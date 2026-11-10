@@ -9,12 +9,17 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPixmap>
+#include <QPointer>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -65,6 +70,7 @@ constexpr int FOOTER_GAP = 8;
 
 constexpr int LIST_ROW_H = 44;
 constexpr int LIST_ROW_PADDING_X = 12;
+constexpr int EDITOR_FIELD_W = 360;
 constexpr int MENU_BUTTON_W = 36;
 constexpr int ARRANGEMENT_H = 220;
 constexpr int ARRANGEMENT_MARGIN = 16;
@@ -634,17 +640,6 @@ static QString entry_title(const stlxconf_autostart_t& autostart) {
     return path.isEmpty() ? QStringLiteral("A program") : path.section(QLatin1Char('/'), -1);
 }
 
-template <typename item_t>
-static int find_entry(const item_t* items, uint32_t count, const char* name) {
-    for (uint32_t i = 0; i < count; i++) {
-        if (strcmp(items[i].name, name) == 0) {
-            return static_cast<int>(i);
-        }
-    }
-
-    return -1;
-}
-
 /* Entries match by section name, which must be unique in a list, so a changed name reads as removed and added,
  * and a move counts once per list. Drop-in entries never differ, since the pages show them read only. */
 template <typename item_t>
@@ -738,8 +733,8 @@ void show_pending_changes() {
     }
 }
 
-/* Pages rebuild once the event that asked for it is done, since its widget goes away */
-static void rebuild_page_later() {
+void rebuild_page_later() {
+    g_st.page->setEnabled(false);
     QTimer::singleShot(0, [] { build_page(g_st.active_page); });
 }
 
@@ -750,41 +745,131 @@ void copy_string(char* destination, size_t capacity, const QString& text) {
     destination[length] = '\0';
 }
 
-/* Drop-in entries follow the user's own in every list, so edits, moves and
- * additions stay within the first `owned` rows */
-template <typename item_t>
-static uint32_t owned_count(const item_t* items, uint32_t count) {
-    uint32_t owned = 0;
-    while (owned < count && !items[owned].from_drop_in) {
-        owned++;
-    }
+QWidget* make_field_row(
+    const QString& label,
+    const QString& key,
+    char* destination,
+    size_t capacity,
+    std::function<void()> on_edit
+) {
+    auto* field = new QLineEdit(QString::fromUtf8(destination));
+    field->setFont(mono_font(STLXTHEME_BODY_SIZE));
+    field->setFixedWidth(EDITOR_FIELD_W);
+    field->setCursorPosition(0);
 
-    return owned;
+    QObject::connect(field, &QLineEdit::textEdited, [destination, capacity, on_edit](const QString& text) {
+        copy_string(destination, capacity, text);
+        on_edit();
+    });
+
+    auto* row = new setting_row(label, key);
+    row->add_control(field);
+
+    return row;
 }
 
-/* Opens a slot at `at` by shifting the entries after it up by one */
-template <typename item_t>
-static item_t* insert_slot(item_t* items, uint32_t count, uint32_t at) {
-    for (uint32_t i = count; i > at; i--) {
-        items[i] = items[i - 1];
-    }
+void add_entry_menu(
+    list_row* row,
+    uint32_t index,
+    uint32_t owned,
+    std::function<void(uint32_t, uint32_t)> move,
+    std::function<void(uint32_t)> remove
+) {
+    auto* more = new more_button;
+    row->add_trailing(more);
 
-    memset(&items[at], 0, sizeof(items[at]));
-    return &items[at];
-}
+    more->on_click = [more, index, owned, move, remove]() {
+        QPointer<QMenu> menu = new QMenu(more);
+        QAction* up = menu->addAction(QStringLiteral("Move up"));
+        up->setEnabled(index > 0);
+        QAction* down = menu->addAction(QStringLiteral("Move down"));
+        down->setEnabled(index + 1 < owned);
 
-/* `prefix` followed by the lowest number that gives a name no entry of the list holds */
-template <typename item_t>
-static QString unused_entry_name(const char* prefix, const item_t* items, uint32_t count) {
-    uint32_t n = 0;
-    while (true) {
-        QByteArray name = QStringLiteral("%1%2").arg(QLatin1String(prefix)).arg(n).toUtf8();
-        if (find_entry(items, count, name.constData()) < 0) {
-            return QString::fromUtf8(name);
+        menu->addSeparator();
+        QAction* removal = menu->addAction(QStringLiteral("Remove"));
+        QAction* chosen = menu->exec(more->mapToGlobal(QPoint(0, more->height())));
+
+        /* A page rebuilt while the menu runs its own event loop deletes the menu with its row */
+        if (!menu) {
+            return;
         }
 
-        n++;
+        menu->deleteLater();
+
+        if (chosen == up) {
+            move(index, index - 1);
+        } else if (chosen == down) {
+            move(index, index + 1);
+        } else if (chosen == removal) {
+            remove(index);
+        }
+
+        if (chosen) {
+            show_pending_changes();
+            rebuild_page_later();
+        }
+    };
+}
+
+void make_openable(list_row* row, int index, int* open_index) {
+    bool is_open = index == *open_index;
+    row->set_open(is_open);
+    row->on_click = [index, open_index, is_open]() {
+        *open_index = is_open ? -1 : index;
+        rebuild_page_later();
+    };
+}
+
+/* The drop-in file that holds `[section]`, as conf.d/<file>, or conf.d when no readable .conf file holds it */
+static QString drop_in_file_of(const QString& section) {
+    QString header = QStringLiteral("[%1]").arg(section);
+    QDir directory(QString::fromLatin1(STLXCONF_DROP_IN_DIR));
+    for (const QFileInfo& file : directory.entryInfoList({ QStringLiteral("*.conf") }, QDir::Files, QDir::Name)) {
+        QFile drop_in(file.filePath());
+        if (!drop_in.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+
+        while (!drop_in.atEnd()) {
+            if (QString::fromUtf8(drop_in.readLine()).trimmed() == header) {
+                return QStringLiteral("conf.d/%1").arg(file.fileName());
+            }
+        }
     }
+
+    return QStringLiteral("conf.d");
+}
+
+void lock_drop_in_row(list_row* row, const char* prefix, const char* name) {
+    QString section = QStringLiteral("%1:%2").arg(QString::fromLatin1(prefix), QString::fromUtf8(name));
+    row->set_locked(true);
+    row->add_trailing(new chip(drop_in_file_of(section)));
+}
+
+push_button* make_add_button(const QString& text, bool is_room_left, std::function<void()> add) {
+    auto* button = new push_button(text);
+    button->set_small(true);
+    button->set_glyph(glyph::PLUS);
+    button->setEnabled(is_room_left);
+    button->on_click = std::move(add);
+    return button;
+}
+
+QWidget* make_editor() {
+    auto* editor = new QWidget;
+    auto* layout = new QVBoxLayout(editor);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    return editor;
+}
+
+QPixmap launcher_icon(const stlxconf_pin_t& pin) {
+    QPixmap icon = pin.icon_path[0] ? QPixmap(QString::fromUtf8(pin.icon_path)) : QPixmap();
+    if (icon.isNull()) {
+        icon = QPixmap(QString::fromLatin1(STLXCONF_DEFAULT_ICON));
+    }
+
+    return icon;
 }
 
 static QVBoxLayout* layout_of(QWidget* widget) {
@@ -935,67 +1020,6 @@ static void add_choice_row(card* parent, const char* label, const char* key, QCo
     QHBoxLayout* row = make_row(parent, label, key);
     row->addWidget(choice);
     row->addStretch(1);
-}
-
-static void build_dock(QWidget* page) {
-    card* pins = add_section(page, "Pinned apps", "[taskbar:<id>]  label  path  args  icon");
-
-    auto move_pin = [](uint32_t from, uint32_t to) {
-        stlxconf_pin_t tmp = g_conf.pins[from];
-        g_conf.pins[from] = g_conf.pins[to];
-        g_conf.pins[to] = tmp;
-    };
-    auto remove_pin = [](uint32_t at) {
-        for (uint32_t i = at; i + 1 < g_conf.pin_count; i++) {
-            g_conf.pins[i] = g_conf.pins[i + 1];
-        }
-
-        g_conf.pin_count--;
-    };
-
-    QHBoxLayout* header = make_list_row(pins);
-    add_caption(header, "LABEL", 110);
-    add_caption(header, "PROGRAM", 0);
-    add_caption(header, "ARGUMENTS", 130);
-    add_caption(header, "ICON", 0);
-    header->addSpacing(MENU_BUTTON_W + 20);
-
-    for (uint32_t i = 0; i < g_conf.pin_count; i++) {
-        stlxconf_pin_t* pin = &g_conf.pins[i];
-
-        QHBoxLayout* row = make_list_row(pins);
-        if (pin->from_drop_in) {
-            add_value(row, pin->label, 110);
-            add_value(row, pin->path, 0);
-            add_value(row, pin->args, 130);
-            add_value(row, pin->icon_path, 0);
-            mark_drop_in_row(row);
-            continue;
-        }
-
-        add_text_field(row, pin->label, sizeof(pin->label), 110);
-        add_text_field(row, pin->path, sizeof(pin->path), 0);
-        add_text_field(row, pin->args, sizeof(pin->args), 130);
-        add_text_field(row, pin->icon_path, sizeof(pin->icon_path), 0);
-        make_row_menu(row, i, owned_count(g_conf.pins, g_conf.pin_count), move_pin, remove_pin);
-    }
-
-    add_list_button(pins, "Add app", [] {
-        if (g_conf.pin_count >= STLXCONF_MAX_TASKBAR) {
-            set_status("the dock is full");
-            return;
-        }
-
-        uint32_t owned = owned_count(g_conf.pins, g_conf.pin_count);
-        QString name = unused_entry_name("pin", g_conf.pins, g_conf.pin_count);
-        stlxconf_pin_t* pin = insert_slot(g_conf.pins, g_conf.pin_count, owned);
-        copy_string(pin->name, sizeof(pin->name), name);
-        copy_string(pin->label, sizeof(pin->label), QStringLiteral("New app"));
-        g_conf.pin_count++;
-
-        show_pending_changes();
-        rebuild_page_later();
-    });
 }
 
 static const char* layout_outcome_text(uint32_t outcome) {
@@ -1334,7 +1358,7 @@ static void apply_mode(uint32_t output) {
         return;
     }
 
-    /* Clicks can arrive before the posted rebuild greys Apply out, after an Apply or a MODES */
+    /* A click can come before the page reads a MODES that made the chosen mode current, so Apply checks again */
     if (!can_apply_mode(output, info.current)) {
         return;
     }
@@ -1555,9 +1579,8 @@ static void build_startup(QWidget* page) {
 
         uint32_t owned = owned_count(g_conf.autostart, g_conf.autostart_count);
         QString name = unused_entry_name("entry", g_conf.autostart, g_conf.autostart_count);
-        stlxconf_autostart_t* as = insert_slot(g_conf.autostart, g_conf.autostart_count, owned);
+        stlxconf_autostart_t* as = insert_entry(g_conf.autostart, g_conf.autostart_count, owned);
         copy_string(as->name, sizeof(as->name), name);
-        g_conf.autostart_count++;
 
         show_pending_changes();
         rebuild_page_later();
@@ -1611,7 +1634,7 @@ static void build_page(uint32_t index) {
 
     switch (static_cast<page_index>(index)) {
     case APPEARANCE_PAGE: build_appearance_page(g_st.page); break;
-    case DOCK_PAGE: build_dock(g_st.page); break;
+    case DOCK_PAGE: build_dock_page(g_st.page); break;
     case DISPLAY_PAGE: build_display(g_st.page); break;
     case INPUT_PAGE: build_input_page(g_st.page); break;
     case STARTUP_PAGE: build_startup(g_st.page); break;

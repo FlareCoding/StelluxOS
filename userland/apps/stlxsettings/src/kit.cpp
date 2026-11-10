@@ -25,6 +25,9 @@ constexpr int ROW_PADDING_RIGHT = 12;
 constexpr int ROW_SPACING = 16;
 
 constexpr int SMALL_BUTTON_PADDING_X = 10;
+constexpr int BUTTON_GLYPH_GAP = 8;
+constexpr int SMALL_BUTTON_GLYPH_GAP = 6;
+constexpr int SMALL_BUTTON_GLYPH_SIZE = 14;
 
 constexpr int SEGMENT_TRACK_INSET = 2;
 constexpr int SEGMENT_GAP = 2;
@@ -44,6 +47,23 @@ constexpr int SLIDER_TICK_TOP = 5;
 constexpr int SLIDER_TICK_H = 4;
 constexpr int SLIDER_KNOB_SIZE = 16;
 constexpr int SLIDER_HALO = 5;
+
+constexpr int CHIP_H = 20;
+constexpr int CHIP_PADDING_X = 6;
+constexpr int CHIP_LOCK_SIZE = 12;
+constexpr int CHIP_LOCK_GAP = 5;
+constexpr int MORE_BUTTON_SIZE = 28;
+
+constexpr int LIST_ROW_H = 44;
+constexpr int LIST_ROW_PADDING_LEFT = 8;
+constexpr int LIST_ROW_PADDING_RIGHT = 6;
+constexpr int LIST_ROW_GAP = 12;
+constexpr int LIST_ICON_SIZE = 28;
+constexpr int LIST_NAME_LINE = 18;
+constexpr int LIST_BOX_PADDING = 4;
+constexpr int LIST_SEPARATOR_INSET = 8;
+constexpr int LIST_FOOTER_H = 44;
+constexpr int LIST_FOOTER_PADDING_X = 10;
 
 constexpr int VALUE_LABEL_W = 64;
 constexpr int VALUE_UNIT_GAP = 4;
@@ -118,6 +138,13 @@ QLabel* make_text(const QString& text, const QFont& font, uint32_t color) {
     return label;
 }
 
+QString code_text(const QString& text) {
+    QString family = QString::fromLatin1(STLXTHEME_MONO_FONT_FAMILY);
+    QString color = theme_color(STLXTHEME_TEXT_SECONDARY).name();
+    QString markup = QStringLiteral("<span style=\"font-family: '%1'; color: %2\">%3</span>");
+    return markup.arg(family, color, text.toHtmlEscaped());
+}
+
 static QPainterPath rounded_rect(qreal x, qreal y, qreal width, qreal height, qreal radius) {
     QPainterPath path;
     path.addRoundedRect(QRectF(x, y, width, height), radius, radius);
@@ -137,6 +164,12 @@ static QPainterPath polygon_path(std::initializer_list<QPointF> points) {
     return path;
 }
 
+static QPainterPath circle_path(qreal x, qreal y, qreal radius) {
+    QPainterPath path;
+    path.addEllipse(QPointF(x, y), radius, radius);
+    return path;
+}
+
 /* Glyphs drawn as lines become filled outlines, so every glyph paints with one fill */
 static QPainterPath stroked(const QPainterPath& line) {
     QPainterPathStroker stroker;
@@ -151,6 +184,11 @@ static QPainterPath quarter_disc(qreal center_x, qreal center_y, qreal radius, q
     path.arcTo(QRectF(center_x - radius, center_y - radius, 2 * radius, 2 * radius), start_degrees, 90);
     path.closeSubpath();
     return path;
+}
+
+static QPainterPath top_half_disc(qreal center_x, qreal center_y, qreal radius) {
+    QPainterPath top = rect_path(center_x - radius, center_y - radius, 2 * radius, radius);
+    return circle_path(center_x, center_y, radius).intersected(top);
 }
 
 static QPainterPath power_path() {
@@ -179,6 +217,12 @@ static QPainterPath keyboard_path() {
     return rounded_rect(0, 4, 16, 9, 2).subtracted(holes.simplified());
 }
 
+static QPainterPath lock_path() {
+    QPainterPath outer = rect_path(4.5, 5, 7, 1.5).united(top_half_disc(8, 5, 3.5));
+    QPainterPath inner = rect_path(6.3, 5, 3.4, 1.5).united(top_half_disc(8, 5, 1.7));
+    return rounded_rect(2.5, 6.5, 11, 8.5, 1.5).united(outer.subtracted(inner));
+}
+
 static QPainterPath build_glyph_path(glyph shape) {
     switch (shape) {
     case glyph::WALLPAPER: {
@@ -195,6 +239,18 @@ static QPainterPath build_glyph_path(glyph shape) {
         return keyboard_path();
     case glyph::POWER:
         return power_path();
+    case glyph::LOCK:
+        return lock_path();
+    case glyph::MORE:
+        return circle_path(3, 8, 1.5).united(circle_path(8, 8, 1.5)).united(circle_path(13, 8, 1.5));
+    case glyph::PLUS:
+        return rect_path(7, 2.5, 2, 11).united(rect_path(2.5, 7, 11, 2));
+    case glyph::PROGRAM: {
+        QPainterPath prompt = polygon_path({
+            { 3.6, 6.2 }, { 6.2, 8.2 }, { 3.6, 10.2 }, { 4.5, 11.3 }, { 8.5, 8.2 }, { 4.5, 5.1 }
+        });
+        return rounded_rect(1, 2, 14, 12, 1.5).subtracted(prompt).subtracted(rect_path(8.5, 10, 4, 1.4));
+    }
     case glyph::LOGO:
         return quarter_disc(7, 7, 7, 90).united(quarter_disc(9, 9, 7, 270));
     }
@@ -337,6 +393,12 @@ push_button::push_button(const QString& text) {
     });
 }
 
+void push_button::set_glyph(glyph shape) {
+    m_glyph = shape;
+    m_has_glyph = true;
+    updateGeometry();
+}
+
 void push_button::set_primary(bool is_primary) {
     m_is_primary = is_primary;
     updateGeometry();
@@ -352,13 +414,26 @@ static QFont button_font(bool is_accent) {
     return ui_font(STLXTHEME_BODY_SIZE, is_accent ? QFont::DemiBold : QFont::Medium);
 }
 
+int push_button::glyph_size() const {
+    return m_is_small ? SMALL_BUTTON_GLYPH_SIZE : STLXTHEME_GLYPH_SIZE;
+}
+
+/* The glyph and its gap before the text, or 0 without a glyph */
+int push_button::glyph_width() const {
+    if (!m_has_glyph) {
+        return 0;
+    }
+
+    return glyph_size() + (m_is_small ? SMALL_BUTTON_GLYPH_GAP : BUTTON_GLYPH_GAP);
+}
+
 QSize push_button::sizeHint() const {
     int full_padding = m_is_primary ? STLXTHEME_ACCENT_BUTTON_PADDING_X : STLXTHEME_BUTTON_PADDING_X;
     int padding = m_is_small ? SMALL_BUTTON_PADDING_X : full_padding;
     int text_width = qCeil(QFontMetricsF(button_font(m_is_primary)).horizontalAdvance(text()));
     int height = m_is_small ? STLXTHEME_TOOLBAR_CONTROL_HEIGHT : STLXTHEME_CONTROL_HEIGHT;
 
-    return QSize(2 * padding + text_width, height);
+    return QSize(2 * padding + glyph_width() + text_width, height);
 }
 
 void push_button::paintEvent(QPaintEvent*) {
@@ -375,12 +450,19 @@ void push_button::paintEvent(QPaintEvent*) {
     painter.drawRoundedRect(QRectF(rect()).adjusted(inset, inset, -inset, -inset), radius, radius);
 
     QFont font = button_font(is_accent);
-    qreal text_width = QFontMetricsF(font).horizontalAdvance(text());
-    qreal left = (width() - text_width) / 2;
+    qreal content_width = glyph_width() + QFontMetricsF(font).horizontalAdvance(text());
+    qreal left = (width() - content_width) / 2;
 
+    if (m_has_glyph) {
+        QColor glyph_color = isEnabled() && !is_accent ? theme_color(STLXTHEME_TEXT_SECONDARY) : colors.text;
+        QRectF glyph_box(left, (height() - glyph_size()) / 2.0, glyph_size(), glyph_size());
+        paint_glyph(painter, m_glyph, glyph_box, glyph_color);
+    }
+
+    QRectF text_box(left + glyph_width(), 0, content_width - glyph_width(), height());
     painter.setFont(font);
     painter.setPen(colors.text);
-    painter.drawText(QRectF(left, 0, text_width, height()), Qt::AlignVCenter, text());
+    painter.drawText(text_box, Qt::AlignVCenter, text());
 }
 
 segmented::segmented(const QStringList& labels, int chosen, mark_painter paint_mark)
@@ -660,4 +742,224 @@ void value_label::paintEvent(QPaintEvent*) {
     painter.setFont(unit_font);
     painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
     painter.drawText(QPointF(width() - unit_width + VALUE_UNIT_GAP, baseline), m_unit);
+}
+
+chip::chip(const QString& text) : m_text(text) {
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+}
+
+QSize chip::sizeHint() const {
+    qreal text_width = QFontMetricsF(mono_font(STLXTHEME_CAPTION_SIZE)).horizontalAdvance(m_text);
+    int lock_width = CHIP_LOCK_SIZE + CHIP_LOCK_GAP;
+    return QSize(2 * (CHIP_PADDING_X + CARD_BORDER) + lock_width + qCeil(text_width), CHIP_H);
+}
+
+void chip::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    qreal radius = STLXTHEME_CHIP_RADIUS - 0.5;
+    painter.setPen(QPen(theme_color(STLXTHEME_LINE), CARD_BORDER));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+
+    qreal lock_left = CHIP_PADDING_X + CARD_BORDER;
+    QRectF lock(lock_left, (height() - CHIP_LOCK_SIZE) / 2.0, CHIP_LOCK_SIZE, CHIP_LOCK_SIZE);
+    paint_glyph(painter, glyph::LOCK, lock, theme_color(STLXTHEME_TEXT_DIM));
+
+    qreal left = lock.right() + CHIP_LOCK_GAP;
+    painter.setFont(mono_font(STLXTHEME_CAPTION_SIZE));
+    painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawText(QRectF(left, 0, width() - left, height()), Qt::AlignVCenter | Qt::AlignLeft, m_text);
+}
+
+more_button::more_button() {
+    setFixedSize(MORE_BUTTON_SIZE, MORE_BUTTON_SIZE);
+    setAttribute(Qt::WA_Hover);
+}
+
+/* Lit while the pointer is on its row, so the row shows where its menu opens */
+void more_button::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    bool is_lit = underMouse() || (parentWidget() && parentWidget()->underMouse());
+
+    if (is_lit) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(STLXTHEME_SURFACE_HOVER));
+        painter.drawRoundedRect(QRectF(rect()), STLXTHEME_CONTROL_RADIUS, STLXTHEME_CONTROL_RADIUS);
+    }
+
+    QRectF dots(0, 0, STLXTHEME_GLYPH_SIZE, STLXTHEME_GLYPH_SIZE);
+    dots.moveCenter(QRectF(rect()).center());
+    paint_glyph(painter, glyph::MORE, dots, theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_DIM));
+}
+
+void more_button::mouseReleaseEvent(QMouseEvent* event) {
+    bool is_click = event->button() == Qt::LeftButton && rect().contains(event->position().toPoint());
+    if (is_click && on_click) {
+        on_click();
+    }
+}
+
+list_row::list_row(const QString& name, const QString& path, const QString& args)
+    : m_name(name), m_path(path), m_args(args), m_layout(new QHBoxLayout(this)) {
+    setFixedHeight(LIST_ROW_H);
+    m_layout->setContentsMargins(LIST_ROW_PADDING_LEFT, 0, LIST_ROW_PADDING_RIGHT, 0);
+    m_layout->setSpacing(LIST_ROW_GAP);
+    m_layout->addStretch(1);
+}
+
+void list_row::set_text(const QString& name, const QString& path, const QString& args) {
+    m_name = name;
+    m_path = path;
+    m_args = args;
+    update();
+}
+
+void list_row::set_icon(const QPixmap& icon) {
+    m_icon = QPixmap();
+    if (!icon.isNull()) {
+        m_icon = icon.scaled(LIST_ICON_SIZE, LIST_ICON_SIZE, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+
+    update();
+}
+
+void list_row::set_locked(bool is_locked) {
+    m_is_locked = is_locked;
+    update();
+}
+
+void list_row::set_open(bool is_open) {
+    m_is_open = is_open;
+    update();
+}
+
+void list_row::add_trailing(QWidget* widget) {
+    m_layout->addWidget(widget, 0, Qt::AlignVCenter);
+}
+
+void list_row::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    qreal center_y = height() / 2.0;
+
+    if (is_lit()) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(STLXTHEME_SURFACE_HOVER));
+        painter.drawRoundedRect(QRectF(rect()), STLXTHEME_CONTROL_RADIUS, STLXTHEME_CONTROL_RADIUS);
+    }
+
+    QRectF icon(LIST_ROW_PADDING_LEFT, center_y - LIST_ICON_SIZE / 2.0, LIST_ICON_SIZE, LIST_ICON_SIZE);
+    if (!m_icon.isNull()) {
+        painter.drawPixmap(icon.topLeft(), m_icon);
+    } else {
+        qreal radius = STLXTHEME_CONTROL_RADIUS - 0.5;
+        painter.setPen(QPen(theme_color(STLXTHEME_LINE_SUBTLE), CARD_BORDER));
+        painter.setBrush(theme_color(STLXTHEME_SURFACE_HOVER));
+        painter.drawRoundedRect(icon.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+
+        QRectF glyph_box(0, 0, STLXTHEME_GLYPH_SIZE, STLXTHEME_GLYPH_SIZE);
+        glyph_box.moveCenter(icon.center());
+        paint_glyph(painter, glyph::PROGRAM, glyph_box, theme_color(STLXTHEME_TEXT_SECONDARY));
+    }
+
+    /* The text runs up to the first trailing widget */
+    qreal text_left = icon.right() + LIST_ROW_GAP;
+    qreal text_right = m_layout->count() > 1 ? m_layout->itemAt(1)->geometry().left() - LIST_ROW_GAP : width();
+    qreal text_width = qMax(0.0, text_right - text_left);
+    QFont name_font = ui_font(STLXTHEME_BODY_SIZE, QFont::Medium);
+    QFont path_font = mono_font(STLXTHEME_CAPTION_SIZE);
+
+    painter.setFont(name_font);
+    painter.setPen(theme_color(m_is_locked ? STLXTHEME_TEXT_SECONDARY : STLXTHEME_TEXT));
+    QString name = QFontMetricsF(name_font).elidedText(m_name, Qt::ElideRight, text_width);
+    painter.drawText(QRectF(text_left, center_y - LIST_NAME_LINE, text_width, LIST_NAME_LINE), Qt::AlignVCenter, name);
+
+    QFontMetricsF path_metrics(path_font);
+    QString path = path_metrics.elidedText(m_path, Qt::ElideMiddle, text_width);
+    QRectF path_line(text_left, center_y, text_width, CAPTION_LINE_HEIGHT);
+    painter.setFont(path_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawText(path_line, Qt::AlignVCenter | Qt::AlignLeft, path);
+
+    qreal args_left = text_left + path_metrics.horizontalAdvance(path + QLatin1Char(' '));
+    QString args = path_metrics.elidedText(m_args, Qt::ElideRight, qMax(0.0, text_right - args_left));
+    QRectF args_line(args_left, path_line.top(), text_right - args_left, CAPTION_LINE_HEIGHT);
+    painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
+    painter.drawText(args_line, Qt::AlignVCenter | Qt::AlignLeft, args);
+}
+
+void list_row::mouseReleaseEvent(QMouseEvent* event) {
+    bool is_click = event->button() == Qt::LeftButton && rect().contains(event->position().toPoint());
+    if (is_click && on_click) {
+        on_click();
+    }
+}
+
+/* The list draws no hairline above or below a lit row, so the pointer entering or leaving a row repaints the list */
+void list_row::enterEvent(QEnterEvent*) {
+    parentWidget()->update();
+}
+
+void list_row::leaveEvent(QEvent*) {
+    parentWidget()->update();
+}
+
+list_box::list_box() : m_entries(new QVBoxLayout) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    m_entries->setContentsMargins(LIST_BOX_PADDING, LIST_BOX_PADDING, LIST_BOX_PADDING, LIST_BOX_PADDING);
+    m_entries->setSpacing(0);
+    layout->addLayout(m_entries);
+}
+
+void list_box::add_row(list_row* row) {
+    m_rows.append(row);
+    m_entries->addWidget(row);
+}
+
+void list_box::add_entry(QWidget* entry) {
+    m_entries->addWidget(entry);
+}
+
+void list_box::set_footer(push_button* add, const QString& hint) {
+    m_footer = new QWidget;
+    m_footer->setFixedHeight(LIST_FOOTER_H);
+    auto* layout = new QHBoxLayout(m_footer);
+    layout->setContentsMargins(LIST_FOOTER_PADDING_X, 0, LIST_FOOTER_PADDING_X, 0);
+
+    QLabel* text = make_text(hint, ui_font(STLXTHEME_CAPTION_SIZE, QFont::Normal), STLXTHEME_TEXT_DIM);
+    text->setTextFormat(Qt::RichText);
+    layout->addWidget(add);
+    layout->addStretch(1);
+    layout->addWidget(text);
+
+    static_cast<QVBoxLayout*>(this->layout())->addWidget(m_footer);
+}
+
+void list_box::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    QColor line = theme_color(STLXTHEME_LINE_SUBTLE);
+    list_row* previous = nullptr;
+
+    for (int i = 0; i < m_entries->count(); i++) {
+        QWidget* entry = m_entries->itemAt(i)->widget();
+        list_row* row = m_rows.contains(entry) ? static_cast<list_row*>(entry) : nullptr;
+        bool is_row_pair = row && previous;
+        bool is_pair_unlit = is_row_pair && !row->is_lit() && !previous->is_lit();
+        if (is_pair_unlit) {
+            QRect place = row->geometry();
+            int hairline_width = place.width() - 2 * LIST_SEPARATOR_INSET;
+            painter.fillRect(QRect(place.left() + LIST_SEPARATOR_INSET, place.top() - 1, hairline_width, 1), line);
+        }
+
+        previous = row;
+    }
+
+    if (m_footer) {
+        painter.fillRect(QRect(0, m_footer->y(), width(), 1), line);
+    }
 }
