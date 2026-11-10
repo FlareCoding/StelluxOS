@@ -444,8 +444,9 @@ public:
         }
     }
 
-    /* Shows the focused window's app on the bar. Call once per wakeup, after
-     * input and client messages are handled. */
+    /* Shows the focused window's app on the bar and the running apps' ticks
+     * on the dock. Call once per wakeup, after input and client messages are
+     * handled. */
     void sync_shell();
 
     /* Whether a power overlay phase or hold is in flight. */
@@ -718,7 +719,7 @@ private:
     /* The compositor's own widget trees in the background band */
     std::unique_ptr<dm_panels> m_panels;
 
-    /* The power overlay and its dock star */
+    /* The power overlay */
     std::unique_ptr<dm_power> m_power;
     bool m_power_was_active = false;
 

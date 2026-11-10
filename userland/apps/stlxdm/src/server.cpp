@@ -639,12 +639,12 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         out.gpu_capture = m_gpu_compositor->make_picture(static_cast<size_t>(width) * height * 4);
     }
 
-    /* Built before the panels paint into the backdrop, so the frost is of the wallpaper alone */
+    /* The frost of the wallpaper, which every glass surface on the output is drawn from */
     out.frost = material::build_frost(out.backdrop, m_glass_tint);
     uint8_t* capture = out.gpu_capture ? out.gpu_capture->pixels() : nullptr;
     bool ready = out.frost && (!m_gpu_composes || capture) &&
                  out.panels->init(width, height, *m_conf, out.backdrop, out.frost, m_stats) == 0 &&
-                 out.power->init(width, height, m_conf->taskbar_height, capture) == 0;
+                 out.power->init(width, height, capture) == 0;
     if (ready && m_gpu_composes) {
         out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
         out.gpu_frost = copy_frost(out.frost);
@@ -1005,6 +1005,16 @@ bool server::compose_pending(uint32_t output) const {
 void server::sync_shell() {
     dm_client* owner = m_focus ? window_owner(m_focus) : nullptr;
     m_panels->show_focused_app(owner ? owner->app_id : nullptr);
+
+    uint64_t running = 0;
+    for (const auto& client : m_clients) {
+        int32_t launcher = m_panels->launcher_of(client->app_id);
+        if (launcher >= 0 && !client->windows.empty()) {
+            running |= 1ull << launcher;
+        }
+    }
+
+    m_panels->show_running_launchers(running, owner ? m_panels->launcher_of(owner->app_id) : -1);
 }
 
 void server::reload_config() {

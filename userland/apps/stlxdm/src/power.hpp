@@ -13,7 +13,7 @@
  * reveal with a short stagger, commit by holding until the progress
  * ring closes, and the chosen light collapses the screen to black
  * before the platform call, unless `run_action_now()` makes the call
- * first. The dock's right edge carries the star that opens it. */
+ * first. The system menu's Power item opens it. */
 class dm_power {
 public:
     enum class state {
@@ -26,8 +26,7 @@ public:
 
     /* Opens the label faces and keeps the collapse backdrop as
      * `capture_into` does. Returns 0, or -1 when a face is missing. */
-    int init(uint32_t screen_w, uint32_t screen_h,
-             uint32_t taskbar_height, uint8_t* capture);
+    int init(uint32_t screen_w, uint32_t screen_h, uint8_t* capture);
     void shutdown();
 
     /* Keeps the collapse backdrop, stale, in `capture`, which must hold
@@ -72,14 +71,11 @@ public:
      * time that every draw shows until the next update */
     void update();
 
-    /* Pointer input while the overlay is active, and star hover
-     * tracking while it is closed */
+    /* Pointer input while the overlay is active */
     void on_motion(int32_t x, int32_t y);
     void on_press(int32_t x, int32_t y);
     void on_release();
 
-    bool star_hit(int32_t x, int32_t y) const;
-    bool star_hover() const { return m_star_hover; }
     int32_t hover_choice() const { return m_hover; }
 
     /* Bounding box of one orb including glow, hold ring, and label */
@@ -109,14 +105,6 @@ public:
     /* The color, with its alpha, that the dim blends over the screen while
      * the overlay is active */
     uint32_t dim_color() const;
-
-    /* The dock's power star, drawn only while the overlay is closed */
-    void draw_star(stlxgfx_surface_t* back,
-                   const damage_list::rect& clip);
-
-    /* The bounds `draw_star` draws inside, empty while the overlay
-     * is active */
-    damage_list::rect star_bounds() const;
 
     /* One collapse frame: the backdrop fading to black under the
      * contracting light. Covers the whole target. */
@@ -150,10 +138,6 @@ private:
     /* The time the last `update` read, so that every draw of one tick,
      * on each output and in either compositor, shows one moment */
     uint64_t m_update_ns = 0;
-
-    int32_t m_star_cx = 0;
-    int32_t m_star_cy = 0;
-    bool m_star_hover = false;
 
     int32_t m_hover = -1;      /* orb under the pointer, -1 off both */
     int32_t m_press = -1;      /* orb being held */

@@ -83,6 +83,20 @@ static uint32_t zone_shape(decor::zone z) {
     }
 }
 
+/* Gives the panels a motion, or each button that changed */
+static void feed_panels(dm_panels& panels, int32_t x, int32_t y, uint16_t buttons, uint16_t changed, int16_t wheel) {
+    if (changed == 0 && wheel == 0) {
+        panels.pointer_move(x, y);
+    }
+
+    for (uint8_t btn = 0; btn < 3; btn++) {
+        uint16_t bit = static_cast<uint16_t>(1u << btn);
+        if (changed & bit) {
+            panels.pointer_button(x, y, btn, (buttons & bit) != 0);
+        }
+    }
+}
+
 /* US layout usage to codepoint, 0 for keys without a character */
 static uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
     bool shift = (hid & HID_SHIFT) != 0;
@@ -547,24 +561,6 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* Star hover tracking while the overlay is closed, a change
-     * repaints the sprite's glow */
-    bool star_was = m_power->star_hover();
-    m_power->on_motion(x, y);
-    if (m_power->star_hover() != star_was) {
-        const damage_list::rect& main = m_layout.find(m_layout.main_output())->rect;
-        m_damage.add(main.x, main.y, main.w, main.h);
-    }
-
-    /* A press on the star opens the overlay above everything */
-    if (press && m_power->star_hit(x, y)) {
-        release_control_press();
-        m_panels->close_popover_now();
-        m_power->open();
-        m_damage.add_full();
-        return;
-    }
-
     /* An active resize drag owns the pointer until every button lifts,
      * and the final target flushes as one last configure */
     if (m_resize) {
@@ -607,6 +603,13 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             m_drag = nullptr;
             release_control_press();
         }
+        return;
+    }
+
+    /* A press the panels hold owns the pointer until its release, wherever the pointer goes meanwhile */
+    if (m_panels->holds_pointer()) {
+        move_cursor(x, y, m_cursor_shape);
+        feed_panels(*m_panels, x, y, buttons, changed, wheel);
         return;
     }
 
@@ -749,17 +752,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         /* Uncovered band area belongs to the panels, and a motion
          * elsewhere clears any panel hover */
         if (!struck && m_panels->contains(x, y)) {
-            if (changed == 0 && wheel == 0) {
-                m_panels->pointer_move(x, y);
-            }
-
-            for (uint8_t btn = 0; btn < 3; btn++) {
-                uint16_t bit = static_cast<uint16_t>(1u << btn);
-                if (changed & bit) {
-                    m_panels->pointer_button(x, y, btn,
-                                            (buttons & bit) != 0);
-                }
-            }
+            feed_panels(*m_panels, x, y, buttons, changed, wheel);
         } else {
             m_panels->pointer_move(-1, -1);
         }

@@ -1459,11 +1459,10 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         decor::draw_outline(canvas, m_outline, r);
     }
 
-    /* Above the windows: the tooltip, star and overlay on the main output,
-     * the overlay's dim on the others, then the pointer the frames draw */
+    /* Above the windows: the tooltip and overlay on the main output, the
+     * overlay's dim on the others, then the pointer the frames draw */
     if (is_main) {
         m_panels->compose_top(back, local);
-        m_power->draw_star(back, local);
         m_power->draw_overlay(back, local);
     } else {
         m_power->draw_dim(back, local);
@@ -1791,7 +1790,6 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
 
     if (is_main) {
         lower.add_bounds(m_panels->top_bounds());
-        lower.add_bounds(m_power->star_bounds());
         upper.add_bounds(m_power->overlay_bounds());
     }
 
@@ -1810,7 +1808,6 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
 
         if (is_main) {
             m_panels->compose_top(lower.surface(), r);
-            m_power->draw_star(lower.surface(), r);
         }
 
         upper.clear(r);

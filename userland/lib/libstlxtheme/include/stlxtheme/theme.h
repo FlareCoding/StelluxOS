@@ -33,7 +33,7 @@
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
 #define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target and of a set pin */
-#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window and of a menu */
+#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window, the dock, a popover panel and a Qt menu */
 #define STLXTHEME_RIM_DIM     0x26E2C496
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
 #define STLXTHEME_BEZEL_DIM   0x1CE2C496 /* on an unfocused window */
@@ -48,6 +48,7 @@
 #define STLXTHEME_SURFACE_HOVER    0x17FFF0D7
 #define STLXTHEME_SURFACE_PRESS    0x4D000000
 #define STLXTHEME_ROW_HOVER        0x0FFFF0D7
+#define STLXTHEME_DOCK_TILE_HOVER  0x1AFFF0D7
 #define STLXTHEME_SURFACE_SELECTED 0x17FFF0D7 /* highlighted items, such as a selected row and the hovered menu item */
 #define STLXTHEME_SELECTED_RING    0x33E2C496
 #define STLXTHEME_SURFACE_ON       0x1CFFF0D7 /* the face of an open bar target and of a set pin */
@@ -73,6 +74,8 @@
 #define STLXTHEME_CONTROL_RADIUS   6
 #define STLXTHEME_MENU_RADIUS      8
 #define STLXTHEME_MENU_ITEM_RADIUS 4
+#define STLXTHEME_DOCK_RADIUS      16
+#define STLXTHEME_DOCK_TILE_RADIUS 12
 #define STLXTHEME_CHIP_RADIUS      4
 
 /* Sizes */
@@ -80,6 +83,9 @@
 #define STLXTHEME_TITLE_BAR_HEIGHT       32
 #define STLXTHEME_CONTROL_HEIGHT         32
 #define STLXTHEME_LIST_ROW_HEIGHT        30
+#define STLXTHEME_DOCK_HEIGHT            48
+#define STLXTHEME_DOCK_TILE_SIZE         40
+#define STLXTHEME_DOCK_ICON_SIZE         32
 #define STLXTHEME_GLYPH_SIZE             16
 #define STLXTHEME_WINDOW_CONTROL_SIZE    16
 #define STLXTHEME_WINDOW_CONTROL_GAP     8
@@ -110,6 +116,7 @@
 #define STLXTHEME_MONO_FONT_PATH        "/etc/res/fonts/IBMPlexMono-Regular.ttf"
 
 /* Type sizes in em pixels, chosen so Plex's x-height lands on whole pixels */
+#define STLXTHEME_PAGE_TITLE_SIZE 29.0f
 #define STLXTHEME_BODY_SIZE       13.5f
 #define STLXTHEME_CAPTION_SIZE    11.5f
 #define STLXTHEME_TERMINAL_SIZE   15.5f

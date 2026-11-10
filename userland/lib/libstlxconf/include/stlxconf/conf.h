@@ -106,15 +106,9 @@ typedef struct {
     /* [theme] bar colors, the bar text size, and the glass level and tint */
     uint32_t bar_color;
     uint32_t bar_font_size;
-    uint32_t accent_color;
     uint32_t text_color;
     stlxconf_glass_level_t glass_level;
     stlxconf_glass_tint_t  glass_tint;
-
-    /* [taskbar] dock geometry */
-    uint32_t taskbar_height;
-    uint32_t taskbar_icon_size;
-    uint32_t taskbar_spacing;
 
     /* [input] keyboard repeat, a delay of 0 disables it */
     uint32_t key_repeat_delay_ms;

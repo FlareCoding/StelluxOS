@@ -1,7 +1,7 @@
-/* The power overlay and its dock star. Orbs, glows, rings, and the
- * collapse are anti-aliased coverage drawing straight onto the
- * backbuffer, animated by the paced compose tick while any phase or
- * hold is in flight and costing nothing once settled.
+/* The power overlay. Orbs, glows, rings, and the collapse are
+ * anti-aliased coverage drawing straight onto the backbuffer or the
+ * GPU path's top picture, animated by the paced compose tick while
+ * any phase or hold is in flight and costing nothing once settled.
  */
 #include "power.hpp"
 
@@ -29,9 +29,6 @@ constexpr int32_t PW_SHUTDOWN = 1;
 constexpr int32_t PW_ORB_RADIUS = 58;
 constexpr int32_t PW_ORB_GAP = 216;
 constexpr float PW_BLACKOUT_AT = 0.82f;
-constexpr int32_t PW_STAR_MARGIN = 34;
-constexpr int32_t PW_STAR_CORE = 6;
-constexpr int32_t PW_STAR_GLOW = 13;
 
 constexpr uint32_t PW_DIM_COLOR = 0xE6080B14;
 constexpr uint32_t PW_ORB_FILL = 0xFF151B2C;
@@ -42,7 +39,6 @@ constexpr uint32_t PW_LABEL_BRIGHT = 0xFFE9EDF8;
 constexpr uint32_t PW_HINT_COLOR = 0xFF7F8AA6;
 constexpr uint32_t PW_RESTART_ACCENT = 0xFF5FD7FF;
 constexpr uint32_t PW_SHUTDOWN_ACCENT = 0xFFFF5C8A;
-constexpr uint32_t PW_STAR_COLOR = 0xFFB7C0D8;
 
 static const char* const g_choice_label[2] = { "Restart", "Shut Down" };
 
@@ -354,14 +350,9 @@ static void pw_text_centered(stlxgfx_surface_t* s, stlxgfx_font* font,
                       text, strlen(text), color);
 }
 
-int dm_power::init(uint32_t screen_w, uint32_t screen_h,
-                   uint32_t taskbar_height, uint8_t* capture) {
+int dm_power::init(uint32_t screen_w, uint32_t screen_h, uint8_t* capture) {
     m_width = screen_w;
     m_height = screen_h;
-
-    int32_t bar_y = static_cast<int32_t>(screen_h - taskbar_height);
-    m_star_cx = static_cast<int32_t>(screen_w) - PW_STAR_MARGIN;
-    m_star_cy = bar_y + static_cast<int32_t>(taskbar_height) / 2;
 
     m_label_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE);
     m_hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE);
@@ -528,12 +519,6 @@ void dm_power::update() {
 }
 
 void dm_power::on_motion(int32_t x, int32_t y) {
-    if (m_state == state::closed) {
-        m_star_hover = star_hit(x, y);
-        return;
-    }
-
-    m_star_hover = false;
     if (m_state != state::opening && m_state != state::open) {
         return;
     }
@@ -566,54 +551,6 @@ void dm_power::on_release() {
     if (m_state == state::opening || m_state == state::open) {
         m_press = -1;
     }
-}
-
-bool dm_power::star_hit(int32_t x, int32_t y) const {
-    int32_t dx = x - m_star_cx;
-    int32_t dy = y - m_star_cy;
-    int32_t r = PW_STAR_GLOW + 4;
-
-    return dx * dx + dy * dy <= r * r;
-}
-
-damage_list::rect dm_power::star_bounds() const {
-    if (m_state != state::closed) {
-        return {};
-    }
-
-    int32_t r = PW_STAR_GLOW + 4;
-
-    return { m_star_cx - r, m_star_cy - r, 2 * r, 2 * r };
-}
-
-void dm_power::draw_star(stlxgfx_surface_t* back,
-                         const damage_list::rect& clip) {
-    if (m_state != state::closed || clip.w <= 0 || clip.h <= 0) {
-        return;
-    }
-
-    stlxgfx_surface_t* view = pw_view(back, clip);
-    if (!view) {
-        return;
-    }
-
-    float cx = static_cast<float>(m_star_cx - clip.x);
-    float cy = static_cast<float>(m_star_cy - clip.y);
-    float boost = m_star_hover ? 1.0f : 0.0f;
-
-    uint32_t halo = pw_with_alpha(PW_STAR_COLOR, 0.20f + 0.22f * boost);
-    pw_glow(view, cx, cy, 1.5f,
-            static_cast<float>(PW_STAR_GLOW) + 2.0f * boost, halo);
-    pw_disc(view, cx, cy,
-            static_cast<float>(PW_STAR_CORE) * (1.0f + 0.08f * boost),
-            pw_with_alpha(PW_STAR_COLOR, 0.75f + 0.25f * boost));
-
-    if (m_star_hover) {
-        pw_arc(view, cx, cy, static_cast<float>(PW_STAR_GLOW) - 1.0f,
-               1.5f, 0.0f, 1.0f, pw_with_alpha(PW_STAR_COLOR, 0.55f));
-    }
-
-    stlxgfx_destroy_surface(view);
 }
 
 void dm_power::draw_orbs(stlxgfx_surface_t* s, int32_t ox, int32_t oy) {

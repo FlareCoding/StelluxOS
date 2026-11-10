@@ -5,6 +5,7 @@
 #include "picture.hpp"
 #include "shell/bar.hpp"
 #include "shell/direct_host.hpp"
+#include "shell/dock.hpp"
 #include "shell/popover.hpp"
 #include "shell/stats.hpp"
 #include "shell/stats_panel.hpp"
@@ -19,9 +20,10 @@
 #include <cstdint>
 
 /* The compositor's chrome: a top bar and a bottom dock of pinned
- * launchers with hover tooltips. Both are toolkit trees painted straight
- * into the shared backdrop, so composing them is the same blit as the
- * wallpaper. The bar's targets open popover panels above the windows. */
+ * launchers with hover tooltips and running ticks. Both are toolkit trees
+ * painted straight into the shared backdrop, so composing them is the same
+ * blit as the wallpaper. The bar's targets open popover panels above the
+ * windows. */
 class dm_panels {
 public:
     static constexpr int32_t BAR_H = STLXTHEME_TOP_BAR_HEIGHT;
@@ -41,12 +43,12 @@ public:
     );
     void shutdown();
 
-    /* Paints into `backdrop` and puts popover panels on glass from `frost` from here on. Both must have the
-     * size and hold the pixels of the ones before, and `frost` must stay valid until the next `rebind()` or
-     * `shutdown()`. */
+    /* Paints into `backdrop` and puts popover panels and the tooltip on glass from `frost` from here on. Both
+     * must have the size and hold the pixels of the ones before, and `frost` must stay valid until the next
+     * `rebind()` or `shutdown()`. */
     void rebind(stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost);
 
-    /* Fired by a dock pin's release, the server spawns the app */
+    /* Fired with the pin of a launcher whose tile is clicked, for the server to spawn the pin's program */
     std::function<void(const stlxconf_pin_t&)> on_launch;
 
     /* Fired by a system menu item or a stats panel link: a program to spawn with its args, or the power overlay */
@@ -57,8 +59,15 @@ public:
         return m_host.dirty() || m_dock_host.dirty() || m_popover.dirty();
     }
 
-    int32_t dock_y() const { return m_dock_y; }
-    int32_t dock_h() const { return m_dock_h; }
+    /* The top row of the dock's shelf, where the windows' work area ends whether or not the dock has launchers */
+    int32_t dock_y() const { return m_dock_layout.shelf.y; }
+
+    /* The index of the first launcher that starts the app `app_id`, which must not be null, or -1 when none does */
+    int32_t launcher_of(const char* app_id) const;
+
+    /* Ticks each launcher whose bit is set in `running`, the one at `focused` longer. `focused` is the launcher
+     * whose app holds the focus, or -1 for none. */
+    void show_running_launchers(uint64_t running, int32_t focused);
 
     /* Paints the bar's and the dock's dirty subtrees into the backdrop, adding the regions they changed
      * to `backdrop_damage`, and adds the regions the popover and the tooltip changed above the windows to
@@ -96,12 +105,15 @@ public:
             return true;
         }
 
-        if (x < 0 || x >= static_cast<int32_t>(m_width)) {
-            return false;
-        }
+        const damage_list::rect& shelf = m_dock_layout.shelf;
+        bool on_shelf = x >= shelf.x && x < shelf.x + shelf.w && y >= shelf.y && y < shelf.y + shelf.h;
+        bool on_bar = x >= 0 && x < static_cast<int32_t>(m_width) && y >= 0 && y < BAR_H;
 
-        return (y >= 0 && y < BAR_H) || (y >= m_dock_y && y < static_cast<int32_t>(m_height));
+        return on_bar || on_shelf;
     }
+
+    /* Whether a launcher's tile took a press, so the pointer's motion and buttons must come here until its release */
+    bool holds_pointer() const { return m_dock_host.holds_pointer(); }
 
     void pointer_move(int32_t x, int32_t y);
     void pointer_button(int32_t x, int32_t y, uint8_t btn, bool down);
@@ -120,28 +132,31 @@ private:
     void toggle_popover(popover_panel& panel);
     void switch_popover(popover_panel& panel);
     void sync_bar_targets();
+    void launch(const stlxconf_pin_t& pin);
     void hover_pin(int32_t index, bool entered);
-    damage_list::rect pin_icon_rect(int32_t index) const;
     bool find_tooltip(damage_list::rect& tip, const char*& label) const;
 
     const stlxconf_t* m_conf = nullptr;
-    const stlxgfx_surface_t* m_frost = nullptr;  /* the main output's, which popover panels' glass is drawn from */
+    const stlxgfx_surface_t* m_frost = nullptr;  /* the main output's, which popover and tooltip glass is drawn from */
     direct_host m_host;
     direct_host m_dock_host;
 
     /* Views into the backdrop rows each tree paints, and the glass
-     * each tree paints beneath its widgets */
+     * the bar paints beneath its widgets */
     stlxgfx_surface_t* m_band = nullptr;
     stlxgfx_surface_t* m_dock = nullptr;
     stlxgfx_surface_t* m_bar_glass = nullptr;
-    stlxgfx_surface_t* m_dock_glass = nullptr;
+
+    /* The launcher icons the dock's tiles draw */
     std::vector<stlxgfx_surface_t*> m_icons;
+
+    /* The dock's tiles, which its tree owns, and where its shelf and band lie */
+    std::vector<dock_tile*> m_tiles;
+    dock_layout m_dock_layout;
+
     stlxgfx_font* m_tip_font = nullptr;
     stlxgfx_font_metrics m_tip_fm = {};
     uint32_t m_width = 0;
-    uint32_t m_height = 0;
-    int32_t m_dock_y = 0;
-    int32_t m_dock_h = 0;
 
     /* The bar's widgets, which the host's tree owns */
     top_bar m_bar;
