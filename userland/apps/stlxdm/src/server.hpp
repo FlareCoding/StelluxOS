@@ -38,21 +38,26 @@ struct dm_hotkey {
 
 /* Config-derived state built as a unit and adopted only when every
  * piece came up, so a failed reload keeps the running desktop. The
- * backdrop is the main output's wallpaper with the panels painted in. */
+ * backdrop is the main output's wallpaper with the panels painted in,
+ * and the frost is made from the wallpaper alone. */
 struct dm_conf_state {
     std::unique_ptr<dm_panels> panels;
     std::unique_ptr<dm_power> power;
     stlxgfx_surface_t* backdrop = nullptr;
     std::unique_ptr<backdrop_picture> gpu_backdrop;  /* the backdrop under the GPU compositor, `backdrop` then null */
+    stlxgfx_surface_t* frost = nullptr;
+    std::unique_ptr<frost_picture> gpu_frost;        /* the frost under the GPU compositor, `frost` then null */
     std::unique_ptr<picture> gpu_capture;            /* the overlay's collapse backdrop under the GPU compositor */
     std::vector<dm_hotkey> hotkeys;
 };
 
-/* An output's own pictures under the GPU compositor: its backdrop on any
- * output but the main one, the draws above the windows beneath the power
- * overlay's dim and above it, and what each of its composes reuses */
+/* An output's own pictures under the GPU compositor: its backdrop and
+ * frost on any output but the main one, the draws above the windows
+ * beneath the power overlay's dim and above it, and what each of its
+ * composes reuses */
 struct dm_output_pictures {
     std::unique_ptr<backdrop_picture>                backdrop;
+    std::unique_ptr<frost_picture>                   frost;
     std::unique_ptr<top_picture>                     lower_top;
     std::unique_ptr<top_picture>                     upper_top;
     std::unique_ptr<gpu_compositor::compose_buffers> compose;
@@ -84,9 +89,11 @@ struct dm_output {
     damage_list        history[DM_DAMAGE_HISTORY];
     uint32_t           history_head = 0;
 
-    /* The wallpaper or flat color at the output's size, null on the main
-     * output, when it could not be built and under the GPU compositor */
+    /* The wallpaper or flat color at the output's size and its frost,
+     * null on the main output, when they could not be built and under
+     * the GPU compositor */
     stlxgfx_surface_t* backdrop = nullptr;
+    stlxgfx_surface_t* frost = nullptr;
     bool               backdrop_failed = false;       /* its last build failed */
 
     bool               cursor_overlaps = false;       /* the pointer's picture overlaps the output */
@@ -547,6 +554,8 @@ private:
     void compose_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
     bool composes_on_gpu() const { return m_gpu_composes && !m_gpu_stopped; }
     backdrop_picture& gpu_backdrop_of(dm_output& out);
+    frost_picture* gpu_frost_of(dm_output& out);
+    const stlxgfx_surface_t* frost_of(dm_output& out);
     bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void compose_collapse(dm_output& out);
@@ -566,6 +575,7 @@ private:
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
     std::unique_ptr<backdrop_picture> copy_backdrop(const stlxgfx_surface_t* backdrop, uint32_t width, uint32_t height);
+    std::unique_ptr<frost_picture> copy_frost(const stlxgfx_surface_t* frost);
     bool make_output_pictures(uint32_t output);
     void make_served_pictures();
     uint32_t gather_members(layout::member* members) const;
@@ -620,6 +630,11 @@ private:
     display* m_display = nullptr;
     const stlxconf_t* m_conf = nullptr;
 
+    /* The glass level and tint the material tables and every frost are
+     * built for, which a failed reload restores */
+    stlxconf_glass_level_t m_glass_level = STLXCONF_GLASS_LEVEL_GLASS;
+    stlxconf_glass_tint_t  m_glass_tint = STLXCONF_GLASS_TINT_WARM;
+
     /* The GPU compositor, null while the CPU composes, and the one the CPU
      * took over from until it is reaped, both before the clients and
      * outputs since their pictures must drop first */
@@ -665,6 +680,11 @@ private:
      * panels painted in, in `m_gpu_backdrop` under the GPU compositor */
     stlxgfx_surface_t* m_backdrop = nullptr;
     std::unique_ptr<backdrop_picture> m_gpu_backdrop;
+
+    /* The frost of the main output's wallpaper, in `m_gpu_frost` under
+     * the GPU compositor */
+    stlxgfx_surface_t* m_frost = nullptr;
+    std::unique_ptr<frost_picture> m_gpu_frost;
 
     /* The power overlay's collapse backdrop under the GPU compositor, at
      * the main backdrop's size, which the overlay views and a

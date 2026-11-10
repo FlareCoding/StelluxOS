@@ -91,11 +91,12 @@ struct picture_copy {
     size_t bytes;
 };
 
-/* An output's backdrop under the GPU compositor: the wallpaper, and on the
- * main output the panels, drawn by the CPU into a picture, and its twin,
- * which the compose reads. Whoever draws into the surface must mark the
- * rows it changed, which the next compose copies into the twin before
- * reading it. Like its pictures, it must drop before its maker. */
+/* An output's backdrop or frost under the GPU compositor, drawn by the
+ * CPU into a picture, and its twin, which the compose reads. The backdrop
+ * is the wallpaper, and on the main output the panels. Whoever draws into
+ * the surface must mark the rows it changed, which the next compose
+ * copies into the twin before reading it. Like its pictures, it must drop
+ * before its maker. */
 class backdrop_picture {
 public:
     /* Makes the picture and its twin at `width` by `height`, every row
@@ -107,8 +108,7 @@ public:
     backdrop_picture(const backdrop_picture&) = delete;
     backdrop_picture& operator=(const backdrop_picture&) = delete;
 
-    /* An opaque surface over the picture, which the CPU draws the
-     * backdrop into */
+    /* An opaque surface over the picture, which the CPU draws into */
     stlxgfx_surface_t* surface() const { return m_surface; }
 
     const picture& memory() const { return *m_memory; }
@@ -140,6 +140,10 @@ private:
     stlxgfx_surface_t*       m_surface = nullptr;
     std::vector<row_span>    m_changed;   /* sorted, no two touching */
 };
+
+/* An output's frost under the GPU compositor, drawn by the CPU once, whose
+ * twin the glass layers read */
+using frost_picture = backdrop_picture;
 
 /* One of an output's two top pictures: what stlxdm draws above the windows,
  * in straight alpha over transparent pixels, which the compose reads only

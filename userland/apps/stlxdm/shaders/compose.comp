@@ -4,9 +4,10 @@
 
 /* Composes one damaged rectangle of an output. Each invocation walks the
  * rectangle's layer list bottom to top for its pixel, with the integer
- * arithmetic of libstlxgfx, decor and power.cpp's dim, so a frame equals
- * the CPU compositor's but for rounding where two translucent draws stack.
- * layers.hpp defines the layers and gpu_compositor.cpp the arguments. */
+ * arithmetic of libstlxgfx, decor, material.cpp and power.cpp's dim, so a
+ * frame equals the CPU compositor's but for rounding where two translucent
+ * draws stack. layers.hpp defines the layers and gpu_compositor.cpp the
+ * arguments. */
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -15,6 +16,11 @@ const uint LAYER_BLEND = 1u;
 const uint LAYER_FILL  = 2u;
 const uint LAYER_DIM   = 3u;
 const uint LAYER_SPIN  = 4u;
+const uint LAYER_GLASS = 5u;
+
+/* material.hpp's GRAIN_TILE and VEIL_STEPS */
+const int  GRAIN_TILE = 160;
+const uint VEIL_STEPS = 256u;
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer pixels {
     uint words[];
@@ -31,6 +37,7 @@ struct layer {
     uint   op;
     uint   color;
     uint   radius;
+    uint   rim_fade;
 };
 
 layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer layer_list {
@@ -39,6 +46,16 @@ layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer lay
 
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer corner_table {
     uint pairs[];
+};
+
+/* material.hpp's `material::tables` */
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer material_table {
+    uint  rim_alpha;
+    uint  light;
+    uint  veil_top;
+    uint  veil_bottom;
+    uvec4 veil[VEIL_STEPS];
+    uint  grain[GRAIN_TILE * GRAIN_TILE / 4];
 };
 
 layout(push_constant, std430) uniform compose_args {
@@ -51,6 +68,7 @@ layout(push_constant, std430) uniform compose_args {
     corner_table   corner_distances;
     uint           corner_count;
     int            corner_far_distance;
+    material_table material;
 } args;
 
 uint div255(uint x) {
@@ -101,14 +119,18 @@ uint corner_distance(uint index) {
     return (index & 1u) != 0u ? pair >> 16 : pair & 0xFFFFu;
 }
 
-/* Signed distance from the center of a pixel in a corner square to the
- * layer's rounded rect, in eighth pixels, negative inside. Such a pixel lies
- * past both straight edges, where decor's distance reads the table. */
+/* Signed distance from the center of `pixel` to the layer's rounded rect, in
+ * eighth pixels, negative inside, as decor's `rounded_rect_distance` measures it */
 int rounded_distance(layer l, ivec2 pixel) {
     ivec2 size = l.end - l.start;
     int radius = int(l.radius);
     ivec2 past = abs(2 * pixel + 1 - (2 * l.start + size)) - (size - 2 * radius);
-    int index = past.x * past.x + past.y * past.y;
+    if (past.x <= 0 && past.y <= 0) {
+        return max(past.x, past.y) * 4 - radius * 8;
+    }
+
+    ivec2 outside = max(past, ivec2(0));
+    int index = outside.x * outside.x + outside.y * outside.y;
     if (index >= int(args.corner_count)) {
         return args.corner_far_distance;
     }
@@ -139,6 +161,50 @@ uint read_source(layer l, ivec2 pixel) {
     return pixels(l.source).words[uint(at.y) * (l.pitch >> 2) + uint(at.x)];
 }
 
+uint veil_alpha(int row, int height) {
+    uint below = uint(2 * row + 1);
+    uint span = uint(2 * height);
+    return (args.material.veil_top * (span - below) + args.material.veil_bottom * below + span / 2u) / span;
+}
+
+uint veiled(uint frost, uvec4 veil) {
+    uint blue = (channel(frost, 0u) * veil.x + veil.y) >> 16;
+    uint green = (channel(frost, 8u) * veil.x + veil.z) >> 16;
+    uint red = (channel(frost, 16u) * veil.x + veil.w) >> 16;
+    return (red << 16) | (green << 8) | blue;
+}
+
+uint grain_alpha(ivec2 inside) {
+    uint index = uint(inside.y % GRAIN_TILE) * uint(GRAIN_TILE) + uint(inside.x % GRAIN_TILE);
+    return (args.material.grain[index >> 2] >> ((index & 3u) * 8u)) & 0xFFu;
+}
+
+uint rim_alpha(int row, uint fade) {
+    if (row >= int(fade)) {
+        return 0u;
+    }
+
+    if (row == 0) {
+        return args.material.rim_alpha;
+    }
+
+    uint span = 2u * fade - 2u;
+    uint left = 2u * fade - 2u * uint(row) - 1u;
+    return (args.material.rim_alpha * left + span / 2u) / span;
+}
+
+/* material.cpp's `draw` of one pixel over `below` */
+uint glass(layer l, ivec2 pixel, uint below) {
+    ivec2 inside = pixel - l.start;
+    uvec4 veil = args.material.veil[veil_alpha(inside.y, l.end.y - l.start.y)];
+    uint lit = blend(veiled(read_source(l, pixel), veil), args.material.light, grain_alpha(inside));
+
+    int distance = rounded_distance(l, pixel);
+    uint ring = coverage(distance) - coverage(distance + 8);
+    lit = blend(lit, args.material.light, div255(rim_alpha(inside.y, l.rim_fade) * ring));
+    return blend(below, lit, coverage(distance));
+}
+
 void main() {
     ivec2 pixel = args.start + ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, args.end))) {
@@ -165,6 +231,8 @@ void main() {
             color = l.color;
         } else if (l.op == LAYER_DIM) {
             color = dim(color, l.color);
+        } else if (l.op == LAYER_GLASS) {
+            color = glass(l, pixel, color);
         } else if (l.op == LAYER_SPIN) {
             /* An atomic at every turn, since a compiler may drop an endless loop of plain stores */
             for (;;) {

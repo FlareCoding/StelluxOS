@@ -129,17 +129,18 @@ public:
     std::unique_ptr<compose_buffers> make_compose_buffers();
 
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
-     * it, into `target` through `buffers`, after copying the rows the CPU
-     * changed in `backdrop` into its twin, and waits at most
-     * `COMPOSE_DEADLINE_NS` for the compose to end. Every picture and
-     * import the scene and `backdrop` name must be this compositor's and
-     * stay until the compose ended. */
+     * it, into `target` through `buffers`, after copying into their twins
+     * the rows the CPU changed in `backdrop` and in `frost` (null without
+     * one), and waits at most `COMPOSE_DEADLINE_NS` for the compose to end.
+     * Every picture and import the scene, `backdrop` and `frost` name must
+     * be this compositor's and stay until the compose ended. */
     compose_result compose(
         compose_buffers& buffers,
         const compose_target& target,
         const layer_scene& scene,
         const std::vector<damage_list::rect>& rects,
-        backdrop_picture& backdrop
+        backdrop_picture& backdrop,
+        frost_picture* frost
     );
 
     /* Has the next compose that lists a rectangle make `failure` at one
@@ -255,6 +256,8 @@ private:
     const char* create_command_pool();
     const char* create_timestamp_queries();
     const char* upload_corner_distances();
+    const char* make_material_buffer();
+    void upload_material();
     const char* probe_gpu_file(int gpu_fd, const gpu_info& info);
 
     VkResult create_import_buffer(VkDeviceSize size, VkBuffer& created);
@@ -274,7 +277,14 @@ private:
         compose_buffers& buffers,
         const compose_target& target,
         const layer_scene& scene,
-        const backdrop_picture& backdrop
+        const backdrop_picture& backdrop,
+        const frost_picture* frost
+    );
+    void record_copies(
+        VkCommandBuffer commands,
+        const backdrop_picture& picture,
+        const std::vector<picture_copy>& copies,
+        std::vector<VkBufferCopy>& regions
     );
     void record_readback(compose_buffers& buffers, const compose_target& target);
     void write_timestamp(VkCommandBuffer commands, uint32_t query);
@@ -344,6 +354,10 @@ private:
     uint32_t      m_corner_count = 0;
     int32_t       m_corner_far_distance = 0;
 
+    /* The glass tables in GPU memory, as of `material::tables_generation` */
+    device_buffer m_material;
+    uint32_t      m_material_generation = 0;
+
     /* The failure the next compose that lists a rectangle makes */
     bool            m_fails_next_compose = false;
     compose_failure m_next_failure = compose_failure::unmapped_read;
@@ -377,6 +391,7 @@ private:
     std::vector<uint32_t>          m_list_starts;
 
     std::vector<picture_copy>          m_copies;
+    std::vector<picture_copy>          m_frost_copies;
     std::vector<VkBufferCopy>          m_copy_regions;
     std::vector<span>                  m_readback_rows;
     std::vector<VkBufferMemoryBarrier> m_transfers;
