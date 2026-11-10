@@ -55,9 +55,12 @@ static stlxgfx_surface_t* make_strip_surface(uint8_t* pixels, const damage_list:
     );
 }
 
+/* Draws the frame of `w` into a strip's pixels inside `clip`, which must
+ * lie in desktop coordinates inside `strip` */
 static bool draw_strip(
     uint8_t* pixels,
     const damage_list::rect& strip,
+    const damage_list::rect& clip,
     const dm_window& w,
     const decor::chrome_state& st
 ) {
@@ -68,7 +71,7 @@ static bool draw_strip(
 
     surface->flags |= STLXGFX_SURFACE_STRAIGHT_ALPHA;
     decor::canvas canvas = { surface, strip.x, strip.y };
-    decor::draw(canvas, w, st, strip);
+    decor::draw(canvas, w, st, clip);
     stlxgfx_destroy_surface(surface);
 
     return true;
@@ -92,15 +95,34 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
     bool is_same_size = b.width == m_width && b.height == m_height;
     bool is_same_title = memcmp(w.title, m_title, sizeof(m_title)) == 0;
-    bool is_same_state = st == m_state;
     bool is_same_maker = &maker == m_maker;
-    if (m_is_drawn && is_same_maker && is_same_size && is_same_title && is_same_state) {
+    bool is_same_frame = m_is_drawn && is_same_maker && is_same_size && is_same_title && st.focused == m_state.focused;
+    if (is_same_frame && st == m_state) {
         return true;
     }
 
     m_is_drawn = false;
+
+    /* A hover or press changes only the controls, so only their part of
+     * the strips is drawn again */
+    if (is_same_frame) {
+        damage_list::rect controls = decor::controls_rect(w);
+        for (uint32_t i = 0; i < STRIPS; i++) {
+            damage_list::rect placed = placed_strip(w, m_strips[i]);
+            damage_list::rect redrawn = damage_list::intersect(placed, controls);
+            bool is_empty = redrawn.w <= 0 || redrawn.h <= 0;
+            if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], placed, redrawn, w, st)) {
+                return false;
+            }
+        }
+
+        m_state = st;
+        m_is_drawn = true;
+        return true;
+    }
+
     damage_list::rect strips[STRIPS];
-    decor::frame_strips(w, strips);
+    decor::frame_strips(w, st.focused, strips);
 
     size_t bytes = 0;
     for (uint32_t i = 0; i < STRIPS; i++) {
@@ -123,7 +145,7 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     memset(m_memory->pixels(), 0, bytes);
     for (uint32_t i = 0; i < STRIPS; i++) {
         bool is_empty = strips[i].w <= 0 || strips[i].h <= 0;
-        if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], strips[i], w, st)) {
+        if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], strips[i], strips[i], w, st)) {
             return false;
         }
     }

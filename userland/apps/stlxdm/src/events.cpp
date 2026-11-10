@@ -450,7 +450,7 @@ void server::begin_resize(dm_window* w, decor::zone z, uint32_t shape) {
     m_resize_anchor_y = (m_resize_edges & EDGE_T)
                       ? w->y + static_cast<int32_t>(b.height) : w->y;
 
-    m_outline = decor::bounds(*w);
+    m_outline = decor::frame_rect(*w, w->x, w->y, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height));
     damage_outline();
 }
 

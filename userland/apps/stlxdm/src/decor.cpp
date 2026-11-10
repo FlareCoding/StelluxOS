@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
+#include <vector>
 
 constexpr int32_t  TITLE_INSET        = 14;  /* from the frame's left edge */
 constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
@@ -47,9 +49,20 @@ constexpr int64_t MAXIMIZE_RADIUS = SAMPLE_UNITS_PER_PIXEL * 5 / 4;
 constexpr int64_t CLOSE_START = SAMPLE_UNITS_PER_PIXEL * 3 / 2;
 constexpr int64_t CLOSE_END = SAMPLE_UNITS_PER_PIXEL * 13 / 2;
 
-/* Corner distances run through a table of squared half pixel offsets,
- * so the content arcs never need a square root per pixel */
-constexpr int32_t SDF_Q_MAX = 2 * decor::CORNER_R;
+/* Shadow weights are fixed point fractions of `SHADOW_ONE` */
+constexpr int32_t SHADOW_SHIFT = 15;
+constexpr int32_t SHADOW_ONE = 1 << SHADOW_SHIFT;
+constexpr int32_t SHADOW_LAYERS_MAX = 4;
+constexpr int32_t CONTACT_SPREAD = 1;  /* of the contact ring, which keeps a frame's edge visible on any wallpaper */
+
+/* A CSS blur of B px is a Gaussian of sigma B / 2, which the SVG filter
+ * spec approximates by three box blurs 3 sqrt(2 pi) / 4 sigma wide */
+constexpr int32_t BOX_PER_BLUR_PERCENT = 94;
+constexpr int32_t PERCENT = 100;
+
+/* Corner distances out to the shadow's contact ring run through a table of
+ * squared half pixel offsets, so the arcs never need a square root per pixel */
+constexpr int32_t SDF_Q_MAX = 2 * (decor::CORNER_R + CONTACT_SPREAD);
 constexpr int32_t SDF_LUT_N = 2 * SDF_Q_MAX * SDF_Q_MAX + 1;
 
 /* A rounded rect in pixels */
@@ -76,6 +89,58 @@ constexpr control_look CONTROL_DIM = {
     STLXTHEME_WINDOW_CONTROL_GLYPH_DIM
 };
 
+/* One layer of a window's shadow in ink, with lengths in px as in a CSS box shadow */
+struct window_shadow_layer {
+    int32_t offset_y;
+    int32_t blur;
+    int32_t spread;
+    int32_t alpha_percent;
+};
+
+constexpr window_shadow_layer UNFOCUSED_SHADOW[] = {
+    { 0, 0, CONTACT_SPREAD, 72 },
+    { 2, 4, 0, 24 },
+    { 8, 20, 0, 36 }
+};
+
+constexpr window_shadow_layer FOCUSED_SHADOW[] = {
+    { 0, 0, CONTACT_SPREAD, 82 },
+    { 2, 4, 0, 34 },
+    { 12, 28, 0, 44 },
+    { 28, 72, 0, 40 }
+};
+
+/* A layer's blur as running sums of its weights out to `reach` either side,
+ * and how much less a corner of `radius` blurs out than a square one */
+struct shadow_kernel {
+    int32_t              reach = 0;
+    int32_t              radius = 0;
+    std::vector<int32_t> running_weights;
+    std::vector<int32_t> corner_deficits;
+};
+
+/* A window's shadow with its layers prepared, each layer's opacity in
+ * fractions of `SHADOW_ONE`, and how far it reaches past each frame side */
+struct window_shadow {
+    const window_shadow_layer* layers = nullptr;
+    int32_t                    layer_count = 0;
+    shadow_kernel              kernels[SHADOW_LAYERS_MAX];
+    int32_t                    opacities[SHADOW_LAYERS_MAX] = {};
+    int32_t                    reach_side = 0;
+    int32_t                    reach_top = 0;
+    int32_t                    reach_bottom = 0;
+};
+
+/* One shadow layer's blurred spans along the drawn area's columns and rows,
+ * and which pass close enough to a corner for its rounding to show */
+struct layer_profile {
+    damage_list::rect    shape;
+    std::vector<int32_t> columns;
+    std::vector<int32_t> rows;
+    std::vector<uint8_t> columns_near_corner;
+    std::vector<uint8_t> rows_near_corner;
+};
+
 /* Whether a point, in sample units from the top-left of the square being
  * measured, lies inside a shape */
 using point_test = bool (*)(int64_t x, int64_t y);
@@ -89,6 +154,9 @@ static uint16_t g_dist8[SDF_LUT_N];
  * corner square, and of each control's glyph, by row then column */
 static uint8_t g_below_rule[decor::CORNER_R][decor::CORNER_R];
 static uint8_t g_glyphs[decor::CONTROL_COUNT][GLYPH_SIZE][GLYPH_SIZE];
+
+static window_shadow g_unfocused_shadow;
+static window_shadow g_focused_shadow;
 
 static const dm_buffer* current_buffer(const dm_window& w) {
     if (w.current < 0) {
@@ -429,6 +497,248 @@ static void draw_title(const decor::canvas& back, const damage_list::rect& area,
     stlxgfx_destroy_surface(view);
 }
 
+static std::vector<int64_t> convolve_box(const std::vector<int64_t>& weights, int32_t width) {
+    std::vector<int64_t> convolved(weights.size() + static_cast<size_t>(width) - 1, 0);
+    for (size_t i = 0; i < weights.size(); i++) {
+        for (int32_t j = 0; j < width; j++) {
+            convolved[i + static_cast<size_t>(j)] += weights[i];
+        }
+    }
+
+    return convolved;
+}
+
+/* The sum of a kernel's weights up to and including `offset` */
+static int32_t running_weight(const shadow_kernel& kernel, int32_t offset) {
+    if (offset < -kernel.reach) {
+        return 0;
+    }
+
+    if (offset >= kernel.reach) {
+        return SHADOW_ONE;
+    }
+
+    return kernel.running_weights[static_cast<size_t>(offset + kernel.reach)];
+}
+
+static int32_t weight_at(const shadow_kernel& kernel, int32_t offset) {
+    return running_weight(kernel, offset) - running_weight(kernel, offset - 1);
+}
+
+/* Builds the running weights of the SVG filter spec's three box blurs, the
+ * last a pixel wider when the box width is even so the blur stays centered */
+static void prepare_blur(shadow_kernel& kernel, const window_shadow_layer& layer) {
+    int32_t box = std::max(1, (layer.blur * BOX_PER_BLUR_PERCENT + PERCENT / 2) / PERCENT);
+    int32_t last_box = box % 2 == 0 ? box + 1 : box;
+    std::vector<int64_t> weights = convolve_box(convolve_box(convolve_box({ 1 }, box), box), last_box);
+    int64_t total = static_cast<int64_t>(box) * box * last_box;
+
+    int64_t running = 0;
+    kernel.reach = static_cast<int32_t>(weights.size() - 1) / 2;
+    for (int64_t weight : weights) {
+        running += weight;
+        kernel.running_weights.push_back(static_cast<int32_t>((running * SHADOW_ONE + total / 2) / total));
+    }
+}
+
+/* Coverage of pixel (`column`, `row`) of the top-left corner square of a
+ * rounded rect of `radius`, as `rrect_dist8` measures it */
+static uint32_t corner_coverage(int32_t radius, int32_t column, int32_t row) {
+    int32_t qx = 2 * (radius - column) - 1;
+    int32_t qy = 2 * (radius - row) - 1;
+
+    return dist8_coverage(static_cast<int32_t>(g_dist8[qx * qx + qy * qy]) - radius * 8);
+}
+
+/* The part of one row of a corner square that rounding leaves out, blurred
+ * across to `x` columns from the square's outer column */
+static int64_t blur_corner_row(const shadow_kernel& kernel, int32_t row, int32_t x) {
+    int64_t blurred = 0;
+    for (int32_t column = 0; column < kernel.radius; column++) {
+        uint32_t left_out = 255 - corner_coverage(kernel.radius, column, row);
+        blurred += static_cast<int64_t>(weight_at(kernel, x - column)) * left_out;
+    }
+
+    return blurred;
+}
+
+static void prepare_corner(shadow_kernel& kernel, int32_t radius) {
+    kernel.radius = radius;
+    int32_t span = radius + 2 * kernel.reach;
+    std::vector<int64_t> blurred_rows(static_cast<size_t>(radius * span));
+    for (size_t i = 0; i < blurred_rows.size(); i++) {
+        int32_t row = static_cast<int32_t>(i) / span;
+        blurred_rows[i] = blur_corner_row(kernel, row, static_cast<int32_t>(i) % span - kernel.reach);
+    }
+
+    kernel.corner_deficits.resize(static_cast<size_t>(span * span));
+    for (size_t i = 0; i < kernel.corner_deficits.size(); i++) {
+        int32_t y = static_cast<int32_t>(i) / span - kernel.reach;
+        int32_t x = static_cast<int32_t>(i) % span;
+        int64_t blurred = 0;
+        for (int32_t row = 0; row < radius; row++) {
+            blurred += weight_at(kernel, y - row) * blurred_rows[static_cast<size_t>(row * span + x)];
+        }
+
+        int64_t scale = static_cast<int64_t>(255) * SHADOW_ONE;
+        kernel.corner_deficits[i] = static_cast<int32_t>((blurred + scale / 2) / scale);
+    }
+}
+
+/* Whether no layer spreads past the contact ring, the farthest the corner
+ * distance table reaches */
+static constexpr bool fits_distance_table(const window_shadow_layer* layers, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (layers[i].spread > CONTACT_SPREAD) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void prepare_shadow(window_shadow& shadow, const window_shadow_layer* layers, int32_t layer_count) {
+    shadow.layers = layers;
+    shadow.layer_count = layer_count;
+    for (int32_t i = 0; i < layer_count; i++) {
+        const window_shadow_layer& layer = layers[i];
+        prepare_blur(shadow.kernels[i], layer);
+        prepare_corner(shadow.kernels[i], decor::CORNER_R + layer.spread);
+        shadow.opacities[i] = (layer.alpha_percent * SHADOW_ONE + PERCENT / 2) / PERCENT;
+
+        int32_t reach = shadow.kernels[i].reach + layer.spread;
+        shadow.reach_side = std::max(shadow.reach_side, reach);
+        shadow.reach_top = std::max(shadow.reach_top, reach - layer.offset_y);
+        shadow.reach_bottom = std::max(shadow.reach_bottom, reach + layer.offset_y);
+    }
+}
+
+static damage_list::rect grow(const damage_list::rect& r, int32_t side, int32_t top, int32_t bottom) {
+    return { r.x - side, r.y - top, r.w + 2 * side, r.h + top + bottom };
+}
+
+/* The blurred deficit of a rounded corner at `x` columns and `y` rows
+ * inward from its outer pixel */
+static int32_t corner_deficit(const shadow_kernel& kernel, int32_t x, int32_t y) {
+    int32_t span = kernel.radius + 2 * kernel.reach;
+    int32_t column = x + kernel.reach;
+    int32_t row = y + kernel.reach;
+    bool is_column_inside = column >= 0 && column < span;
+    bool is_row_inside = row >= 0 && row < span;
+    if (!is_column_inside || !is_row_inside) {
+        return 0;
+    }
+
+    return kernel.corner_deficits[static_cast<size_t>(row * span + column)];
+}
+
+static int32_t blurred_corners(const shadow_kernel& kernel, const damage_list::rect& shape, int32_t x, int32_t y) {
+    int32_t left = x - shape.x;
+    int32_t right = shape.x + shape.w - 1 - x;
+    int32_t top = y - shape.y;
+    int32_t bottom = shape.y + shape.h - 1 - y;
+
+    return corner_deficit(kernel, left, top) + corner_deficit(kernel, right, top) +
+           corner_deficit(kernel, left, bottom) + corner_deficit(kernel, right, bottom);
+}
+
+/* Whether a corner's blurred deficit reaches a line `from_start` and
+ * `from_end` pixels inward from the shape's two edges across it */
+static bool is_near_corner(const shadow_kernel& kernel, int32_t from_start, int32_t from_end) {
+    int32_t limit = kernel.radius + kernel.reach;
+    bool is_near_start = from_start >= -kernel.reach && from_start < limit;
+    bool is_near_end = from_end >= -kernel.reach && from_end < limit;
+
+    return is_near_start || is_near_end;
+}
+
+/* The coverage at `position` of `length` ink pixels from `start` after the blur */
+static int32_t blurred_span(const shadow_kernel& kernel, int32_t start, int32_t length, int32_t position) {
+    return running_weight(kernel, position - start) - running_weight(kernel, position - start - length);
+}
+
+static layer_profile profile_layer(const window_shadow_layer& layer, const shadow_kernel& kernel,
+                                   const damage_list::rect& frame, const damage_list::rect& area) {
+    layer_profile profile;
+    profile.shape = grow({ frame.x, frame.y + layer.offset_y, frame.w, frame.h }, layer.spread, layer.spread,
+                         layer.spread);
+    const damage_list::rect& shape = profile.shape;
+
+    for (int32_t x = area.x; x < area.x + area.w; x++) {
+        profile.columns.push_back(blurred_span(kernel, shape.x, shape.w, x));
+        profile.columns_near_corner.push_back(is_near_corner(kernel, x - shape.x, shape.x + shape.w - 1 - x));
+    }
+
+    for (int32_t y = area.y; y < area.y + area.h; y++) {
+        profile.rows.push_back(blurred_span(kernel, shape.y, shape.h, y));
+        profile.rows_near_corner.push_back(is_near_corner(kernel, y - shape.y, shape.y + shape.h - 1 - y));
+    }
+
+    return profile;
+}
+
+/* The ink alpha the layers stack up at the area's pixel (`column`, `row`),
+ * each darkening the share the layers before it left clear */
+static uint32_t shadow_alpha(const window_shadow& shadow, const layer_profile* profiles, const damage_list::rect& area,
+                             int32_t column, int32_t row) {
+    int64_t clear = SHADOW_ONE;
+    for (int32_t i = 0; i < shadow.layer_count; i++) {
+        const layer_profile& profile = profiles[i];
+        int64_t covered = static_cast<int64_t>(profile.columns[column]) * profile.rows[row] >> SHADOW_SHIFT;
+        if (covered == 0) {
+            continue;
+        }
+
+        if (profile.columns_near_corner[column] && profile.rows_near_corner[row]) {
+            int32_t corners = blurred_corners(shadow.kernels[i], profile.shape, area.x + column, area.y + row);
+            covered = std::max<int64_t>(0, covered - corners);
+        }
+
+        int64_t darkened = covered * shadow.opacities[i] >> SHADOW_SHIFT;
+        clear -= clear * darkened >> SHADOW_SHIFT;
+    }
+
+    return static_cast<uint32_t>((255 * (SHADOW_ONE - clear) + SHADOW_ONE / 2) >> SHADOW_SHIFT);
+}
+
+/* Whether the pixel lies in the frame's rect outside its corner squares,
+ * where the body covers it whole */
+static bool is_under_body(const damage_list::rect& frame, int32_t x, int32_t y) {
+    bool is_inside = x >= frame.x && x < frame.x + frame.w && y >= frame.y && y < frame.y + frame.h;
+    bool is_beside_corner = x < frame.x + decor::CORNER_R || x >= frame.x + frame.w - decor::CORNER_R;
+    bool is_level_with_corner = y < frame.y + decor::CORNER_R || y >= frame.y + frame.h - decor::CORNER_R;
+
+    return is_inside && !(is_beside_corner && is_level_with_corner);
+}
+
+/* Writes the shadow of `frame` as ink into `view` over `area`, replacing each
+ * pixel it reaches except where `is_under_body` holds */
+static void draw_shadow(stlxgfx_surface_t* view, const damage_list::rect& area, const damage_list::rect& frame,
+                        const window_shadow& shadow) {
+    layer_profile profiles[SHADOW_LAYERS_MAX];
+    for (int32_t i = 0; i < shadow.layer_count; i++) {
+        profiles[i] = profile_layer(shadow.layers[i], shadow.kernels[i], frame, area);
+    }
+
+    for (int32_t row = 0; row < area.h; row++) {
+        uint32_t* pixels = back_row(view, row);
+        for (int32_t column = 0; column < area.w; column++) {
+            if (is_under_body(frame, area.x + column, area.y + row)) {
+                continue;
+            }
+
+            uint32_t alpha = shadow_alpha(shadow, profiles, area, column, row);
+            if (alpha != 0) {
+                pixels[column] = (alpha << 24) | (STLXTHEME_INK & 0x00FFFFFFu);
+            }
+        }
+    }
+}
+
+static const window_shadow& shadow_of(bool is_focused) {
+    return is_focused ? g_focused_shadow : g_unfocused_shadow;
+}
+
 namespace decor {
 
 int init() {
@@ -445,6 +755,12 @@ int init() {
     for (int32_t control = 0; control < CONTROL_COUNT; control++) {
         measure_square(glyph_shapes[control], &g_glyphs[control][0][0], GLYPH_SIZE);
     }
+
+    static_assert(std::size(UNFOCUSED_SHADOW) <= SHADOW_LAYERS_MAX && std::size(FOCUSED_SHADOW) <= SHADOW_LAYERS_MAX);
+    static_assert(fits_distance_table(UNFOCUSED_SHADOW, std::size(UNFOCUSED_SHADOW)));
+    static_assert(fits_distance_table(FOCUSED_SHADOW, std::size(FOCUSED_SHADOW)));
+    prepare_shadow(g_unfocused_shadow, UNFOCUSED_SHADOW, static_cast<int32_t>(std::size(UNFOCUSED_SHADOW)));
+    prepare_shadow(g_focused_shadow, FOCUSED_SHADOW, static_cast<int32_t>(std::size(FOCUSED_SHADOW)));
 
     return 0;
 }
@@ -467,16 +783,36 @@ damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
              cw + 2 * BORDER, ch + TITLE_H + BORDER };
 }
 
-damage_list::rect bounds(const dm_window& w) {
+damage_list::rect bounds(const dm_window& w, bool is_focused) {
     const dm_buffer* b = current_buffer(w);
     if (!b) {
         return {};
     }
 
-    return frame_rect(w, w.x, w.y, static_cast<int32_t>(b->width), static_cast<int32_t>(b->height));
+    damage_list::rect frame = frame_rect(w, w.x, w.y, static_cast<int32_t>(b->width), static_cast<int32_t>(b->height));
+    if (!decorated(w)) {
+        return frame;
+    }
+
+    const window_shadow& shadow = shadow_of(is_focused);
+
+    return grow(frame, shadow.reach_side, shadow.reach_top, shadow.reach_bottom);
 }
 
-void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS]) {
+damage_list::rect damage_rect(const dm_window& w, int32_t x, int32_t y, int32_t cw, int32_t ch) {
+    damage_list::rect frame = frame_rect(w, x, y, cw, ch);
+    if (!decorated(w)) {
+        return frame;
+    }
+
+    int32_t side = std::max(g_focused_shadow.reach_side, g_unfocused_shadow.reach_side);
+    int32_t top = std::max(g_focused_shadow.reach_top, g_unfocused_shadow.reach_top);
+    int32_t bottom = std::max(g_focused_shadow.reach_bottom, g_unfocused_shadow.reach_bottom);
+
+    return grow(frame, side, top, bottom);
+}
+
+void frame_strips(const dm_window& w, bool is_focused, damage_list::rect (&strips)[FRAME_STRIPS]) {
     const dm_buffer* b = current_buffer(w);
     if (!b || !decorated(w)) {
         for (damage_list::rect& strip : strips) {
@@ -486,7 +822,7 @@ void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS])
         return;
     }
 
-    damage_list::rect outer = bounds(w);
+    damage_list::rect outer = bounds(w, is_focused);
     int32_t bw = static_cast<int32_t>(b->width);
     int32_t bh = static_cast<int32_t>(b->height);
     int32_t corner_y = w.y + (bh > CONTENT_R ? bh - CONTENT_R : 0);
@@ -591,13 +927,14 @@ void draw(const canvas& back, const dm_window& w,
         return;
     }
 
-    damage_list::rect area = damage_list::intersect(clip, bounds(w));
+    damage_list::rect area = damage_list::intersect(clip, bounds(w, st.focused));
     stlxgfx_surface_t* view = clip_view(back, area);
     if (!view) {
         return;
     }
 
     damage_list::rect frame = frame_rect(w, w.x, w.y, static_cast<int32_t>(b->width), static_cast<int32_t>(b->height));
+    draw_shadow(view, area, frame, shadow_of(st.focused));
     draw_body(view, area, { frame.x, frame.y, frame.w, frame.h, CORNER_R }, w.y - 1, st);
     for (int32_t i = first_control(frame); i < CONTROL_COUNT; i++) {
         draw_control(view, area, control_square(frame, i), g_glyphs[i], look_of(CONTROLS[i], st));
