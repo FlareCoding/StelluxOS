@@ -9,7 +9,7 @@ alwaysApply: true
 
 - Google style with domain scopes from repo history: `feat(sched):`, `feat(sysstat):`, `feat(userland):`, `feat(syscall):`, `fix(signals):`.
 - Subject verbs in past tense: "added", "implemented", "rendered", "accounted".
-- Body: 2-4 sentences on WHY (the problem that existed, why this approach). No implementation play-by-play. Timeless wording, no "this PR/commit", no Linux mentions.
+- Body: none by default, so most commits are one line. Deep philosophical or architectural design decisions get 2-4 sentences on WHY (the problem that existed, why this approach). No implementation play-by-play. Timeless wording, no "this PR/commit", no Linux mentions.
 - Work lands as a stack of small self-contained commits, each independently buildable and testable. Lib primitives may land with their first consumer.
 
 ## Code style
