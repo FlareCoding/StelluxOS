@@ -97,14 +97,15 @@ void blend_popover_layer(stlxgfx_surface_t* back, const damage_list::rect& clip,
 }
 
 layer_piece popover_layer_piece(const popover_layer& shown) {
-    if (!shown.surface || shown.address == 0) {
+    uint64_t address = shown.picture ? shown.picture->address() : 0;
+    if (!shown.surface || address == 0) {
         return {};
     }
 
     layer_piece piece;
     piece.bounds = { shown.x, shown.y, static_cast<int32_t>(shown.surface->width),
                      static_cast<int32_t>(shown.surface->height) };
-    piece.picture = { shown.address, shown.surface->pitch, shown.x, shown.y };
+    piece.picture = { address, shown.surface->pitch, shown.x, shown.y, shown.picture };
     piece.opacity = shown.opacity;
 
     return piece;
@@ -219,7 +220,7 @@ popover_layer popover_host::layer() const {
     }
 
     damage_list::rect at = bounds();
-    return { m_picture.surface(), m_picture.address(), at.x, at.y, m_opacity };
+    return { m_picture.surface(), m_picture.twinned(), at.x, at.y, m_opacity };
 }
 
 bool popover_host::contains(int32_t x, int32_t y) const {
@@ -279,7 +280,7 @@ void popover_host::paint_tree(damage_list& damage) {
     m_host.layout_now(box.w, box.h);
     m_host.paint_now(m_picture.content(), painted);
 
-    m_picture.round_corners(painted);
+    m_picture.finish_paint(painted);
 
     damage_list::rect at = bounds();
     for (const ui::rect& r : painted) {

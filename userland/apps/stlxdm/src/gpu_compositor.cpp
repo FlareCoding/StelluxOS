@@ -989,9 +989,7 @@ compose_result gpu_compositor::compose(
     compose_buffers& buffers,
     const compose_target& target,
     const layer_scene& scene,
-    const std::vector<damage_list::rect>& rects,
-    backdrop_picture& backdrop,
-    frost_picture* frost
+    const std::vector<damage_list::rect>& rects
 ) {
     uint64_t start_ns = thread_cpu_ns();
 
@@ -999,15 +997,11 @@ compose_result gpu_compositor::compose(
         return compose_result::not_submitted;
     }
 
-    buffers.m_copies.clear();
-    backdrop.take_copies(buffers.m_copies);
-    buffers.m_frost_copies.clear();
-    if (frost) {
-        frost->take_copies(buffers.m_frost_copies);
-    }
+    buffers.m_twinned.clear();
+    append_twinned(scene, buffers.m_twinned);
 
     upload_material();
-    if (!record_compose(buffers, target, scene, backdrop, frost)) {
+    if (!record_compose(buffers, target, scene)) {
         return compose_result::not_submitted;
     }
 
@@ -1095,34 +1089,28 @@ layer gpu_compositor::failure_layer(const damage_list::rect& r) const {
     return failing;
 }
 
-/* Records the copies that bring `picture`'s twin up to date, building their regions in `regions` */
-void gpu_compositor::record_copies(
-    VkCommandBuffer commands,
-    const backdrop_picture& picture,
-    const std::vector<picture_copy>& copies,
-    std::vector<VkBufferCopy>& regions
-) {
-    if (copies.empty()) {
-        return;
+/* Records the copies that bring `picture`'s twin up to date and clears its marks. False when it has no marked bytes */
+bool gpu_compositor::record_copies(compose_buffers& buffers, twinned_picture& picture) {
+    buffers.m_copies.clear();
+    picture.take_copies(buffers.m_copies);
+    if (buffers.m_copies.empty()) {
+        return false;
     }
 
-    regions.clear();
-    for (const picture_copy& copy : copies) {
-        regions.push_back({ copy.offset, copy.offset, copy.bytes });
+    buffers.m_copy_regions.clear();
+    for (const picture_copy& copy : buffers.m_copies) {
+        buffers.m_copy_regions.push_back({ copy.offset, copy.offset, copy.bytes });
     }
 
     VkBuffer drawn = static_cast<const owned_picture&>(picture.memory()).buffer();
     VkBuffer twin = static_cast<const owned_picture&>(picture.twin()).buffer();
-    m_vk.cmd_copy_buffer(commands, drawn, twin, static_cast<uint32_t>(regions.size()), regions.data());
+    uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
+    m_vk.cmd_copy_buffer(buffers.m_commands, drawn, twin, region_count, buffers.m_copy_regions.data());
+
+    return true;
 }
 
-bool gpu_compositor::record_compose(
-    compose_buffers& buffers,
-    const compose_target& target,
-    const layer_scene& scene,
-    const backdrop_picture& backdrop,
-    const frost_picture* frost
-) {
+bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene) {
     VkCommandBuffer commands = buffers.m_commands;
 
     VkCommandBufferBeginInfo begin_info = {};
@@ -1138,12 +1126,12 @@ bool gpu_compositor::record_compose(
 
     transfer_buffers(buffers, target, scene, true);
 
-    record_copies(commands, backdrop, buffers.m_copies, buffers.m_copy_regions);
-    if (frost) {
-        record_copies(commands, *frost, buffers.m_frost_copies, buffers.m_copy_regions);
+    bool has_copies = false;
+    for (twinned_picture* picture : buffers.m_twinned) {
+        has_copies = record_copies(buffers, *picture) || has_copies;
     }
 
-    if (!buffers.m_copies.empty() || !buffers.m_frost_copies.empty()) {
+    if (has_copies) {
         VkMemoryBarrier copied = {};
         copied.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         copied.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

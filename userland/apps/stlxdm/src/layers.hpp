@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <vector>
 
+class twinned_picture;
 class window_import;
 
 /* Per damaged rectangle of an output, the layers shaders/compose.comp walks
@@ -45,13 +46,14 @@ static_assert(sizeof(layer) == 56);
 constexpr uint32_t SCALE_CONTENT = 1u;
 constexpr uint32_t SCALE_PREMULTIPLIED = 2u;
 
-/* A picture's first pixel in GPU memory, its pitch, and the output pixel it
- * lies at */
+/* A picture's first pixel in GPU memory, its pitch, the output pixel it
+ * lies at, and the twinned picture `address` lies in, if any */
 struct layer_picture {
-    uint64_t address = 0;
-    uint32_t pitch = 0;
-    int32_t  x = 0;
-    int32_t  y = 0;
+    uint64_t         address = 0;
+    uint32_t         pitch = 0;
+    int32_t          x = 0;
+    int32_t          y = 0;
+    twinned_picture* twinned = nullptr;
 };
 
 /* A picture over the part of the output it shows, and the opacity a blend
@@ -63,13 +65,15 @@ struct layer_piece {
 };
 
 /* A region of a picture: its first pixel as the CPU reads it, null without
- * a mapping, and as the GPU reads it, 0 where the GPU cannot reach it */
+ * a mapping, and as the GPU reads it, 0 where the GPU cannot reach it, and
+ * the twinned picture `address` lies in, if any */
 struct picture_region {
-    const uint8_t* pixels = nullptr;
-    uint64_t       address = 0;
-    uint32_t       pitch = 0;
-    int32_t        width = 0;
-    int32_t        height = 0;
+    const uint8_t*   pixels = nullptr;
+    uint64_t         address = 0;
+    uint32_t         pitch = 0;
+    int32_t          width = 0;
+    int32_t          height = 0;
+    twinned_picture* twinned = nullptr;
 };
 
 /* A picture region resampled bilinearly into `bounds` at `opacity` from 0 to 255. Content rounds its bottom corners
@@ -126,5 +130,9 @@ uint32_t max_layers(size_t windows);
  * by opaque content, whose window's glass and frame go too, or on an output
  * with frost by the glass under premultiplied content */
 uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std::vector<layer>& list);
+
+/* Appends to `pictures` the twinned picture of each picture `scene` names,
+ * some more than once, whose twins a compose of the scene reads */
+void append_twinned(const layer_scene& scene, std::vector<twinned_picture*>& pictures);
 
 #endif

@@ -25,6 +25,14 @@ public:
 picture::picture(uint8_t* pixels, uint64_t address, size_t bytes)
     : m_pixels(pixels), m_address(address), m_bytes(bytes) {}
 
+bool picture_maker::makes_twins() const {
+    return false;
+}
+
+std::unique_ptr<picture> picture_maker::make_twin(size_t) {
+    return nullptr;
+}
+
 std::unique_ptr<picture> heap_picture_maker::make_picture(size_t bytes) {
     uint8_t* pixels = static_cast<uint8_t*>(malloc(bytes));
     if (!pixels) {
@@ -77,7 +85,15 @@ static bool draw_strip(
     return true;
 }
 
+/* Marks `count` rows from row `y` changed in the image `width` pixels wide that starts `offset` bytes into `picture` */
+static void mark_image_rows(twinned_picture& picture, size_t offset, int32_t width, int32_t y, int32_t count) {
+    size_t pitch = static_cast<size_t>(width) * BYTES_PER_PIXEL;
+    picture.mark_changed(offset + static_cast<size_t>(y) * pitch, static_cast<size_t>(count) * pitch);
+}
+
+/* Clears the parts of `drawn` inside `r` and marks their rows, which this compose's draws in `r` change as well */
 static void clear_inside(
+    twinned_picture& picture,
     stlxgfx_surface_t* surface,
     const std::vector<damage_list::rect>& drawn,
     const damage_list::rect& r
@@ -87,6 +103,7 @@ static void clear_inside(
         if (stale.w > 0 && stale.h > 0) {
             stlxgfx_fill_rect(surface, stale.x, stale.y, static_cast<uint32_t>(stale.w),
                               static_cast<uint32_t>(stale.h), 0);
+            mark_image_rows(picture, 0, static_cast<int32_t>(surface->width), stale.y, stale.h);
         }
     }
 }
@@ -110,10 +127,15 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
         for (uint32_t i = 0; i < STRIPS; i++) {
             damage_list::rect placed = placed_strip(w, m_strips[i]);
             damage_list::rect redrawn = damage_list::intersect(placed, controls);
-            bool is_empty = redrawn.w <= 0 || redrawn.h <= 0;
-            if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], placed, redrawn, w, st)) {
+            if (redrawn.w <= 0 || redrawn.h <= 0) {
+                continue;
+            }
+
+            if (!draw_strip(m_memory->pixels() + m_offsets[i], placed, redrawn, w, st)) {
                 return false;
             }
+
+            mark_image_rows(*m_memory, m_offsets[i], placed.w, redrawn.y - placed.y, redrawn.h);
         }
 
         m_state = st;
@@ -134,7 +156,7 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     bool has_room = m_memory && m_memory->bytes() >= bytes;
     if (!is_same_maker || !has_room) {
         m_memory.reset();
-        m_memory = maker.make_picture(bytes);
+        m_memory = twinned_picture::make(maker, bytes);
         if (!m_memory) {
             return false;
         }
@@ -143,6 +165,7 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     }
 
     memset(m_memory->pixels(), 0, bytes);
+    m_memory->mark_changed(0, bytes);
     for (uint32_t i = 0; i < STRIPS; i++) {
         bool is_empty = strips[i].w <= 0 || strips[i].h <= 0;
         if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], strips[i], strips[i], w, st)) {
@@ -175,7 +198,8 @@ void frame_picture::place(const dm_window& w, int32_t origin_x, int32_t origin_y
             m_memory->address() + m_offsets[i],
             static_cast<uint32_t>(strip.w) * BYTES_PER_PIXEL,
             x,
-            y
+            y,
+            m_memory.get()
         };
     }
 }
@@ -208,6 +232,8 @@ picture_region frame_picture::strip_pixels(uint32_t index) const {
     picture_region region;
     region.pixels = m_memory->pixels() + m_offsets[index];
     region.address = address != 0 ? address + m_offsets[index] : 0;
+    region.twinned = m_memory.get();
+
     region.pitch = static_cast<uint32_t>(strip.w) * BYTES_PER_PIXEL;
     region.width = strip.w;
     region.height = strip.h;
@@ -220,18 +246,18 @@ std::unique_ptr<top_picture> top_picture::make(picture_maker& maker, uint32_t wi
     size_t bytes = static_cast<size_t>(pitch) * height;
 
     std::unique_ptr<top_picture> made(new top_picture());
-    made->m_memory = maker.make_picture(bytes);
-    if (!made->m_memory) {
+    made->m_picture = twinned_picture::make(maker, bytes);
+    if (!made->m_picture) {
         return nullptr;
     }
 
-    made->m_surface = stlxgfx_surface_from_buffer(made->m_memory->pixels(), width, height, pitch, 32, 16, 8, 0);
+    made->m_surface = stlxgfx_surface_from_buffer(made->m_picture->pixels(), width, height, pitch, 32, 16, 8, 0);
     if (!made->m_surface) {
         return nullptr;
     }
 
     made->m_surface->flags |= STLXGFX_SURFACE_STRAIGHT_ALPHA;
-    memset(made->m_memory->pixels(), 0, bytes);
+    memset(made->m_picture->pixels(), 0, bytes);
 
     return made;
 }
@@ -255,8 +281,17 @@ void top_picture::add_bounds(const damage_list::rect& bounds) {
 }
 
 void top_picture::clear(const damage_list::rect& r) {
-    clear_inside(m_surface, m_last_drawn, r);
-    clear_inside(m_surface, m_drawn, r);
+    clear_inside(*m_picture, m_surface, m_last_drawn, r);
+    clear_inside(*m_picture, m_surface, m_drawn, r);
+}
+
+void top_picture::mark_drawn(const damage_list::rect& r) {
+    int32_t width = static_cast<int32_t>(m_surface->width);
+    int32_t height = static_cast<int32_t>(m_surface->height);
+    damage_list::rect inside = damage_list::intersect(r, { 0, 0, width, height });
+    if (inside.w > 0 && inside.h > 0) {
+        mark_image_rows(*m_picture, 0, width, inside.y, inside.h);
+    }
 }
 
 layer_piece top_picture::layer() const {
@@ -275,30 +310,23 @@ layer_piece top_picture::layer() const {
         y1 = std::max(y1, bounds.y + bounds.h);
     }
 
-    return { { x0, y0, x1 - x0, y1 - y0 }, { m_memory->address(), m_surface->pitch, 0, 0 } };
+    return { { x0, y0, x1 - x0, y1 - y0 }, { m_picture->address(), m_surface->pitch, 0, 0, m_picture.get() } };
 }
 
-std::unique_ptr<backdrop_picture> backdrop_picture::make(twin_maker& maker, uint32_t width, uint32_t height) {
+std::unique_ptr<backdrop_picture> backdrop_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
     uint32_t pitch = width * BYTES_PER_PIXEL;
     size_t bytes = static_cast<size_t>(pitch) * height;
 
     std::unique_ptr<backdrop_picture> made(new backdrop_picture());
-    made->m_memory = maker.make_picture(bytes);
-    if (!made->m_memory) {
+    made->m_picture = twinned_picture::make(maker, bytes);
+    if (!made->m_picture || !made->m_picture->has_twin()) {
         return nullptr;
     }
 
-    made->m_twin = maker.make_twin(bytes);
-    if (!made->m_twin) {
-        return nullptr;
-    }
-
-    made->m_surface = stlxgfx_surface_from_buffer(made->m_memory->pixels(), width, height, pitch, 32, 16, 8, 0);
+    made->m_surface = stlxgfx_surface_from_buffer(made->m_picture->pixels(), width, height, pitch, 32, 16, 8, 0);
     if (!made->m_surface) {
         return nullptr;
     }
-
-    made->mark_rows(0, static_cast<int32_t>(height));
 
     return made;
 }
@@ -308,20 +336,51 @@ backdrop_picture::~backdrop_picture() {
 }
 
 layer_picture backdrop_picture::twin_layer() const {
-    return { m_twin->address(), m_surface->pitch, 0, 0 };
+    return { m_picture->address(), m_surface->pitch, 0, 0, m_picture.get() };
 }
 
 void backdrop_picture::mark_rows(int32_t y, int32_t count) {
     int64_t end = static_cast<int64_t>(y) + count;
     int32_t first_row = std::max(y, 0);
     int32_t end_row = static_cast<int32_t>(std::min(end, static_cast<int64_t>(m_surface->height)));
-    if (first_row >= end_row) {
+    if (first_row < end_row) {
+        mark_image_rows(*m_picture, 0, static_cast<int32_t>(m_surface->width), first_row, end_row - first_row);
+    }
+}
+
+std::unique_ptr<twinned_picture> twinned_picture::make(picture_maker& maker, size_t bytes) {
+    std::unique_ptr<twinned_picture> made(new twinned_picture());
+    made->m_memory = maker.make_picture(bytes);
+    if (!made->m_memory) {
+        return nullptr;
+    }
+
+    if (maker.makes_twins()) {
+        made->m_twin = maker.make_twin(bytes);
+        if (!made->m_twin) {
+            return nullptr;
+        }
+    }
+
+    made->mark_changed(0, bytes);
+
+    return made;
+}
+
+uint64_t twinned_picture::address() const {
+    return m_twin ? m_twin->address() : m_memory->address();
+}
+
+void twinned_picture::mark_changed(size_t offset, size_t bytes) {
+    size_t size = m_memory->bytes();
+    bool is_empty = offset >= size || bytes == 0;
+    if (!m_twin || is_empty) {
         return;
     }
 
-    /* Every span that overlaps or touches the added rows merges into them */
-    row_span added = { first_row, end_row };
-    auto first = std::find_if(m_changed.begin(), m_changed.end(), [&](const row_span& s) {
+    /* Every span that overlaps or touches the added bytes merges into them */
+    byte_span added = { offset, offset + std::min(bytes, size - offset) };
+    auto first = std::find_if(m_changed.begin(), m_changed.end(), [&](const byte_span& s) {
         return s.end >= added.first;
     });
     auto last = first;
@@ -335,10 +394,9 @@ void backdrop_picture::mark_rows(int32_t y, int32_t count) {
     m_changed.insert(first, added);
 }
 
-void backdrop_picture::take_copies(std::vector<picture_copy>& copies) {
-    size_t pitch = m_surface->pitch;
-    for (const row_span& s : m_changed) {
-        copies.push_back({ static_cast<size_t>(s.first) * pitch, static_cast<size_t>(s.end - s.first) * pitch });
+void twinned_picture::take_copies(std::vector<picture_copy>& copies) {
+    for (const byte_span& s : m_changed) {
+        copies.push_back({ s.first, s.end - s.first });
     }
 
     m_changed.clear();

@@ -1642,9 +1642,7 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         *pictures.compose,
         target,
         pictures.scene,
-        rects,
-        gpu_backdrop_of(out),
-        gpu_frost_of(out)
+        rects
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;
@@ -1676,9 +1674,7 @@ bool server::compose_capture(dm_output& out) {
         *out.pictures.compose,
         target,
         scene,
-        whole,
-        gpu_backdrop_of(out),
-        gpu_frost_of(out)
+        whole
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;
@@ -1935,6 +1931,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
     upper.begin();
     upper.add_bounds(whole);
     draw_collapse_frame(out, upper.surface());
+    upper.mark_drawn(whole);
 
     layer_scene& scene = out.pictures.scene;
     scene.width = sw;
@@ -1955,9 +1952,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
         *out.pictures.compose,
         target,
         scene,
-        rects,
-        gpu_backdrop_of(out),
-        gpu_frost_of(out)
+        rects
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;

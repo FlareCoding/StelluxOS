@@ -191,3 +191,27 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
 
     return static_cast<uint32_t>(list.size() - list_start);
 }
+
+static void append_if_twinned(twinned_picture* twinned, std::vector<twinned_picture*>& pictures) {
+    if (twinned) {
+        pictures.push_back(twinned);
+    }
+}
+
+void append_twinned(const layer_scene& scene, std::vector<twinned_picture*>& pictures) {
+    append_if_twinned(scene.backdrop.twinned, pictures);
+    append_if_twinned(scene.frost.twinned, pictures);
+    for (const layer_window& w : scene.windows) {
+        for (const layer_piece& strip : w.frame) {
+            append_if_twinned(strip.picture.twinned, pictures);
+        }
+
+        for (const layer_scaled& piece : w.scaled) {
+            append_if_twinned(piece.source.twinned, pictures);
+        }
+    }
+
+    append_if_twinned(scene.popover.picture.twinned, pictures);
+    append_if_twinned(scene.lower_top.picture.twinned, pictures);
+    append_if_twinned(scene.upper_top.picture.twinned, pictures);
+}
