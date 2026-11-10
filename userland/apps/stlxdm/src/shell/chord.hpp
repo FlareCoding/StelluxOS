@@ -2,6 +2,8 @@
 #define STLXDM_SHELL_CHORD_HPP
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 /* The modifier bits a chord parses to, the bits the server cooks from the HID modifiers */
 constexpr uint8_t CHORD_MOD_SHIFT = 1u << 0;
@@ -13,5 +15,8 @@ constexpr uint8_t CHORD_MOD_SUPER = 1u << 3;
  * digit. Returns false when a key is neither a modifier name nor one lowercase letter or digit, or when no
  * key is a letter or digit. */
 bool parse_chord(const char* chord, uint8_t* out_mods, uint16_t* out_usage);
+
+/* The names keycaps show for the keys of `chord`, such as Super and S, or none when `parse_chord` refuses it */
+std::vector<std::string> chord_keycaps(const char* chord);
 
 #endif

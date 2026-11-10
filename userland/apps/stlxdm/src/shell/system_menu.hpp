@@ -5,17 +5,18 @@
 #include "popover.hpp"
 #include "stats.hpp"
 
+#include <stlxconf/conf.h>
 #include <stlxui/stlxui.h>
 
 #include <cstdint>
 #include <functional>
 #include <memory>
 
-/* The menu under the Stellux mark: the release and the uptime, then Settings and the task monitor, and Power,
- * which opens the power overlay */
+/* The menu under the Stellux mark: the release and the uptime, then Settings and the task monitor, each with the
+ * keys of a shortcut that runs the same program, if any, and Power, which opens the power overlay */
 class system_menu : public popover_panel {
 public:
-    explicit system_menu(const stats_sampler& stats) : m_stats(stats) {}
+    system_menu(const stlxconf_t& conf, const stats_sampler& stats) : m_conf(conf), m_stats(stats) {}
 
     /* Fired by a chosen item: a program to spawn with its args, or the power overlay. Both must be set before the
      * menu opens. */
@@ -29,7 +30,8 @@ public:
     void closed() override;
 
 private:
-    /* The sampler whose uptime the header shows */
+    /* The config whose shortcuts each opening reads, and the sampler whose uptime the header shows */
+    const stlxconf_t&    m_conf;
     const stats_sampler& m_stats;
 
     /* The header's uptime label, from `build()` until `closed()` */
