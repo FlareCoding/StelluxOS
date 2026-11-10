@@ -334,19 +334,21 @@ static void add_commit_damage(dm_window& w, const swp_rect* rects, uint32_t coun
     w.pending_damage_count += count;
 }
 
-/* Marks the rows of `w`'s twin that its pending commits changed, every row when one named no rects or more than fit */
-static void mark_twin_rows(dm_window& w) {
+/* Marks the pixels of `w`'s twin that its pending commits changed, all of them when one named no rects or more than
+ * fit */
+static void mark_twin_damage(dm_window& w) {
     if (!w.twin) {
         return;
     }
 
     if (w.pending_damage_whole || w.pending_damage_count == 0) {
-        w.twin->mark_rows(0, static_cast<int32_t>(w.twin->height()));
+        w.twin->mark_changed({ 0, 0, static_cast<int32_t>(w.twin->width()), static_cast<int32_t>(w.twin->height()) });
         return;
     }
 
     for (uint32_t i = 0; i < w.pending_damage_count; i++) {
-        w.twin->mark_rows(w.pending_damage[i].y, w.pending_damage[i].h);
+        const swp_rect& r = w.pending_damage[i];
+        w.twin->mark_changed({ r.x, r.y, r.w, r.h });
     }
 }
 
@@ -1230,7 +1232,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
         w.has_twin_failed = false;
     }
 
-    mark_twin_rows(w);
+    mark_twin_damage(w);
     w.pending_damage_count = 0;
     w.pending_damage_whole = false;
 
@@ -1781,11 +1783,10 @@ const stlxgfx_surface_t* server::frost_of(dm_output& out) {
     return is_main ? m_frost : out.frost;
 }
 
-/* The twin a GPU compose reads `w`'s current buffer `b` through, made again when its pitch or height differs from
- * `b`'s. Null for a buffer without an import or in video memory, and once video memory ran out for a twin of `b`'s
- * size, when the compose reads `b` where it lies */
+/* The twin a compose reads `w`'s current buffer `b` through, remade when its pitch or size differs. Null for `b` in
+ * video memory or not imported, and once video memory ran out for its size, when the compose reads `b` in place */
 window_twin* server::twin_of(dm_window& w, const dm_buffer& b) {
-    bool fits = w.twin && w.twin->pitch() == b.pitch && w.twin->height() == b.height;
+    bool fits = w.twin && w.twin->pitch() == b.pitch && w.twin->width() == b.width && w.twin->height() == b.height;
     bool is_in_system_memory = b.import && b.placement == GPU_PLACEMENT_SYSTEM;
     if (fits && is_in_system_memory) {
         return w.twin.get();
@@ -1796,7 +1797,7 @@ window_twin* server::twin_of(dm_window& w, const dm_buffer& b) {
         return nullptr;
     }
 
-    w.twin = window_twin::make(*m_gpu_compositor, b.pitch, b.height);
+    w.twin = window_twin::make(*m_gpu_compositor, b.pitch, b.width, b.height);
     if (!w.twin) {
         w.has_twin_failed = true;
         printf("stlxdm: window %u is read from system memory, as video memory ran out for its twin\r\n", w.win_id);

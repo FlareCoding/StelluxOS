@@ -8,7 +8,8 @@ constexpr uint64_t FRAME_STATS_PERIOD_NS = 60000000000ull;
 
 /* What one GPU compose cost: its thread's CPU time from its layer lists to
  * its submit and, when its queue writes timestamps and their read succeeds,
- * its GPU time between the timestamps around its dispatches */
+ * its GPU time between the timestamps around the dispatches that compose
+ * its layers, which follow its twins' copies */
 struct compose_times {
     uint64_t cpu_ns = 0;
     uint64_t gpu_ns = 0;

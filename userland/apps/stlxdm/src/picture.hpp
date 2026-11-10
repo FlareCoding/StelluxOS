@@ -85,48 +85,26 @@ public:
     std::unique_ptr<picture> make_picture(size_t bytes) override;
 };
 
-/* Bytes at the same offset in a picture and in its twin */
-struct picture_copy {
-    size_t offset;
-    size_t bytes;
-};
-
-/* The bytes of a picture changed since its twin's last copy */
-class changed_bytes {
-public:
-    /* Adds `bytes` from `offset`, ignoring those from `size` on */
-    void add(size_t offset, size_t bytes, size_t size);
-
-    /* Appends a copy of each run of changed bytes and clears them */
-    void take(std::vector<picture_copy>& copies);
-
-private:
-    /* The bytes from `first` up to `end` */
-    struct byte_span {
-        size_t first;
-        size_t end;
-    };
-
-    std::vector<byte_span> m_spans;   /* sorted, no two touching */
-};
-
-/* A picture the CPU draws into and a compose reads, and its twin when its
- * maker makes twins, which the compose then reads in its place. Whoever
- * draws into the picture must mark the bytes it changed, which the next
- * compose naming the picture copies into the twin before reading it. Like
- * its pictures, it must drop before its maker. */
+/* A picture the CPU draws into and a compose reads, `width` by `height`
+ * pixels with rows `width` pixels apart, and its twin when its maker makes
+ * twins, which the compose then reads in its place. Whoever draws into the
+ * picture must mark the pixels it changed, which the next compose naming
+ * the picture copies into the twin before reading it. Like its pictures,
+ * it must drop before its maker. */
 class twinned_picture {
 public:
-    /* Makes a picture of at least `bytes`, and its twin when `maker` makes
-     * twins, every byte marked changed, or returns null when memory runs
-     * out */
-    static std::unique_ptr<twinned_picture> make(picture_maker& maker, size_t bytes);
+    /* Makes the picture, and its twin when `maker` makes twins, every pixel
+     * marked changed, or returns null when memory runs out. The pixels are
+     * undefined, so the caller must draw every one before a compose. */
+    static std::unique_ptr<twinned_picture> make(picture_maker& maker, uint32_t width, uint32_t height);
 
     twinned_picture(const twinned_picture&) = delete;
     twinned_picture& operator=(const twinned_picture&) = delete;
 
     uint8_t* pixels() const { return m_memory->pixels(); }
-    size_t bytes() const { return m_memory->bytes(); }
+    uint32_t width() const { return m_width; }
+    uint32_t height() const { return m_height; }
+    uint32_t pitch() const { return m_pitch; }
     bool has_twin() const { return m_twin != nullptr; }
 
     /* The picture and its twin, which must be called only when `has_twin` */
@@ -137,34 +115,42 @@ public:
      * picture, 0 when only the CPU reaches it */
     uint64_t address() const;
 
-    /* Marks `bytes` from `offset` changed, ignoring those past the picture */
-    void mark_changed(size_t offset, size_t bytes);
+    /* Gives the picture the size `width` by `height` when its memory holds
+     * that many pixels, every pixel marked changed and undefined, as after
+     * `make`. False when it does not. */
+    bool resize(uint32_t width, uint32_t height);
 
-    /* Appends the copies that bring the twin up to date and clears the
+    /* Marks the pixels of `r` changed, ignoring those outside the picture */
+    void mark_changed(const damage_list::rect& r);
+
+    /* Appends the rects that bring the twin up to date and clears the
      * marks */
-    void take_copies(std::vector<picture_copy>& copies);
+    void take_copies(std::vector<damage_list::rect>& copies);
 
 private:
     twinned_picture() = default;
 
     std::unique_ptr<picture> m_memory;
     std::unique_ptr<picture> m_twin;
-    changed_bytes            m_changed;
+    uint32_t                 m_width = 0;
+    uint32_t                 m_height = 0;
+    uint32_t                 m_pitch = 0;
+    damage_list              m_changed;
 };
 
 /* The twin of the picture in a window's current buffer, for a buffer in
  * system memory.
  *
- * Every latch of the window must mark the rows its latched pictures
+ * Every latch of the window must mark the pixels its latched pictures
  * changed, also while no compose reads the twin, since the next compose
- * naming the twin copies only the marked rows from the current buffer. It
- * must drop before the maker that made it. */
+ * naming the twin copies only the marked pixels from the current buffer.
+ * It must drop before the maker that made it. */
 class window_twin {
 public:
-    /* Makes a twin of `height` rows `pitch` bytes apart, every row marked
-     * changed, or returns null when `maker` makes no twins or memory runs
-     * out */
-    static std::unique_ptr<window_twin> make(picture_maker& maker, uint32_t pitch, uint32_t height);
+    /* Makes a twin of a picture `width` by `height` pixels with rows `pitch`
+     * bytes apart, every pixel marked changed, or returns null when `maker`
+     * makes no twins or memory runs out */
+    static std::unique_ptr<window_twin> make(picture_maker& maker, uint32_t pitch, uint32_t width, uint32_t height);
 
     window_twin(const window_twin&) = delete;
     window_twin& operator=(const window_twin&) = delete;
@@ -172,23 +158,24 @@ public:
     const picture& twin() const { return *m_twin; }
     uint64_t address() const { return m_twin->address(); }
     uint32_t pitch() const { return m_pitch; }
+    uint32_t width() const { return m_width; }
     uint32_t height() const { return m_height; }
 
-    /* Marks `count` rows from row `y` changed, ignoring those outside the
-     * twin */
-    void mark_rows(int32_t y, int32_t count);
+    /* Marks the pixels of `r` changed, ignoring those outside the twin */
+    void mark_changed(const damage_list::rect& r);
 
-    /* Appends the copies that bring the twin up to date, at offsets from
-     * the picture's first byte, and clears the marks */
-    void take_copies(std::vector<picture_copy>& copies);
+    /* Appends the rects that bring the twin up to date and clears the
+     * marks */
+    void take_copies(std::vector<damage_list::rect>& copies);
 
 private:
     window_twin() = default;
 
     std::unique_ptr<picture> m_twin;
     uint32_t                 m_pitch = 0;
+    uint32_t                 m_width = 0;
     uint32_t                 m_height = 0;
-    changed_bytes            m_changed;
+    damage_list              m_changed;
 };
 
 /* An output's backdrop or frost under the GPU compositor, drawn by the
@@ -235,7 +222,7 @@ using frost_picture = backdrop_picture;
  *
  * A compose calls `begin`, records the bounds of each draw it will make,
  * and in each damaged rectangle calls `clear` once before drawing there,
- * which marks the rows the draws may change for the picture's twin. A
+ * which marks what the draws may change for the picture's twin. A
  * draw must stay inside its bounds, and the damage must cover a draw that
  * moved or vanished, as on the CPU compositor, so that only this compose's
  * draws hold pixels. Like its picture, it must drop before its maker. */
@@ -282,20 +269,20 @@ private:
     std::vector<damage_list::rect>   m_last_drawn;
 };
 
-/* A decorated window's frame and the shadow it casts as four strips
- * of one picture: the top with the title bar, the two sides, and the
- * bottom with the content's last rows, whose rounded corners the
- * content's copy leaves showing. Each strip holds both in straight
- * alpha over transparent pixels, so blending it over what lies beneath
- * paints the shadow and then the frame there, but for rounding where
- * two translucent draws stack. */
+/* A decorated window's frame and the shadow it casts as four strip
+ * pictures: the top with the title bar, the two sides, and the bottom
+ * with the content's last rows, whose rounded corners the content's
+ * copy leaves showing. Each strip holds both in straight alpha over
+ * transparent pixels, so blending it over what lies beneath paints the
+ * shadow and then the frame there, but for rounding where two
+ * translucent draws stack. */
 class frame_picture {
 public:
     static constexpr uint32_t STRIPS = layer_window::FRAME_STRIPS;
 
     /* Draws the frame of `w`, which must be decorated and have a current
      * buffer, when its size, its title, `st` or `maker` differs from the
-     * last draw, making the strips' picture and its twin first when they
+     * last draw, making a strip's picture and its twin first when the strip
      * outgrew it or `maker` did not make it. Returns false when memory runs
      * out, and `place` and `blend` then wait for an update that returns
      * true. */
@@ -323,10 +310,9 @@ public:
     picture_region strip_pixels(uint32_t index) const;
 
 private:
-    picture_maker*                   m_maker = nullptr;  /* the maker of `m_memory` */
-    std::unique_ptr<twinned_picture> m_memory;
+    picture_maker*                   m_maker = nullptr;  /* the maker of the last update's pictures */
+    std::unique_ptr<twinned_picture> m_pictures[STRIPS]; /* null for an empty strip */
     damage_list::rect                m_strips[STRIPS];   /* from the content's top-left pixel */
-    size_t                           m_offsets[STRIPS] = {};
 
     bool                m_is_drawn = false;
     uint32_t            m_width = 0;

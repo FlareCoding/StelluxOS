@@ -35,7 +35,7 @@ bool panel_picture::make(picture_maker* maker, const panel_style& style, int32_t
     uint32_t picture_h = static_cast<uint32_t>(style.shadow_top + h + style.shadow_bottom);
     uint32_t pitch = picture_w * BYTES_PER_PIXEL;
     if (maker) {
-        m_memory = twinned_picture::make(*maker, static_cast<size_t>(pitch) * picture_h);
+        m_memory = twinned_picture::make(*maker, picture_w, picture_h);
     }
 
     if (m_memory) {
@@ -98,13 +98,11 @@ void panel_picture::drop() {
 }
 
 void panel_picture::finish_paint(const std::vector<ui::rect>& painted) {
-    size_t pitch = m_surface->pitch;
     for (const ui::rect& r : painted) {
-        int32_t first_row = std::max(r.y, 0);
-        int32_t end_row = std::min(r.y + r.h, m_box.h);
-        if (m_memory && first_row < end_row) {
-            size_t offset = static_cast<size_t>(m_box.y + first_row) * pitch;
-            m_memory->mark_changed(offset, static_cast<size_t>(end_row - first_row) * pitch);
+        damage_list::rect inside = damage_list::intersect({ r.x, r.y, r.w, r.h }, { 0, 0, m_box.w, m_box.h });
+        bool is_empty = inside.w <= 0 || inside.h <= 0;
+        if (m_memory && !is_empty) {
+            m_memory->mark_changed({ m_box.x + inside.x, m_box.y + inside.y, inside.w, inside.h });
         }
     }
 

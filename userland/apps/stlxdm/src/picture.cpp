@@ -42,10 +42,6 @@ std::unique_ptr<picture> heap_picture_maker::make_picture(size_t bytes) {
     return std::make_unique<heap_picture>(pixels, bytes);
 }
 
-static size_t strip_bytes(const damage_list::rect& strip) {
-    return static_cast<size_t>(strip.w) * static_cast<size_t>(strip.h) * BYTES_PER_PIXEL;
-}
-
 static damage_list::rect placed_strip(const dm_window& w, const damage_list::rect& strip) {
     return { w.x + strip.x, w.y + strip.y, strip.w, strip.h };
 }
@@ -85,13 +81,7 @@ static bool draw_strip(
     return true;
 }
 
-/* Marks `count` rows from row `y` changed in the image `width` pixels wide that starts `offset` bytes into `picture` */
-static void mark_image_rows(twinned_picture& picture, size_t offset, int32_t width, int32_t y, int32_t count) {
-    size_t pitch = static_cast<size_t>(width) * BYTES_PER_PIXEL;
-    picture.mark_changed(offset + static_cast<size_t>(y) * pitch, static_cast<size_t>(count) * pitch);
-}
-
-/* Clears the parts of `drawn` inside `r` and marks their rows, which this compose's draws in `r` change as well */
+/* Clears the parts of `drawn` inside `r` and marks them, where this compose's draws in `r` change pixels as well */
 static void clear_inside(
     twinned_picture& picture,
     stlxgfx_surface_t* surface,
@@ -103,9 +93,31 @@ static void clear_inside(
         if (stale.w > 0 && stale.h > 0) {
             stlxgfx_fill_rect(surface, stale.x, stale.y, static_cast<uint32_t>(stale.w),
                               static_cast<uint32_t>(stale.h), 0);
-            mark_image_rows(picture, 0, static_cast<int32_t>(surface->width), stale.y, stale.h);
+            picture.mark_changed(stale);
         }
     }
+}
+
+/* Gives `picture` the size of `strip`, keeping its memory when `is_same_maker` says `maker` made it and it holds the
+ * strip. False when memory runs out */
+static bool fit_strip(
+    std::unique_ptr<twinned_picture>& picture,
+    picture_maker& maker,
+    bool is_same_maker,
+    const damage_list::rect& strip
+) {
+    uint32_t width = static_cast<uint32_t>(strip.w);
+    uint32_t height = static_cast<uint32_t>(strip.h);
+    bool is_reusable = is_same_maker && picture;
+    if (is_reusable && picture->resize(width, height)) {
+        return true;
+    }
+
+    /* No compose still reads the old memory, since frames are drawn only after the last compose ended */
+    picture.reset();
+    picture = twinned_picture::make(maker, width, height);
+
+    return picture != nullptr;
 }
 
 bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor::chrome_state& st) {
@@ -127,15 +139,16 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
         for (uint32_t i = 0; i < STRIPS; i++) {
             damage_list::rect placed = placed_strip(w, m_strips[i]);
             damage_list::rect redrawn = damage_list::intersect(placed, controls);
-            if (redrawn.w <= 0 || redrawn.h <= 0) {
+            bool is_empty = redrawn.w <= 0 || redrawn.h <= 0;
+            if (!m_pictures[i] || is_empty) {
                 continue;
             }
 
-            if (!draw_strip(m_memory->pixels() + m_offsets[i], placed, redrawn, w, st)) {
+            if (!draw_strip(m_pictures[i]->pixels(), placed, redrawn, w, st)) {
                 return false;
             }
 
-            mark_image_rows(*m_memory, m_offsets[i], placed.w, redrawn.y - placed.y, redrawn.h);
+            m_pictures[i]->mark_changed({ redrawn.x - placed.x, redrawn.y - placed.y, redrawn.w, redrawn.h });
         }
 
         m_state = st;
@@ -146,29 +159,18 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     damage_list::rect strips[STRIPS];
     decor::frame_strips(w, st.focused, strips);
 
-    size_t bytes = 0;
     for (uint32_t i = 0; i < STRIPS; i++) {
-        m_offsets[i] = bytes;
-        bytes += strip_bytes(strips[i]);
-    }
+        if (strips[i].w <= 0 || strips[i].h <= 0) {
+            m_pictures[i].reset();
+            continue;
+        }
 
-    /* No compose still reads the old memory, since frames are drawn only after the last compose ended */
-    bool has_room = m_memory && m_memory->bytes() >= bytes;
-    if (!is_same_maker || !has_room) {
-        m_memory.reset();
-        m_memory = twinned_picture::make(maker, bytes);
-        if (!m_memory) {
+        if (!fit_strip(m_pictures[i], maker, is_same_maker, strips[i])) {
             return false;
         }
 
-        m_maker = &maker;
-    }
-
-    memset(m_memory->pixels(), 0, bytes);
-    m_memory->mark_changed(0, bytes);
-    for (uint32_t i = 0; i < STRIPS; i++) {
-        bool is_empty = strips[i].w <= 0 || strips[i].h <= 0;
-        if (!is_empty && !draw_strip(m_memory->pixels() + m_offsets[i], strips[i], strips[i], w, st)) {
+        memset(m_pictures[i]->pixels(), 0, static_cast<size_t>(m_pictures[i]->pitch()) * m_pictures[i]->height());
+        if (!draw_strip(m_pictures[i]->pixels(), strips[i], strips[i], w, st)) {
             return false;
         }
     }
@@ -177,6 +179,7 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
         m_strips[i] = { strips[i].x - w.x, strips[i].y - w.y, strips[i].w, strips[i].h };
     }
 
+    m_maker = &maker;
     m_width = b.width;
     m_height = b.height;
     m_state = st;
@@ -188,19 +191,17 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
 
 void frame_picture::place(const dm_window& w, int32_t origin_x, int32_t origin_y, layer_window& shown) const {
     for (uint32_t i = 0; i < STRIPS; i++) {
-        const damage_list::rect& strip = m_strips[i];
-        damage_list::rect placed = placed_strip(w, strip);
+        twinned_picture* picture = m_pictures[i].get();
+        if (!picture) {
+            shown.frame[i] = {};
+            continue;
+        }
+
+        damage_list::rect placed = placed_strip(w, m_strips[i]);
         int32_t x = placed.x - origin_x;
         int32_t y = placed.y - origin_y;
-
-        shown.frame[i].bounds = { x, y, strip.w, strip.h };
-        shown.frame[i].picture = {
-            m_memory->address() + m_offsets[i],
-            static_cast<uint32_t>(strip.w) * BYTES_PER_PIXEL,
-            x,
-            y,
-            m_memory.get()
-        };
+        shown.frame[i].bounds = { x, y, m_strips[i].w, m_strips[i].h };
+        shown.frame[i].picture = { picture->address(), picture->pitch(), x, y, picture };
     }
 }
 
@@ -209,11 +210,12 @@ void frame_picture::blend(const decor::canvas& back, const dm_window& w, const d
         const damage_list::rect& strip = m_strips[i];
         damage_list::rect placed = placed_strip(w, strip);
         damage_list::rect shown = damage_list::intersect(placed, clip);
-        if (shown.w <= 0 || shown.h <= 0) {
+        bool is_empty = shown.w <= 0 || shown.h <= 0;
+        if (!m_pictures[i] || is_empty) {
             continue;
         }
 
-        stlxgfx_surface_t* source = make_strip_surface(m_memory->pixels() + m_offsets[i], strip);
+        stlxgfx_surface_t* source = make_strip_surface(m_pictures[i]->pixels(), strip);
         if (!source) {
             continue;
         }
@@ -224,17 +226,19 @@ void frame_picture::blend(const decor::canvas& back, const dm_window& w, const d
     }
 }
 
-/* A picture in memory only the CPU reads has no GPU address to offset */
 picture_region frame_picture::strip_pixels(uint32_t index) const {
     const damage_list::rect& strip = m_strips[index];
-    uint64_t address = m_memory->address();
+    twinned_picture* picture = m_pictures[index].get();
+    if (!picture) {
+        return {};
+    }
 
     picture_region region;
-    region.pixels = m_memory->pixels() + m_offsets[index];
-    region.address = address != 0 ? address + m_offsets[index] : 0;
-    region.twinned = m_memory.get();
+    region.pixels = picture->pixels();
+    region.address = picture->address();
+    region.twinned = picture;
 
-    region.pitch = static_cast<uint32_t>(strip.w) * BYTES_PER_PIXEL;
+    region.pitch = picture->pitch();
     region.width = strip.w;
     region.height = strip.h;
 
@@ -242,22 +246,20 @@ picture_region frame_picture::strip_pixels(uint32_t index) const {
 }
 
 std::unique_ptr<top_picture> top_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
-    uint32_t pitch = width * BYTES_PER_PIXEL;
-    size_t bytes = static_cast<size_t>(pitch) * height;
-
     std::unique_ptr<top_picture> made(new top_picture());
-    made->m_picture = twinned_picture::make(maker, bytes);
+    made->m_picture = twinned_picture::make(maker, width, height);
     if (!made->m_picture) {
         return nullptr;
     }
 
+    uint32_t pitch = made->m_picture->pitch();
     made->m_surface = stlxgfx_surface_from_buffer(made->m_picture->pixels(), width, height, pitch, 32, 16, 8, 0);
     if (!made->m_surface) {
         return nullptr;
     }
 
     made->m_surface->flags |= STLXGFX_SURFACE_STRAIGHT_ALPHA;
-    memset(made->m_picture->pixels(), 0, bytes);
+    memset(made->m_picture->pixels(), 0, static_cast<size_t>(pitch) * height);
 
     return made;
 }
@@ -286,12 +288,7 @@ void top_picture::clear(const damage_list::rect& r) {
 }
 
 void top_picture::mark_drawn(const damage_list::rect& r) {
-    int32_t width = static_cast<int32_t>(m_surface->width);
-    int32_t height = static_cast<int32_t>(m_surface->height);
-    damage_list::rect inside = damage_list::intersect(r, { 0, 0, width, height });
-    if (inside.w > 0 && inside.h > 0) {
-        mark_image_rows(*m_picture, 0, width, inside.y, inside.h);
-    }
+    m_picture->mark_changed(r);
 }
 
 layer_piece top_picture::layer() const {
@@ -314,15 +311,13 @@ layer_piece top_picture::layer() const {
 }
 
 std::unique_ptr<backdrop_picture> backdrop_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
-    uint32_t pitch = width * BYTES_PER_PIXEL;
-    size_t bytes = static_cast<size_t>(pitch) * height;
-
     std::unique_ptr<backdrop_picture> made(new backdrop_picture());
-    made->m_picture = twinned_picture::make(maker, bytes);
+    made->m_picture = twinned_picture::make(maker, width, height);
     if (!made->m_picture || !made->m_picture->has_twin()) {
         return nullptr;
     }
 
+    uint32_t pitch = made->m_picture->pitch();
     made->m_surface = stlxgfx_surface_from_buffer(made->m_picture->pixels(), width, height, pitch, 32, 16, 8, 0);
     if (!made->m_surface) {
         return nullptr;
@@ -340,15 +335,49 @@ layer_picture backdrop_picture::twin_layer() const {
 }
 
 void backdrop_picture::mark_rows(int32_t y, int32_t count) {
-    int64_t end = static_cast<int64_t>(y) + count;
-    int32_t first_row = std::max(y, 0);
-    int32_t end_row = static_cast<int32_t>(std::min(end, static_cast<int64_t>(m_surface->height)));
-    if (first_row < end_row) {
-        mark_image_rows(*m_picture, 0, static_cast<int32_t>(m_surface->width), first_row, end_row - first_row);
-    }
+    m_picture->mark_changed({ 0, y, static_cast<int32_t>(m_surface->width), count });
 }
 
-std::unique_ptr<twinned_picture> twinned_picture::make(picture_maker& maker, size_t bytes) {
+/* Adds the part of `r` inside a picture `width` by `height` to `changed`, summing in 64 bits since a window's damage
+ * rects come from its client unchecked */
+static void mark_inside(damage_list& changed, const damage_list::rect& r, uint32_t width, uint32_t height) {
+    int64_t left = std::max<int64_t>(r.x, 0);
+    int64_t top = std::max<int64_t>(r.y, 0);
+    int64_t right = std::min<int64_t>(static_cast<int64_t>(r.x) + r.w, width);
+    int64_t bottom = std::min<int64_t>(static_cast<int64_t>(r.y) + r.h, height);
+    if (left >= right || top >= bottom) {
+        return;
+    }
+
+    changed.add(
+        static_cast<int32_t>(left),
+        static_cast<int32_t>(top),
+        static_cast<int32_t>(right - left),
+        static_cast<int32_t>(bottom - top)
+    );
+}
+
+/* Appends the rects of `changed`, or the whole picture `width` by `height` once more than fit were marked, and clears
+ * it */
+static void take_changed(
+    damage_list& changed,
+    uint32_t width,
+    uint32_t height,
+    std::vector<damage_list::rect>& copies
+) {
+    if (changed.full()) {
+        copies.push_back({ 0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height) });
+    } else {
+        for (uint32_t i = 0; i < changed.count(); i++) {
+            copies.push_back(changed.at(i));
+        }
+    }
+
+    changed.clear();
+}
+
+std::unique_ptr<twinned_picture> twinned_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
+    size_t bytes = static_cast<size_t>(width) * height * BYTES_PER_PIXEL;
     std::unique_ptr<twinned_picture> made(new twinned_picture());
     made->m_memory = maker.make_picture(bytes);
     if (!made->m_memory) {
@@ -362,7 +391,10 @@ std::unique_ptr<twinned_picture> twinned_picture::make(picture_maker& maker, siz
         }
     }
 
-    made->mark_changed(0, bytes);
+    made->m_width = width;
+    made->m_height = height;
+    made->m_pitch = width * BYTES_PER_PIXEL;
+    made->m_changed.add_full();
 
     return made;
 }
@@ -371,17 +403,31 @@ uint64_t twinned_picture::address() const {
     return m_twin ? m_twin->address() : m_memory->address();
 }
 
-void twinned_picture::mark_changed(size_t offset, size_t bytes) {
+bool twinned_picture::resize(uint32_t width, uint32_t height) {
+    if (static_cast<size_t>(width) * height * BYTES_PER_PIXEL > m_memory->bytes()) {
+        return false;
+    }
+
+    m_width = width;
+    m_height = height;
+    m_pitch = width * BYTES_PER_PIXEL;
+    m_changed.clear();
+    m_changed.add_full();
+
+    return true;
+}
+
+void twinned_picture::mark_changed(const damage_list::rect& r) {
     if (m_twin) {
-        m_changed.add(offset, bytes, m_memory->bytes());
+        mark_inside(m_changed, r, m_width, m_height);
     }
 }
 
-void twinned_picture::take_copies(std::vector<picture_copy>& copies) {
-    m_changed.take(copies);
+void twinned_picture::take_copies(std::vector<damage_list::rect>& copies) {
+    take_changed(m_changed, m_width, m_height, copies);
 }
 
-std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pitch, uint32_t height) {
+std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pitch, uint32_t width, uint32_t height) {
     if (!maker.makes_twins()) {
         return nullptr;
     }
@@ -393,52 +439,17 @@ std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pi
     }
 
     made->m_pitch = pitch;
+    made->m_width = width;
     made->m_height = height;
-    made->mark_rows(0, static_cast<int32_t>(height));
+    made->m_changed.add_full();
 
     return made;
 }
 
-void window_twin::mark_rows(int32_t y, int32_t count) {
-    int64_t end = static_cast<int64_t>(y) + count;
-    int32_t first_row = std::max(y, 0);
-    int32_t end_row = static_cast<int32_t>(std::min(end, static_cast<int64_t>(m_height)));
-    if (first_row < end_row) {
-        size_t offset = static_cast<size_t>(first_row) * m_pitch;
-        size_t bytes = static_cast<size_t>(end_row - first_row) * m_pitch;
-        m_changed.add(offset, bytes, static_cast<size_t>(m_pitch) * m_height);
-    }
+void window_twin::mark_changed(const damage_list::rect& r) {
+    mark_inside(m_changed, r, m_width, m_height);
 }
 
-void window_twin::take_copies(std::vector<picture_copy>& copies) {
-    m_changed.take(copies);
-}
-
-void changed_bytes::add(size_t offset, size_t bytes, size_t size) {
-    if (offset >= size || bytes == 0) {
-        return;
-    }
-
-    /* Every span that overlaps or touches the added bytes merges into them */
-    byte_span added = { offset, offset + std::min(bytes, size - offset) };
-    auto first = std::find_if(m_spans.begin(), m_spans.end(), [&](const byte_span& s) {
-        return s.end >= added.first;
-    });
-    auto last = first;
-    while (last != m_spans.end() && last->first <= added.end) {
-        added.first = std::min(added.first, last->first);
-        added.end = std::max(added.end, last->end);
-        last++;
-    }
-
-    first = m_spans.erase(first, last);
-    m_spans.insert(first, added);
-}
-
-void changed_bytes::take(std::vector<picture_copy>& copies) {
-    for (const byte_span& s : m_spans) {
-        copies.push_back({ s.first, s.end - s.first });
-    }
-
-    m_spans.clear();
+void window_twin::take_copies(std::vector<damage_list::rect>& copies) {
+    take_changed(m_changed, m_width, m_height, copies);
 }
