@@ -54,7 +54,7 @@ public:
     ui::rect box() const { return m_box; }
 
     /* Finishes a paint of `painted`, the rects of `content()` the tree just painted: blends the corners the paint
-     * reached over the shadow beneath them and marks the painted rows changed. A paint must finish once, since
+     * reached over the shadow beneath them and marks the painted rects changed. A paint must finish once, since
      * rounding a corner pixel again blends it over the shadow a second time. */
     void finish_paint(const std::vector<ui::rect>& painted);
 

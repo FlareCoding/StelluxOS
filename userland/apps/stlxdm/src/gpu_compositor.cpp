@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "compose_spirv.h"
+#include "copy_spirv.h"
 
 /* One dispatch's push constants, which compose.comp's `compose_args` must match */
 struct compose_args {
@@ -32,12 +33,35 @@ struct compose_args {
 
 static_assert(sizeof(compose_args) == 64);
 
+/* One copy dispatch's push constants, which copy.comp's `copy_args` must match */
+struct copy_args {
+    uint64_t source;
+    uint64_t target;
+    uint32_t pitch;
+    uint32_t width;
+    uint32_t height;
+};
+
+static_assert(sizeof(copy_args) == 32);
+
+const gpu_compositor::pipeline_refusals gpu_compositor::COMPOSE_REFUSALS = {
+    "Vulkan refused the compose pipeline's layout",
+    "Vulkan refused the compose shader",
+    "Vulkan refused the compose pipeline"
+};
+
+const gpu_compositor::pipeline_refusals gpu_compositor::COPY_REFUSALS = {
+    "Vulkan refused the copy pipeline's layout",
+    "Vulkan refused the copy shader",
+    "Vulkan refused the copy pipeline"
+};
+
 /* The version that makes timeline semaphores and buffer device addresses core */
 constexpr uint32_t VULKAN_API_VERSION = VK_API_VERSION_1_2;
 
 constexpr float QUEUE_PRIORITY = 1.0f;
 
-/* The width and height of compose.comp's workgroups */
+/* The width and height of compose.comp's and copy.comp's workgroups */
 constexpr uint32_t WORKGROUP_PIXELS = 16;
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
@@ -45,7 +69,7 @@ constexpr uint32_t BYTES_PER_PIXEL = 4;
 /* NVIDIA's display scans out rows that start a multiple of 256 bytes apart */
 constexpr uint64_t SCANOUT_PITCH_ALIGNMENT = 256;
 
-/* The queries of the timestamp pool, written around each compose's dispatches */
+/* The queries of the timestamp pool, written around a compose's layer dispatches, after its twins' copies */
 constexpr uint32_t BEFORE_DISPATCHES = 0;
 constexpr uint32_t AFTER_DISPATCHES = 1;
 constexpr uint32_t TIMESTAMP_COUNT = 2;
@@ -221,6 +245,14 @@ gpu_compositor::~gpu_compositor() {
         m_vk.destroy_pipeline_layout(m_device, m_pipeline_layout, nullptr);
     }
 
+    if (m_copy_pipeline != VK_NULL_HANDLE) {
+        m_vk.destroy_pipeline(m_device, m_copy_pipeline, nullptr);
+    }
+
+    if (m_copy_pipeline_layout != VK_NULL_HANDLE) {
+        m_vk.destroy_pipeline_layout(m_device, m_copy_pipeline_layout, nullptr);
+    }
+
     if (m_timeline != VK_NULL_HANDLE) {
         m_vk.destroy_semaphore(m_device, m_timeline, nullptr);
     }
@@ -265,7 +297,7 @@ const char* gpu_compositor::start(int gpu_fd) {
         return refusal;
     }
 
-    refusal = create_pipeline();
+    refusal = create_pipelines();
     if (refusal) {
         return refusal;
     }
@@ -519,46 +551,78 @@ const char* gpu_compositor::create_device() {
     return nullptr;
 }
 
-const char* gpu_compositor::create_pipeline() {
+const char* gpu_compositor::create_pipelines() {
+    const char* refusal = create_pipeline(
+        COMPOSE_SPIRV,
+        sizeof(COMPOSE_SPIRV),
+        sizeof(compose_args),
+        COMPOSE_REFUSALS,
+        m_pipeline_layout,
+        m_pipeline
+    );
+    if (refusal) {
+        return refusal;
+    }
+
+    return create_pipeline(
+        COPY_SPIRV,
+        sizeof(COPY_SPIRV),
+        sizeof(copy_args),
+        COPY_REFUSALS,
+        m_copy_pipeline_layout,
+        m_copy_pipeline
+    );
+}
+
+/* Makes the compute pipeline of the shader `code`, `code_bytes` long, whose push constants take `push_bytes`, into
+ * `layout` and `pipeline`, or returns the step of `refusals` Vulkan refused */
+const char* gpu_compositor::create_pipeline(
+    const uint32_t* code,
+    size_t code_bytes,
+    uint32_t push_bytes,
+    const pipeline_refusals& refusals,
+    VkPipelineLayout& layout,
+    VkPipeline& pipeline
+) {
     VkPushConstantRange push_range = {};
     push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    push_range.size = sizeof(compose_args);
+    push_range.size = push_bytes;
 
     VkPipelineLayoutCreateInfo layout_info = {};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
 
-    if (m_vk.create_pipeline_layout(m_device, &layout_info, nullptr, &m_pipeline_layout) != VK_SUCCESS) {
-        m_pipeline_layout = VK_NULL_HANDLE;
-        return "Vulkan refused the compose pipeline's layout";
+    if (m_vk.create_pipeline_layout(m_device, &layout_info, nullptr, &layout) != VK_SUCCESS) {
+        layout = VK_NULL_HANDLE;
+        return refusals.layout;
     }
 
     VkShaderModuleCreateInfo module_info = {};
     module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    module_info.codeSize = sizeof(COMPOSE_SPIRV);
-    module_info.pCode = COMPOSE_SPIRV;
+    module_info.codeSize = code_bytes;
+    module_info.pCode = code;
 
     VkShaderModule module = VK_NULL_HANDLE;
     if (m_vk.create_shader_module(m_device, &module_info, nullptr, &module) != VK_SUCCESS) {
-        return "Vulkan refused the compose shader";
+        return refusals.shader;
     }
 
     VkComputePipelineCreateInfo pipeline_info = {};
     pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipeline_info.layout = m_pipeline_layout;
+    pipeline_info.layout = layout;
 
     pipeline_info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     pipeline_info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     pipeline_info.stage.module = module;
     pipeline_info.stage.pName = "main";
 
-    VkResult created = m_vk.create_compute_pipelines(m_device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &m_pipeline);
+    VkResult created = m_vk.create_compute_pipelines(m_device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline);
     m_vk.destroy_shader_module(m_device, module, nullptr);
 
     if (created != VK_SUCCESS) {
-        m_pipeline = VK_NULL_HANDLE;
-        return "Vulkan refused the compose pipeline";
+        pipeline = VK_NULL_HANDLE;
+        return refusals.pipeline;
     }
 
     return nullptr;
@@ -1089,47 +1153,51 @@ layer gpu_compositor::failure_layer(const damage_list::rect& r) const {
     return failing;
 }
 
-/* Records the copies that bring `picture`'s twin up to date and clears its marks. False when it has no marked bytes */
+/* Records the dispatch that copies `r` of a picture at `source` into its twin at `target`, both with rows `pitch`
+ * bytes apart. The copy pipeline must be bound. */
+void gpu_compositor::record_copy(
+    VkCommandBuffer commands,
+    uint64_t source,
+    uint64_t target,
+    uint32_t pitch,
+    const damage_list::rect& r
+) {
+    uint64_t first = static_cast<uint64_t>(r.y) * pitch + static_cast<uint64_t>(r.x) * BYTES_PER_PIXEL;
+
+    copy_args args = {};
+    args.source = source + first;
+    args.target = target + first;
+    args.pitch = pitch;
+    args.width = static_cast<uint32_t>(r.w);
+    args.height = static_cast<uint32_t>(r.h);
+
+    m_vk.cmd_push_constants(commands, m_copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
+    m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
+}
+
+/* Records the copies that bring `picture`'s twin up to date and clears its marks. False when it has none */
 bool gpu_compositor::record_copies(compose_buffers& buffers, twinned_picture& picture) {
     buffers.m_copies.clear();
     picture.take_copies(buffers.m_copies);
-    if (buffers.m_copies.empty()) {
-        return false;
+    for (const damage_list::rect& r : buffers.m_copies) {
+        record_copy(buffers.m_commands, picture.memory().address(), picture.twin().address(), picture.pitch(), r);
     }
 
-    buffers.m_copy_regions.clear();
-    for (const picture_copy& copy : buffers.m_copies) {
-        buffers.m_copy_regions.push_back({ copy.offset, copy.offset, copy.bytes });
-    }
-
-    VkBuffer drawn = static_cast<const owned_picture&>(picture.memory()).buffer();
-    VkBuffer twin = static_cast<const owned_picture&>(picture.twin()).buffer();
-    uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
-    m_vk.cmd_copy_buffer(buffers.m_commands, drawn, twin, region_count, buffers.m_copy_regions.data());
-
-    return true;
+    return !buffers.m_copies.empty();
 }
 
 /* Records the copies that bring `window`'s twin up to date from its buffer and clears the twin's marks. False when it
- * has no marked rows */
+ * has none */
 bool gpu_compositor::record_window_copies(compose_buffers& buffers, const layer_window& window) {
     buffers.m_copies.clear();
     window.twin->take_copies(buffers.m_copies);
-    if (buffers.m_copies.empty()) {
-        return false;
+
+    uint64_t source = window.import->address() + window.picture_offset;
+    for (const damage_list::rect& r : buffers.m_copies) {
+        record_copy(buffers.m_commands, source, window.twin->address(), window.twin->pitch(), r);
     }
 
-    buffers.m_copy_regions.clear();
-    for (const picture_copy& copy : buffers.m_copies) {
-        buffers.m_copy_regions.push_back({ window.picture_offset + copy.offset, copy.offset, copy.bytes });
-    }
-
-    VkBuffer source = static_cast<const imported_window_buffer&>(*window.import).buffer();
-    VkBuffer twin = static_cast<const owned_picture&>(window.twin->twin()).buffer();
-    uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
-    m_vk.cmd_copy_buffer(buffers.m_commands, source, twin, region_count, buffers.m_copy_regions.data());
-
-    return true;
+    return !buffers.m_copies.empty();
 }
 
 bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene) {
@@ -1148,6 +1216,7 @@ bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_targ
 
     transfer_buffers(buffers, target, scene, true);
 
+    m_vk.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_copy_pipeline);
     bool has_copies = false;
     for (twinned_picture* picture : buffers.m_twinned) {
         has_copies = record_copies(buffers, *picture) || has_copies;
@@ -1162,11 +1231,11 @@ bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_targ
     if (has_copies) {
         VkMemoryBarrier copied = {};
         copied.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        copied.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        copied.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         copied.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         m_vk.cmd_pipeline_barrier(
             commands,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0,
             1,
@@ -1409,8 +1478,7 @@ void gpu_compositor::transfer_buffers(
     for (const layer_window& window : scene.windows) {
         if (window.import) {
             VkBuffer read = static_cast<const imported_window_buffer&>(*window.import).buffer();
-            VkAccessFlags accesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-            buffers.m_transfers.push_back(transfer_barrier(read, accesses, to_compose));
+            buffers.m_transfers.push_back(transfer_barrier(read, VK_ACCESS_SHADER_READ_BIT, to_compose));
         }
     }
 
@@ -1418,13 +1486,12 @@ void gpu_compositor::transfer_buffers(
         return;
     }
 
-    /* Window twins' copies read window buffers before the dispatches and a readback's copy reads the output buffer
-     * after them, so both barriers cover the transfer stage as well as the compute stage */
-    VkPipelineStageFlags compose_stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    /* A readback's copy reads the output buffer after the dispatches, so its release waits for that copy too */
     m_vk.cmd_pipeline_barrier(
         buffers.m_commands,
-        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : compose_stages,
-        to_compose ? compose_stages : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                   : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        to_compose ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
         0,
         nullptr,
@@ -1435,8 +1502,8 @@ void gpu_compositor::transfer_buffers(
     );
 }
 
-/* Moves `buffer` between the queue families outside Vulkan and the compose's queue family, whose shaders and copies
- * make `accesses` to it */
+/* Moves `buffer` between the queue families outside Vulkan and the compose's queue family, whose shaders make
+ * `accesses` to it */
 VkBufferMemoryBarrier gpu_compositor::transfer_barrier(VkBuffer buffer, VkAccessFlags accesses, bool to_compose) const {
     VkBufferMemoryBarrier transfer = {};
     transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;

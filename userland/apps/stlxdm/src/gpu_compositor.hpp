@@ -71,12 +71,12 @@ enum class window_import_result {
  * video memory for a buffer in system memory, through the Vulkan library on
  * the GPU of stlxdm's /dev/gpu0 file.
  *
- * It owns a Vulkan device with one queue, the compose pipeline and
- * stlxdm's timeline, which each compose's submission raises and stlxdm
- * waits on before presenting. It also holds a probe context on the
- * /dev/gpu0 file, with no queue and no mapping, which reads lost with
- * `GPU_LOST_DEVICE` once the GPU failed and tells that apart from a loss
- * of the compositor's own context.
+ * It owns a Vulkan device with one queue, the compose pipeline, the copy
+ * pipeline that brings twins up to date, and stlxdm's timeline, which each
+ * compose's submission raises and stlxdm waits on before presenting. It
+ * also holds a probe context on the /dev/gpu0 file, with no queue and no
+ * mapping, which reads lost with `GPU_LOST_DEVICE` once the GPU failed and
+ * tells that apart from a loss of the compositor's own context.
  *
  * stlxdm's one thread makes every call. */
 class gpu_compositor : public picture_maker, public output_buffer_maker {
@@ -132,7 +132,7 @@ public:
 
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
      * it, into `target` through `buffers`, once each twin the scene names
-     * holds a copy of the bytes marked changed in its twinned picture or
+     * holds a copy of the pixels marked changed in its twinned picture or
      * window buffer, and waits at most `COMPOSE_DEADLINE_NS` for the
      * compose to end. Every picture, twin and import the scene names must
      * be this compositor's and stay until the compose ended. The rects must
@@ -183,6 +183,16 @@ private:
     static const memory_kind VIDEO_MEMORY;
     static const memory_kind SYSTEM_WINDOW_MEMORY;
     static const memory_kind VIDEO_WINDOW_MEMORY;
+
+    /* What Vulkan refused while a compute pipeline was made */
+    struct pipeline_refusals {
+        const char* layout;
+        const char* shader;
+        const char* pipeline;
+    };
+
+    static const pipeline_refusals COMPOSE_REFUSALS;
+    static const pipeline_refusals COPY_REFUSALS;
 
     /* The library exports only the global commands, so the others come
      * from `vkGetInstanceProcAddr` */
@@ -253,7 +263,15 @@ private:
     const char* find_physical_device(const gpu_info& info);
     const char* check_physical_device();
     const char* create_device();
-    const char* create_pipeline();
+    const char* create_pipelines();
+    const char* create_pipeline(
+        const uint32_t* code,
+        size_t code_bytes,
+        uint32_t push_bytes,
+        const pipeline_refusals& refusals,
+        VkPipelineLayout& layout,
+        VkPipeline& pipeline
+    );
     const char* create_command_pool();
     const char* create_timestamp_queries();
     const char* upload_corner_distances();
@@ -275,6 +293,13 @@ private:
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
     layer failure_layer(const damage_list::rect& r) const;
     bool record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene);
+    void record_copy(
+        VkCommandBuffer commands,
+        uint64_t source,
+        uint64_t target,
+        uint32_t pitch,
+        const damage_list::rect& r
+    );
     bool record_copies(compose_buffers& buffers, twinned_picture& picture);
     bool record_window_copies(compose_buffers& buffers, const layer_window& window);
     void record_readback(compose_buffers& buffers, const compose_target& target);
@@ -320,6 +345,8 @@ private:
     VkSemaphore      m_timeline = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
     VkPipeline       m_pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_copy_pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline       m_copy_pipeline = VK_NULL_HANDLE;  /* copies changed rects into twins */
     VkCommandPool    m_command_pool = VK_NULL_HANDLE;
     VkQueryPool      m_timestamps = VK_NULL_HANDLE;
     int              m_gpu_fd = -1;
@@ -382,7 +409,7 @@ private:
     std::vector<uint32_t>          m_list_starts;
 
     std::vector<twinned_picture*>      m_twinned;
-    std::vector<picture_copy>          m_copies;
+    std::vector<damage_list::rect>     m_copies;
     std::vector<VkBufferCopy>          m_copy_regions;
     std::vector<span>                  m_readback_rows;
     std::vector<VkBufferMemoryBarrier> m_transfers;
