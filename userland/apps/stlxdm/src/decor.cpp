@@ -137,6 +137,18 @@ static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
     return reinterpret_cast<uint32_t*>(back->pixels + static_cast<uint32_t>(y) * back->pitch);
 }
 
+/* Fills the part of `r` inside `clip`, both in desktop coordinates */
+static void fill_inside(const decor::canvas& back, const damage_list::rect& clip,
+                        const damage_list::rect& r, uint32_t color) {
+    damage_list::rect inside = damage_list::intersect(r, clip);
+    if (inside.w <= 0 || inside.h <= 0) {
+        return;
+    }
+
+    stlxgfx_fill_rect(back.surface, inside.x - back.x, inside.y - back.y,
+                      static_cast<uint32_t>(inside.w), static_cast<uint32_t>(inside.h), color);
+}
+
 namespace decor {
 
 int init() {
@@ -386,15 +398,13 @@ void blit_content(const canvas& back, const dm_window& w,
         return;
     }
 
-    /* A picture without a mapping shows the content color, which
-     * `draw` paints under a decorated window */
+    /* A picture without a mapping shows the content color, leaving the
+     * bottom corner squares to the frame as the compose shader's fill does */
+    int32_t inner_r = decorated(w) ? CONTENT_R : 0;
     if (!b->pixels) {
-        if (!decorated(w)) {
-            stlxgfx_fill_rect(back.surface, ix0 - back.x, iy0 - back.y,
-                              static_cast<uint32_t>(ix1 - ix0),
-                              static_cast<uint32_t>(iy1 - iy0), CONTENT_BG);
-        }
-
+        int32_t corner_h = bh < inner_r ? bh : inner_r;
+        fill_inside(back, clip, { w.x, w.y, bw, bh - corner_h }, CONTENT_BG);
+        fill_inside(back, clip, { w.x + inner_r, w.y + bh - corner_h, bw - 2 * inner_r, corner_h }, CONTENT_BG);
         return;
     }
 
@@ -407,7 +417,6 @@ void blit_content(const canvas& back, const dm_window& w,
 
     /* Rows above the corner zone, and undecorated windows entirely,
      * are a plain copy */
-    int32_t inner_r = decorated(w) ? CONTENT_R : 0;
     int32_t zone_top = w.y + bh - inner_r;
     int32_t plain_end = iy1 < zone_top ? iy1 : zone_top;
     if (iy0 < plain_end) {

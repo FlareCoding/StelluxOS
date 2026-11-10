@@ -211,7 +211,7 @@ struct dm_window {
     uint64_t pending_since_ns = 0;
     uint64_t next_query_ns = 0;
 
-    /* Its decoration as the GPU compositor blends it, drawn while that
+    /* Its decoration as either compositor blends it, drawn while that
      * compositor composes the window */
     frame_picture frame;
 };
@@ -523,6 +523,7 @@ private:
     void latch_window(dm_client& c, dm_window& w);
     void flush_configures();
     decor::chrome_state chrome_of(const dm_window& w) const;
+    picture_maker& frame_maker();
     void flush_panels();
     bool compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
@@ -616,6 +617,10 @@ private:
      * outputs since their pictures must drop first */
     std::unique_ptr<gpu_compositor> m_gpu_compositor;
     std::unique_ptr<gpu_compositor> m_retired_compositor;
+
+    /* The maker of frame pictures while no GPU compositor exists, declared
+     * before the clients since their frame pictures must drop first */
+    heap_picture_maker m_heap_picture_maker;
 
     std::vector<std::unique_ptr<dm_client>> m_clients;
 
