@@ -4,12 +4,14 @@
 #include <QImage>
 #include <qpa/qplatformbackingstore.h>
 
-// The raster engine paints into an XRGB image, the same format stlxwin buffers use
+// The raster engine paints into an image in the format of the window's stlxwin buffers: XRGB, or premultiplied ARGB
+// for a window on glass
 class QStelluxBackingStore : public QPlatformBackingStore {
 public:
     explicit QStelluxBackingStore(QWindow* window);
 
     QPaintDevice* paintDevice() override;
+    void beginPaint(const QRegion& region) override;
     void flush(QWindow* window, const QRegion& region, const QPoint& offset) override;
     void resize(const QSize& size, const QRegion& static_contents) override;
     QImage toImage() const override;

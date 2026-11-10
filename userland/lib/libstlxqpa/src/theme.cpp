@@ -8,7 +8,6 @@
 
 #include <stlxtheme/theme.h>
 
-static const QColor WINDOW_BG = QColor::fromRgba(STLXTHEME_WINDOW_BG);
 static const QColor RECESS = QColor::fromRgba(STLXTHEME_RECESS);
 static const QColor CARD = QColor::fromRgba(STLXTHEME_CARD);
 static const QColor SURFACE = QColor::fromRgba(STLXTHEME_SURFACE);
@@ -41,7 +40,9 @@ static const QFile::Permissions EXECUTE_PERMISSIONS = QFile::ExeOwner | QFile::E
 static QPalette desktop_palette() {
     QPalette palette;
 
-    palette.setColor(QPalette::Window, WINDOW_BG);
+    // Transparent so every Qt window shows stlxdm's glass through its background
+    palette.setColor(QPalette::Window, Qt::transparent);
+
     palette.setColor(QPalette::WindowText, TEXT);
     palette.setColor(QPalette::Base, RECESS);
     palette.setColor(QPalette::AlternateBase, CARD);

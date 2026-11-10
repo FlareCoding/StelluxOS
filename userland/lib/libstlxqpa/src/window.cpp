@@ -3,6 +3,7 @@
 
 #include <QGuiApplication>
 #include <QHash>
+#include <QPalette>
 #include <QVarLengthArray>
 #include <QWheelEvent>
 #include <QWindow>
@@ -14,6 +15,7 @@ static const QSize DEFAULT_WINDOW_SIZE(640, 480);
 static const int BYTES_PER_PIXEL = 4;
 static const int FIRST_PRINTABLE = 0x20;
 static const int LAST_PRINTABLE = 0x7e;
+static const int OPAQUE_ALPHA = 255;
 
 // USB HID keyboard page usages for the keys that produce no printable character
 enum hid_usage : uint16_t {
@@ -152,6 +154,11 @@ static Qt::KeyboardModifiers to_qt_modifiers(uint8_t modifiers) {
     return result;
 }
 
+// A translucent Window color lets stlxdm's glass show through every window Qt paints
+static bool palette_shows_glass() {
+    return QGuiApplication::palette().color(QPalette::Window).alpha() < OPAQUE_ALPHA;
+}
+
 // stlxdm reads an unbounded side as 0
 static uint32_t to_stlxwin_extent(int extent) {
     return extent >= QWINDOWSIZE_MAX ? 0 : static_cast<uint32_t>(qMax(extent, 0));
@@ -171,7 +178,7 @@ static Qt::MouseButton to_qt_button(uint8_t button) {
 }
 
 QStelluxWindow::QStelluxWindow(QWindow* window)
-    : QPlatformWindow(window) {
+    : QPlatformWindow(window), m_shows_glass(palette_shows_glass()) {
     QRect requested = window->geometry();
     if (requested.size().isEmpty()) {
         requested.setSize(DEFAULT_WINDOW_SIZE);
@@ -186,6 +193,10 @@ QStelluxWindow::~QStelluxWindow() {
 
 stlxwin_window* QStelluxWindow::handle() const {
     return m_handle;
+}
+
+bool QStelluxWindow::shows_glass() const {
+    return m_shows_glass;
 }
 
 // A popup opened without a parent window, such as a context menu, opens over the focused one
@@ -220,15 +231,27 @@ void QStelluxWindow::create_native_window() {
         auto* parent_window = static_cast<QStelluxWindow*>(m_parent->handle());
         QPoint offset = geometry().topLeft() - m_parent->geometry().topLeft();
         uint32_t flags = window()->type() == Qt::Popup ? STLXWIN_PF_GRAB : 0;
+        if (m_shows_glass) {
+            flags |= STLXWIN_PF_GLASS | STLXWIN_PF_PREMULTIPLIED;
+        }
 
         m_handle = stlxwin_popup_create(parent_window->handle(), offset.x(), offset.y(),
                                         static_cast<uint32_t>(size.width()),
                                         static_cast<uint32_t>(size.height()), flags);
     } else {
         QByteArray title = window()->title().toUtf8();
-        m_handle = stlxwin_window_create(integration->connection(), static_cast<uint32_t>(size.width()),
-                                         static_cast<uint32_t>(size.height()), title.constData(),
-                                         STLXWIN_WF_RESIZABLE);
+        uint32_t flags = STLXWIN_WF_RESIZABLE;
+        if (m_shows_glass) {
+            flags |= STLXWIN_WF_GLASS | STLXWIN_WF_PREMULTIPLIED;
+        }
+
+        m_handle = stlxwin_window_create(
+            integration->connection(),
+            static_cast<uint32_t>(size.width()),
+            static_cast<uint32_t>(size.height()),
+            title.constData(),
+            flags
+        );
     }
 
     if (m_handle) {
