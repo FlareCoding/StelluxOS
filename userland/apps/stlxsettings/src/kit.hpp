@@ -33,6 +33,14 @@ enum class glyph {
 /* `LOGO` must stay last, since it ends the count */
 constexpr int GLYPH_COUNT = static_cast<int>(glyph::LOGO) + 1;
 
+/* The ring that marks a chosen wallpaper, the accent or the selected display, and how far outside its edge it sits */
+constexpr qreal SELECTION_RING_WIDTH = 1.5;
+constexpr qreal SELECTION_RING_OFFSET = 2;
+
+/* Signs the pages print, written as code points since the sources stay ASCII */
+constexpr QChar TIMES_SIGN(0x00D7);
+constexpr QChar MIDDLE_DOT(0x00B7);
+
 /* The pane's margins and the line heights of body and caption text */
 constexpr int PANE_MARGIN_X = 24;
 constexpr int PANE_MARGIN_TOP = 20;
@@ -57,17 +65,21 @@ QLabel* make_text(const QString& text, const QFont& font, uint32_t color);
 /* Rich text that sets a path or key apart in Plex Mono, for hints that name one */
 QString code_text(const QString& text);
 
-/* A section's caps title above its card, and at the right the config section its rows write, if any */
+/* A section's caps title above its card, with a caption at the right, such as the config section its settings
+ * write */
 class section_head : public QWidget {
 public:
-    section_head(const QString& title, const QString& config_section);
+    section_head(const QString& title, const QString& caption);
+
+    void set_title(const QString& title);
+    void set_caption(const QString& caption);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
     QString m_title;
-    QString m_config_section;
+    QString m_caption;
 };
 
 /* A rounded panel of rows, one hairline between neighbors added with `add_row` */
@@ -103,7 +115,6 @@ public:
     void add_control(QWidget* control);
 
     void set_key(const QString& key) { m_label->set_key(key); }
-    QHBoxLayout* controls() const { return m_layout; }
 
 private:
     setting_label* m_label;
@@ -172,6 +183,8 @@ public:
     explicit toggle(bool is_on);
 
     std::function<void(bool)> on_toggle;
+
+    void set_on(bool is_on);
 
 protected:
     void paintEvent(QPaintEvent* event) override;

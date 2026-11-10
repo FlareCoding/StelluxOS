@@ -5,7 +5,9 @@
  * page makes. A page builder fills a widget whose layout is a QVBoxLayout. */
 #include <stlxconf/conf.h>
 
+#include <QImage>
 #include <QString>
+#include <QStringList>
 
 #include <cstddef>
 #include <cstring>
@@ -14,10 +16,8 @@
 class card;
 class list_row;
 class push_button;
-class QComboBox;
-class QHBoxLayout;
+class section_head;
 class QPixmap;
-class QVBoxLayout;
 class QWidget;
 
 extern stlxconf_t g_conf;
@@ -45,17 +45,8 @@ void copy_string(char* destination, size_t capacity, const QString& text);
 /* Adds a card under a head with `title` and the config section its settings write, if any */
 card* add_section(QWidget* page, const QString& title, const QString& config_section);
 
-/* The QVBoxLayout of a page or a card */
-QVBoxLayout* layout_of(QWidget* widget);
-
-/* Adds a row with a label and key that holds `choice` */
-void add_choice_row(card* parent, const char* label, const char* key, QComboBox* choice);
-
-/* A bare card row with no label column, for a button or a note */
-QHBoxLayout* make_list_row(card* parent);
-
-/* Adds a small button in a bare row of its own */
-push_button* add_list_button(card* parent, const char* text, std::function<void()> on_click);
+/* Adds a head the page built, such as one it updates in place, and the card under it */
+card* add_section(QWidget* page, section_head* head);
 
 /* Whether held keys repeat, which takes a nonzero delay and interval, as the display manager reads them */
 bool is_key_repeat_on(const stlxconf_t& conf);
@@ -170,6 +161,15 @@ QString unused_entry_name(
         n++;
     }
 }
+
+/* The configured wallpaper scaled to cover `size`, or the fallback color when it cannot be read */
+QImage wallpaper_picture(const QSize& size);
+
+/* The display layout is stlxdm's to store, so Save sends it apart from the file, Revert sets it back to the places
+ * stlxdm lists, and `note_layout_changes` adds its unsaved changes to the list the footer counts */
+void note_layout_changes(QStringList& changes);
+void save_layout();
+void revert_layout();
 
 /* A display mode's keep prompt, which the window must place above the page, so a trial stays answerable from
  * every page */
