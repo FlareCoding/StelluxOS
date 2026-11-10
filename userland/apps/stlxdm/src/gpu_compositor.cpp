@@ -1165,11 +1165,6 @@ bool gpu_compositor::record_compose(
     write_timestamp(commands, BEFORE_DISPATCHES);
     m_vk.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
 
-    VkMemoryBarrier between = {};
-    between.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-    between.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    between.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-
     size_t list_count = buffers.m_list_rects.size();
     for (size_t i = 0; i < list_count; i++) {
         const damage_list::rect& r = buffers.m_list_rects[i];
@@ -1191,22 +1186,6 @@ bool gpu_compositor::record_compose(
         args.corner_count = m_corner_count;
         args.corner_far_distance = m_corner_far_distance;
         args.material = m_material.address;
-
-        /* Rectangles may overlap, so each dispatch waits for the writes of the one before */
-        if (i > 0) {
-            m_vk.cmd_pipeline_barrier(
-                commands,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0,
-                1,
-                &between,
-                0,
-                nullptr,
-                0,
-                nullptr
-            );
-        }
 
         m_vk.cmd_push_constants(commands, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
         m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);

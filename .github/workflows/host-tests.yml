@@ -1,9 +1,9 @@
 #
 # Host Tests
 #
-# Builds the userland libraries' host tests with the runner's own compiler and
-# runs them, for library code that no unit test inside Stellux reaches. Also
-# tests the disk image script that make image and the flash scripts share.
+# Builds the userland host tests with the runner's own compiler and runs them,
+# for code that no unit test inside Stellux reaches. Also tests the disk image
+# script that make image and the flash scripts share.
 #
 
 name: Host tests

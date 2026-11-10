@@ -2,6 +2,38 @@
 
 #include <algorithm>
 
+/* Writes the parts of `added` outside all of `holes` to `pieces`, which must hold `damage_list::MAX_RECTS` rects, and
+ * returns their count. The count exceeds `room` once the parts left after any hole outgrow `room` rects. */
+static uint32_t subtract_all(
+    const damage_list::rect& added,
+    const damage_list::rect* holes,
+    uint32_t hole_count,
+    uint32_t room,
+    damage_list::rect* pieces
+) {
+    damage_list::rect outside[damage_list::MAX_RECTS];
+    uint32_t piece_count = 1;
+    pieces[0] = added;
+    for (uint32_t i = 0; i < hole_count && piece_count > 0; i++) {
+        uint32_t outside_count = 0;
+        for (uint32_t j = 0; j < piece_count; j++) {
+            damage_list::rect parts[damage_list::PARTS_OUTSIDE_MAX];
+            uint32_t part_count = damage_list::subtract(pieces[j], holes[i], parts);
+            if (outside_count + part_count > room) {
+                return room + 1;
+            }
+
+            std::copy(parts, parts + part_count, outside + outside_count);
+            outside_count += part_count;
+        }
+
+        std::copy(outside, outside + outside_count, pieces);
+        piece_count = outside_count;
+    }
+
+    return piece_count;
+}
+
 void damage_list::add(int32_t x, int32_t y, int32_t w, int32_t h) {
     if (m_full || w <= 0 || h <= 0) {
         return;
@@ -22,12 +54,17 @@ void damage_list::add(int32_t x, int32_t y, int32_t w, int32_t h) {
     }
 
     m_count = kept;
-    if (m_count == MAX_RECTS) {
+
+    rect pieces[MAX_RECTS];
+    uint32_t room = MAX_RECTS - m_count;
+    uint32_t piece_count = subtract_all(added, m_rects, m_count, room, pieces);
+    if (piece_count > room) {
         m_full = true;
         return;
     }
 
-    m_rects[m_count++] = added;
+    std::copy(pieces, pieces + piece_count, m_rects + m_count);
+    m_count += piece_count;
 }
 
 void damage_list::clear() {
@@ -83,4 +120,36 @@ damage_list::rect damage_list::union_of(const rect& a, const rect& b) {
     int32_t bottom = std::max(a.y + a.h, b.y + b.h);
 
     return { left, top, right - left, bottom - top };
+}
+
+uint32_t damage_list::subtract(const rect& piece, const rect& hole, rect* parts) {
+    rect shared = intersect(piece, hole);
+    if (shared.w <= 0 || shared.h <= 0) {
+        parts[0] = piece;
+        return 1;
+    }
+
+    int32_t piece_right = piece.x + piece.w;
+    int32_t piece_bottom = piece.y + piece.h;
+    int32_t shared_right = shared.x + shared.w;
+    int32_t shared_bottom = shared.y + shared.h;
+
+    uint32_t count = 0;
+    if (shared.y > piece.y) {
+        parts[count++] = { piece.x, piece.y, piece.w, shared.y - piece.y };
+    }
+
+    if (shared_bottom < piece_bottom) {
+        parts[count++] = { piece.x, shared_bottom, piece.w, piece_bottom - shared_bottom };
+    }
+
+    if (shared.x > piece.x) {
+        parts[count++] = { piece.x, shared.y, shared.x - piece.x, shared.h };
+    }
+
+    if (shared_right < piece_right) {
+        parts[count++] = { shared_right, shared.y, piece_right - shared_right, shared.h };
+    }
+
+    return count;
 }

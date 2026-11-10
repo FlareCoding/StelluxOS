@@ -1240,33 +1240,12 @@ void server::latch_window(dm_client& c, dm_window& w) {
 static bool subtract_hole(std::vector<damage_list::rect>& pieces,
                           const damage_list::rect& hole) {
     std::vector<damage_list::rect> out;
-    out.reserve(pieces.size() + 4);
+    out.reserve(pieces.size() + damage_list::PARTS_OUTSIDE_MAX);
 
     for (const damage_list::rect& p : pieces) {
-        int32_t hx0 = hole.x > p.x ? hole.x : p.x;
-        int32_t hy0 = hole.y > p.y ? hole.y : p.y;
-        int32_t hx1 = hole.x + hole.w < p.x + p.w
-                    ? hole.x + hole.w : p.x + p.w;
-        int32_t hy1 = hole.y + hole.h < p.y + p.h
-                    ? hole.y + hole.h : p.y + p.h;
-        if (hx0 >= hx1 || hy0 >= hy1) {
-            out.push_back(p);
-            continue;
-        }
-
-        /* Up to four bands survive around the covered middle */
-        if (hy0 > p.y) {
-            out.push_back({ p.x, p.y, p.w, hy0 - p.y });
-        }
-        if (hy1 < p.y + p.h) {
-            out.push_back({ p.x, hy1, p.w, p.y + p.h - hy1 });
-        }
-        if (hx0 > p.x) {
-            out.push_back({ p.x, hy0, hx0 - p.x, hy1 - hy0 });
-        }
-        if (hx1 < p.x + p.w) {
-            out.push_back({ hx1, hy0, p.x + p.w - hx1, hy1 - hy0 });
-        }
+        damage_list::rect parts[damage_list::PARTS_OUTSIDE_MAX];
+        uint32_t count = damage_list::subtract(p, hole, parts);
+        out.insert(out.end(), parts, parts + count);
     }
 
     if (out.size() > OCCLUDE_PIECE_CAP) {
