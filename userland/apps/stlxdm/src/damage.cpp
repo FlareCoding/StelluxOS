@@ -7,12 +7,27 @@ void damage_list::add(int32_t x, int32_t y, int32_t w, int32_t h) {
         return;
     }
 
+    rect added = { x, y, w, h };
+    for (uint32_t i = 0; i < m_count; i++) {
+        if (contains(m_rects[i], added)) {
+            return;
+        }
+    }
+
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < m_count; i++) {
+        if (!contains(added, m_rects[i])) {
+            m_rects[kept++] = m_rects[i];
+        }
+    }
+
+    m_count = kept;
     if (m_count == MAX_RECTS) {
         m_full = true;
         return;
     }
 
-    m_rects[m_count++] = { x, y, w, h };
+    m_rects[m_count++] = added;
 }
 
 void damage_list::clear() {
@@ -44,6 +59,13 @@ damage_list::rect damage_list::intersect(const rect& a, const rect& b) {
     }
 
     return { left, top, right - left, bottom - top };
+}
+
+bool damage_list::contains(const rect& outer, const rect& inner) {
+    bool holds_columns = inner.x >= outer.x && inner.x + inner.w <= outer.x + outer.w;
+    bool holds_rows = inner.y >= outer.y && inner.y + inner.h <= outer.y + outer.h;
+
+    return holds_columns && holds_rows;
 }
 
 damage_list::rect damage_list::union_of(const rect& a, const rect& b) {
