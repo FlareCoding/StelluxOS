@@ -60,10 +60,16 @@
 #define STLXTHEME_SCROLL_THUMB_MIN_LENGTH 16
 
 /* Typefaces */
-#define STLXTHEME_MONO_FONT_PATH        "/etc/res/fonts/UbuntuMono-Regular.ttf"
-#define STLXTHEME_UI_FONT_FAMILY        "Inter"
-#define STLXTHEME_UI_FONT_PATH          "/etc/res/fonts/Inter-Regular.ttf"
-#define STLXTHEME_UI_FONT_MEDIUM_PATH   "/etc/res/fonts/Inter-Medium.ttf"
-#define STLXTHEME_UI_FONT_SEMIBOLD_PATH "/etc/res/fonts/Inter-SemiBold.ttf"
+#define STLXTHEME_UI_FONT_FAMILY        "IBM Plex Sans"
+#define STLXTHEME_UI_FONT_PATH          "/etc/res/fonts/IBMPlexSans-Regular.ttf"
+#define STLXTHEME_UI_FONT_MEDIUM_PATH   "/etc/res/fonts/IBMPlexSans-Medium.ttf"
+#define STLXTHEME_UI_FONT_SEMIBOLD_PATH "/etc/res/fonts/IBMPlexSans-SemiBold.ttf"
+#define STLXTHEME_MONO_FONT_FAMILY      "IBM Plex Mono"
+#define STLXTHEME_MONO_FONT_PATH        "/etc/res/fonts/IBMPlexMono-Regular.ttf"
+
+/* Type sizes in em pixels, chosen so Plex's x-height lands on whole pixels */
+#define STLXTHEME_BODY_SIZE       13.5f
+#define STLXTHEME_CAPTION_SIZE    11.5f
+#define STLXTHEME_TERMINAL_SIZE   15.5f
 
 #endif /* STLXTHEME_THEME_H */

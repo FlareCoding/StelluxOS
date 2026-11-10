@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "integration.h"
 #include "style.h"
 
 #include <QFileInfo>
@@ -20,10 +21,7 @@ static const QColor DANGER = QColor::fromRgba(STLXTHEME_DANGER);
 static const QColor TEXT = QColor::fromRgba(STLXTHEME_TEXT);
 static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
 
-// stlxgfx sizes a face from ascender to descender, which makes the desktop's
-// 14 px and 12 px text Inter faces with 12 px and 10 px ems, the sizes Qt takes
-static const int FONT_PIXEL_SIZE = 12;
-static const int SMALL_FONT_PIXEL_SIZE = 10;
+static const qreal POINTS_PER_INCH = 72;
 
 static const char* FOLDER_ICON = "/etc/res/icons/icon_fm_folder_16x16.bmp";
 static const char* PROGRAM_ICON = "/etc/res/icons/icon_fm_exec_16x16.bmp";
@@ -73,10 +71,11 @@ static QPalette desktop_palette() {
     return palette;
 }
 
-// Built from the family, since a default QFont reads the application font before this theme exists
-static QFont desktop_font(int pixel_size, QFont::Weight weight) {
-    QFont font(QString::fromLatin1(STLXTHEME_UI_FONT_FAMILY));
-    font.setPixelSize(pixel_size);
+// Built from the family, since a default QFont reads the application font before this theme exists. QFont takes
+// only whole pixel sizes, so a half pixel em size is set as points at the screens' dots per inch.
+static QFont desktop_font(const char* family, float em_px, QFont::Weight weight) {
+    QFont font(QString::fromLatin1(family));
+    font.setPointSizeF(em_px * POINTS_PER_INCH / SCREEN_LOGICAL_DPI);
     font.setWeight(weight);
     return font;
 }
@@ -84,9 +83,10 @@ static QFont desktop_font(int pixel_size, QFont::Weight weight) {
 // Button labels take the medium weight, as stlxui sets them
 QStelluxTheme::QStelluxTheme()
     : m_palette(desktop_palette())
-    , m_font(desktop_font(FONT_PIXEL_SIZE, QFont::Normal))
-    , m_small_font(desktop_font(SMALL_FONT_PIXEL_SIZE, QFont::Normal))
-    , m_button_font(desktop_font(FONT_PIXEL_SIZE, QFont::Medium))
+    , m_font(desktop_font(STLXTHEME_UI_FONT_FAMILY, STLXTHEME_BODY_SIZE, QFont::Normal))
+    , m_small_font(desktop_font(STLXTHEME_UI_FONT_FAMILY, STLXTHEME_CAPTION_SIZE, QFont::Normal))
+    , m_button_font(desktop_font(STLXTHEME_UI_FONT_FAMILY, STLXTHEME_BODY_SIZE, QFont::Medium))
+    , m_fixed_font(desktop_font(STLXTHEME_MONO_FONT_FAMILY, STLXTHEME_BODY_SIZE, QFont::Normal))
     , m_folder_icon(QString::fromLatin1(FOLDER_ICON))
     , m_program_icon(QString::fromLatin1(PROGRAM_ICON))
     , m_image_icon(QString::fromLatin1(IMAGE_ICON))
@@ -108,6 +108,8 @@ const QFont* QStelluxTheme::font(Font type) const {
         case PushButtonFont:
         case ToolButtonFont:
             return &m_button_font;
+        case FixedFont:
+            return &m_fixed_font;
         default:
             return nullptr;
     }

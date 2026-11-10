@@ -11,7 +11,7 @@ constexpr int32_t SCROLL_STEP = 24;
 
 /* Measurement runs outside a paint pass, and text metrics come from
  * process global state, so a transient painter serves them */
-static size text_metrics(const std::string& text, uint32_t font_size,
+static size text_metrics(const std::string& text, float font_size,
                          weight w = weight::regular) {
     painter p;
     return p.measure_text(text, font_size, w);
@@ -35,12 +35,12 @@ void label::set_color(color c) {
     invalidate();
 }
 
-void label::set_font_size(uint32_t px) {
-    if (m_font_size == px) {
+void label::set_font_size(float em_px) {
+    if (m_font_size == em_px) {
         return;
     }
 
-    m_font_size = px;
+    m_font_size = em_px;
     invalidate_layout();
 }
 
@@ -260,12 +260,12 @@ void text_input::set_placeholder(std::string text) {
     invalidate();
 }
 
-void text_input::set_font_size(uint32_t px) {
-    if (m_font_size == px) {
+void text_input::set_font_size(float em_px) {
+    if (m_font_size == em_px) {
         return;
     }
 
-    m_font_size = px;
+    m_font_size = em_px;
     invalidate_layout();
 }
 

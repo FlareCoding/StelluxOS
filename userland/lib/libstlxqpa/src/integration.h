@@ -16,6 +16,9 @@
 class QSocketNotifier;
 class QStelluxWindow;
 
+// Qt's base dots per inch, reported by every screen so Qt scales nothing and a point is 4/3 of a pixel
+constexpr qreal SCREEN_LOGICAL_DPI = 96;
+
 class QStelluxCursor : public QPlatformCursor {
 public:
     void changeCursor(QCursor* cursor, QWindow* window) override;
@@ -36,6 +39,7 @@ public:
     QRect availableGeometry() const override;
     int depth() const override;
     QImage::Format format() const override;
+    QDpi logicalDpi() const override;
     qreal refreshRate() const override;
     QList<QPlatformScreen*> virtualSiblings() const override;
     QPlatformCursor* cursor() const override;

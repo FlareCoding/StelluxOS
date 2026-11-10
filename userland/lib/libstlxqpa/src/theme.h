@@ -25,6 +25,7 @@ private:
     QFont m_font;
     QFont m_small_font;
     QFont m_button_font;
+    QFont m_fixed_font;
 
     QMimeDatabase m_mime_database;
     QIcon m_folder_icon;

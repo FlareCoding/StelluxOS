@@ -100,6 +100,10 @@ QImage::Format QStelluxScreen::format() const {
     return QImage::Format_RGB32;
 }
 
+QDpi QStelluxScreen::logicalDpi() const {
+    return QDpi(SCREEN_LOGICAL_DPI, SCREEN_LOGICAL_DPI);
+}
+
 qreal QStelluxScreen::refreshRate() const {
     return m_refresh_rate;
 }

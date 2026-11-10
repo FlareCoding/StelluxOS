@@ -21,7 +21,6 @@ constexpr uint32_t CLOSE_BG_HOVER     = 0xFFF38BA8;
 constexpr uint32_t CLOSE_BG_PRESS     = 0xFFD06080;
 constexpr uint32_t CLOSE_FG           = 0xFFBAC2DE;
 constexpr uint32_t CLOSE_FG_HOVER     = 0xFFFFFFFF;
-constexpr uint32_t TITLE_FONT_SIZE    = 13;
 constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
 
 /* Corner distances run through a table of squared half pixel offsets,
@@ -141,7 +140,7 @@ static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
 namespace decor {
 
 int init() {
-    g_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, TITLE_FONT_SIZE);
+    g_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE);
     if (!g_font) {
         return -1;
     }

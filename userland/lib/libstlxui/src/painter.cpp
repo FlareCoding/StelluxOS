@@ -10,9 +10,9 @@
 
 namespace ui {
 
-/* Faces opened once per weight and pixel size, kept for the process */
+/* Faces opened once per weight and size, kept for the process */
 struct font_entry {
-    uint32_t px = 0;
+    float em_px = 0;
     weight w = weight::regular;
     stlxgfx_font* font = nullptr;
 };
@@ -29,25 +29,25 @@ static const char* face_path(weight w) {
     }
 }
 
-static stlxgfx_font* font_for(uint32_t px, weight w) {
-    if (px == 0) {
-        px = theme::active().font_size;
+static stlxgfx_font* font_for(float em_px, weight w) {
+    if (em_px == 0) {
+        em_px = theme::active().font_size;
     }
 
     for (auto& e : g_fonts) {
-        if (e.px == px && e.w == w) {
+        if (e.em_px == em_px && e.w == w) {
             return e.font;
         }
     }
 
     /* A missing weight falls back to the regular face rather than
      * losing the text entirely */
-    stlxgfx_font* f = stlxgfx_font_open(face_path(w), px);
+    stlxgfx_font* f = stlxgfx_font_open(face_path(w), em_px);
     if (!f && w != weight::regular) {
-        f = stlxgfx_font_open(face_path(weight::regular), px);
+        f = stlxgfx_font_open(face_path(weight::regular), em_px);
     }
     if (f) {
-        g_fonts.push_back({ px, w, f });
+        g_fonts.push_back({ em_px, w, f });
     }
 
     return f;
@@ -138,7 +138,7 @@ void painter::line(point a, point b, color c) {
 }
 
 void painter::text(point baseline_origin, std::string_view utf8,
-                   uint32_t font_size, color c, weight w) {
+                   float font_size, color c, weight w) {
     if (!m_target || m_clips.empty() || utf8.empty()) {
         return;
     }
@@ -174,7 +174,7 @@ void painter::text(point baseline_origin, std::string_view utf8,
 }
 
 size painter::measure_text(std::string_view utf8,
-                           uint32_t font_size, weight w) const {
+                           float font_size, weight w) const {
     stlxgfx_font* f = font_for(font_size, w);
     if (!f) {
         return { 0, 0 };
@@ -187,7 +187,7 @@ size painter::measure_text(std::string_view utf8,
              m.line_height };
 }
 
-int32_t painter::font_ascent(uint32_t font_size, weight w) const {
+int32_t painter::font_ascent(float font_size, weight w) const {
     stlxgfx_font* f = font_for(font_size, w);
     if (!f) {
         return 0;
