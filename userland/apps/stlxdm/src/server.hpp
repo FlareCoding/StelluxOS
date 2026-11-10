@@ -443,6 +443,10 @@ public:
         }
     }
 
+    /* Shows the focused window's app on the bar. Call once per wakeup, after
+     * input and client messages are handled. */
+    void sync_shell();
+
     /* Whether a power overlay phase or hold is in flight. */
     bool power_animating() const { return m_power->animating(); }
 
@@ -706,6 +710,9 @@ private:
      * refocused if the popup dies while it holds the focus */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
+
+    /* The system figures the shell shows, kept across rebuilds of the panels */
+    stats_sampler m_stats;
 
     /* The compositor's own widget trees in the background band */
     std::unique_ptr<dm_panels> m_panels;

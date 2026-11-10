@@ -37,6 +37,9 @@
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
 #define STLXTHEME_BEZEL_DIM   0x1CE2C496 /* on an unfocused window */
 
+/* Unlit meter cells, brass */
+#define STLXTHEME_METER_IDLE 0x38E2C496 /* the bar's load meter */
+
 /* Overlays laid over a window's background, and the menu panel */
 #define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces */
 #define STLXTHEME_SURFACE_HOVER    0x17FFF0D7
@@ -68,9 +71,11 @@
 #define STLXTHEME_MENU_ITEM_RADIUS 4
 
 /* Sizes */
+#define STLXTHEME_TOP_BAR_HEIGHT         32
 #define STLXTHEME_TITLE_BAR_HEIGHT       32
 #define STLXTHEME_CONTROL_HEIGHT         32
 #define STLXTHEME_LIST_ROW_HEIGHT        30
+#define STLXTHEME_GLYPH_SIZE             16
 #define STLXTHEME_WINDOW_CONTROL_SIZE    16
 #define STLXTHEME_WINDOW_CONTROL_GAP     8
 #define STLXTHEME_FOCUS_RULE_WIDTH       2

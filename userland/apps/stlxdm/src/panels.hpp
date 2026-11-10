@@ -2,10 +2,13 @@
 #define STLXDM_PANELS_HPP
 
 #include "damage.hpp"
+#include "shell/bar.hpp"
+#include "shell/stats.hpp"
 
 #include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
+#include <stlxtheme/theme.h>
 #include <stlxui/stlxui.h>
 
 #include <cstdint>
@@ -31,20 +34,28 @@ public:
     }
 };
 
-/* The compositor's chrome: a top bar with the product name, system
- * stats, the clock, and network state, and a bottom dock of pinned
- * launchers with hover tooltips. Both are toolkit trees painted
- * straight into the shared backdrop, so composing them is the same
- * blit as the wallpaper. */
+/* The compositor's chrome: a top bar and a bottom dock of pinned
+ * launchers with hover tooltips. Both are toolkit trees painted straight
+ * into the shared backdrop, so composing them is the same blit as the
+ * wallpaper. */
 class dm_panels {
 public:
-    static constexpr int32_t BAR_H = 28;
+    static constexpr int32_t BAR_H = STLXTHEME_TOP_BAR_HEIGHT;
 
     /* Builds both panels over the backdrop, which must already hold the
      * wallpaper, each painting its widgets over a picture of its glass
-     * drawn from `frost`, the frost of that wallpaper */
-    int init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf,
-             stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost);
+     * drawn from `frost`, the frost of that wallpaper. The bar shows
+     * `stats`, which must outlive the panels. Returns -1 when a view, a
+     * picture or the tooltip font cannot be made, after which the caller
+     * must still call `shutdown()`. */
+    int init(
+        uint32_t screen_w,
+        uint32_t screen_h,
+        const stlxconf_t& conf,
+        stlxgfx_surface_t* backdrop,
+        const stlxgfx_surface_t* frost,
+        stats_sampler& stats
+    );
     void shutdown();
 
     /* Paints into `backdrop` from here on, which must have the size and
@@ -77,16 +88,21 @@ public:
             return false;
         }
 
-        return (y >= 0 && y <= BAR_H) || (y >= m_dock_y && y < static_cast<int32_t>(m_height));
+        return (y >= 0 && y < BAR_H) || (y >= m_dock_y && y < static_cast<int32_t>(m_height));
     }
 
     void pointer_move(int32_t x, int32_t y);
     void pointer_button(int32_t x, int32_t y, uint8_t btn, bool down);
 
-    /* Nanoseconds until the next second rollover, and the tick that
-     * applies it. The clock is the desktop's only idle timer. */
+    /* The desktop's only idle timer: nanoseconds until the stats sampler's
+     * next period starts, and the tick that samples the stats and updates
+     * the bar */
     int64_t clock_timeout_ns(uint64_t now_ns) const;
     void clock_tick();
+
+    /* Shows beside the mark the label of the first labeled launcher whose
+     * program has id `app_id`, else the id, and nothing without an id */
+    void show_focused_app(const char* app_id);
 
 private:
     void hover_pin(int32_t index, bool entered);
@@ -110,12 +126,14 @@ private:
     uint32_t m_height = 0;
     int32_t m_dock_y = 0;
     int32_t m_dock_h = 0;
-    ui::label* m_clock = nullptr;
-    ui::label* m_stats = nullptr;
-    ui::label* m_net = nullptr;
 
-    /* Last query times gating the refresh cadences */
-    uint64_t m_stats_query_ns = 0;
+    /* The bar's widgets, which the host's tree owns */
+    top_bar m_bar;
+
+    /* The sampler the CPU and memory readouts show, which the server owns */
+    stats_sampler* m_stats = nullptr;
+
+    /* When the network was last queried, at a slower cadence than the stats */
     uint64_t m_net_query_ns = 0;
 
     /* Dock pin under the pointer, -1 outside, drives the tooltip */
