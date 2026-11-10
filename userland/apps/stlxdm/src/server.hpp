@@ -147,6 +147,7 @@ struct dm_buffer {
     std::unique_ptr<window_import> import;
 
     bool      is_gpu = false;
+    bool      is_premultiplied = false;  /* the pixels are premultiplied ARGB8888, not XRGB8888 */
     bool      is_release_only = false;
     bool      is_detached = false;  /* shown until the next latch drops it */
     int       acquire = -1;         /* read handle of the acquire timeline */

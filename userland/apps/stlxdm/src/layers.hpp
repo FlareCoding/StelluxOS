@@ -14,12 +14,13 @@ class window_import;
  * bottom to top for each pixel, every rectangle in the output's pixels */
 
 enum class layer_op : uint32_t {
-    copy,   /* the source, its bottom corner squares blended by coverage when rounded */
-    blend,  /* the source's straight alpha pixels over what lies beneath */
-    fill,   /* one color, leaving what lies beneath in the bottom corner squares when rounded */
-    dim,    /* what lies beneath darkened by one color at its alpha */
-    spin,   /* 1 added to the pixel without end, which runs a test's compose past its deadline */
-    glass,  /* the rectangle's glass from the frost source, its corners blended by coverage when rounded */
+    copy,                 /* the source, its bottom corner squares blended by coverage when rounded */
+    blend,                /* the source's straight alpha pixels over what lies beneath */
+    fill,                 /* one color, leaving what lies beneath in the bottom corner squares when rounded */
+    dim,                  /* what lies beneath darkened by one color at its alpha */
+    spin,                 /* 1 added to the pixel without end, which runs a test's compose past its deadline */
+    glass,                /* glass from the frost source, its corners blended by coverage when rounded */
+    blend_premultiplied,  /* the source's premultiplied alpha pixels over what lies beneath, rounded as `copy` */
 };
 
 /* One layer as the compose shader reads it, which compose.comp's `layer`
@@ -64,8 +65,9 @@ struct layer_window {
     uint32_t             radius = 0;
     layer_piece          frame[FRAME_STRIPS];
     bool                 has_picture = false;
+    bool                 is_premultiplied = false;  /* `picture` blends over what lies beneath */
     layer_picture        picture;
-    const window_import* import = nullptr;  /* the window buffer `picture` lies in */
+    const window_import* import = nullptr;          /* the window buffer `picture` lies in */
 };
 
 /* What one output shows, bottom to top, the dim only while the power
@@ -87,9 +89,10 @@ struct layer_scene {
 /* The most layers one list of a scene with `windows` windows holds */
 uint32_t max_layers(size_t windows);
 
-/* Appends `r`'s layers to `list` and returns their count, leaving out those
- * outside `r` and those beneath content that covers `r` clear of
- * its corners */
+/* Appends `r`'s layers to `list` and returns their count, leaving out
+ * those outside `r` and those beneath the topmost window covering `r`:
+ * by opaque content, whose window's glass and frame go too, or on an output
+ * with frost by premultiplied content over its glass */
 uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std::vector<layer>& list);
 
 #endif

@@ -27,10 +27,13 @@ static bool covers(const layer_window& w, const damage_list::rect& r) {
     return is_above_corners || is_between_corners;
 }
 
-/* The topmost window whose content covers `r`, or the window count when none does */
+/* The topmost window that covers `r`, or the window count when none does. A premultiplied window covers only on an
+ * output with frost, since without glass beneath its content what lies below shows through. */
 static size_t find_covering_window(const layer_scene& scene, const damage_list::rect& r) {
     for (size_t i = scene.windows.size(); i-- > 0;) {
-        if (covers(scene.windows[i], r)) {
+        const layer_window& w = scene.windows[i];
+        bool shows_below = w.is_premultiplied && scene.frost.address == 0;
+        if (!shows_below && covers(w, r)) {
             return i;
         }
     }
@@ -104,7 +107,8 @@ static void append_content(
         return;
     }
 
-    layer content = layer_over(w.content, w.has_picture ? layer_op::copy : layer_op::fill);
+    layer_op shown = w.is_premultiplied ? layer_op::blend_premultiplied : layer_op::copy;
+    layer content = layer_over(w.content, w.has_picture ? shown : layer_op::fill);
     content.radius = w.radius;
     if (w.has_picture) {
         set_source(content, w.picture);
@@ -123,14 +127,17 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
     size_t list_start = list.size();
     damage_list::rect whole = { 0, 0, scene.width, scene.height };
 
-    /* Content covering the rectangle overwrites every layer beneath it, its own frame's among them */
+    /* The window covering the rectangle overwrites every layer beneath it, its own glass and frame among them
+     * unless its premultiplied content blends over them */
     size_t covering = find_covering_window(scene, r);
     size_t first_framed = 0;
-    if (covering < scene.windows.size()) {
+    if (covering == scene.windows.size()) {
+        append_piece(list, r, { whole, scene.backdrop }, layer_op::copy);
+    } else if (scene.windows[covering].is_premultiplied) {
+        first_framed = covering;
+    } else {
         append_content(list, r, scene.windows[covering], scene.content_color);
         first_framed = covering + 1;
-    } else {
-        append_piece(list, r, { whole, scene.backdrop }, layer_op::copy);
     }
 
     for (size_t i = first_framed; i < scene.windows.size(); i++) {

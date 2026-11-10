@@ -39,7 +39,8 @@ typedef struct {
 } stlxwin_rect;
 
 /* A frame being painted. pixels is writable between begin_frame and
- * commit. The format is always 32-bit XRGB, rows stride bytes apart. */
+ * commit. Rows lie stride bytes apart, in 32-bit XRGB, or premultiplied
+ * ARGB for a window made with STLXWIN_WF_PREMULTIPLIED. */
 typedef struct {
     uint32_t* pixels;
     uint32_t  width;
@@ -47,9 +48,14 @@ typedef struct {
     uint32_t  stride;
 } stlxwin_buffer;
 
+/* STLXWIN_WF_GLASS lays the display manager's glass material under a borderless window, as the display manager does
+ * under every decorated window's frame, and premultiplied pixels show it through their alpha. Premultiplied pixels
+ * need STLXWIN_WF_GLASS even on a decorated window, or the display manager disconnects the client. */
 enum {
-    STLXWIN_WF_RESIZABLE  = 1u << 0,
-    STLXWIN_WF_BORDERLESS = 1u << 1,
+    STLXWIN_WF_RESIZABLE     = 1u << 0,
+    STLXWIN_WF_BORDERLESS    = 1u << 1,
+    STLXWIN_WF_GLASS         = 1u << 2,
+    STLXWIN_WF_PREMULTIPLIED = 1u << 3,  /* stlxwin_buffer pixels hold premultiplied ARGB, GPU buffers stay XRGB */
 };
 
 enum {

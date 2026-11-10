@@ -98,9 +98,14 @@ typedef struct {
 } swp_hello;
 _Static_assert(sizeof(swp_hello) == 68, "wire layout");
 
+/* SWP_WF_GLASS lays the DM's glass material under a borderless window, as the DM does under every decorated window's
+ * frame, and premultiplied pixels show it through their alpha. The DM disconnects a client asking for premultiplied
+ * pixels without SWP_WF_GLASS, even on a decorated window. */
 enum {
-    SWP_WF_RESIZABLE  = 1u << 0,
-    SWP_WF_BORDERLESS = 1u << 1,
+    SWP_WF_RESIZABLE     = 1u << 0,
+    SWP_WF_BORDERLESS    = 1u << 1,
+    SWP_WF_GLASS         = 1u << 2,
+    SWP_WF_PREMULTIPLIED = 1u << 3,  /* shared memory buffers hold premultiplied ARGB8888, not XRGB8888 */
 };
 
 enum {
@@ -273,7 +278,7 @@ _Static_assert(sizeof(swp_set_layout) == 204, "wire layout");
 /* ---- DM to client ---- */
 
 enum {
-    SWP_FMT_XRGB8888 = 1,   /* the only format, negotiation reserved */
+    SWP_FMT_XRGB8888 = 1,   /* the only format value, SWP_WF_PREMULTIPLIED marks premultiplied shared memory buffers */
 };
 
 /* HELLO_REPLY's header flags */

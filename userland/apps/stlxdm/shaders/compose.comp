@@ -11,12 +11,13 @@
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-const uint LAYER_COPY  = 0u;
-const uint LAYER_BLEND = 1u;
-const uint LAYER_FILL  = 2u;
-const uint LAYER_DIM   = 3u;
-const uint LAYER_SPIN  = 4u;
-const uint LAYER_GLASS = 5u;
+const uint LAYER_COPY                = 0u;
+const uint LAYER_BLEND               = 1u;
+const uint LAYER_FILL                = 2u;
+const uint LAYER_DIM                 = 3u;
+const uint LAYER_SPIN                = 4u;
+const uint LAYER_GLASS               = 5u;
+const uint LAYER_BLEND_PREMULTIPLIED = 6u;
 
 /* material.hpp's GRAIN_TILE and VEIL_STEPS */
 const int  GRAIN_TILE = 160;
@@ -93,6 +94,18 @@ uint blend(uint below, uint color, uint alpha) {
     uint blended = 0u;
     for (uint shift = 0u; shift < 24u; shift += 8u) {
         blended |= div255(channel(color, shift) * alpha + channel(below, shift) * inverse) << shift;
+    }
+
+    return blended;
+}
+
+/* Source-over of the premultiplied `source` onto the opaque `below`, clamping each channel at 255 since a client
+ * may send a color above its alpha */
+uint blend_premultiplied(uint below, uint source) {
+    uint inverse = 255u - (source >> 24);
+    uint blended = 0u;
+    for (uint shift = 0u; shift < 24u; shift += 8u) {
+        blended |= min(channel(source, shift) + div255(channel(below, shift) * inverse), 255u) << shift;
     }
 
     return blended;
@@ -240,6 +253,11 @@ void main() {
             for (;;) {
                 atomicAdd(args.target.words[target_index], 1u);
             }
+        } else if (l.op == LAYER_BLEND_PREMULTIPLIED && is_bottom_corner) {
+            uint blended = blend_premultiplied(color, read_source(l, pixel));
+            color = blend(color, blended, coverage(rounded_distance(l, pixel)));
+        } else if (l.op == LAYER_BLEND_PREMULTIPLIED) {
+            color = blend_premultiplied(color, read_source(l, pixel));
         }
     }
 
