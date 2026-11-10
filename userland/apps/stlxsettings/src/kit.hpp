@@ -23,6 +23,10 @@ enum class glyph {
     DISPLAY,
     KEYBOARD,
     POWER,
+    LOCK,
+    MORE,
+    PLUS,
+    PROGRAM,
     LOGO,
 };
 
@@ -49,6 +53,9 @@ void paint_glyph(QPainter& painter, glyph shape, const QRectF& box, const QColor
 
 /* A single line of text in one font and color */
 QLabel* make_text(const QString& text, const QFont& font, uint32_t color);
+
+/* Rich text that sets a path or key apart in Plex Mono, for hints that name one */
+QString code_text(const QString& text);
 
 /* A section's caps title above its card, and at the right the config section its rows write, if any */
 class section_head : public QWidget {
@@ -103,14 +110,15 @@ private:
     QHBoxLayout* m_layout;
 };
 
-/* A push button that runs `on_click` when clicked. An enabled primary button fills with the accent, which marks
- * a pending change, and a small one fits list footers. */
+/* A push button that runs `on_click` when clicked, with an optional glyph before its text. An enabled primary
+ * button fills with the accent, which marks a pending change, and a small one fits list footers. */
 class push_button : public QAbstractButton {
 public:
     explicit push_button(const QString& text);
 
     std::function<void()> on_click;
 
+    void set_glyph(glyph shape);
     void set_primary(bool is_primary);
     void set_small(bool is_small);
 
@@ -120,6 +128,11 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
+    int glyph_size() const;
+    int glyph_width() const;
+
+    glyph m_glyph = glyph::PLUS;
+    bool m_has_glyph = false;
     bool m_is_primary = false;
     bool m_is_small = false;
 };
@@ -212,6 +225,83 @@ protected:
 private:
     QString m_value;
     QString m_unit;
+};
+
+/* A lock beside a small Plex Mono label in a ring, marking an entry a drop-in file owns */
+class chip : public QWidget {
+public:
+    explicit chip(const QString& text);
+
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QString m_text;
+};
+
+/* The square button that opens a list entry's menu */
+class more_button : public QWidget {
+public:
+    more_button();
+
+    std::function<void()> on_click;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+};
+
+/* One entry of a list editor: an icon (the program glyph for a null one), the name over its path and arguments,
+ * then trailing widgets. A locked (drop-in) entry shows its name in secondary text and does not light on hover */
+class list_row : public QWidget {
+public:
+    list_row(const QString& name, const QString& path, const QString& args);
+
+    std::function<void()> on_click;
+
+    void set_text(const QString& name, const QString& path, const QString& args);
+    void set_icon(const QPixmap& icon);
+    void set_locked(bool is_locked);
+    void set_open(bool is_open);
+    void add_trailing(QWidget* widget);
+
+    bool is_lit() const { return m_is_open || (!m_is_locked && underMouse()); }
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
+
+private:
+    QString m_name;
+    QString m_path;
+    QString m_args;
+    QPixmap m_icon;
+    bool m_is_locked = false;
+    bool m_is_open = false;
+    QHBoxLayout* m_layout;
+};
+
+/* A list editor's rows and the editors open under them, a hairline between two neighboring rows when neither
+ * is lit, over a footer with the list's add button and a hint */
+class list_box : public QWidget {
+public:
+    list_box();
+
+    void add_row(list_row* row);
+    void add_entry(QWidget* entry);
+    void set_footer(push_button* add, const QString& hint);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QVBoxLayout* m_entries;
+    QList<list_row*> m_rows;
+    QWidget* m_footer = nullptr;
 };
 
 #endif /* STLXSETTINGS_KIT_HPP */
