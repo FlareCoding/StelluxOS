@@ -5,23 +5,23 @@
 #include <QStringList>
 #include <QVariant>
 
-// The desktop's palette, the one stlxui draws its widgets with
-static const QColor WINDOW_BG(0x1E1E2E);
-static const QColor ALTERNATE_ROW(0x212131);  // a step off the window, under the hover and selection fills
-static const QColor SURFACE(0x313244);
-static const QColor SURFACE_HOVER(0x45475A);
-static const QColor SURFACE_PRESS(0x585B70);
-static const QColor RAISED_DARK(0x181825);
-static const QColor SHADOW(0x11111B);
-static const QColor ACCENT(0x89B4FA);
-static const QColor ACCENT_PRESS(0x6E9DE8);
-static const QColor DANGER(0xF38BA8);
-static const QColor TEXT(0xCDD6F4);
-static const QColor TEXT_DIM(0x585B70);
+#include <stlxtheme/theme.h>
+
+static const QColor WINDOW_BG = QColor::fromRgba(STLXTHEME_WINDOW_BG);
+static const QColor ALTERNATE_ROW = QColor::fromRgba(STLXTHEME_ALTERNATE_ROW);
+static const QColor SURFACE = QColor::fromRgba(STLXTHEME_SURFACE);
+static const QColor SURFACE_HOVER = QColor::fromRgba(STLXTHEME_SURFACE_HOVER);
+static const QColor SURFACE_PRESS = QColor::fromRgba(STLXTHEME_SURFACE_PRESS);
+static const QColor RAISED_DARK = QColor::fromRgba(STLXTHEME_RAISED_DARK);
+static const QColor SHADOW = QColor::fromRgba(STLXTHEME_SHADOW);
+static const QColor ACCENT = QColor::fromRgba(STLXTHEME_ACCENT);
+static const QColor ACCENT_PRESS = QColor::fromRgba(STLXTHEME_ACCENT_PRESS);
+static const QColor DANGER = QColor::fromRgba(STLXTHEME_DANGER);
+static const QColor TEXT = QColor::fromRgba(STLXTHEME_TEXT);
+static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
 
 // stlxgfx sizes a face from ascender to descender, which makes the desktop's
 // 14 px and 12 px text Inter faces with 12 px and 10 px ems, the sizes Qt takes
-static const char* FONT_FAMILY = "Inter";
 static const int FONT_PIXEL_SIZE = 12;
 static const int SMALL_FONT_PIXEL_SIZE = 10;
 
@@ -71,7 +71,7 @@ static QPalette desktop_palette() {
 
 // Built from the family, since a default QFont reads the application font before this theme exists
 static QFont desktop_font(int pixel_size, QFont::Weight weight) {
-    QFont font(QString::fromLatin1(FONT_FAMILY));
+    QFont font(QString::fromLatin1(STLXTHEME_UI_FONT_FAMILY));
     font.setPixelSize(pixel_size);
     font.setWeight(weight);
     return font;

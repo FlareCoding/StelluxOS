@@ -7,6 +7,7 @@
 #include <stlx/input.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
+#include <stlxtheme/theme.h>
 
 #include <cmath>
 #include <cstring>
@@ -384,10 +385,8 @@ static uint64_t splash_clock_ns() {
 }
 
 void splash_run(presenter& pres) {
-    stlxgfx_font* title_font = stlxgfx_font_open(STLXGFX_UI_FONT_SEMIBOLD_PATH,
-                                                 SPLASH_TITLE_PX);
-    stlxgfx_font* hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH,
-                                                SPLASH_HINT_PX);
+    stlxgfx_font* title_font = stlxgfx_font_open(STLXTHEME_UI_FONT_SEMIBOLD_PATH, SPLASH_TITLE_PX);
+    stlxgfx_font* hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, SPLASH_HINT_PX);
     if (!title_font || !hint_font) {
         stlxgfx_font_close(title_font);
         stlxgfx_font_close(hint_font);

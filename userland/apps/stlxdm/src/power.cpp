@@ -5,6 +5,8 @@
  */
 #include "power.hpp"
 
+#include <stlxtheme/theme.h>
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -363,8 +365,8 @@ int dm_power::init(uint32_t screen_w, uint32_t screen_h,
     m_star_cx = static_cast<int32_t>(screen_w) - PW_STAR_MARGIN;
     m_star_cy = bar_y + static_cast<int32_t>(taskbar_height) / 2;
 
-    m_label_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
-    m_hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH, PW_HINT_FONT);
+    m_label_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
+    m_hint_font = stlxgfx_font_open(STLXTHEME_UI_FONT_PATH, PW_HINT_FONT);
     if (!m_label_font || !m_hint_font) {
         return -1;
     }

@@ -9,6 +9,7 @@
 
 #include <stlx/net.h>
 #include <stlxgfx/bmp.h>
+#include <stlxtheme/theme.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -333,7 +334,7 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
     stlxgfx_fill_rect(m_dock, 0, 0, screen_w, 1, conf.accent_color);
 
-    m_tip_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, TIP_FONT_PX);
+    m_tip_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, TIP_FONT_PX);
     if (!m_tip_font) {
         return -1;
     }

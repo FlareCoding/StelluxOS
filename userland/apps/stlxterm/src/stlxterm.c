@@ -8,6 +8,7 @@
 #include <stlxwin/proto.h>
 #include <stlxgfx/surface.h>
 #include <stlxgfx/font.h>
+#include <stlxtheme/theme.h>
 #include <stlx/proc.h>
 #include <stlx/pty.h>
 #include <stdio.h>
@@ -28,7 +29,6 @@
 #define INITIAL_HEIGHT    600
 #define MIN_COLS          20
 #define MIN_ROWS          5
-#define BG_COLOR          0xFF1E1E2E
 #define CURSOR_COLOR      0xFFF5E0DC
 #define FONT_SIZE         16
 #define PADDING           4
@@ -36,7 +36,7 @@
 #define PTY_DRAIN_MAX     16
 
 static const uint32_t FG_PALETTE[17] = {
-    0xFFCDD6F4, // 0: default foreground
+    STLXTHEME_TEXT, // 0: default foreground
     0xFF45475A, // 1: black (30)
     0xFFF38BA8, // 2: red (31)
     0xFFA6E3A1, // 3: green (32)
@@ -56,7 +56,7 @@ static const uint32_t FG_PALETTE[17] = {
 };
 
 static const uint32_t BG_PALETTE[17] = {
-    0xFF1E1E2E, // 0: default background
+    STLXTHEME_WINDOW_BG, // 0: default background
     0xFF45475A, // 1: black (40)
     0xFFF38BA8, // 2: red (41)
     0xFFA6E3A1, // 3: green (42)
@@ -166,7 +166,7 @@ static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
         stlxgfx_fill_rect(s, px, py, g_cell_w, g_cell_h, bg);
 
         if (g_term.cells[row][c] != ' ') {
-            uint32_t fg = at_cursor ? BG_COLOR
+            uint32_t fg = at_cursor ? STLXTHEME_WINDOW_BG
                         : FG_PALETTE[g_term.attrs[row][c].fg];
             ch_buf[0] = g_term.cells[row][c];
             stlxgfx_draw_text(s, g_font, px, py + g_ascent, ch_buf, 1, fg);
@@ -257,7 +257,7 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     int overflow = 0;
 
     if (full) {
-        stlxgfx_clear(s, BG_COLOR);
+        stlxgfx_clear(s, STLXTHEME_WINDOW_BG);
         for (int r = 0; r < g_term.rows; r++) {
             render_span(s, r, 0, g_term.cols - 1, drawn_cursor);
         }
@@ -439,7 +439,7 @@ int main(void) {
         return 1;
     }
 
-    g_font = stlxgfx_font_open(STLXGFX_FONT_PATH, FONT_SIZE);
+    g_font = stlxgfx_font_open(STLXTHEME_MONO_FONT_PATH, FONT_SIZE);
     if (!g_font) {
         printf("stlxterm: font load failed\r\n");
         stlxwin_window_destroy(win);

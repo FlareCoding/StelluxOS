@@ -8,11 +8,6 @@
 
 namespace ui {
 
-constexpr int32_t MENU_PAD = 4;
-constexpr int32_t MENU_ROW_H = 24;
-constexpr int32_t MENU_ROW_PAD_X = 12;
-constexpr int32_t MENU_SEP_H = 5;
-
 /* One selectable line, highlight driven by the list */
 class menu_row : public widget {
 public:
@@ -35,7 +30,7 @@ public:
         painter p;
         size text = p.measure_text(m_text, 0);
 
-        return { text.w + 2 * MENU_ROW_PAD_X, MENU_ROW_H };
+        return { text.w + 2 * STLXTHEME_MENU_ROW_PADDING_X, STLXTHEME_MENU_ROW_HEIGHT };
     }
 
     void paint(painter& p) override {
@@ -48,7 +43,7 @@ public:
         size text = p.measure_text(m_text, 0);
         int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
 
-        p.text({ MENU_ROW_PAD_X, baseline }, m_text, 0,
+        p.text({ STLXTHEME_MENU_ROW_PADDING_X, baseline }, m_text, 0,
                m_enabled ? t.text : t.text_dim);
     }
 
@@ -83,7 +78,7 @@ public:
 
     explicit menu_list(const std::vector<menu_item>& items) {
         m_style.direction = axis::column;
-        m_style.padding = edge_insets::all(MENU_PAD);
+        m_style.padding = edge_insets::all(STLXTHEME_MENU_PADDING);
         m_style.background = theme::active().surface;
 
         for (size_t i = 0; i < items.size(); i++) {
@@ -91,14 +86,14 @@ public:
 
             menu_row* row = add<menu_row>(items[i].text, i,
                                           items[i].enabled);
-            row->s().main = length::fixed(MENU_ROW_H);
+            row->s().main = length::fixed(STLXTHEME_MENU_ROW_HEIGHT);
             row->on_pick = [this](size_t idx) { pick(idx); };
             row->on_hot = [this](size_t idx) { set_hot(idx); };
             m_rows.push_back(row);
 
             if (items[i].separator_after && i + 1 < items.size()) {
                 widget* sep = add<box>();
-                sep->s().main = length::fixed(MENU_SEP_H);
+                sep->s().main = length::fixed(STLXTHEME_MENU_SEPARATOR_HEIGHT);
             }
         }
     }
@@ -212,19 +207,20 @@ void menu::open_at(widget* anchor, std::vector<menu_item> items) {
     /* Size from the widest item plus chrome */
     painter measure;
     int32_t width = 0;
-    int32_t height = 2 * MENU_PAD;
+    int32_t height = 2 * STLXTHEME_MENU_PADDING;
     for (const menu_item& it : items) {
         size text = measure.measure_text(it.text, 0);
-        if (text.w + 2 * MENU_ROW_PAD_X > width) {
-            width = text.w + 2 * MENU_ROW_PAD_X;
+        if (text.w + 2 * STLXTHEME_MENU_ROW_PADDING_X > width) {
+            width = text.w + 2 * STLXTHEME_MENU_ROW_PADDING_X;
         }
 
-        height += MENU_ROW_H;
+        height += STLXTHEME_MENU_ROW_HEIGHT;
         if (it.separator_after) {
-            height += MENU_SEP_H;
+            height += STLXTHEME_MENU_SEPARATOR_HEIGHT;
         }
     }
-    width += 2 * MENU_PAD;
+
+    width += 2 * STLXTHEME_MENU_PADDING;
 
     auto host = std::unique_ptr<window_host>(new window_host(*a));
     host->m_win = stlxwin_popup_create(

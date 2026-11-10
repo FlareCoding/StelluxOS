@@ -36,8 +36,7 @@
 
 constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
 
-/* App palette on top of the theme: a darker rail and raised cards */
-static const QColor RAIL_BG(0x181825);
+/* App palette on top of the theme: the rail's hover and raised cards */
 static const QColor RAIL_HOVER(0x232334);
 static const QColor CARD_BG(0x252536);
 
@@ -1493,7 +1492,7 @@ static QWidget* make_rail() {
     rail->setFixedWidth(RAIL_W);
     rail->setAutoFillBackground(true);
     QPalette palette = rail->palette();
-    palette.setColor(QPalette::Window, RAIL_BG);
+    palette.setColor(QPalette::Window, palette.color(QPalette::Dark));
     rail->setPalette(palette);
 
     auto* layout = new QVBoxLayout(rail);

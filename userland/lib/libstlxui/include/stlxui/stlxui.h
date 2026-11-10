@@ -15,7 +15,7 @@
  * the parent dies or remove() runs, and nothing here is thread aware.
  */
 
-#include <stlxgfx/font.h>
+#include <stlxtheme/theme.h>
 
 #include <cstdint>
 #include <functional>
@@ -103,23 +103,23 @@ enum class weight : uint8_t { regular, medium, semibold };
  * instance, replaceable as a whole, no per widget cascade.
  */
 struct theme {
-    color window_bg = 0xFF1E1E2E;
-    color surface = 0xFF313244;
-    color surface_hover = 0xFF45475A;
-    color surface_press = 0xFF585B70;
-    color accent = 0xFF89B4FA;
-    color accent_hover = 0xFFA5C8FC;
-    color accent_press = 0xFF6E9DE8;
-    color danger = 0xFFF38BA8;
-    color text = 0xFFCDD6F4;
-    color text_dim = 0xFF585B70;
+    color window_bg = STLXTHEME_WINDOW_BG;
+    color surface = STLXTHEME_SURFACE;
+    color surface_hover = STLXTHEME_SURFACE_HOVER;
+    color surface_press = STLXTHEME_SURFACE_PRESS;
+    color accent = STLXTHEME_ACCENT;
+    color accent_hover = STLXTHEME_ACCENT_HOVER;
+    color accent_press = STLXTHEME_ACCENT_PRESS;
+    color danger = STLXTHEME_DANGER;
+    color text = STLXTHEME_TEXT;
+    color text_dim = STLXTHEME_TEXT_DIM;
     uint32_t font_size = 14;
-    int32_t control_h = 28;    /* default height of one line controls */
+    int32_t control_h = STLXTHEME_CONTROL_HEIGHT; /* default height of one line controls */
 
     /* Face files per weight, opened lazily and kept for the process */
-    const char* font_regular = STLXGFX_UI_FONT_PATH;
-    const char* font_medium = STLXGFX_UI_FONT_MEDIUM_PATH;
-    const char* font_semibold = STLXGFX_UI_FONT_SEMIBOLD_PATH;
+    const char* font_regular = STLXTHEME_UI_FONT_PATH;
+    const char* font_medium = STLXTHEME_UI_FONT_MEDIUM_PATH;
+    const char* font_semibold = STLXTHEME_UI_FONT_SEMIBOLD_PATH;
 
     static const theme& active();
     static void set_active(const theme& t);

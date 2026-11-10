@@ -3,6 +3,7 @@
 
 #include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
+#include <stlxtheme/theme.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -351,7 +352,7 @@ static void check_call(const draw_call* call, color_pair colors) {
 }
 
 int main(void) {
-    static const char font_path[] = INITRD_DIR STLXGFX_FONT_PATH;
+    static const char font_path[] = INITRD_DIR STLXTHEME_MONO_FONT_PATH;
     static const draw_call calls[] = {
         { "blend_coverage",             SWEEP_WIDTH, SWEEP_HEIGHT, draw_blend_coverage,        1 },
         { "blend_coverage translucent", SWEEP_WIDTH, SWEEP_HEIGHT, draw_translucent_coverage,  0 },

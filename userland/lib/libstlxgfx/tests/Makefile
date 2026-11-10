@@ -11,10 +11,10 @@ REPO_ROOT := $(abspath ../../../..)
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
 SOURCES   := $(SRC_DIR)/surface.c $(SRC_DIR)/text.c
-HEADERS   := $(wildcard ../include/stlxgfx/*.h ../include/stlxgfx/internal/*.h)
+HEADERS   := $(wildcard ../include/stlxgfx/*.h ../include/stlxgfx/internal/*.h ../../libstlxtheme/include/stlxtheme/*.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 
-CFLAGS := -std=c11 -O2 -g -Wall -Wextra -Werror -I../include \
+CFLAGS := -std=c11 -O2 -g -Wall -Wextra -Werror -I../include -I../../libstlxtheme/include \
 	-DINITRD_DIR='"$(REPO_ROOT)/initrd"'
 
 run: $(TESTS)
