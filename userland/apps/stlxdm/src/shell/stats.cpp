@@ -1,5 +1,6 @@
 #include "stats.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -7,6 +8,10 @@
 
 constexpr size_t CPU_TEXT_BYTES = 4096;
 constexpr size_t SMALL_TEXT_BYTES = 256;
+
+constexpr uint64_t NS_PER_SECOND = 1000000000ull;
+constexpr uint64_t SECONDS_PER_MINUTE = 60;
+constexpr uint64_t SECONDS_PER_HOUR = 3600;
 
 /* Reads a /dev/sysinfo text file into `buf`, cut to fit and NUL terminated.
  * Returns the bytes read, or -1 when it cannot be opened. */
@@ -65,6 +70,7 @@ bool stats_sampler::sample(uint64_t now_ns) {
 
     read_cpus();
     read_memory();
+    read_uptime();
 
     return true;
 }
@@ -108,4 +114,23 @@ void stats_sampler::read_memory() {
 
     m_page_size = text_field(text, "page_size ");
     m_used_pages = text_field(text, "used_pages ");
+}
+
+void stats_sampler::read_uptime() {
+    char text[SMALL_TEXT_BYTES];
+    if (read_text("/dev/sysinfo/uptime", text, sizeof(text)) > 0) {
+        m_uptime_ns = strtoull(text, nullptr, 10);
+    }
+}
+
+std::string format_uptime(uint64_t uptime_ns) {
+    uint64_t seconds = uptime_ns / NS_PER_SECOND;
+    unsigned long long hours = seconds / SECONDS_PER_HOUR;
+    unsigned long long minutes = seconds % SECONDS_PER_HOUR / SECONDS_PER_MINUTE;
+    unsigned long long rest = seconds % SECONDS_PER_MINUTE;
+
+    char text[32];
+    snprintf(text, sizeof(text), "%llu:%02llu:%02llu", hours, minutes, rest);
+
+    return text;
 }

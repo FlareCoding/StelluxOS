@@ -138,6 +138,15 @@ static std::string release_name() {
     return release.substr(0, release.find('-'));
 }
 
+/* Empty while the sampler has read no uptime */
+static std::string uptime_text(const stats_sampler& stats) {
+    if (stats.uptime_ns() == 0) {
+        return "";
+    }
+
+    return "up " + format_uptime(stats.uptime_ns());
+}
+
 int32_t system_menu::width() const {
     return MENU_WIDTH;
 }
@@ -159,6 +168,7 @@ std::unique_ptr<ui::widget> system_menu::build() {
     ui::label* title = header->add<ui::label>("Stellux " + release_name());
     title->set_weight(ui::weight::semibold);
     title->s().main = ui::length::flex();
+    m_uptime = header->add<mono_label>(uptime_text(m_stats), STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM);
 
     root->add<menu_divider>();
     for (const menu_program& program : MENU_PROGRAMS) {
@@ -175,4 +185,14 @@ std::unique_ptr<ui::widget> system_menu::build() {
     };
 
     return root;
+}
+
+void system_menu::refresh() {
+    if (m_uptime) {
+        m_uptime->set_text(uptime_text(m_stats));
+    }
+}
+
+void system_menu::closed() {
+    m_uptime = nullptr;
 }
