@@ -72,8 +72,6 @@ constexpr uint32_t TILE_CHROME = 0xE012100D;      /* the bar and dock hinted on 
 constexpr uint32_t TILE_CHROME_LINE = 0x40E2C496; /* brass at .25 */
 constexpr uint32_t BADGE_FILL = 0x1FFFF0D7;       /* cream at .12 */
 
-static QString display_name(const stlxwin_output& output, uint32_t index);
-static QString mode_text(const stlxwin_output& output);
 static bool has_layout_changes();
 static void follow_outputs();
 
@@ -578,8 +576,7 @@ static display_card g_card;
 static trial_state g_trial;
 static mode_rows g_unplaced_modes[STLXWIN_OUTPUTS_MAX]; /* the choices of lit outputs the desktop does not place */
 
-/* The monitor's maker and name, or "Display" and its tile's number when it reports no identity */
-static QString display_name(const stlxwin_output& output, uint32_t index) {
+QString display_name(const stlxwin_output& output, uint32_t index) {
     size_t length = strnlen(output.monitor, sizeof(output.monitor));
     if (length == 0) {
         return QStringLiteral("Display %1").arg(index + 1);
@@ -588,7 +585,7 @@ static QString display_name(const stlxwin_output& output, uint32_t index) {
     return QString::fromUtf8(output.monitor, static_cast<qsizetype>(length));
 }
 
-static QString mode_text(const stlxwin_output& output) {
+QString mode_text(const stlxwin_output& output) {
     QString size = QStringLiteral("%1 %2 %3").arg(output.width).arg(TIMES_SIGN).arg(output.height);
     if (output.refresh_millihertz == 0) {
         return size;

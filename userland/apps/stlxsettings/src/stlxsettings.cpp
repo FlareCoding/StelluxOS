@@ -64,18 +64,18 @@ constexpr int EDITOR_FIELD_W = 360;
 
 stlxconf_t g_conf;
 
-enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE };
+enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE, ABOUT_PAGE };
 
-constexpr uint32_t PAGE_COUNT = STARTUP_PAGE + 1;
+constexpr uint32_t PAGE_COUNT = ABOUT_PAGE + 1;
 
 static const char* const PAGE_NAMES[] = {
-    "Appearance", "Dock", "Displays", "Input", "Startup"
+    "Appearance", "Dock", "Displays", "Input", "Startup", "About"
 };
 static_assert(std::size(PAGE_NAMES) == PAGE_COUNT);
 
 /* The names `--page` takes */
 static const char* const PAGE_SLUGS[] = {
-    "appearance", "dock", "displays", "input", "startup"
+    "appearance", "dock", "displays", "input", "startup", "about"
 };
 static_assert(std::size(PAGE_SLUGS) == PAGE_COUNT);
 
@@ -85,17 +85,19 @@ static const char* const PAGE_BLURBS[] = {
     "Where each display sits, which one is main, and each one's mode.",
     "How held keys repeat.",
     "Programs that start with the desktop, and the shortcuts that launch programs.",
+    "This machine and the software on it.",
 };
 static_assert(std::size(PAGE_BLURBS) == PAGE_COUNT);
 
-/* The file that stores each page's settings, for the Displays page the layout file that stlxdm writes */
+/* The file that stores each page's settings, for the Displays page the layout file that stlxdm writes.
+ * About stores none and says so instead */
 static const char* const PAGE_FILES[] = {
-    STLXCONF_PATH, STLXCONF_PATH, LAYOUTS_PATH, STLXCONF_PATH, STLXCONF_PATH
+    STLXCONF_PATH, STLXCONF_PATH, LAYOUTS_PATH, STLXCONF_PATH, STLXCONF_PATH, "read only"
 };
 static_assert(std::size(PAGE_FILES) == PAGE_COUNT);
 
 static const glyph PAGE_GLYPHS[] = {
-    glyph::WALLPAPER, glyph::DOCK, glyph::DISPLAY, glyph::KEYBOARD, glyph::POWER
+    glyph::WALLPAPER, glyph::DOCK, glyph::DISPLAY, glyph::KEYBOARD, glyph::POWER, glyph::INFO
 };
 static_assert(std::size(PAGE_GLYPHS) == PAGE_COUNT);
 
@@ -413,7 +415,14 @@ void show_pending_changes() {
     g_st.revert->setEnabled(is_pending);
     g_st.save->setEnabled(is_pending);
 
-    if (changes.size() == 1) {
+    /* About writes nothing, so its footer shows the buttons only for changes made on other pages */
+    bool is_nothing_to_save = !is_pending && g_st.active_page == ABOUT_PAGE;
+    g_st.revert->setVisible(!is_nothing_to_save);
+    g_st.save->setVisible(!is_nothing_to_save);
+
+    if (is_nothing_to_save) {
+        set_status(QStringLiteral("Nothing to save on this page"));
+    } else if (changes.size() == 1) {
         set_status(QStringLiteral("1 unsaved change: %1").arg(changes.first()));
     } else if (is_pending) {
         set_status(QStringLiteral("%1 unsaved changes").arg(changes.size()));
@@ -578,13 +587,14 @@ card* add_section(QWidget* page, section_head* head) {
     return section;
 }
 
-card* add_section(QWidget* page, const QString& title, const QString& config_section) {
-    return add_section(page, new section_head(title, config_section));
+card* add_section(QWidget* page, const QString& title, const QString& caption) {
+    return add_section(page, new section_head(title, caption));
 }
 
 /* Swaps the page under the fixed chrome */
 static void build_page(uint32_t index) {
-    if (index != g_st.active_page) {
+    bool is_other_page = index != g_st.active_page;
+    if (is_other_page) {
         g_st.chosen_scroll = 0;
         g_st.scroll->verticalScrollBar()->setValue(0);
     }
@@ -612,10 +622,16 @@ static void build_page(uint32_t index) {
     case DISPLAY_PAGE: build_displays_page(g_st.page); break;
     case INPUT_PAGE: build_input_page(g_st.page); break;
     case STARTUP_PAGE: build_startup_page(g_st.page); break;
+    case ABOUT_PAGE: build_about_page(g_st.page); break;
     }
 
     page_layout->addStretch(1);
     layout_of(g_st.page_slot)->addWidget(g_st.page);
+
+    /* A rebuild after an edit keeps the footer's message */
+    if (is_other_page) {
+        show_pending_changes();
+    }
 }
 
 /* A rebuild can empty the scroll bar's range for a moment, which puts the
@@ -678,9 +694,9 @@ static void revert_conf() {
     set_status(QStringLiteral("Reverted to the file on disk"));
 }
 
-/* The release before its build suffix, 3.0.1 of 3.0.1-x86_64-release */
-static QString release_version(const utsname& system) {
-    return QString::fromUtf8(system.release).section(QLatin1Char('-'), 0, 0);
+QString system_title(const utsname& system) {
+    QString release = QString::fromUtf8(system.release).section(QLatin1Char('-'), 0, 0);
+    return QStringLiteral("Stellux %1").arg(release);
 }
 
 static QWidget* make_group(size_t group) {
@@ -710,8 +726,7 @@ static QWidget* make_sidebar() {
     utsname system = {};
     uname(&system);
 
-    QString release = QStringLiteral("Stellux %1").arg(release_version(system));
-    auto* sidebar_widget = new sidebar(release, QString::fromUtf8(system.machine));
+    auto* sidebar_widget = new sidebar(system_title(system), QString::fromUtf8(system.machine));
     sidebar_widget->setFixedWidth(SIDEBAR_W);
     auto* layout = new QVBoxLayout(sidebar_widget);
     layout->setContentsMargins(SIDEBAR_PADDING_X, 0, SIDEBAR_PADDING_X, SIDEBAR_FOOT_H);

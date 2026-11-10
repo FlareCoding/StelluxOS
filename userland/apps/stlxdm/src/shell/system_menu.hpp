@@ -12,7 +12,7 @@
 #include <functional>
 #include <memory>
 
-/* The menu under the Stellux mark: the release and the uptime, then Settings, Displays and the task monitor,
+/* The menu under the Stellux mark: the release and the uptime, then About, Settings, Displays and the task monitor,
  * each with the keys of a shortcut that runs the same program, if any, and Power, which opens the power overlay */
 class system_menu : public popover_panel {
 public:
