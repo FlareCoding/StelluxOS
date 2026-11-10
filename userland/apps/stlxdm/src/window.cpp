@@ -334,6 +334,22 @@ static void add_commit_damage(dm_window& w, const swp_rect* rects, uint32_t coun
     w.pending_damage_count += count;
 }
 
+/* Marks the rows of `w`'s twin that its pending commits changed, every row when one named no rects or more than fit */
+static void mark_twin_rows(dm_window& w) {
+    if (!w.twin) {
+        return;
+    }
+
+    if (w.pending_damage_whole || w.pending_damage_count == 0) {
+        w.twin->mark_rows(0, static_cast<int32_t>(w.twin->height()));
+        return;
+    }
+
+    for (uint32_t i = 0; i < w.pending_damage_count; i++) {
+        w.twin->mark_rows(w.pending_damage[i].y, w.pending_damage[i].h);
+    }
+}
+
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -549,12 +565,14 @@ bool server::import_attached_buffers() {
     return true;
 }
 
-/* Drops each window's frame picture, which may hold GPU memory, and what composing on the GPU made for windows:
- * each Vulkan import and each shared memory buffer's GPU_BUFFER_IMPORT handle */
+/* Drops each window's frame picture, which may hold GPU memory, and what composing on the GPU made for windows: each
+ * twin, each Vulkan import and each shared memory buffer's GPU_BUFFER_IMPORT handle */
 void server::drop_window_imports() {
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             w->frame = frame_picture();
+            w->twin.reset();
+            w->has_twin_failed = false;
             for (dm_buffer& b : w->buffers) {
                 b.import.reset();
                 b.gpu_address = 0;
@@ -1207,6 +1225,12 @@ void server::latch_window(dm_client& c, dm_window& w) {
         }
     }
 
+    if (resized) {
+        w.twin.reset();
+        w.has_twin_failed = false;
+    }
+
+    mark_twin_rows(w);
     w.pending_damage_count = 0;
     w.pending_damage_whole = false;
 
@@ -1757,6 +1781,30 @@ const stlxgfx_surface_t* server::frost_of(dm_output& out) {
     return is_main ? m_frost : out.frost;
 }
 
+/* The twin a GPU compose reads `w`'s current buffer `b` through, made again when its pitch or height differs from
+ * `b`'s. Null for a buffer without an import or in video memory, and once video memory ran out for a twin of `b`'s
+ * size, when the compose reads `b` where it lies */
+window_twin* server::twin_of(dm_window& w, const dm_buffer& b) {
+    bool fits = w.twin && w.twin->pitch() == b.pitch && w.twin->height() == b.height;
+    bool is_in_system_memory = b.import && b.placement == GPU_PLACEMENT_SYSTEM;
+    if (fits && is_in_system_memory) {
+        return w.twin.get();
+    }
+
+    w.twin.reset();
+    if (!is_in_system_memory || w.has_twin_failed) {
+        return nullptr;
+    }
+
+    w.twin = window_twin::make(*m_gpu_compositor, b.pitch, b.height);
+    if (!w.twin) {
+        w.has_twin_failed = true;
+        printf("stlxdm: window %u is read from system memory, as video memory ran out for its twin\r\n", w.win_id);
+    }
+
+    return w.twin.get();
+}
+
 /* Draws the frames and top pictures a GPU compose of `out` reads in `rects`, in its pixels, and fills its scene with
  * what it shows, or what the collapse backdrop holds when `is_capture`. Needs `out`'s pictures. False without memory */
 bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture) {
@@ -1797,10 +1845,14 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
             w->frame.place(*w, ox, oy, shown);
         }
 
+        window_twin* twin = twin_of(*w, b);
         shown.has_picture = b.gpu_address != 0;
         shown.is_premultiplied = b.is_premultiplied;
-        shown.picture = { b.gpu_address, b.pitch, shown.content.x, shown.content.y };
+        shown.picture = { twin ? twin->address() : b.gpu_address, b.pitch, shown.content.x, shown.content.y };
+
         shown.import = b.import.get();
+        shown.twin = twin;
+        shown.picture_offset = b.offset;
         scene.windows.push_back(shown);
     }
 

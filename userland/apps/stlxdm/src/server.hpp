@@ -222,6 +222,10 @@ struct dm_window {
     /* Its decoration as either compositor blends it, drawn while that
      * compositor composes the window */
     frame_picture frame;
+
+    /* The twin that the GPU compositor reads in place of the current buffer */
+    std::unique_ptr<window_twin> twin;
+    bool                         has_twin_failed = false;  /* no twin fits until the buffer's shape changes */
 };
 
 /* One window control of one window, none when `window` is null */
@@ -554,6 +558,7 @@ private:
     const stlxgfx_surface_t* frost_of(dm_output& out);
     bool draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
     void draw_top_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture);
+    window_twin* twin_of(dm_window& w, const dm_buffer& b);
     void compose_collapse(dm_output& out);
     void draw_collapse_frame(dm_output& out, stlxgfx_surface_t* back);
     bool collapse_on_cpu(dm_output& out, const presenter::target& t);

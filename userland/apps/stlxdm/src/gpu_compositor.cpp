@@ -1110,6 +1110,28 @@ bool gpu_compositor::record_copies(compose_buffers& buffers, twinned_picture& pi
     return true;
 }
 
+/* Records the copies that bring `window`'s twin up to date from its buffer and clears the twin's marks. False when it
+ * has no marked rows */
+bool gpu_compositor::record_window_copies(compose_buffers& buffers, const layer_window& window) {
+    buffers.m_copies.clear();
+    window.twin->take_copies(buffers.m_copies);
+    if (buffers.m_copies.empty()) {
+        return false;
+    }
+
+    buffers.m_copy_regions.clear();
+    for (const picture_copy& copy : buffers.m_copies) {
+        buffers.m_copy_regions.push_back({ window.picture_offset + copy.offset, copy.offset, copy.bytes });
+    }
+
+    VkBuffer source = static_cast<const imported_window_buffer&>(*window.import).buffer();
+    VkBuffer twin = static_cast<const owned_picture&>(window.twin->twin()).buffer();
+    uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
+    m_vk.cmd_copy_buffer(buffers.m_commands, source, twin, region_count, buffers.m_copy_regions.data());
+
+    return true;
+}
+
 bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene) {
     VkCommandBuffer commands = buffers.m_commands;
 
@@ -1129,6 +1151,12 @@ bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_targ
     bool has_copies = false;
     for (twinned_picture* picture : buffers.m_twinned) {
         has_copies = record_copies(buffers, *picture) || has_copies;
+    }
+
+    for (const layer_window& window : scene.windows) {
+        if (window.twin) {
+            has_copies = record_window_copies(buffers, window) || has_copies;
+        }
     }
 
     if (has_copies) {
@@ -1381,7 +1409,8 @@ void gpu_compositor::transfer_buffers(
     for (const layer_window& window : scene.windows) {
         if (window.import) {
             VkBuffer read = static_cast<const imported_window_buffer&>(*window.import).buffer();
-            buffers.m_transfers.push_back(transfer_barrier(read, VK_ACCESS_SHADER_READ_BIT, to_compose));
+            VkAccessFlags accesses = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+            buffers.m_transfers.push_back(transfer_barrier(read, accesses, to_compose));
         }
     }
 
@@ -1389,12 +1418,13 @@ void gpu_compositor::transfer_buffers(
         return;
     }
 
-    /* A readback's copy reads the output buffer after the dispatches, so its release waits for that copy too */
+    /* Window twins' copies read window buffers before the dispatches and a readback's copy reads the output buffer
+     * after them, so both barriers cover the transfer stage as well as the compute stage */
+    VkPipelineStageFlags compose_stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     m_vk.cmd_pipeline_barrier(
         buffers.m_commands,
-        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                   : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-        to_compose ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        to_compose ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : compose_stages,
+        to_compose ? compose_stages : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         0,
         0,
         nullptr,
@@ -1405,8 +1435,8 @@ void gpu_compositor::transfer_buffers(
     );
 }
 
-/* Moves `buffer` between the queue families outside Vulkan and the compose's queue family, whose shaders make
- * `accesses` to it */
+/* Moves `buffer` between the queue families outside Vulkan and the compose's queue family, whose shaders and copies
+ * make `accesses` to it */
 VkBufferMemoryBarrier gpu_compositor::transfer_barrier(VkBuffer buffer, VkAccessFlags accesses, bool to_compose) const {
     VkBufferMemoryBarrier transfer = {};
     transfer.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;

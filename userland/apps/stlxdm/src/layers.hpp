@@ -10,6 +10,7 @@
 
 class twinned_picture;
 class window_import;
+class window_twin;
 
 /* Per damaged rectangle of an output, the layers shaders/compose.comp walks
  * bottom to top for each pixel, every rectangle in the output's pixels */
@@ -89,7 +90,8 @@ struct layer_scaled {
 
 /* A window as its layers show it: no frame strips when borderless, the content color without a picture the GPU
  * reads, no glass when its bounds are empty, and while it animates `scaled` pieces in place of its frame strips and
- * content. An animating window covers no rect. */
+ * content. An animating window covers no rect. With a twin, which needs `import`, `picture` and the scaled content lie
+ * in the twin, which the compose first brings up to date from the window buffer. */
 struct layer_window {
     static constexpr uint32_t FRAME_STRIPS = 4;
     static constexpr uint32_t SCALED_MAX = FRAME_STRIPS * 3 + 1;  /* up to three pieces per strip, and the content */
@@ -101,7 +103,9 @@ struct layer_window {
     bool                      has_picture = false;
     bool                      is_premultiplied = false;  /* `picture` blends over what lies beneath */
     layer_picture             picture;
-    const window_import*      import = nullptr;          /* the window buffer `picture` or the scaled content lies in */
+    const window_import*      import = nullptr;          /* the window buffer */
+    window_twin*              twin = nullptr;
+    uint64_t                  picture_offset = 0;        /* from the window buffer's first byte to its picture's */
     std::vector<layer_scaled> scaled;
 };
 

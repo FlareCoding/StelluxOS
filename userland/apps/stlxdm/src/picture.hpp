@@ -91,6 +91,25 @@ struct picture_copy {
     size_t bytes;
 };
 
+/* The bytes of a picture changed since its twin's last copy */
+class changed_bytes {
+public:
+    /* Adds `bytes` from `offset`, ignoring those from `size` on */
+    void add(size_t offset, size_t bytes, size_t size);
+
+    /* Appends a copy of each run of changed bytes and clears them */
+    void take(std::vector<picture_copy>& copies);
+
+private:
+    /* The bytes from `first` up to `end` */
+    struct byte_span {
+        size_t first;
+        size_t end;
+    };
+
+    std::vector<byte_span> m_spans;   /* sorted, no two touching */
+};
+
 /* A picture the CPU draws into and a compose reads, and its twin when its
  * maker makes twins, which the compose then reads in its place. Whoever
  * draws into the picture must mark the bytes it changed, which the next
@@ -126,17 +145,50 @@ public:
     void take_copies(std::vector<picture_copy>& copies);
 
 private:
-    /* The bytes from `first` up to `end` */
-    struct byte_span {
-        size_t first;
-        size_t end;
-    };
-
     twinned_picture() = default;
 
     std::unique_ptr<picture> m_memory;
     std::unique_ptr<picture> m_twin;
-    std::vector<byte_span>   m_changed;   /* sorted, no two touching */
+    changed_bytes            m_changed;
+};
+
+/* The twin of the picture in a window's current buffer, for a buffer in
+ * system memory.
+ *
+ * Every latch of the window must mark the rows its latched pictures
+ * changed, also while no compose reads the twin, since the next compose
+ * naming the twin copies only the marked rows from the current buffer. It
+ * must drop before the maker that made it. */
+class window_twin {
+public:
+    /* Makes a twin of `height` rows `pitch` bytes apart, every row marked
+     * changed, or returns null when `maker` makes no twins or memory runs
+     * out */
+    static std::unique_ptr<window_twin> make(picture_maker& maker, uint32_t pitch, uint32_t height);
+
+    window_twin(const window_twin&) = delete;
+    window_twin& operator=(const window_twin&) = delete;
+
+    const picture& twin() const { return *m_twin; }
+    uint64_t address() const { return m_twin->address(); }
+    uint32_t pitch() const { return m_pitch; }
+    uint32_t height() const { return m_height; }
+
+    /* Marks `count` rows from row `y` changed, ignoring those outside the
+     * twin */
+    void mark_rows(int32_t y, int32_t count);
+
+    /* Appends the copies that bring the twin up to date, at offsets from
+     * the picture's first byte, and clears the marks */
+    void take_copies(std::vector<picture_copy>& copies);
+
+private:
+    window_twin() = default;
+
+    std::unique_ptr<picture> m_twin;
+    uint32_t                 m_pitch = 0;
+    uint32_t                 m_height = 0;
+    changed_bytes            m_changed;
 };
 
 /* An output's backdrop or frost under the GPU compositor, drawn by the

@@ -372,32 +372,73 @@ uint64_t twinned_picture::address() const {
 }
 
 void twinned_picture::mark_changed(size_t offset, size_t bytes) {
-    size_t size = m_memory->bytes();
-    bool is_empty = offset >= size || bytes == 0;
-    if (!m_twin || is_empty) {
+    if (m_twin) {
+        m_changed.add(offset, bytes, m_memory->bytes());
+    }
+}
+
+void twinned_picture::take_copies(std::vector<picture_copy>& copies) {
+    m_changed.take(copies);
+}
+
+std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pitch, uint32_t height) {
+    if (!maker.makes_twins()) {
+        return nullptr;
+    }
+
+    std::unique_ptr<window_twin> made(new window_twin());
+    made->m_twin = maker.make_twin(static_cast<size_t>(pitch) * height);
+    if (!made->m_twin) {
+        return nullptr;
+    }
+
+    made->m_pitch = pitch;
+    made->m_height = height;
+    made->mark_rows(0, static_cast<int32_t>(height));
+
+    return made;
+}
+
+void window_twin::mark_rows(int32_t y, int32_t count) {
+    int64_t end = static_cast<int64_t>(y) + count;
+    int32_t first_row = std::max(y, 0);
+    int32_t end_row = static_cast<int32_t>(std::min(end, static_cast<int64_t>(m_height)));
+    if (first_row < end_row) {
+        size_t offset = static_cast<size_t>(first_row) * m_pitch;
+        size_t bytes = static_cast<size_t>(end_row - first_row) * m_pitch;
+        m_changed.add(offset, bytes, static_cast<size_t>(m_pitch) * m_height);
+    }
+}
+
+void window_twin::take_copies(std::vector<picture_copy>& copies) {
+    m_changed.take(copies);
+}
+
+void changed_bytes::add(size_t offset, size_t bytes, size_t size) {
+    if (offset >= size || bytes == 0) {
         return;
     }
 
     /* Every span that overlaps or touches the added bytes merges into them */
     byte_span added = { offset, offset + std::min(bytes, size - offset) };
-    auto first = std::find_if(m_changed.begin(), m_changed.end(), [&](const byte_span& s) {
+    auto first = std::find_if(m_spans.begin(), m_spans.end(), [&](const byte_span& s) {
         return s.end >= added.first;
     });
     auto last = first;
-    while (last != m_changed.end() && last->first <= added.end) {
+    while (last != m_spans.end() && last->first <= added.end) {
         added.first = std::min(added.first, last->first);
         added.end = std::max(added.end, last->end);
         last++;
     }
 
-    first = m_changed.erase(first, last);
-    m_changed.insert(first, added);
+    first = m_spans.erase(first, last);
+    m_spans.insert(first, added);
 }
 
-void twinned_picture::take_copies(std::vector<picture_copy>& copies) {
-    for (const byte_span& s : m_changed) {
+void changed_bytes::take(std::vector<picture_copy>& copies) {
+    for (const byte_span& s : m_spans) {
         copies.push_back({ s.first, s.end - s.first });
     }
 
-    m_changed.clear();
+    m_spans.clear();
 }
