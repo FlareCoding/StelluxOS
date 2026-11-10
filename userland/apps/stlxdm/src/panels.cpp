@@ -245,6 +245,10 @@ void dm_panels::hover_pin(int32_t index, bool entered) {
 }
 
 void dm_panels::launch(const stlxconf_pin_t& pin) {
+    if (on_unminimize && on_unminimize(pin)) {
+        return;
+    }
+
     if (on_launch) {
         on_launch(pin);
     }

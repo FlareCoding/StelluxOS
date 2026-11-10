@@ -1145,12 +1145,13 @@ void server::flush_configures() {
     }
 }
 
-/* Latch a window's pending commit and translate its damage to desktop
- * coordinates: the whole window on map or resize, the commit rects otherwise. */
+/* Latch a window's pending commit and translate its damage to desktop coordinates: the whole window on map or
+ * resize, the commit rects otherwise, and none while its toplevel is hidden. */
 void server::latch_window(dm_client& c, dm_window& w) {
     const dm_buffer& nb = w.buffers[static_cast<size_t>(w.pending)];
     bool first_map = !w.mapped;
     bool resized = false;
+    bool is_shown = !is_hidden(toplevel_of(c, w));
 
     /* Clients may rely on the latch point coming before the replaced
      * picture's release and FRAME_DONE */
@@ -1161,7 +1162,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
     if (w.current >= 0) {
         const dm_buffer& ob = w.buffers[static_cast<size_t>(w.current)];
         resized = ob.width != nb.width || ob.height != nb.height;
-        if (resized) {
+        if (resized && is_shown) {
             scene_damage_window(&w);
         }
 
@@ -1190,16 +1191,19 @@ void server::latch_window(dm_client& c, dm_window& w) {
     }
     w.sent_conf_count = keep;
 
-    if (first_map || resized) {
-        damage_list::rect nr = decor::damage_rect(w, w.x, w.y, static_cast<int32_t>(nb.width),
-                                                  static_cast<int32_t>(nb.height));
-        m_damage.add(nr.x, nr.y, nr.w, nr.h);
-    } else if (w.pending_damage_whole || w.pending_damage_count == 0) {
-        m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
-    } else {
-        for (uint32_t i = 0; i < w.pending_damage_count; i++) {
-            const swp_rect& r = w.pending_damage[i];
-            m_damage.add(w.x + r.x, w.y + r.y, r.w, r.h);
+    /* `scene_show` damages a hidden window whole when it comes back */
+    if (is_shown) {
+        if (first_map || resized) {
+            damage_list::rect nr = decor::damage_rect(w, w.x, w.y, static_cast<int32_t>(nb.width),
+                                                      static_cast<int32_t>(nb.height));
+            m_damage.add(nr.x, nr.y, nr.w, nr.h);
+        } else if (w.pending_damage_whole || w.pending_damage_count == 0) {
+            m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
+        } else {
+            for (uint32_t i = 0; i < w.pending_damage_count; i++) {
+                const swp_rect& r = w.pending_damage[i];
+                m_damage.add(w.x + r.x, w.y + r.y, r.w, r.h);
+            }
         }
     }
 
@@ -1217,9 +1221,13 @@ void server::latch_window(dm_client& c, dm_window& w) {
         drop_buffer(c, w, static_cast<size_t>(replaced));
     }
 
+    /* A popup that maps while its toplevel is hidden stays out of the
+     * scene until `scene_show` puts the toplevel back */
     if (first_map) {
         w.mapped = true;
-        scene_map(&w);
+        if (is_shown) {
+            scene_map(&w);
+        }
     }
 
     swp_frame_done done = { w.win_id, 0, now_ns() };
