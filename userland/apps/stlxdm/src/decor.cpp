@@ -53,6 +53,10 @@ constexpr int32_t SHADOW_SHIFT = 15;
 constexpr int32_t SHADOW_ONE = 1 << SHADOW_SHIFT;
 constexpr int32_t SHADOW_LAYERS_MAX = 4;
 
+/* Bits of `body_placement` */
+constexpr uint32_t BODY_WITHIN = 1;
+constexpr uint32_t BODY_BETWEEN_CORNERS = 2;
+
 /* A CSS blur of B px is a Gaussian of sigma B / 2, which the SVG filter
  * spec approximates by three box blurs 3 sqrt(2 pi) / 4 sigma wide */
 constexpr int32_t BOX_PER_BLUR_PERCENT = 94;
@@ -112,6 +116,8 @@ struct window_shadow {
     int32_t                           reach_side = 0;
     int32_t                           reach_top = 0;
     int32_t                           reach_bottom = 0;
+    int32_t                           corner_side = 0;  /* of the square frame whose shadow `corner_alphas` holds */
+    std::vector<uint8_t>              corner_alphas;    /* row by row over that frame's shadow bounds */
 };
 
 /* One shadow layer's blurred spans along the drawn area's columns and rows,
@@ -715,14 +721,69 @@ static uint32_t shadow_alpha(const window_shadow& shadow, const layer_profile* p
     return static_cast<uint32_t>((255 * (SHADOW_ONE - clear) + SHADOW_ONE / 2) >> SHADOW_SHIFT);
 }
 
+/* Where a column or row at `position` lies along a frame side spanning
+ * `length` pixels from `start`: within the side, and between its corner squares */
+static uint32_t body_placement(int32_t position, int32_t start, int32_t length) {
+    bool is_within = position >= start && position < start + length;
+    bool is_between_corners = position >= start + decor::CORNER_R && position < start + length - decor::CORNER_R;
+
+    return (is_within ? BODY_WITHIN : 0) | (is_between_corners ? BODY_BETWEEN_CORNERS : 0);
+}
+
 /* Whether the pixel lies in the frame's rect outside its corner squares,
  * where the body covers it whole */
 static bool is_under_body(const damage_list::rect& frame, int32_t x, int32_t y) {
-    bool is_inside = x >= frame.x && x < frame.x + frame.w && y >= frame.y && y < frame.y + frame.h;
-    bool is_beside_corner = x < frame.x + decor::CORNER_R || x >= frame.x + frame.w - decor::CORNER_R;
-    bool is_level_with_corner = y < frame.y + decor::CORNER_R || y >= frame.y + frame.h - decor::CORNER_R;
+    uint32_t column_placement = body_placement(x, frame.x, frame.w);
+    uint32_t row_placement = body_placement(y, frame.y, frame.h);
+    bool is_inside = (column_placement & row_placement & BODY_WITHIN) != 0;
 
-    return is_inside && !(is_beside_corner && is_level_with_corner);
+    return is_inside && ((column_placement | row_placement) & BODY_BETWEEN_CORNERS) != 0;
+}
+
+/* Whether every layer covers column `column` of the area as it covers the
+ * column before, with no corner rounding in either */
+static bool column_shades_as_left(const window_shadow& shadow, const layer_profile* profiles, int32_t column) {
+    for (int32_t i = 0; i < shadow.layer_count; i++) {
+        const layer_profile& profile = profiles[i];
+        bool is_rounded = profile.columns_near_corner[column] || profile.columns_near_corner[column - 1];
+        if (is_rounded || profile.columns[column] != profile.columns[column - 1]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Whether every layer covers row `row` of the area as it covers the row
+ * above, with no corner rounding in either */
+static bool row_shades_as_above(const window_shadow& shadow, const layer_profile* profiles, int32_t row) {
+    for (int32_t i = 0; i < shadow.layer_count; i++) {
+        const layer_profile& profile = profiles[i];
+        bool is_rounded = profile.rows_near_corner[row] || profile.rows_near_corner[row - 1];
+        if (is_rounded || profile.rows[row] != profile.rows[row - 1]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* The column or row of `corner_alphas` a position takes its alpha from when it lies in the shadow past either end
+ * of the side from `start` spanning `length`, or less than half `corner_side` inside it, else -1 */
+static int32_t corner_alpha_index(int32_t position, int32_t start, int32_t length, int32_t reach_before,
+                                  int32_t reach_after, int32_t corner_side) {
+    int32_t half = corner_side / 2;
+    int32_t from_start = position - (start - reach_before);
+    if (from_start >= 0 && from_start < reach_before + half) {
+        return from_start;
+    }
+
+    int32_t from_end = start + length + reach_after - 1 - position;
+    if (from_end >= 0 && from_end < reach_after + half) {
+        return reach_before + corner_side + reach_after - 1 - from_end;
+    }
+
+    return -1;
 }
 
 /* Writes the shadow of `frame` as ink into `view` over `area`, replacing each
@@ -734,18 +795,100 @@ static void draw_shadow(stlxgfx_surface_t* view, const damage_list::rect& area, 
         profiles[i] = profile_layer(shadow.layers[i], shadow.kernels[i], frame, area);
     }
 
-    for (int32_t row = 0; row < area.h; row++) {
-        uint32_t* pixels = back_row(view, row);
+    /* A reused alpha stays exact only while `shadow_alpha` and `is_under_body` read a column or row through what
+     * these checks compare */
+    std::vector<uint8_t> repeats_left(static_cast<size_t>(area.w), 0);
+    for (int32_t column = 1; column < area.w; column++) {
+        int32_t x = area.x + column;
+        bool meets_body_as_left = body_placement(x, frame.x, frame.w) == body_placement(x - 1, frame.x, frame.w);
+        repeats_left[column] = meets_body_as_left && column_shades_as_left(shadow, profiles, column);
+    }
+
+    std::vector<uint8_t> repeats_above(static_cast<size_t>(area.h), 0);
+    for (int32_t row = 1; row < area.h; row++) {
+        int32_t y = area.y + row;
+        bool meets_body_as_above = body_placement(y, frame.y, frame.h) == body_placement(y - 1, frame.y, frame.h);
+        repeats_above[row] = meets_body_as_above && row_shades_as_above(shadow, profiles, row);
+    }
+
+    std::vector<int32_t> corner_columns(static_cast<size_t>(area.w), -1);
+    std::vector<int32_t> corner_rows(static_cast<size_t>(area.h), -1);
+    bool uses_corner_alphas = !shadow.corner_alphas.empty() && frame.w >= shadow.corner_side &&
+                              frame.h >= shadow.corner_side;
+    if (uses_corner_alphas) {
         for (int32_t column = 0; column < area.w; column++) {
-            if (is_under_body(frame, area.x + column, area.y + row)) {
-                continue;
+            corner_columns[column] = corner_alpha_index(area.x + column, frame.x, frame.w, shadow.reach_side,
+                                                        shadow.reach_side, shadow.corner_side);
+        }
+
+        for (int32_t row = 0; row < area.h; row++) {
+            corner_rows[row] = corner_alpha_index(area.y + row, frame.y, frame.h, shadow.reach_top,
+                                                  shadow.reach_bottom, shadow.corner_side);
+        }
+    }
+
+    size_t corner_width = static_cast<size_t>(shadow.corner_side + 2 * shadow.reach_side);
+    std::vector<uint32_t> alphas(static_cast<size_t>(area.w), 0);
+    for (int32_t row = 0; row < area.h; row++) {
+        if (!repeats_above[row]) {
+            const uint8_t* corner_alpha_row = nullptr;
+            if (corner_rows[row] >= 0) {
+                corner_alpha_row = &shadow.corner_alphas[static_cast<size_t>(corner_rows[row]) * corner_width];
             }
 
-            uint32_t alpha = shadow_alpha(shadow, profiles, area, column, row);
-            if (alpha != 0) {
-                pixels[column] = (alpha << 24) | (STLXTHEME_INK & 0x00FFFFFFu);
+            for (int32_t column = 0; column < area.w; column++) {
+                if (repeats_left[column]) {
+                    alphas[column] = alphas[column - 1];
+                } else if (corner_alpha_row && corner_columns[column] >= 0) {
+                    alphas[column] = corner_alpha_row[corner_columns[column]];
+                } else if (is_under_body(frame, area.x + column, area.y + row)) {
+                    alphas[column] = 0;
+                } else {
+                    alphas[column] = shadow_alpha(shadow, profiles, area, column, row);
+                }
             }
         }
+
+        uint32_t* pixels = back_row(view, row);
+        for (int32_t column = 0; column < area.w; column++) {
+            if (alphas[column] != 0) {
+                pixels[column] = (alphas[column] << 24) | (STLXTHEME_INK & 0x00FFFFFFu);
+            }
+        }
+    }
+}
+
+/* Keeps the alphas of a square frame's shadow, which every frame at least as wide and high shows within half its
+ * side of a corner while no term of `shadow_alpha` depends on a frame edge more than `reach_inward` pixels away */
+static void prepare_corners(window_shadow& shadow) {
+    int32_t reach_inward = 0;
+    for (int32_t i = 0; i < shadow.layer_count; i++) {
+        const decor::window_shadow_layer& layer = shadow.layers[i];
+        const shadow_kernel& kernel = shadow.kernels[i];
+        int32_t reach = kernel.radius + kernel.reach + std::abs(layer.offset_y) + std::abs(layer.spread);
+        reach_inward = std::max(reach_inward, reach);
+    }
+
+    int32_t half = reach_inward + 1;
+    damage_list::rect frame = { 0, 0, 2 * half, 2 * half };
+    damage_list::rect area = grow(frame, shadow.reach_side, shadow.reach_top, shadow.reach_bottom);
+    std::vector<uint32_t> pixels(static_cast<size_t>(area.w) * static_cast<size_t>(area.h), 0);
+
+    stlxgfx_surface_t view = {};
+    view.width = static_cast<uint32_t>(area.w);
+    view.height = static_cast<uint32_t>(area.h);
+    view.pitch = view.width * 4;
+    view.pixels = reinterpret_cast<uint8_t*>(pixels.data());
+
+    view.bpp = 32;
+    view.red_shift = 16;
+    view.green_shift = 8;
+    draw_shadow(&view, area, frame, shadow);
+
+    shadow.corner_side = frame.w;
+    shadow.corner_alphas.resize(pixels.size());
+    for (size_t i = 0; i < pixels.size(); i++) {
+        shadow.corner_alphas[i] = static_cast<uint8_t>(pixels[i] >> 24);
     }
 }
 
@@ -775,6 +918,9 @@ int init() {
     static_assert(fits_distance_table(FOCUSED_SHADOW, std::size(FOCUSED_SHADOW)));
     prepare_shadow(g_unfocused_shadow, UNFOCUSED_SHADOW, static_cast<int32_t>(std::size(UNFOCUSED_SHADOW)));
     prepare_shadow(g_focused_shadow, FOCUSED_SHADOW, static_cast<int32_t>(std::size(FOCUSED_SHADOW)));
+
+    prepare_corners(g_unfocused_shadow);
+    prepare_corners(g_focused_shadow);
 
     return 0;
 }
