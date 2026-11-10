@@ -65,6 +65,10 @@ public:
     /* The top row of the dock's shelf, where the windows' work area ends whether or not the dock has launchers */
     int32_t dock_y() const { return m_dock_layout.shelf.y; }
 
+    /* The tile in desktop coordinates of the launcher at `index`, empty
+     * past the last launcher */
+    damage_list::rect launcher_tile(uint32_t index) const;
+
     /* The index of the first launcher that starts the app `app_id`, which must not be null, or -1 when none does */
     int32_t launcher_of(const char* app_id) const;
 

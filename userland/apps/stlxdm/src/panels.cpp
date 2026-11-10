@@ -254,6 +254,14 @@ void dm_panels::launch(const stlxconf_pin_t& pin) {
     }
 }
 
+damage_list::rect dm_panels::launcher_tile(uint32_t index) const {
+    if (index >= m_conf->pin_count) {
+        return {};
+    }
+
+    return dock_tile_rect(m_dock_layout, index);
+}
+
 int32_t dm_panels::launcher_of(const char* app_id) const {
     if (!app_id[0]) {
         return -1;

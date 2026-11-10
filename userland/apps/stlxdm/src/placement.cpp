@@ -12,6 +12,10 @@
 /* The largest distance in pixels on each axis from a title press at which a window that is not normal stays put */
 constexpr int32_t DRAG_RESTORE_SLOP = 4;
 
+/* A window resampled into its new rect waits at most this long from the
+ * animation's start for its client to commit at the new size */
+constexpr uint64_t SETTLE_LIMIT_NS = 1000000000ull;
+
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -37,6 +41,10 @@ static damage_list::rect newest_content(const dm_window& w) {
     const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
 
     return { w.x, w.y, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
+}
+
+static bool is_same_rect(const damage_list::rect& a, const damage_list::rect& b) {
+    return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 }
 
 static dm_window* topmost_toplevel(const std::vector<dm_window*>& zorder) {
@@ -122,7 +130,10 @@ void server::set_window_state(dm_window* w, window_state state) {
     }
 
     w->placement.state = state;
-    place_window(w, state_rect(*w));
+    damage_list::rect content = state_rect(*w);
+    damage_list::rect frame = decor::frame_rect(*w, content.x, content.y, content.w, content.h);
+    animate_window(w, window_transition::resize, shown_frame(*w), frame);
+    place_window(w, content);
 }
 
 void server::toggle_maximized(dm_window* w) {
@@ -190,18 +201,23 @@ void server::refit_placed_windows() {
 }
 
 bool server::is_hidden(const dm_window& top) const {
-    return top.placement.minimized_ns != 0;
+    bool animates = std::any_of(m_animations.begin(), m_animations.end(), [&top](const window_animation& a) {
+        return a.window == &top;
+    });
+
+    return top.placement.minimized_ns != 0 || animates;
 }
 
 /* Only a toplevel whose app has a dock launcher minimizes, since each click
  * on that launcher brings back the app's window minimized last */
 void server::minimize_window(dm_window* w) {
     dm_client* owner = window_owner(w);
-    bool is_shown_toplevel = w->parent_id == 0 && w->placement.minimized_ns == 0;
+    bool is_shown_toplevel = w->parent_id == 0 && w->current >= 0 && w->placement.minimized_ns == 0;
     if (!owner || !is_shown_toplevel || !has_launcher(*owner)) {
         return;
     }
 
+    damage_list::rect frame = shown_frame(*w);
     w->placement.minimized_ns = now_ns();
     scene_hide(w);
 
@@ -209,16 +225,41 @@ void server::minimize_window(dm_window* w) {
     if (focus_left) {
         set_focus(topmost_toplevel(m_zorder));
     }
+
+    animate_window(w, window_transition::minimize, frame, fit_rect(frame, launcher_tile_of(*owner)));
 }
 
+/* A window coming back takes the focus immediately and joins the scene when it reaches its place */
 void server::unminimize_window(dm_window* w) {
+    dm_client* owner = window_owner(w);
     w->placement.minimized_ns = 0;
-    scene_show(w);
     set_focus(w);
+
+    damage_list::rect tile = owner ? launcher_tile_of(*owner) : damage_list::rect{};
+    bool animates = false;
+    if (tile.w > 0 && w->current >= 0) {
+        damage_list::rect frame = shown_frame(*w);
+        animates = animate_window(w, window_transition::unminimize, fit_rect(frame, tile), frame);
+    }
+
+    if (!animates) {
+        forget_animation(w);
+        scene_show(w);
+    }
 }
 
 bool server::has_launcher(const dm_client& c) const {
     return m_panels->launcher_of(c.app_id) >= 0;
+}
+
+/* The tile of the dock launcher that starts `c`'s app, empty when none does */
+damage_list::rect server::launcher_tile_of(const dm_client& c) const {
+    int32_t launcher = m_panels->launcher_of(c.app_id);
+    if (launcher < 0) {
+        return {};
+    }
+
+    return m_panels->launcher_tile(static_cast<uint32_t>(launcher));
 }
 
 /* Brings back the window of `pin`'s app minimized last, or returns false when
@@ -260,4 +301,144 @@ void server::unminimize_windows_without_launcher() {
             }
         }
     }
+}
+
+window_animation* server::find_animation(const dm_window* w) {
+    for (window_animation& a : m_animations) {
+        if (a.window == w) {
+            return &a;
+        }
+    }
+
+    return nullptr;
+}
+
+/* Shows `w` resampled out of the scene from `from` to `to`, or from where a running animation shows it. False when
+ * `w` has no frame or no displayed buffer, and then its change shows at once. */
+bool server::animate_window(
+    dm_window* w,
+    window_transition transition,
+    const damage_list::rect& from,
+    const damage_list::rect& to
+) {
+    if (!decor::decorated(*w) || w->current < 0) {
+        return false;
+    }
+
+    window_animation* running = find_animation(w);
+    if (!running) {
+        window_animation started;
+        started.window = w;
+        started.rect = from;
+        started.opacity = transition == window_transition::unminimize ? 0 : decor::CHANNEL_MAX;
+
+        m_animations.push_back(std::move(started));
+        running = &m_animations.back();
+        scene_hide(w);
+        damage_painted(*w, from);
+    }
+
+    running->transition = transition;
+    running->from = running->rect;
+    running->from_opacity = running->opacity;
+    running->to = to;
+    running->to_opacity = transition == window_transition::minimize ? 0 : decor::CHANNEL_MAX;
+    running->start_ns = now_ns();
+
+    return true;
+}
+
+/* Past its easing, an animation other than a minimize waits for its window's client to commit at the new size, at
+ * most `SETTLE_LIMIT_NS` from its start, since the scene shows the displayed buffer at the window's place */
+void server::advance_animations() {
+    uint64_t now = now_ns();
+    for (size_t i = m_animations.size(); i-- > 0;) {
+        window_animation& a = m_animations[i];
+        dm_window* w = a.window;
+        damage_list::rect was = a.rect;
+        uint32_t was_opacity = a.opacity;
+        bool has_eased = step_animation(a, now);
+        if (!is_same_rect(was, a.rect) || was_opacity != a.opacity) {
+            damage_painted(*w, was);
+            damage_painted(*w, a.rect);
+        }
+
+        bool is_minimizing = a.transition == window_transition::minimize;
+        bool is_settled = w->target_w == 0 && w->sent_conf_count == 0;
+        bool has_waited = now >= a.start_ns + SETTLE_LIMIT_NS;
+        if (!has_eased || !(is_minimizing || is_settled || has_waited)) {
+            continue;
+        }
+
+        damage_painted(*w, a.rect);
+        m_animations.erase(m_animations.begin() + static_cast<long>(i));
+        if (!is_minimizing) {
+            scene_show(w);
+
+            bool is_focus_shown = std::find(m_zorder.begin(), m_zorder.end(), m_focus) != m_zorder.end();
+            if (m_focus != w && is_focus_shown) {
+                scene_raise(m_focus);
+            }
+        }
+    }
+}
+
+void server::forget_animation(const dm_window* w) {
+    for (size_t i = 0; i < m_animations.size(); i++) {
+        if (m_animations[i].window != w) {
+            continue;
+        }
+
+        damage_painted(*w, m_animations[i].rect);
+        m_animations.erase(m_animations.begin() + static_cast<long>(i));
+        return;
+    }
+}
+
+void server::damage_painted(const dm_window& w, const damage_list::rect& frame) {
+    damage_list::rect painted = painted_rect(w, frame);
+    m_damage.add(painted.x, painted.y, painted.w, painted.h);
+}
+
+/* Draws the animations above the windows of a CPU compose of `r`, from the
+ * frame pictures a GPU compose resamples */
+void server::compose_animations(const decor::canvas& canvas, const damage_list::rect& r) {
+    std::vector<layer_scaled> pieces;
+    for (window_animation& a : m_animations) {
+        dm_window* w = a.window;
+        damage_list::rect area = damage_list::intersect(painted_rect(*w, a.rect), r);
+        if (area.w <= 0 || area.h <= 0) {
+            continue;
+        }
+
+        bool has_frame = w->frame.update(frame_maker(), *w, chrome_of(*w));
+        pieces.clear();
+        animation_pieces(a, *w, has_frame ? &w->frame : nullptr, pieces);
+        for (const layer_scaled& piece : pieces) {
+            draw_scaled(canvas, piece, r);
+        }
+    }
+}
+
+/* Adds every animation to `out`'s scene above its windows, in its pixels.
+ * False when a frame picture's memory ran out. */
+bool server::add_animations(dm_output& out) {
+    for (window_animation& a : m_animations) {
+        dm_window* w = a.window;
+        if (!w->frame.update(*m_gpu_compositor, *w, chrome_of(*w))) {
+            return false;
+        }
+
+        layer_window shown;
+        shown.import = w->buffers[static_cast<size_t>(w->current)].import.get();
+        animation_pieces(a, *w, &w->frame, shown.scaled);
+        for (layer_scaled& piece : shown.scaled) {
+            piece.bounds.x -= out.place.x;
+            piece.bounds.y -= out.place.y;
+        }
+
+        out.pictures.scene.windows.push_back(std::move(shown));
+    }
+
+    return true;
 }

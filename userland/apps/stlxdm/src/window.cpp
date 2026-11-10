@@ -1458,6 +1458,8 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         }
     }
 
+    compose_animations(canvas, r);
+
     damage_list::rect local = { r.x - ox, r.y - oy, r.w, r.h };
     if (is_main) {
         blend_popover_layer(back, local, m_panels->popover());
@@ -1769,6 +1771,10 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
         scene.windows.push_back(shown);
     }
 
+    if (!add_animations(out)) {
+        return false;
+    }
+
     draw_top_pictures(out, rects, is_capture);
 
     bool is_main = &out == &m_outputs[m_layout.main_output()];
@@ -2064,6 +2070,7 @@ void server::compose_tick(uint32_t output) {
         advance_power();
     }
 
+    advance_animations();
     spread_damage();
 
     /* Windows still latch and release their buffers and the power action still runs, so clients and the loop settle */

@@ -138,9 +138,21 @@ dm_client* server::window_owner(const dm_window* w) {
     return nullptr;
 }
 
-/* Topmost window whose decorated bounds contain the point, walking
- * the scene top-down and reporting which zone was struck. */
+/* Topmost window whose decorated bounds contain the point, walking the scene top-down and reporting which zone
+ * was struck. None where an animating window lies above the scene. */
 dm_window* server::window_at(int32_t x, int32_t y, decor::zone* out_zone) {
+    for (const window_animation& a : m_animations) {
+        const damage_list::rect& frame = a.rect;
+        bool is_inside = x >= frame.x && x < frame.x + frame.w && y >= frame.y && y < frame.y + frame.h;
+        if (is_inside) {
+            if (out_zone) {
+                *out_zone = decor::zone::none;
+            }
+
+            return nullptr;
+        }
+    }
+
     for (size_t i = m_zorder.size(); i-- > 0;) {
         dm_window* w = m_zorder[i];
         decor::zone z = decor::hit(*w, x, y);
@@ -232,6 +244,8 @@ void server::forget_window(dm_window* w) {
             break;
         }
     }
+
+    forget_animation(w);
 
     if (was_focused_grab) {
         set_focus(m_focus_restore);
