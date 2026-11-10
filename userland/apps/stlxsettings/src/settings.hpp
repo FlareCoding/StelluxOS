@@ -14,7 +14,10 @@
 class card;
 class list_row;
 class push_button;
+class QComboBox;
+class QHBoxLayout;
 class QPixmap;
+class QVBoxLayout;
 class QWidget;
 
 extern stlxconf_t g_conf;
@@ -26,15 +29,33 @@ const stlxconf_t& saved_conf();
  * must call it after each edit of `g_conf`. */
 void show_pending_changes();
 
+/* Shows `text` in the footer in place of its last message, as a sentence whatever case it starts in */
+void set_status(const QString& text);
+
 /* Rebuilds the shown page once the event that asked for it is done, since the rebuild deletes that
  * event's widget. The page takes no input until then, so no click reaches a widget the rebuild replaces */
 void rebuild_page_later();
+
+/* Rebuilds the Displays page the same way, and only while it is the page shown */
+void rebuild_displays_page_later();
 
 /* Copies text as UTF-8 into a configuration char array, cut on a byte to fit. `capacity` must be at least 1 */
 void copy_string(char* destination, size_t capacity, const QString& text);
 
 /* Adds a card under a head with `title` and the config section its settings write, if any */
 card* add_section(QWidget* page, const QString& title, const QString& config_section);
+
+/* The QVBoxLayout of a page or a card */
+QVBoxLayout* layout_of(QWidget* widget);
+
+/* Adds a row with a label and key that holds `choice` */
+void add_choice_row(card* parent, const char* label, const char* key, QComboBox* choice);
+
+/* A bare card row with no label column, for a button or a note */
+QHBoxLayout* make_list_row(card* parent);
+
+/* Adds a small button in a bare row of its own */
+push_button* add_list_button(card* parent, const char* text, std::function<void()> on_click);
 
 /* Whether held keys repeat, which takes a nonzero delay and interval, as the display manager reads them */
 bool is_key_repeat_on(const stlxconf_t& conf);
@@ -150,7 +171,12 @@ QString unused_entry_name(
     }
 }
 
+/* A display mode's keep prompt, which the window must place above the page, so a trial stays answerable from
+ * every page */
+QWidget* make_keep_prompt();
+
 void build_appearance_page(QWidget* page);
+void build_displays_page(QWidget* page);
 void build_dock_page(QWidget* page);
 void build_input_page(QWidget* page);
 void build_startup_page(QWidget* page);
