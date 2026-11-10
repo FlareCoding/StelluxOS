@@ -601,6 +601,8 @@ private:
     void scene_map(dm_window* w);
     void scene_raise(dm_window* w);
     void scene_damage_window(dm_window* w);
+    void scene_hide(dm_window* top);
+    void scene_show(dm_window* top);
 
     /* placement.cpp */
     void place_window(dm_window* w, const damage_list::rect& content);
@@ -610,6 +612,12 @@ private:
     bool record_title_press(dm_window* w, int32_t x, int32_t y);
     bool restore_dragged_window(int32_t x, int32_t y);
     void refit_placed_windows();
+    bool is_hidden(const dm_window& top) const;
+    void minimize_window(dm_window* w);
+    void unminimize_window(dm_window* w);
+    bool has_launcher(const dm_client& c) const;
+    bool unminimize_app_window(const stlxconf_pin_t& pin);
+    void unminimize_windows_without_launcher();
 
     /* modes.cpp */
     bool keeps_place_for_mode_request(uint32_t output) const;

@@ -439,6 +439,9 @@ void server::release_control_press() {
 
 void server::act_on_control(dm_window* w, decor::zone control) {
     switch (control) {
+    case decor::zone::minimize:
+        minimize_window(w);
+        break;
     case decor::zone::maximize:
         toggle_maximized(w);
         break;
@@ -452,7 +455,6 @@ void server::act_on_control(dm_window* w, decor::zone control) {
     case decor::zone::none:
     case decor::zone::content:
     case decor::zone::title:
-    case decor::zone::minimize:
     case decor::zone::resize_l:
     case decor::zone::resize_r:
     case decor::zone::resize_t:

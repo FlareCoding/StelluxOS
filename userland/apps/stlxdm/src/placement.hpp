@@ -3,6 +3,8 @@
 
 #include "damage.hpp"
 
+#include <cstdint>
+
 /* How a toplevel shows: where it was last moved and sized, or with its
  * frame filling its output's work area within its size hints */
 enum class window_state {
@@ -12,10 +14,11 @@ enum class window_state {
 
 /* Where a toplevel shows. `floating` is the content rect in desktop coordinates that toggling back to normal
  * restores and whose size a title drag restores under the pointer, recorded as the window leaves normal and moved
- * with its output. */
+ * with its output. A minimized window keeps its state and shows in it again. */
 struct window_placement {
     window_state      state = window_state::normal;
     damage_list::rect floating;
+    uint64_t          minimized_ns = 0;  /* when it was minimized, 0 while it is not */
 };
 
 #endif

@@ -48,7 +48,10 @@ public:
      * `rebind()` or `shutdown()`. */
     void rebind(stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost);
 
-    /* Fired with the pin of a launcher whose tile is clicked, for the server to spawn the pin's program */
+    /* Fired first by a launcher's release, true when the server brought back a minimized window of the app */
+    std::function<bool(const stlxconf_pin_t&)> on_unminimize;
+
+    /* Fired by a launcher's release when `on_unminimize` is unset or returned false: the server spawns the app */
     std::function<void(const stlxconf_pin_t&)> on_launch;
 
     /* Fired by a system menu item or a stats panel link: a program to spawn with its args, or the power overlay */

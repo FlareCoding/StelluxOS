@@ -59,6 +59,40 @@ void server::scene_map(dm_window* w) {
     }
 }
 
+/* Takes the toplevel `top` and its popups out of the scene, keeping their
+ * buffers, until `scene_show` puts them back */
+void server::scene_hide(dm_window* top) {
+    dm_client* c = window_owner(top);
+    if (!c) {
+        return;
+    }
+
+    std::vector<dm_window*> subtree;
+    collect_subtree(c->windows, top, subtree);
+    for (dm_window* member : subtree) {
+        scene_damage_window(member);
+        std::erase(m_zorder, member);
+    }
+}
+
+/* Puts the toplevel `top` and its mapped popups back on top of the scene */
+void server::scene_show(dm_window* top) {
+    dm_client* c = window_owner(top);
+    if (!c) {
+        return;
+    }
+
+    std::vector<dm_window*> subtree;
+    collect_subtree(c->windows, top, subtree);
+    for (dm_window* member : subtree) {
+        std::erase(m_zorder, member);
+        if (member->mapped) {
+            m_zorder.push_back(member);
+            scene_damage_window(member);
+        }
+    }
+}
+
 /* Raising moves the window's whole toplevel subtree to the top,
  * preserving its internal order. */
 void server::scene_raise(dm_window* w) {

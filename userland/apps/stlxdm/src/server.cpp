@@ -670,6 +670,10 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         out.frost = nullptr;
     }
 
+    out.panels->on_unminimize = [this](const stlxconf_pin_t& pin) {
+        return unminimize_app_window(pin);
+    };
+
     out.panels->on_launch = [](const stlxconf_pin_t& pin) {
         spawn_app(pin.path, pin.args);
     };
@@ -1018,6 +1022,9 @@ void server::sync_shell() {
 }
 
 void server::reload_config() {
+    /* `m_conf` holds the new pins already, so this runs even when the rebuild below fails */
+    unminimize_windows_without_launcher();
+
     follow_compositor();
     follow_compose_fault();
 

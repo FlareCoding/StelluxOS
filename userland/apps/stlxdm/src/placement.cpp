@@ -1,9 +1,11 @@
 #include "decor.hpp"
 #include "placement.hpp"
 #include "server.hpp"
+#include "shell/dock.hpp"
 
 #include <stlxui/stlxui.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 
@@ -35,6 +37,16 @@ static damage_list::rect newest_content(const dm_window& w) {
     const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
 
     return { w.x, w.y, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
+}
+
+static dm_window* topmost_toplevel(const std::vector<dm_window*>& zorder) {
+    for (size_t i = zorder.size(); i-- > 0;) {
+        if (zorder[i]->parent_id == 0) {
+            return zorder[i];
+        }
+    }
+
+    return nullptr;
 }
 
 static uint32_t clamp_to_hints(int32_t length, uint32_t min_length, uint32_t max_length) {
@@ -172,6 +184,79 @@ void server::refit_placed_windows() {
             bool is_placed = w->placement.state != window_state::normal;
             if (is_toplevel && has_displayed_buffer && is_placed) {
                 place_window(w.get(), state_rect(*w));
+            }
+        }
+    }
+}
+
+bool server::is_hidden(const dm_window& top) const {
+    return top.placement.minimized_ns != 0;
+}
+
+/* Only a toplevel whose app has a dock launcher minimizes, since each click
+ * on that launcher brings back the app's window minimized last */
+void server::minimize_window(dm_window* w) {
+    dm_client* owner = window_owner(w);
+    bool is_shown_toplevel = w->parent_id == 0 && w->placement.minimized_ns == 0;
+    if (!owner || !is_shown_toplevel || !has_launcher(*owner)) {
+        return;
+    }
+
+    w->placement.minimized_ns = now_ns();
+    scene_hide(w);
+
+    bool focus_left = m_focus && std::find(m_zorder.begin(), m_zorder.end(), m_focus) == m_zorder.end();
+    if (focus_left) {
+        set_focus(topmost_toplevel(m_zorder));
+    }
+}
+
+void server::unminimize_window(dm_window* w) {
+    w->placement.minimized_ns = 0;
+    scene_show(w);
+    set_focus(w);
+}
+
+bool server::has_launcher(const dm_client& c) const {
+    return m_panels->launcher_of(c.app_id) >= 0;
+}
+
+/* Brings back the window of `pin`'s app minimized last, or returns false when
+ * none is minimized */
+bool server::unminimize_app_window(const stlxconf_pin_t& pin) {
+    dm_window* newest = nullptr;
+    for (auto& c : m_clients) {
+        if (!launches_app(pin, c->app_id)) {
+            continue;
+        }
+
+        for (auto& w : c->windows) {
+            bool is_newer = !newest || w->placement.minimized_ns > newest->placement.minimized_ns;
+            if (w->placement.minimized_ns != 0 && is_newer) {
+                newest = w.get();
+            }
+        }
+    }
+
+    if (!newest) {
+        return false;
+    }
+
+    unminimize_window(newest);
+
+    return true;
+}
+
+/* Unminimizes every window whose app has no launcher, since a minimized window comes back only through one */
+void server::unminimize_windows_without_launcher() {
+    for (auto& c : m_clients) {
+        if (has_launcher(*c)) {
+            continue;
+        }
+
+        for (auto& w : c->windows) {
+            if (w->placement.minimized_ns != 0) {
+                unminimize_window(w.get());
             }
         }
     }
