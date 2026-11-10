@@ -2,6 +2,7 @@
 #define STLXDM_LAYERS_HPP
 
 #include "damage.hpp"
+#include "material.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,7 @@ enum class layer_op : uint32_t {
     fill,   /* one color, leaving what lies beneath in the bottom corner squares when rounded */
     dim,    /* what lies beneath darkened by one color at its alpha */
     spin,   /* 1 added to the pixel without end, which runs a test's compose past its deadline */
+    glass,  /* the rectangle's glass from the frost source, its corners blended by coverage when rounded */
 };
 
 /* One layer as the compose shader reads it, which compose.comp's `layer`
@@ -30,10 +32,11 @@ struct layer {
     uint32_t pitch;
     layer_op op;
     uint32_t color;
-    uint32_t radius;                /* of the rectangle's rounded bottom corners, 0 when square */
+    uint32_t radius;                /* of the rectangle's rounded bottom corners, all four for glass, 0 when square */
+    uint32_t rim_fade;              /* rows a glass rectangle's rim light fades over, 0 for none */
 };
 
-static_assert(sizeof(layer) == 48);
+static_assert(sizeof(layer) == 56);
 
 /* A picture's first pixel in GPU memory, its pitch, and the output pixel it
  * lies at */
@@ -51,10 +54,12 @@ struct layer_piece {
 };
 
 /* A window as its layers show it. A borderless one has no frame strips,
- * and one without a picture the GPU reads shows the content color. */
+ * one without a picture the GPU reads shows the content color, and
+ * glass with empty bounds shows none. */
 struct layer_window {
     static constexpr uint32_t FRAME_STRIPS = 4;
 
+    material::surface    glass;
     damage_list::rect    content;
     uint32_t             radius = 0;
     layer_piece          frame[FRAME_STRIPS];
@@ -70,6 +75,7 @@ struct layer_scene {
     int32_t                   width = 0;
     int32_t                   height = 0;
     layer_picture             backdrop;
+    layer_picture             frost;          /* address 0 without one, and then no glass shows */
     std::vector<layer_window> windows;
     uint32_t                  content_color = 0;
     layer_piece               lower_top;

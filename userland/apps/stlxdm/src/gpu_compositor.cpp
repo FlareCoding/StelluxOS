@@ -1,5 +1,6 @@
 #include "gpu_compositor.hpp"
 #include "decor.hpp"
+#include "material.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -26,9 +27,10 @@ struct compose_args {
     uint64_t corner_distances;
     uint32_t corner_count;
     int32_t  corner_far_distance;
+    uint64_t material;
 };
 
-static_assert(sizeof(compose_args) == 56);
+static_assert(sizeof(compose_args) == 64);
 
 /* The version that makes timeline semaphores and buffer device addresses core */
 constexpr uint32_t VULKAN_API_VERSION = VK_API_VERSION_1_2;
@@ -201,6 +203,7 @@ gpu_compositor::~gpu_compositor() {
 
     end_retirement();
     free_buffer(m_corner_distances);
+    free_buffer(m_material);
 
     if (m_timestamps != VK_NULL_HANDLE) {
         m_vk.destroy_query_pool(m_device, m_timestamps, nullptr);
@@ -278,6 +281,11 @@ const char* gpu_compositor::start(int gpu_fd) {
     }
 
     refusal = upload_corner_distances();
+    if (refusal) {
+        return refusal;
+    }
+
+    refusal = make_material_buffer();
     if (refusal) {
         return refusal;
     }
@@ -607,6 +615,24 @@ const char* gpu_compositor::upload_corner_distances() {
     m_corner_far_distance = corners.far_distance;
 
     return nullptr;
+}
+
+const char* gpu_compositor::make_material_buffer() {
+    if (!create_buffer(sizeof(material::tables), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, COHERENT_MEMORY, m_material)) {
+        return "Vulkan refused memory for the glass tables";
+    }
+
+    return nullptr;
+}
+
+/* No compose reads the tables meanwhile, since each compose ends before the next one starts */
+void gpu_compositor::upload_material() {
+    if (m_material_generation == material::tables_generation()) {
+        return;
+    }
+
+    memcpy(m_material.mapping, &material::current_tables(), sizeof(material::tables));
+    m_material_generation = material::tables_generation();
 }
 
 uint32_t gpu_compositor::find_memory_type(uint32_t type_bits, const memory_kind& kind) const {
@@ -964,7 +990,8 @@ compose_result gpu_compositor::compose(
     const compose_target& target,
     const layer_scene& scene,
     const std::vector<damage_list::rect>& rects,
-    backdrop_picture& backdrop
+    backdrop_picture& backdrop,
+    frost_picture* frost
 ) {
     uint64_t start_ns = thread_cpu_ns();
 
@@ -974,8 +1001,13 @@ compose_result gpu_compositor::compose(
 
     buffers.m_copies.clear();
     backdrop.take_copies(buffers.m_copies);
+    buffers.m_frost_copies.clear();
+    if (frost) {
+        frost->take_copies(buffers.m_frost_copies);
+    }
 
-    if (!record_compose(buffers, target, scene, backdrop)) {
+    upload_material();
+    if (!record_compose(buffers, target, scene, backdrop, frost)) {
         return compose_result::not_submitted;
     }
 
@@ -1063,11 +1095,33 @@ layer gpu_compositor::failure_layer(const damage_list::rect& r) const {
     return failing;
 }
 
+/* Records the copies that bring `picture`'s twin up to date, building their regions in `regions` */
+void gpu_compositor::record_copies(
+    VkCommandBuffer commands,
+    const backdrop_picture& picture,
+    const std::vector<picture_copy>& copies,
+    std::vector<VkBufferCopy>& regions
+) {
+    if (copies.empty()) {
+        return;
+    }
+
+    regions.clear();
+    for (const picture_copy& copy : copies) {
+        regions.push_back({ copy.offset, copy.offset, copy.bytes });
+    }
+
+    VkBuffer drawn = static_cast<const owned_picture&>(picture.memory()).buffer();
+    VkBuffer twin = static_cast<const owned_picture&>(picture.twin()).buffer();
+    m_vk.cmd_copy_buffer(commands, drawn, twin, static_cast<uint32_t>(regions.size()), regions.data());
+}
+
 bool gpu_compositor::record_compose(
     compose_buffers& buffers,
     const compose_target& target,
     const layer_scene& scene,
-    const backdrop_picture& backdrop
+    const backdrop_picture& backdrop,
+    const frost_picture* frost
 ) {
     VkCommandBuffer commands = buffers.m_commands;
 
@@ -1084,17 +1138,12 @@ bool gpu_compositor::record_compose(
 
     transfer_buffers(buffers, target, scene, true);
 
-    if (!buffers.m_copies.empty()) {
-        buffers.m_copy_regions.clear();
-        for (const picture_copy& copy : buffers.m_copies) {
-            buffers.m_copy_regions.push_back({ copy.offset, copy.offset, copy.bytes });
-        }
+    record_copies(commands, backdrop, buffers.m_copies, buffers.m_copy_regions);
+    if (frost) {
+        record_copies(commands, *frost, buffers.m_frost_copies, buffers.m_copy_regions);
+    }
 
-        VkBuffer drawn = static_cast<const owned_picture&>(backdrop.memory()).buffer();
-        VkBuffer twin = static_cast<const owned_picture&>(backdrop.twin()).buffer();
-        uint32_t region_count = static_cast<uint32_t>(buffers.m_copy_regions.size());
-        m_vk.cmd_copy_buffer(commands, drawn, twin, region_count, buffers.m_copy_regions.data());
-
+    if (!buffers.m_copies.empty() || !buffers.m_frost_copies.empty()) {
         VkMemoryBarrier copied = {};
         copied.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         copied.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1141,6 +1190,7 @@ bool gpu_compositor::record_compose(
         args.corner_distances = m_corner_distances.address;
         args.corner_count = m_corner_count;
         args.corner_far_distance = m_corner_far_distance;
+        args.material = m_material.address;
 
         /* Rectangles may overlap, so each dispatch waits for the writes of the one before */
         if (i > 0) {

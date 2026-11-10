@@ -302,6 +302,8 @@ int server::init(display* disp, const stlxconf_t* conf) {
     m_gpu_fd = open_gpu_device();
     choose_compositor();
     material::configure(conf->glass_level, conf->glass_tint);
+    m_glass_level = conf->glass_level;
+    m_glass_tint = conf->glass_tint;
 
     dm_wallpaper wallpaper(*conf);
     dm_conf_state state;
@@ -346,8 +348,9 @@ void server::switch_to_gpu() {
     const char* refusal = m_display->falls_back() ? "the display has no buffers" : nullptr;
     if (!refusal) {
         m_gpu_backdrop = copy_backdrop(m_backdrop, m_backdrop->width, m_backdrop->height);
+        m_gpu_frost = copy_frost(m_frost);
         m_gpu_capture = m_gpu_compositor->make_picture(static_cast<size_t>(m_backdrop->width) * m_backdrop->height * 4);
-        bool made = m_gpu_backdrop != nullptr && m_gpu_capture != nullptr;
+        bool made = m_gpu_backdrop != nullptr && m_gpu_frost != nullptr && m_gpu_capture != nullptr;
         for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX && made; output++) {
             made = !m_outputs[output].pres || make_output_pictures(output);
         }
@@ -361,6 +364,7 @@ void server::switch_to_gpu() {
 
     if (refusal) {
         m_gpu_backdrop.reset();
+        m_gpu_frost.reset();
         m_gpu_capture.reset();
         for (dm_output& out : m_outputs) {
             out.pictures = {};
@@ -375,12 +379,16 @@ void server::switch_to_gpu() {
     m_panels->rebind(m_gpu_backdrop->surface());
     m_power->capture_into(m_gpu_capture->pixels());
     stlxgfx_destroy_surface(m_backdrop);
+    stlxgfx_destroy_surface(m_frost);
     m_backdrop = nullptr;
+    m_frost = nullptr;
 
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         dm_output& out = m_outputs[output];
         stlxgfx_destroy_surface(out.backdrop);
+        stlxgfx_destroy_surface(out.frost);
         out.backdrop = nullptr;
+        out.frost = nullptr;
         if (out.pres) {
             out.pres = m_display->presenter_of(output);
         }
@@ -391,13 +399,20 @@ void server::switch_to_gpu() {
     printf("stlxdm: composing on the GPU%s\r\n", m_compares_frames ? ", comparing each frame with the CPU's" : "");
 }
 
-/* Retires the GPU compositor and moves every served output to the CPU compositor on a flip presenter, copying the
- * backdrops into CPU memory. Composing stops instead when a flip presenter or the main backdrop's copy fails */
+/* Retires the GPU compositor and moves every served output to the CPU compositor on a flip presenter, or stops
+ * composing when a flip presenter or a copy of the main output's backdrop or frost fails */
 void server::switch_to_cpu(const char* reason) {
     m_gpu_compositor->retire();
 
     stlxgfx_surface_t* backdrop = copy_surface(m_gpu_backdrop->surface());
-    const char* refusal = backdrop ? nullptr : "no memory was left for the main backdrop's copy";
+    stlxgfx_surface_t* frost = copy_surface(m_gpu_frost->surface());
+    const char* refusal = nullptr;
+    if (!backdrop) {
+        refusal = "no memory was left for the main backdrop's copy";
+    } else if (!frost) {
+        refusal = "no memory was left for the main output's frost copy";
+    }
+
     if (!refusal && m_display->present_through(nullptr) != 0) {
         refusal = "an output has no flip presenter";
         show_cursor();
@@ -405,6 +420,7 @@ void server::switch_to_cpu(const char* reason) {
 
     if (refusal) {
         stlxgfx_destroy_surface(backdrop);
+        stlxgfx_destroy_surface(frost);
         printf("stlxdm: composing stopped, %s, and the CPU cannot take over since %s\r\n", reason, refusal);
         m_gpu_stopped = true;
 
@@ -416,9 +432,12 @@ void server::switch_to_cpu(const char* reason) {
 
     m_panels->rebind(backdrop);
     m_power->capture_into(nullptr);
-    m_backdrop = backdrop;
-    m_gpu_backdrop.reset();
     m_gpu_capture.reset();
+
+    m_backdrop = backdrop;
+    m_frost = frost;
+    m_gpu_backdrop.reset();
+    m_gpu_frost.reset();
 
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         dm_output& out = m_outputs[output];
@@ -426,6 +445,13 @@ void server::switch_to_cpu(const char* reason) {
             out.backdrop = copy_surface(out.pictures.backdrop->surface());
             if (!out.backdrop) {
                 printf("stlxdm: output %u's backdrop could not be copied, showing the background color\r\n", output);
+            }
+        }
+
+        if (out.pictures.frost) {
+            out.frost = copy_surface(out.pictures.frost->surface());
+            if (!out.frost) {
+                printf("stlxdm: output %u's frost could not be copied, showing no glass\r\n", output);
             }
         }
 
@@ -649,29 +675,34 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     }
 
     /* Built before the panels paint into the backdrop, so the frost is of the wallpaper alone */
-    stlxgfx_surface_t* frost = material::build_frost(out.backdrop, m_conf->glass_tint);
+    out.frost = material::build_frost(out.backdrop, m_glass_tint);
     uint8_t* capture = out.gpu_capture ? out.gpu_capture->pixels() : nullptr;
-    bool ready = frost && (!m_gpu_composes || capture) &&
-                 out.panels->init(width, height, *m_conf, out.backdrop, frost) == 0 &&
+    bool ready = out.frost && (!m_gpu_composes || capture) &&
+                 out.panels->init(width, height, *m_conf, out.backdrop, out.frost) == 0 &&
                  out.power->init(width, height, m_conf->taskbar_height, capture) == 0;
-    stlxgfx_destroy_surface(frost);
     if (ready && m_gpu_composes) {
         out.gpu_backdrop = copy_backdrop(out.backdrop, width, height);
-        ready = out.gpu_backdrop != nullptr;
+        out.gpu_frost = copy_frost(out.frost);
+        ready = out.gpu_backdrop != nullptr && out.gpu_frost != nullptr;
     }
 
     if (!ready) {
         out.panels->shutdown();
         out.power->shutdown();
+
         stlxgfx_destroy_surface(out.backdrop);
+        stlxgfx_destroy_surface(out.frost);
         out.backdrop = nullptr;
+        out.frost = nullptr;
         return -1;
     }
 
     if (out.gpu_backdrop) {
         out.panels->rebind(out.gpu_backdrop->surface());
         stlxgfx_destroy_surface(out.backdrop);
+        stlxgfx_destroy_surface(out.frost);
         out.backdrop = nullptr;
+        out.frost = nullptr;
     }
 
     out.panels->on_launch = [](const stlxconf_pin_t& pin) {
@@ -706,19 +737,23 @@ void server::adopt_conf_state(dm_conf_state&& next) {
         m_power->shutdown();
     }
     stlxgfx_destroy_surface(m_backdrop);
+    stlxgfx_destroy_surface(m_frost);
 
     m_panels = std::move(next.panels);
     m_power = std::move(next.power);
     m_gpu_capture = std::move(next.gpu_capture);
+    m_hotkeys = std::move(next.hotkeys);
 
     m_backdrop = next.backdrop;
     m_gpu_backdrop = std::move(next.gpu_backdrop);
-    m_hotkeys = std::move(next.hotkeys);
+    m_frost = next.frost;
+    m_gpu_frost = std::move(next.gpu_frost);
     next.backdrop = nullptr;
+    next.frost = nullptr;
 }
 
-/* Gives each served output but the main one a backdrop at its size, building a failed one again only at a new
- * presenter or size or with `rebuild_all` */
+/* Gives each served output but the main one a backdrop at its size and its frost, building a failed one again only at
+ * a new presenter or size or with `rebuild_all` */
 void server::refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper) {
     for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
         dm_output& out = m_outputs[output];
@@ -735,6 +770,10 @@ void server::refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper) {
         out.backdrop = nullptr;
         out.pictures.backdrop.reset();
         out.backdrop_failed = false;
+
+        stlxgfx_destroy_surface(out.frost);
+        out.frost = nullptr;
+        out.pictures.frost.reset();
         if (!needs_own) {
             continue;
         }
@@ -747,14 +786,35 @@ void server::refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper) {
             printf("stlxdm: output %u's backdrop could not be built, showing the background color\r\n", output);
         }
 
+        /* An output whose frost could not be built composes its windows without glass */
+        out.frost = out.backdrop ? material::build_frost(out.backdrop, m_glass_tint) : nullptr;
+        if (out.backdrop && !out.frost) {
+            printf("stlxdm: output %u's frost could not be built, showing no glass\r\n", output);
+        }
+
         if (m_gpu_composes) {
             out.pictures.backdrop = copy_backdrop(out.backdrop, width, height);
             if (out.pictures.backdrop) {
                 stlxgfx_destroy_surface(out.backdrop);
                 out.backdrop = nullptr;
             }
+
+            out.pictures.frost = copy_frost(out.frost);
+            if (out.pictures.frost) {
+                stlxgfx_destroy_surface(out.frost);
+                out.frost = nullptr;
+            }
         }
     }
+}
+
+/* A frost picture holding `frost`'s pixels, null without one or when memory ran out */
+std::unique_ptr<frost_picture> server::copy_frost(const stlxgfx_surface_t* frost) {
+    if (!frost) {
+        return nullptr;
+    }
+
+    return copy_backdrop(frost, frost->width, frost->height);
 }
 
 /* A backdrop picture holding `backdrop`'s pixels, or the background color
@@ -778,8 +838,8 @@ std::unique_ptr<backdrop_picture> server::copy_backdrop(
     return picture;
 }
 
-/* Makes the pictures `output`'s record lacks under the GPU compositor, the backdrop of any output but the main one
- * a copy of its own. False when memory ran out */
+/* Makes the pictures `output`'s record lacks under the GPU compositor, the backdrop and frost of any output but the
+ * main one copies of its own. False when memory ran out */
 bool server::make_output_pictures(uint32_t output) {
     dm_output& out = m_outputs[output];
     dm_output_pictures& pictures = out.pictures;
@@ -791,11 +851,21 @@ bool server::make_output_pictures(uint32_t output) {
         pictures.backdrop = copy_backdrop(out.backdrop, width, height);
     }
 
+    if (!is_main && !pictures.frost) {
+        pictures.frost = copy_frost(out.frost);
+    }
+
     /* switch_to_gpu keeps the CPU backdrops until it commits */
     bool drops_cpu_backdrop = m_gpu_composes && pictures.backdrop && out.backdrop;
     if (drops_cpu_backdrop) {
         stlxgfx_destroy_surface(out.backdrop);
         out.backdrop = nullptr;
+    }
+
+    bool drops_cpu_frost = m_gpu_composes && pictures.frost && out.frost;
+    if (drops_cpu_frost) {
+        stlxgfx_destroy_surface(out.frost);
+        out.frost = nullptr;
     }
 
     if (!pictures.lower_top) {
@@ -821,7 +891,8 @@ bool server::make_output_pictures(uint32_t output) {
     }
 
     bool compares = !m_compares_frames || (pictures.readback && pictures.comparison);
-    return (is_main || pictures.backdrop) && pictures.lower_top && pictures.upper_top && pictures.compose && compares;
+    bool has_backdrop_and_frost = is_main || (pictures.backdrop && (pictures.frost || !out.frost));
+    return has_backdrop_and_frost && pictures.lower_top && pictures.upper_top && pictures.compose && compares;
 }
 
 /* Gives every served output the pictures it lacks while the GPU composes */
@@ -890,6 +961,7 @@ void server::sync_outputs() {
 
         if (!pres || !place) {
             stlxgfx_destroy_surface(out.backdrop);
+            stlxgfx_destroy_surface(out.frost);
             out = {};
             continue;
         }
@@ -898,10 +970,15 @@ void server::sync_outputs() {
         bool resized = out.place.w != place->rect.w || out.place.h != place->rect.h;
         if (out.pres != pres || resized) {
             stlxgfx_surface_t* backdrop = out.backdrop;
+            stlxgfx_surface_t* frost = out.frost;
             std::unique_ptr<backdrop_picture> gpu_backdrop = std::move(out.pictures.backdrop);
+            std::unique_ptr<frost_picture> gpu_frost = std::move(out.pictures.frost);
             out = {};
+
             out.backdrop = backdrop;
+            out.frost = frost;
             out.pictures.backdrop = std::move(gpu_backdrop);
+            out.pictures.frost = std::move(gpu_frost);
         }
 
         out.pres = pres;
@@ -986,11 +1063,19 @@ void server::perf_tick(uint64_t now_ns) {
 void server::reload_config() {
     follow_compositor();
     follow_compose_fault();
-    material::configure(m_conf->glass_level, m_conf->glass_tint);
+
+    stlxconf_glass_level_t running_level = m_glass_level;
+    stlxconf_glass_tint_t running_tint = m_glass_tint;
+    m_glass_level = m_conf->glass_level;
+    m_glass_tint = m_conf->glass_tint;
+    material::configure(m_glass_level, m_glass_tint);
 
     dm_wallpaper wallpaper(*m_conf);
     dm_conf_state state;
     if (build_conf_state(state, wallpaper) != 0) {
+        m_glass_level = running_level;
+        m_glass_tint = running_tint;
+        material::configure(m_glass_level, m_glass_tint);
         printf("stlxdm: config reload failed, keeping the running desktop\r\n");
         return;
     }
@@ -1358,8 +1443,13 @@ void server::shutdown() {
     m_backdrop = nullptr;
     m_gpu_backdrop.reset();
 
+    stlxgfx_destroy_surface(m_frost);
+    m_frost = nullptr;
+    m_gpu_frost.reset();
+
     for (dm_output& out : m_outputs) {
         stlxgfx_destroy_surface(out.backdrop);
+        stlxgfx_destroy_surface(out.frost);
         out = {};
     }
 

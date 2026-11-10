@@ -103,6 +103,7 @@ struct tint_look {
 };
 
 static material::tables g_tables;
+static uint32_t g_tables_generation = 0;
 static uint8_t g_grain_noise[material::GRAIN_TILE * material::GRAIN_TILE];
 static bool g_has_grain_noise = false;
 
@@ -535,6 +536,16 @@ void configure(stlxconf_glass_level_t level, stlxconf_glass_tint_t tint) {
     for (int32_t i = 0; i < GRAIN_TILE * GRAIN_TILE; i++) {
         grain[i] = static_cast<uint8_t>(stlxgfx_div255(g_grain_noise[i] * grain_alpha));
     }
+
+    g_tables_generation++;
+}
+
+const tables& current_tables() {
+    return g_tables;
+}
+
+uint32_t tables_generation() {
+    return g_tables_generation;
 }
 
 stlxgfx_surface_t* build_frost(const stlxgfx_surface_t* wallpaper, stlxconf_glass_tint_t tint) {

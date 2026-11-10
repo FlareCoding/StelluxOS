@@ -1,8 +1,8 @@
 #include "layers.hpp"
 
-/* The backdrop, each window's frame strips and content, and above them the
- * two top pictures with the dim between */
-constexpr uint32_t LAYERS_PER_WINDOW = layer_window::FRAME_STRIPS + 1;
+/* The backdrop, each window's glass, frame strips and content, and above
+ * them the two top pictures with the dim between */
+constexpr uint32_t LAYERS_PER_WINDOW = layer_window::FRAME_STRIPS + 2;
 constexpr uint32_t LAYERS_AROUND_WINDOWS = 4;
 
 static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
@@ -71,6 +71,23 @@ static void append_piece(
     list.push_back(l);
 }
 
+static void append_glass(
+    std::vector<layer>& list,
+    const damage_list::rect& r,
+    const layer_window& w,
+    const layer_picture& frost
+) {
+    if (frost.address == 0 || !overlaps(w.glass.bounds, r)) {
+        return;
+    }
+
+    layer glass = layer_over(w.glass.bounds, layer_op::glass);
+    set_source(glass, frost);
+    glass.radius = static_cast<uint32_t>(w.glass.radius);
+    glass.rim_fade = static_cast<uint32_t>(w.glass.rim_fade);
+    list.push_back(glass);
+}
+
 static void append_frame(std::vector<layer>& list, const damage_list::rect& r, const layer_window& w) {
     for (const layer_piece& strip : w.frame) {
         append_piece(list, r, strip, layer_op::blend);
@@ -117,6 +134,7 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
     }
 
     for (size_t i = first_framed; i < scene.windows.size(); i++) {
+        append_glass(list, r, scene.windows[i], scene.frost);
         append_frame(list, r, scene.windows[i]);
         append_content(list, r, scene.windows[i], scene.content_color);
     }

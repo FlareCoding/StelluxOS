@@ -1271,6 +1271,61 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
     return true;
 }
 
+/* Takes the content of `w` out of every piece but for its bottom corner squares, which the rounded content blit
+ * blends over whatever lies beneath. Returns false like `subtract_hole`. */
+static bool subtract_content(std::vector<damage_list::rect>& pieces, const dm_window& w) {
+    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
+    int32_t bw = static_cast<int32_t>(b.width);
+    int32_t bh = static_cast<int32_t>(b.height);
+    int32_t r = decor::decorated(w) ? decor::CONTENT_R : 0;
+    if (r > 0 && bh > r && bw > 2 * r) {
+        return subtract_hole(pieces, { w.x, w.y, bw, bh - r }) &&
+               subtract_hole(pieces, { w.x + r, w.y + bh - r, bw - 2 * r, r });
+    }
+
+    return subtract_hole(pieces, { w.x, w.y, bw, bh });
+}
+
+/* The glass beneath `w`, which must have a current buffer, in the pixels of an output whose top-left pixel lies at
+ * (`origin_x`, `origin_y`) on the desktop: its decorated rect, or empty bounds for a borderless window */
+static material::surface glass_under(const dm_window& w, int32_t origin_x, int32_t origin_y) {
+    if (!decor::decorated(w)) {
+        return {};
+    }
+
+    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
+    int32_t bw = static_cast<int32_t>(b.width);
+    int32_t bh = static_cast<int32_t>(b.height);
+    damage_list::rect frame = decor::frame_rect(w, w.x - origin_x, w.y - origin_y, bw, bh);
+
+    return { frame, decor::CORNER_R, material::WINDOW_RIM_FADE };
+}
+
+/* Draws `glass`, in the output's pixels, from `frost` into the output's `back` within `piece`, in desktop
+ * coordinates, but for what `subtract_content` takes out, or in all of `piece` when that fails */
+static void draw_glass_beside_content(
+    stlxgfx_surface_t* back,
+    const stlxgfx_surface_t* frost,
+    const material::surface& glass,
+    const dm_window& w,
+    const damage_list::rect& piece,
+    int32_t origin_x,
+    int32_t origin_y
+) {
+    if (glass.bounds.w <= 0 || glass.bounds.h <= 0) {
+        return;
+    }
+
+    std::vector<damage_list::rect> pieces = { piece };
+    if (!subtract_content(pieces, w)) {
+        pieces = { piece };
+    }
+
+    for (const damage_list::rect& p : pieces) {
+        material::draw(back, 0, 0, frost, glass, { p.x - origin_x, p.y - origin_y, p.w, p.h });
+    }
+}
+
 decor::chrome_state server::chrome_of(const dm_window& w) const {
     decor::chrome_state st;
     st.focused = &w == m_focus;
@@ -1307,23 +1362,8 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         }
 
         visible[i] = pieces;
-        if (!subtracting) {
-            continue;
-        }
-
-        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
-        int32_t bw = static_cast<int32_t>(b.width);
-        int32_t bh = static_cast<int32_t>(b.height);
-
-        /* The bottom corner squares stay exposed, the rounded content
-         * blit blends them over whatever lies beneath */
-        int32_t r = decor::decorated(*w) ? decor::CONTENT_R : 0;
-        if (r > 0 && bh > r && bw > 2 * r) {
-            subtracting = subtract_hole(pieces, { w->x, w->y, bw, bh - r }) &&
-                          subtract_hole(pieces, { w->x + r, w->y + bh - r,
-                                                  bw - 2 * r, r });
-        } else {
-            subtracting = subtract_hole(pieces, { w->x, w->y, bw, bh });
+        if (subtracting) {
+            subtracting = subtract_content(pieces, *w);
         }
     }
 
@@ -1350,6 +1390,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
     }
 
     decor::canvas canvas = { back, ox, oy };
+    const stlxgfx_surface_t* frost = frost_of(out);
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         dm_window* w = m_zorder[i];
@@ -1357,10 +1398,16 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
             continue;
         }
 
-        /* The frame first, then the content with the frame's rounding
-         * applied at its bottom corners */
+        material::surface glass = glass_under(*w, ox, oy);
+
+        /* The glass when the output has frost, then the frame, then the
+         * content with the frame's rounding applied at its bottom corners */
         bool has_frame = decor::decorated(*w) && w->frame.update(frame_maker(), *w, chrome_of(*w));
         for (const damage_list::rect& p : visible[i]) {
+            if (frost) {
+                draw_glass_beside_content(back, frost, glass, *w, p, ox, oy);
+            }
+
             if (has_frame) {
                 w->frame.blend(canvas, *w, p);
             }
@@ -1512,7 +1559,8 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         target,
         pictures.scene,
         rects,
-        gpu_backdrop_of(out)
+        gpu_backdrop_of(out),
+        gpu_frost_of(out)
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;
@@ -1546,7 +1594,8 @@ bool server::compose_capture(dm_output& out) {
         target,
         scene,
         whole,
-        gpu_backdrop_of(out)
+        gpu_backdrop_of(out),
+        gpu_frost_of(out)
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;
@@ -1610,6 +1659,23 @@ backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
     return is_main ? *m_gpu_backdrop : *out.pictures.backdrop;
 }
 
+/* The frost picture of `out` under the GPU compositor, null without one */
+frost_picture* server::gpu_frost_of(dm_output& out) {
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    return is_main ? m_gpu_frost.get() : out.pictures.frost.get();
+}
+
+/* The frost of `out` where the CPU reads it under either compositor, null without one */
+const stlxgfx_surface_t* server::frost_of(dm_output& out) {
+    const frost_picture* picture = gpu_frost_of(out);
+    if (picture) {
+        return picture->surface();
+    }
+
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    return is_main ? m_frost : out.frost;
+}
+
 /* Draws the frames and top pictures a GPU compose of `out` reads in `rects`, in its pixels, and fills its scene with
  * what it shows, or what the collapse backdrop holds when `is_capture`. Needs `out`'s pictures. False without memory */
 bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>& rects, bool is_capture) {
@@ -1619,9 +1685,12 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
     scene.width = static_cast<int32_t>(out.pres->width());
     scene.height = static_cast<int32_t>(out.pres->height());
-    scene.backdrop = gpu_backdrop_of(out).twin_layer();
     scene.windows.clear();
     scene.content_color = decor::CONTENT_BG;
+
+    const frost_picture* frost = gpu_frost_of(out);
+    scene.backdrop = gpu_backdrop_of(out).twin_layer();
+    scene.frost = frost ? frost->twin_layer() : layer_picture{};
 
     for (dm_window* w : m_zorder) {
         if (w->current < 0) {
@@ -1636,6 +1705,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
         const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
         layer_window shown;
+        shown.glass = glass_under(*w, ox, oy);
         shown.content = { w->x - ox, w->y - oy, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
         if (decor::decorated(*w)) {
             if (!w->frame.update(frame_maker(), *w, chrome)) {
@@ -1791,7 +1861,8 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
         target,
         scene,
         rects,
-        gpu_backdrop_of(out)
+        gpu_backdrop_of(out),
+        gpu_frost_of(out)
     );
     if (switch_to_cpu_on_failed_compose(result)) {
         return false;
