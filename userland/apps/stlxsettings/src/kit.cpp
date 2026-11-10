@@ -229,6 +229,23 @@ static QPainterPath lock_path() {
     return rounded_rect(2.5, 6.5, 11, 8.5, 1.5).united(outer.subtracted(inner));
 }
 
+static QPainterPath document_path() {
+    QPainterPath page(QPointF(3.5, 1));
+    page.lineTo(9, 1);
+    page.lineTo(13, 5);
+
+    page.lineTo(13, 13.5);
+    page.arcTo(QRectF(10, 12, 3, 3), 0, -90);
+    page.lineTo(3.5, 15);
+
+    page.arcTo(QRectF(2, 12, 3, 3), 270, -90);
+    page.lineTo(2, 2.5);
+    page.arcTo(QRectF(2, 1, 3, 3), 180, -90);
+    page.closeSubpath();
+
+    return page.subtracted(rect_path(5, 8, 6, 1.5)).subtracted(rect_path(5, 11, 4.5, 1.5));
+}
+
 static QPainterPath build_glyph_path(glyph shape) {
     switch (shape) {
     case glyph::WALLPAPER: {
@@ -245,12 +262,16 @@ static QPainterPath build_glyph_path(glyph shape) {
         return keyboard_path();
     case glyph::POWER:
         return power_path();
+    case glyph::INFO:
+        return circle_path(8, 8, 7).subtracted(rect_path(7, 7, 2, 5)).subtracted(rect_path(7, 3.5, 2, 2));
     case glyph::LOCK:
         return lock_path();
     case glyph::MORE:
         return circle_path(3, 8, 1.5).united(circle_path(8, 8, 1.5)).united(circle_path(13, 8, 1.5));
     case glyph::PLUS:
         return rect_path(7, 2.5, 2, 11).united(rect_path(2.5, 7, 11, 2));
+    case glyph::DOCUMENT:
+        return document_path();
     case glyph::PROGRAM: {
         QPainterPath prompt = polygon_path({
             { 3.6, 6.2 }, { 6.2, 8.2 }, { 3.6, 10.2 }, { 4.5, 11.3 }, { 8.5, 8.2 }, { 4.5, 5.1 }

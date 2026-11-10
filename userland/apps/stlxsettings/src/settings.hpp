@@ -4,10 +4,13 @@
 /* What the pages share with the window around them: the configuration as edited, which Save writes, and the calls a
  * page makes. A page builder fills a widget whose layout is a QVBoxLayout. */
 #include <stlxconf/conf.h>
+#include <stlxwin/stlxwin.h>
 
 #include <QImage>
 #include <QString>
 #include <QStringList>
+
+#include <sys/utsname.h>
 
 #include <cstddef>
 #include <cstring>
@@ -25,11 +28,13 @@ extern stlxconf_t g_conf;
 /* The configuration as last loaded or saved, which the pending changes count against */
 const stlxconf_t& saved_conf();
 
-/* Recounts the unsaved changes and shows their count in the footer, naming the change when there is only one. A page
- * must call it after each edit of `g_conf`. */
+/* Recounts the unsaved changes and shows their count in the footer, naming the change when there is only one. About
+ * drops Save and Revert while nothing is pending and says there is nothing to save. A page must call it after each edit
+ * of `g_conf`. */
 void show_pending_changes();
 
-/* Shows `text` in the footer in place of its last message, as a sentence whatever case it starts in */
+/* Shows `text` in the footer as a sentence whatever case it starts in, until the next message or recount of the changes
+ * replaces it */
 void set_status(const QString& text);
 
 /* Rebuilds the shown page once the event that asked for it is done, since the rebuild deletes that
@@ -42,8 +47,9 @@ void rebuild_displays_page_later();
 /* Copies text as UTF-8 into a configuration char array, cut on a byte to fit. `capacity` must be at least 1 */
 void copy_string(char* destination, size_t capacity, const QString& text);
 
-/* Adds a card under a head with `title` and the config section its settings write, if any */
-card* add_section(QWidget* page, const QString& title, const QString& config_section);
+/* Adds a card for a section's settings under a head with `caption` at its right, such as the config section
+ * they write */
+card* add_section(QWidget* page, const QString& title, const QString& caption);
 
 /* Adds a head the page built, such as one it updates in place, and the card under it */
 card* add_section(QWidget* page, section_head* head);
@@ -175,6 +181,16 @@ void revert_layout();
  * every page */
 QWidget* make_keep_prompt();
 
+/* The monitor's maker and name, or "Display" and `index` + 1 when it reports no identity */
+QString display_name(const stlxwin_output& output, uint32_t index);
+
+/* The output's width by height, then its refresh rate in whole hertz when the output reports one */
+QString mode_text(const stlxwin_output& output);
+
+/* The system's name and release before its build suffix, Stellux 3.0.1 of 3.0.1-x86_64-release */
+QString system_title(const utsname& system);
+
+void build_about_page(QWidget* page);
 void build_appearance_page(QWidget* page);
 void build_displays_page(QWidget* page);
 void build_dock_page(QWidget* page);

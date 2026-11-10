@@ -23,9 +23,11 @@ enum class glyph {
     DISPLAY,
     KEYBOARD,
     POWER,
+    INFO,
     LOCK,
     MORE,
     PLUS,
+    DOCUMENT,
     PROGRAM,
     LOGO,
 };
