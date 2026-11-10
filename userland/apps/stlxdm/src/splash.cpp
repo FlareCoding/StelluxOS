@@ -2,10 +2,13 @@
  * nebula while the title resolves, until Enter dismisses it.
  */
 #include "splash.hpp"
+#include "decor.hpp"
 #include "presenter.hpp"
 
 #include <stlx/input.h>
+#include <stlxgfx/blend.h>
 #include <stlxgfx/font.h>
+#include <stlxgfx/image.h>
 #include <stlxgfx/surface.h>
 #include <stlxtheme/theme.h>
 
@@ -20,6 +23,11 @@ constexpr uint32_t SPLASH_FPS = 60;
 constexpr uint64_t SPLASH_FRAME_NS = 1000000000ull / SPLASH_FPS;
 constexpr uint32_t SPLASH_STAR_COUNT = 800;
 constexpr float SPLASH_TITLE_SIZE = 38.0f;
+constexpr const char* SPLASH_EMBLEM_PATH = "/etc/res/icons/stellux-emblem-256.png";
+
+/* Pixels from the emblem's bottom edge to the top of the title's line, with the emblem, title and hint
+ * centered as one group */
+constexpr int32_t SPLASH_EMBLEM_GAP = 24;
 
 /* Text breathes between the desktop's dim and bright shades of cream */
 constexpr uint32_t SPLASH_TEXT_BRIGHT = STLXTHEME_TEXT;
@@ -314,6 +322,27 @@ static void splash_draw_centered(stlxgfx_surface_t* buf, uint32_t screen_w,
                       strlen(text), color);
 }
 
+/* Draws `emblem` centered horizontally on `buf` with its top at `top_y`, at `opacity` out of 255 */
+static void splash_draw_emblem(stlxgfx_surface_t* buf, const stlxgfx_surface_t* emblem, int32_t top_y,
+                               uint32_t opacity) {
+    int32_t width = static_cast<int32_t>(emblem->width);
+    int32_t height = static_cast<int32_t>(emblem->height);
+    int32_t left = (static_cast<int32_t>(buf->width) - width) / 2;
+    damage_list::rect screen = { 0, 0, static_cast<int32_t>(buf->width), static_cast<int32_t>(buf->height) };
+    damage_list::rect area = damage_list::intersect({ left, top_y, width, height }, screen);
+
+    for (int32_t y = area.y; y < area.y + area.h; y++) {
+        size_t source_row = static_cast<size_t>(y - top_y) * emblem->pitch;
+        const uint32_t* source = reinterpret_cast<const uint32_t*>(emblem->pixels + source_row);
+        uint32_t* target = reinterpret_cast<uint32_t*>(buf->pixels + static_cast<size_t>(y) * buf->pitch);
+        for (int32_t x = area.x; x < area.x + area.w; x++) {
+            uint32_t pixel = source[x - left];
+            uint32_t alpha = stlxgfx_div255((pixel >> decor::PIXEL_ALPHA_SHIFT) * opacity);
+            target[x] = decor::blend_over(target[x], pixel, alpha);
+        }
+    }
+}
+
 /* Blends two palette colors by t in [0, 1] */
 static uint32_t splash_mix(uint32_t a, uint32_t b, float t) {
     uint32_t out = 0;
@@ -394,6 +423,7 @@ void splash_run(presenter& pres) {
     stlxgfx_font_metrics_get(title_font, &title_fm);
     stlxgfx_font_metrics_get(hint_font, &hint_fm);
 
+    stlxgfx_surface_t* emblem = stlxgfx_load_image(SPLASH_EMBLEM_PATH);
     int kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
 
     for (uint32_t i = 0; i < SPLASH_STAR_COUNT; i++) {
@@ -402,8 +432,9 @@ void splash_run(presenter& pres) {
 
     uint32_t w = pres.width();
     uint32_t h = pres.height();
-    int32_t title_y = static_cast<int32_t>(h / 2) - 40;
-    int32_t hint_y = static_cast<int32_t>(h / 2) + 34;
+    int32_t emblem_room = emblem ? static_cast<int32_t>(emblem->height) + SPLASH_EMBLEM_GAP : 0;
+    int32_t title_y = static_cast<int32_t>(h / 2) - 40 + emblem_room / 2;
+    int32_t hint_y = static_cast<int32_t>(h / 2) + 34 + emblem_room / 2;
     nebula_init(w, h);
 
     damage_list full;
@@ -438,6 +469,11 @@ void splash_run(presenter& pres) {
 
         float title_a = splash_ramp(seconds, SPLASH_TITLE_IN_S, SPLASH_TITLE_FADE_S);
         float hint_a = splash_ramp(seconds, SPLASH_HINT_IN_S, SPLASH_HINT_FADE_S);
+        if (emblem) {
+            uint32_t opacity = static_cast<uint32_t>(title_a * 255.0f + 0.5f);
+            splash_draw_emblem(buf, emblem, title_y - emblem_room, opacity);
+        }
+
         splash_draw_centered(buf, w, title_y, "Stellux 3.0", title_font,
                              title_fm,
                              splash_pulse_color(seconds, SPLASH_TEXT_MID,
@@ -464,6 +500,7 @@ void splash_run(presenter& pres) {
         close(kbd_fd);
     }
 
+    stlxgfx_destroy_surface(emblem);
     stlxgfx_font_close(title_font);
     stlxgfx_font_close(hint_font);
 }
