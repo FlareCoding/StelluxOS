@@ -153,4 +153,65 @@ private:
     int m_hovered = -1;
 };
 
+/* An on and off switch: a cream track with a dark knob when on. Never amber, since amber marks a pending change */
+class toggle : public QWidget {
+public:
+    explicit toggle(bool is_on);
+
+    std::function<void(bool)> on_toggle;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+private:
+    bool m_is_on;
+};
+
+/* A whole number from `minimum` to `maximum`, picked in steps of `step` on a recessed track with `tick_count` ticks
+ * spaced evenly along it. `minimum` must be below `maximum`, `step` above 0 and `tick_count` at least 2. */
+class slider : public QWidget {
+public:
+    slider(int minimum, int maximum, int step, int value, int tick_count);
+
+    std::function<void(int)> on_change;
+
+    /* Moves the knob to `value`, kept within the range, without calling `on_change` */
+    void set_value(int value);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
+private:
+    qreal x_of(int value) const;
+    void move_to(qreal x);
+
+    int m_minimum;
+    int m_maximum;
+    int m_step;
+    int m_value;
+    int m_tick_count;
+    bool m_is_dragging = false;
+};
+
+/* A value in Plex Mono with its unit in the caption size after it, right aligned */
+class value_label : public QWidget {
+public:
+    value_label(const QString& value, const QString& unit);
+
+    void set_value(const QString& value);
+
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QString m_value;
+    QString m_unit;
+};
+
 #endif /* STLXSETTINGS_KIT_HPP */

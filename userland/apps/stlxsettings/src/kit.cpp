@@ -32,6 +32,23 @@ constexpr int SEGMENT_PADDING_X = 11;
 constexpr int SEGMENT_MARK_SIZE = 10;
 constexpr int SEGMENT_MARK_GAP = 7;
 
+constexpr int TOGGLE_W = 34;
+constexpr int TOGGLE_H = 20;
+constexpr int TOGGLE_KNOB_SIZE = 14;
+constexpr int TOGGLE_KNOB_INSET = 3;
+
+constexpr int SLIDER_W = 200;
+constexpr int SLIDER_H = 26;
+constexpr int SLIDER_TRACK_H = 4;
+constexpr int SLIDER_TICK_TOP = 5;
+constexpr int SLIDER_TICK_H = 4;
+constexpr int SLIDER_KNOB_SIZE = 16;
+constexpr int SLIDER_HALO = 5;
+
+constexpr int VALUE_LABEL_W = 64;
+constexpr int VALUE_UNIT_GAP = 4;
+constexpr qreal DISABLED_OPACITY = 0.38;
+
 static QPainterPath g_glyph_paths[GLYPH_COUNT];
 
 namespace {
@@ -472,4 +489,175 @@ void segmented::mousePressEvent(QMouseEvent* event) {
 void segmented::leaveEvent(QEvent*) {
     m_hovered = -1;
     update();
+}
+
+toggle::toggle(bool is_on) : m_is_on(is_on) {
+    setFixedSize(TOGGLE_W, TOGGLE_H);
+    setAttribute(Qt::WA_Hover);
+}
+
+void toggle::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    bool is_hovered = underMouse();
+    qreal radius = TOGGLE_H / 2.0;
+
+    if (m_is_on) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(theme_color(is_hovered ? STLXTHEME_SWITCH_HOVER_TRACK : STLXTHEME_TEXT_SECONDARY));
+    } else {
+        uint32_t ring = is_hovered ? STLXTHEME_SWITCH_HOVER_RING : STLXTHEME_LINE_STRONG;
+        painter.setPen(QPen(theme_color(ring), CARD_BORDER));
+        painter.setBrush(theme_color(STLXTHEME_RECESS));
+    }
+
+    painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius - 0.5, radius - 0.5);
+
+    qreal knob_left = m_is_on ? TOGGLE_W - TOGGLE_KNOB_INSET - TOGGLE_KNOB_SIZE : TOGGLE_KNOB_INSET;
+    QRectF knob(knob_left, TOGGLE_KNOB_INSET, TOGGLE_KNOB_SIZE, TOGGLE_KNOB_SIZE);
+    painter.setPen(Qt::NoPen);
+    if (!m_is_on) {
+        painter.setBrush(theme_color(STLXTHEME_KNOB_SHADOW));
+        painter.drawEllipse(knob.translated(0, 1));
+    }
+
+    painter.setBrush(theme_color(m_is_on ? STLXTHEME_SWITCH_KNOB : STLXTHEME_TEXT_DIM));
+    painter.drawEllipse(knob);
+}
+
+void toggle::mouseReleaseEvent(QMouseEvent* event) {
+    bool is_click = event->button() == Qt::LeftButton && rect().contains(event->position().toPoint());
+    if (!is_click) {
+        return;
+    }
+
+    m_is_on = !m_is_on;
+    update();
+
+    if (on_toggle) {
+        on_toggle(m_is_on);
+    }
+}
+
+slider::slider(int minimum, int maximum, int step, int value, int tick_count)
+    : m_minimum(minimum), m_maximum(maximum), m_step(step), m_value(qBound(minimum, value, maximum)),
+      m_tick_count(tick_count) {
+    setFixedSize(SLIDER_W, SLIDER_H);
+    setAttribute(Qt::WA_Hover);
+}
+
+void slider::set_value(int value) {
+    m_value = qBound(m_minimum, value, m_maximum);
+    update();
+}
+
+/* The knob's center stays a radius inside each end, so it never leaves the track */
+qreal slider::x_of(int value) const {
+    qreal fraction = static_cast<qreal>(value - m_minimum) / (m_maximum - m_minimum);
+    return SLIDER_KNOB_SIZE / 2.0 + fraction * (width() - SLIDER_KNOB_SIZE);
+}
+
+void slider::move_to(qreal x) {
+    qreal fraction = qBound(0.0, (x - SLIDER_KNOB_SIZE / 2.0) / (width() - SLIDER_KNOB_SIZE), 1.0);
+    int steps = qRound(fraction * (m_maximum - m_minimum) / m_step);
+    int value = qMin(m_maximum, m_minimum + steps * m_step);
+    if (value == m_value) {
+        return;
+    }
+
+    m_value = value;
+    update();
+
+    if (on_change) {
+        on_change(value);
+    }
+}
+
+void slider::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setOpacity(isEnabled() ? 1 : DISABLED_OPACITY);
+    qreal center_y = height() / 2.0;
+    QRectF track(0.5, center_y - SLIDER_TRACK_H / 2.0 + 0.5, width() - 1, SLIDER_TRACK_H - 1);
+    qreal track_radius = SLIDER_TRACK_H / 2.0;
+
+    painter.setPen(QPen(theme_color(STLXTHEME_LINE), CARD_BORDER));
+    painter.setBrush(theme_color(STLXTHEME_RECESS));
+    painter.drawRoundedRect(track, track_radius, track_radius);
+
+    qreal knob_x = x_of(m_value);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawRoundedRect(QRectF(0, track.top() - 0.5, knob_x, SLIDER_TRACK_H), track_radius, track_radius);
+
+    for (int i = 0; i < m_tick_count; i++) {
+        qreal x = qRound(SLIDER_KNOB_SIZE / 2.0 + i * (width() - SLIDER_KNOB_SIZE) / (m_tick_count - 1.0));
+        painter.fillRect(QRectF(x, center_y + SLIDER_TICK_TOP, 1, SLIDER_TICK_H), theme_color(STLXTHEME_LINE_STRONG));
+    }
+
+    bool is_lit = isEnabled() && (underMouse() || m_is_dragging);
+    QPointF knob(knob_x, center_y);
+    qreal knob_radius = SLIDER_KNOB_SIZE / 2.0;
+    if (is_lit) {
+        painter.setBrush(theme_color(STLXTHEME_KNOB_HALO));
+        painter.drawEllipse(knob, knob_radius + SLIDER_HALO, knob_radius + SLIDER_HALO);
+    }
+
+    painter.setBrush(theme_color(STLXTHEME_KNOB_SHADOW));
+    painter.drawEllipse(knob + QPointF(0, 1), knob_radius + 0.5, knob_radius + 0.5);
+    painter.setBrush(theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_SLIDER_KNOB));
+    painter.drawEllipse(knob, knob_radius, knob_radius);
+}
+
+void slider::mousePressEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton) {
+        return;
+    }
+
+    m_is_dragging = true;
+    move_to(event->position().x());
+    update();
+}
+
+void slider::mouseMoveEvent(QMouseEvent* event) {
+    if (m_is_dragging) {
+        move_to(event->position().x());
+    }
+}
+
+void slider::mouseReleaseEvent(QMouseEvent*) {
+    m_is_dragging = false;
+    update();
+}
+
+value_label::value_label(const QString& value, const QString& unit) : m_value(value), m_unit(unit) {
+    setFixedHeight(STLXTHEME_CONTROL_HEIGHT);
+}
+
+void value_label::set_value(const QString& value) {
+    m_value = value;
+    update();
+}
+
+QSize value_label::sizeHint() const {
+    return QSize(VALUE_LABEL_W, STLXTHEME_CONTROL_HEIGHT);
+}
+
+void value_label::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setOpacity(isEnabled() ? 1 : DISABLED_OPACITY);
+
+    QFont value_font = mono_font(STLXTHEME_BODY_SIZE);
+    QFont unit_font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::Normal);
+    QFontMetricsF value_metrics(value_font);
+    qreal unit_width = QFontMetricsF(unit_font).horizontalAdvance(m_unit) + VALUE_UNIT_GAP;
+    qreal baseline = (height() - value_metrics.height()) / 2 + value_metrics.ascent();
+
+    painter.setFont(value_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT));
+    painter.drawText(QPointF(width() - unit_width - value_metrics.horizontalAdvance(m_value), baseline), m_value);
+
+    painter.setFont(unit_font);
+    painter.setPen(theme_color(STLXTHEME_TEXT_DIM));
+    painter.drawText(QPointF(width() - unit_width + VALUE_UNIT_GAP, baseline), m_unit);
 }

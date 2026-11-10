@@ -24,6 +24,10 @@ void copy_string(char* destination, size_t capacity, const QString& text);
 /* Adds a card under a head with `title` and the config section its settings write, if any */
 card* add_section(QWidget* page, const QString& title, const QString& config_section);
 
+/* Whether held keys repeat, which takes a nonzero delay and interval, as the display manager reads them */
+bool is_key_repeat_on(const stlxconf_t& conf);
+
 void build_appearance_page(QWidget* page);
+void build_input_page(QWidget* page);
 
 #endif /* STLXSETTINGS_SETTINGS_HPP */

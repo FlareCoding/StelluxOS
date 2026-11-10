@@ -8,7 +8,6 @@
 #include <stlxwin/stlxwin.h>
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -73,9 +72,6 @@ constexpr int OUTPUT_RADIUS = 6;
 constexpr int MAIN_STRIP_PX = 4;
 constexpr int MAIN_STRIP_INSET = 3;
 constexpr int SNAP_PX = 24;
-
-constexpr uint32_t REPEAT_DELAY_MS = 400;
-constexpr uint32_t REPEAT_INTERVAL_MS = 40;
 
 constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
 constexpr int COUNTDOWN_TICK_MS = 1000;
@@ -682,6 +678,10 @@ static void note_list_changes(
     note_change(is_reordered, list_name + QStringLiteral(" order changed"), changes);
 }
 
+bool is_key_repeat_on(const stlxconf_t& conf) {
+    return conf.key_repeat_delay_ms != 0 && conf.key_repeat_interval_ms != 0;
+}
+
 /* What Save would write: one description for each changed setting, list entry and list order */
 static QStringList pending_changes() {
     const stlxconf_t& saved = g_st.saved;
@@ -692,10 +692,15 @@ static QStringList pending_changes() {
     note_change(saved.glass_level != edited.glass_level, QStringLiteral("Glass changed"), changes);
     note_change(saved.glass_tint != edited.glass_tint, QStringLiteral("Tint changed"), changes);
 
-    bool is_delay_changed = saved.key_repeat_delay_ms != edited.key_repeat_delay_ms;
+    bool was_repeating = is_key_repeat_on(saved);
+    bool is_repeating = is_key_repeat_on(edited);
+    bool is_delay_changed = was_repeating && is_repeating && saved.key_repeat_delay_ms != edited.key_repeat_delay_ms;
     bool is_interval_changed = saved.key_repeat_interval_ms != edited.key_repeat_interval_ms;
+
+    note_change(was_repeating && !is_repeating, QStringLiteral("Key repeat turned off"), changes);
+    note_change(!was_repeating && is_repeating, QStringLiteral("Key repeat turned on"), changes);
     note_change(is_delay_changed, QStringLiteral("Repeat delay changed"), changes);
-    note_change(is_interval_changed, QStringLiteral("Repeat interval changed"), changes);
+    note_change(is_interval_changed, QStringLiteral("Repeat rate changed"), changes);
 
     note_list_changes(saved.pins, saved.pin_count, edited.pins, edited.pin_count, QStringLiteral("Dock"), changes);
     note_list_changes(
@@ -780,10 +785,6 @@ static QString unused_entry_name(const char* prefix, const item_t* items, uint32
 
         n++;
     }
-}
-
-static uint32_t parse_u32(const QString& s, int base) {
-    return static_cast<uint32_t>(strtoul(s.toUtf8().constData(), nullptr, base));
 }
 
 static QVBoxLayout* layout_of(QWidget* widget) {
@@ -879,20 +880,6 @@ static QLineEdit* add_text_field(QHBoxLayout* row, char* dst, size_t cap, int wi
     });
 
     return field;
-}
-
-/* A short numeric field writing through to a config integer */
-static void make_number_row(card* parent, const char* label, const char* key, uint32_t* value) {
-    QHBoxLayout* row = make_row(parent, label, key);
-
-    QLineEdit* field = make_field(QString::number(*value));
-    field->setFixedWidth(80);
-    row->addWidget(field);
-
-    QObject::connect(field, &QLineEdit::textEdited, [value](const QString& s) {
-        *value = parse_u32(s, 10);
-        show_pending_changes();
-    });
 }
 
 /* A "..." button opening the row actions for one list entry. The
@@ -1522,24 +1509,6 @@ static void build_display(QWidget* page) {
     }
 }
 
-static void build_input(QWidget* page) {
-    card* repeat = add_section(page, "Keyboard", "[input]");
-
-    auto* enabled = new QCheckBox;
-    enabled->setChecked(g_conf.key_repeat_delay_ms != 0);
-    make_row(repeat, "Repeat held keys", "key_repeat_delay_ms > 0")->addWidget(enabled);
-    QObject::connect(enabled, &QCheckBox::toggled, [](bool on) {
-        g_conf.key_repeat_delay_ms = on ? REPEAT_DELAY_MS : 0;
-        show_pending_changes();
-        rebuild_page_later();
-    });
-
-    if (g_conf.key_repeat_delay_ms != 0) {
-        make_number_row(repeat, "Delay (ms)", "key_repeat_delay_ms", &g_conf.key_repeat_delay_ms);
-        make_number_row(repeat, "Interval (ms)", "key_repeat_interval_ms", &g_conf.key_repeat_interval_ms);
-    }
-}
-
 static void build_startup(QWidget* page) {
     card* autos = add_section(page, "Autostart", "[autostart:<id>]  path  args");
 
@@ -1644,7 +1613,7 @@ static void build_page(uint32_t index) {
     case APPEARANCE_PAGE: build_appearance_page(g_st.page); break;
     case DOCK_PAGE: build_dock(g_st.page); break;
     case DISPLAY_PAGE: build_display(g_st.page); break;
-    case INPUT_PAGE: build_input(g_st.page); break;
+    case INPUT_PAGE: build_input_page(g_st.page); break;
     case STARTUP_PAGE: build_startup(g_st.page); break;
     }
 
@@ -1662,15 +1631,6 @@ static void track_page_scroll(QScrollBar* page_scroll_bar) {
     QObject::connect(page_scroll_bar, &QAbstractSlider::rangeChanged, [page_scroll_bar] {
         page_scroll_bar->setValue(g_st.chosen_scroll);
     });
-}
-
-/* Clamp the fields a broken save could take the desktop down with */
-static void sanitize_conf() {
-    stlxconf_t& c = g_conf;
-
-    if (c.key_repeat_delay_ms != 0 && c.key_repeat_interval_ms == 0) {
-        c.key_repeat_interval_ms = REPEAT_INTERVAL_MS;
-    }
 }
 
 /* Delivers the reload signal to the display manager's pidfile */
@@ -1696,8 +1656,6 @@ static void load_conf() {
 }
 
 static void save_conf() {
-    sanitize_conf();
-
     if (stlxconf_save(&g_conf, STLXCONF_PATH) != 0) {
         set_status(QStringLiteral("Could not write the config file"));
         return;
