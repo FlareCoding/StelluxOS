@@ -331,6 +331,7 @@ bool server::animate_window(
         started.window = w;
         started.rect = from;
         started.opacity = transition == window_transition::unminimize ? 0 : decor::CHANNEL_MAX;
+        started.chrome.focused = chrome_of(*w).focused;
 
         m_animations.push_back(std::move(started));
         running = &m_animations.back();
@@ -394,6 +395,17 @@ void server::forget_animation(const dm_window* w) {
     }
 }
 
+/* Draws `a`'s window's frame in the animation's look at its first compose, or again once dropped, and keeps it after.
+ * Null when its memory ran out. */
+const frame_picture* server::animation_frame(window_animation& a, picture_maker& maker) {
+    dm_window& w = *a.window;
+    if (!a.has_frame || !w.frame.is_drawn()) {
+        a.has_frame = w.frame.update(maker, w, a.chrome);
+    }
+
+    return a.has_frame ? &w.frame : nullptr;
+}
+
 void server::damage_painted(const dm_window& w, const damage_list::rect& frame) {
     damage_list::rect painted = painted_rect(w, frame);
     m_damage.add(painted.x, painted.y, painted.w, painted.h);
@@ -410,9 +422,8 @@ void server::compose_animations(const decor::canvas& canvas, const damage_list::
             continue;
         }
 
-        bool has_frame = w->frame.update(frame_maker(), *w, chrome_of(*w));
         pieces.clear();
-        animation_pieces(a, *w, has_frame ? &w->frame : nullptr, pieces);
+        animation_pieces(a, *w, animation_frame(a, frame_maker()), pieces);
         for (const layer_scaled& piece : pieces) {
             draw_scaled(canvas, piece, r);
         }
@@ -424,13 +435,14 @@ void server::compose_animations(const decor::canvas& canvas, const damage_list::
 bool server::add_animations(dm_output& out) {
     for (window_animation& a : m_animations) {
         dm_window* w = a.window;
-        if (!w->frame.update(*m_gpu_compositor, *w, chrome_of(*w))) {
+        const frame_picture* frame = animation_frame(a, *m_gpu_compositor);
+        if (!frame) {
             return false;
         }
 
         layer_window shown;
         shown.import = w->buffers[static_cast<size_t>(w->current)].import.get();
-        animation_pieces(a, *w, &w->frame, shown.scaled);
+        animation_pieces(a, *w, frame, shown.scaled);
         for (layer_scaled& piece : shown.scaled) {
             piece.bounds.x -= out.place.x;
             piece.bounds.y -= out.place.y;

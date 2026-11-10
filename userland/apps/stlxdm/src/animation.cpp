@@ -404,7 +404,9 @@ void animation_pieces(
     std::vector<layer_scaled>& pieces
 ) {
     const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
-    damage_list::rect content = { 0, 0, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
+    uint32_t width = frame ? frame->drawn_width() : b.width;
+    uint32_t height = frame ? frame->drawn_height() : b.height;
+    damage_list::rect content = { 0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height) };
     damage_list::rect shown = decor::frame_rect(w, 0, 0, content.w, content.h);
     int32_t corner_y = content.h - decor::CONTENT_R;
 
@@ -427,7 +429,7 @@ void animation_pieces(
     }
 
     picture_region pixels = { reinterpret_cast<const uint8_t*>(b.pixels), b.gpu_address, b.pitch,
-                              content.w, content.h };
+                              static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
     damage_list::rect placed = map_rect(columns, rows, content);
     int32_t radius = keeps_ends ? decor::CONTENT_R : decor::CONTENT_R * placed.w / content.w;
     size_t first = pieces.size();

@@ -221,6 +221,12 @@ public:
      * coordinates inside `back`. The last update must have returned true. */
     void blend(const decor::canvas& back, const dm_window& w, const damage_list::rect& clip) const;
 
+    /* Whether the last update drew the frame, and the content size it drew
+     * the frame around */
+    bool is_drawn() const { return m_is_drawn; }
+    uint32_t drawn_width() const { return m_width; }
+    uint32_t drawn_height() const { return m_height; }
+
     /* Strip `index` of the last update, which must have returned true, from
      * the content's top-left pixel, and its pixels */
     const damage_list::rect& strip_rect(uint32_t index) const { return m_strips[index]; }
