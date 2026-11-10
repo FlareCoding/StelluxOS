@@ -24,7 +24,7 @@ public:
     std::function<void()> on_power;
 
     int32_t width() const override;
-    int32_t left() const override;
+    int32_t left(int32_t output_w) const override;
     std::unique_ptr<ui::widget> build() override;
     void refresh() override;
     void closed() override;

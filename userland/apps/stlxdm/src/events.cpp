@@ -232,7 +232,7 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
-    if (is_escape_press && m_panels->has_open_popover()) {
+    if (is_escape_press && m_panels->escape_closes_popover()) {
         m_panels->close_popover();
         return;
     }
@@ -653,8 +653,9 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         zone = decor::zone::content;
     }
 
-    /* The shell's popover lies above every window */
-    if (m_panels->popover_contains(x, y)) {
+    /* Over the shell's popover the pointer reaches no window, unless one holds the pointer grab */
+    bool is_over_popover = !m_grab && m_panels->popover_contains(x, y);
+    if (is_over_popover) {
         struck = nullptr;
         zone = decor::zone::none;
     }
@@ -717,8 +718,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
+    /* The release that ends a press on a window's control never reaches the popover */
     if (is_last_release && m_control_press.window) {
         release_control_press();
+        if (is_over_popover) {
+            return;
+        }
     }
 
     dm_window* target = zone == decor::zone::content ? struck : nullptr;

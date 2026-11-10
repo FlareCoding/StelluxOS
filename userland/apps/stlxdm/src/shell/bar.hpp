@@ -16,14 +16,16 @@ class bar_separator;
 
 /* One of the bar's click targets. Hover goes to the widget under the pointer, so a target has no
  * children and paints its hover and open states and content. Its frame spans the bar's height and
- * reaches `reach_left` past its hover background, so a press at the output's edge still hits it. */
+ * reaches `reach_left` and `reach_right` past its hover background, so a press at the output's edge
+ * still hits it. */
 class bar_target : public ui::widget {
 public:
-    explicit bar_target(int32_t reach_left);
+    bar_target(int32_t reach_left, int32_t reach_right);
     ~bar_target() override;
 
-    /* Fired by a press on the target */
+    /* Fired by a press on the target, and when the pointer enters it */
     std::function<void()> on_press;
+    std::function<void()> on_enter;
 
     void set_open(bool open);
 
@@ -38,6 +40,7 @@ protected:
 
 private:
     int32_t            m_reach_left;
+    int32_t            m_reach_right;
     bool               m_hover = false;
     bool               m_open = false;
     stlxgfx_surface_t* m_ring = nullptr;
@@ -56,8 +59,8 @@ private:
     stlxgfx_surface_t* m_mark = nullptr;
 };
 
-/* The CPU, memory and network readouts at the bar's right */
-class readouts_target : public ui::widget {
+/* The CPU, memory and network readouts at the bar's right, which open the stats panel */
+class readouts_target : public bar_target {
 public:
     readouts_target();
 
@@ -86,7 +89,7 @@ private:
  * output, and the readouts, on glass with a hairline along its bottom */
 class top_bar {
 public:
-    /* How far the mark's hover background and the readouts' frame lie in from the output's sides */
+    /* How far the targets' hover backgrounds lie in from the output's sides */
     static constexpr int32_t TARGET_INSET = 8;
 
     /* Builds the bar's tree over `glass`, a picture of its background that

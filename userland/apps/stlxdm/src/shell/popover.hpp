@@ -20,9 +20,9 @@ class popover_panel {
 public:
     virtual ~popover_panel() = default;
 
-    /* The panel's width, and its left edge on the output */
+    /* The panel's width, and its left edge on an output `output_w` wide */
     virtual int32_t width() const = 0;
-    virtual int32_t left() const = 0;
+    virtual int32_t left(int32_t output_w) const = 0;
 
     /* Builds the content the host shows until the panel closes */
     virtual std::unique_ptr<ui::widget> build() = 0;
@@ -32,6 +32,10 @@ public:
 
     /* Runs after the content `build()` gave is gone, when the panel closed or could not be shown */
     virtual void closed() {}
+
+    /* Whether the shell keeps the panel open on Esc, on a press outside both it and the bar's targets, when the
+     * pointer enters another target, and after a program starts from it */
+    virtual bool pinned() const { return false; }
 };
 
 /* The shown panel, a closing one included, as both compositors blend it.
@@ -59,6 +63,8 @@ public:
     /* Makes pictures in `maker`'s memory from here on, or the CPU's own when null. A shown panel closes at once and
      * its picture drops, since the picture lies in the earlier maker's memory. */
     void use_picture_maker(picture_maker* maker);
+
+    void set_output_width(int32_t width) { m_output_w = width; }
 
     /* Opens `panel` on glass from the main output's `frost`, first closing any shown panel at once. `panel` must
      * stay alive through the call to its `closed()`. When its picture cannot be made, it logs, drops the content,
@@ -102,6 +108,7 @@ private:
     damage_list::rect bounds() const;
 
     picture_maker* m_maker = nullptr;
+    int32_t        m_output_w = 0;
     popover_panel* m_panel = nullptr;
     direct_host    m_host;
     panel_picture  m_picture;

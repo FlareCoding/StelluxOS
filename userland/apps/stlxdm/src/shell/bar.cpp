@@ -8,7 +8,7 @@
 
 constexpr int32_t TARGET_HEIGHT = 24;
 
-/* Padding left and right of the content inside the mark's hover background and the readouts' frame */
+/* Space between a target's content and the sides of its hover background */
 constexpr int32_t TARGET_PADDING = 8;
 
 constexpr int32_t SEPARATOR_MARGIN = 12;
@@ -75,9 +75,10 @@ private:
 
 } // namespace
 
-/* The `TARGET_HEIGHT` rows centered in `frame`, `reach_left` in from its left side, counted from its top left */
-static ui::rect target_slot(const ui::rect& frame, int32_t reach_left) {
-    return { reach_left, (frame.h - TARGET_HEIGHT) / 2, frame.w - reach_left, TARGET_HEIGHT };
+/* The `TARGET_HEIGHT` rows centered in `frame`, `reach_left` and `reach_right` in from its sides, counted from
+ * its top left */
+static ui::rect target_slot(const ui::rect& frame, int32_t reach_left, int32_t reach_right) {
+    return { reach_left, (frame.h - TARGET_HEIGHT) / 2, frame.w - reach_left - reach_right, TARGET_HEIGHT };
 }
 
 /* Used memory in whole mebibytes below a gibibyte, else in gibibytes cut to a tenth */
@@ -92,7 +93,8 @@ static void format_memory(char* out, size_t cap, uint64_t used_bytes) {
              static_cast<unsigned long long>(tenths % 10));
 }
 
-bar_target::bar_target(int32_t reach_left) : m_reach_left(reach_left) {}
+bar_target::bar_target(int32_t reach_left, int32_t reach_right)
+    : m_reach_left(reach_left), m_reach_right(reach_right) {}
 
 bar_target::~bar_target() {
     stlxgfx_destroy_surface(m_ring);
@@ -129,6 +131,10 @@ void bar_target::paint(ui::painter& p) {
 void bar_target::on_pointer_enter() {
     m_hover = true;
     invalidate();
+
+    if (on_enter) {
+        on_enter();
+    }
 }
 
 void bar_target::on_pointer_leave() {
@@ -146,10 +152,10 @@ bool bar_target::on_pointer_down(const ui::pointer_event&) {
 }
 
 ui::rect bar_target::slot() const {
-    return target_slot(m_frame, m_reach_left);
+    return target_slot(m_frame, m_reach_left, m_reach_right);
 }
 
-mark_target::mark_target() : bar_target(top_bar::TARGET_INSET), m_mark(make_mark_picture(STLXTHEME_TEXT)) {}
+mark_target::mark_target() : bar_target(top_bar::TARGET_INSET, 0), m_mark(make_mark_picture(STLXTHEME_TEXT)) {}
 
 mark_target::~mark_target() {
     stlxgfx_destroy_surface(m_mark);
@@ -167,7 +173,8 @@ void mark_target::paint(ui::painter& p) {
 }
 
 readouts_target::readouts_target()
-    : m_cpu_label("CPU", STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
+    : bar_target(0, top_bar::TARGET_INSET),
+      m_cpu_label("CPU", STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
       m_memory_label("MEM", STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
       m_network_label("NET", STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
       m_cpu("", STLXTHEME_MONO_FONT_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_SECONDARY),
@@ -199,11 +206,15 @@ ui::size readouts_target::measure(ui::size) {
     int32_t memory = m_memory_label.width() + READOUT_GAP + m_memory.width();
     int32_t network = m_network_label.width() + READOUT_GAP + m_network.width();
 
-    return { 2 * TARGET_PADDING + cpu + memory + network + 2 * SEPARATOR_WIDTH, STLXTHEME_TOP_BAR_HEIGHT };
+    int32_t content = 2 * TARGET_PADDING + cpu + memory + network + 2 * SEPARATOR_WIDTH;
+
+    return { content + top_bar::TARGET_INSET, STLXTHEME_TOP_BAR_HEIGHT };
 }
 
 void readouts_target::paint(ui::painter& p) {
-    int32_t x = TARGET_PADDING;
+    bar_target::paint(p);
+
+    int32_t x = slot().x + TARGET_PADDING;
     m_cpu_label.draw(p, x, 0, m_frame.h);
     x = paint_meter(p, x + m_cpu_label.width() + READOUT_GAP) + READOUT_GAP;
 
@@ -274,7 +285,6 @@ std::unique_ptr<ui::widget> top_bar::build(const stlxgfx_surface_t* glass) {
     right->s().main = ui::length::flex();
     right->s().align_items = ui::align::center;
     right->s().justify = ui::align::end;
-    right->s().padding = { 0, TARGET_INSET, 0, 0 };
     m_readouts = right->add<readouts_target>();
 
     show_clock();
