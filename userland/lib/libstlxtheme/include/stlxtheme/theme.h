@@ -77,6 +77,14 @@
 #define STLXTHEME_TINT_SWATCH_NEUTRAL 0xFF4A4C52
 #define STLXTHEME_TINT_SWATCH_WARM    0xFF6A5640
 
+/* Switches and sliders in Settings */
+#define STLXTHEME_SWITCH_HOVER_RING  0x7AE2C496 /* an off switch's hovered ring */
+#define STLXTHEME_SWITCH_HOVER_TRACK 0xFFD6CDBF /* an on switch's hovered track, lightened toward the primary text */
+#define STLXTHEME_SWITCH_KNOB        0xFF17130E /* an on switch's knob */
+#define STLXTHEME_SLIDER_KNOB        0xFFE9E0D2
+#define STLXTHEME_KNOB_SHADOW        0x8C060402 /* under an off switch's knob and a slider's */
+#define STLXTHEME_KNOB_HALO          0x14FFF0D7 /* around the knob of a hovered or dragged slider */
+
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CARD_RADIUS      8

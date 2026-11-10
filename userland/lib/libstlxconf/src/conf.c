@@ -64,8 +64,8 @@ void stlxconf_defaults(stlxconf_t* conf) {
     conf->glass_level = STLXCONF_GLASS_LEVEL_GLASS;
     conf->glass_tint  = STLXCONF_GLASS_TINT_WARM;
 
-    conf->key_repeat_delay_ms    = 400;
-    conf->key_repeat_interval_ms = 40;
+    conf->key_repeat_delay_ms    = STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS;
+    conf->key_repeat_interval_ms = STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS;
 }
 
 static char* trim(char* s) {

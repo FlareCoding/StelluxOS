@@ -16,6 +16,9 @@ extern "C" {
 #define STLXCONF_MAX_AUTOSTART 8
 #define STLXCONF_MAX_URL_HANDLERS 8
 
+#define STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS    400
+#define STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS 40
+
 /* Which compositor composes the desktop: auto the GPU when stlxdm can make
  * its compositor, cpu the CPU */
 typedef enum {
