@@ -1193,8 +1193,8 @@ void server::latch_window(dm_client& c, dm_window& w) {
     w.sent_conf_count = keep;
 
     if (first_map || resized) {
-        damage_list::rect nr = decor::frame_rect(w, w.x, w.y, static_cast<int32_t>(nb.width),
-                                                 static_cast<int32_t>(nb.height));
+        damage_list::rect nr = decor::damage_rect(w, w.x, w.y, static_cast<int32_t>(nb.width),
+                                                  static_cast<int32_t>(nb.height));
         m_damage.add(nr.x, nr.y, nr.w, nr.h);
     } else if (w.pending_damage_whole || w.pending_damage_count == 0) {
         m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
@@ -1628,7 +1628,8 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
             continue;
         }
 
-        damage_list::rect bounds = decor::bounds(*w);
+        decor::chrome_state chrome = chrome_of(*w);
+        damage_list::rect bounds = decor::bounds(*w, chrome.focused);
         if (!touches_any({ bounds.x - ox, bounds.y - oy, bounds.w, bounds.h }, rects)) {
             continue;
         }
@@ -1637,7 +1638,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
         layer_window shown;
         shown.content = { w->x - ox, w->y - oy, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
         if (decor::decorated(*w)) {
-            if (!w->frame.update(frame_maker(), *w, chrome_of(*w))) {
+            if (!w->frame.update(frame_maker(), *w, chrome)) {
                 return false;
             }
 
@@ -1876,7 +1877,7 @@ void server::rounding_regions(dm_output& out) {
         }
 
         damage_list::rect strips[decor::FRAME_STRIPS];
-        decor::frame_strips(*w, strips);
+        decor::frame_strips(*w, chrome_of(*w).focused, strips);
         for (const damage_list::rect& strip : strips) {
             regions.push_back({ strip.x - ox, strip.y - oy, strip.w, strip.h });
         }

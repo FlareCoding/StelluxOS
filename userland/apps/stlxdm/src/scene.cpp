@@ -16,9 +16,12 @@ static void collect_subtree(
     }
 }
 
+/* Covers the shadows of both focus states, since a focus change swaps one for the other */
 void server::scene_damage_window(dm_window* w) {
     if (w->mapped && w->current >= 0) {
-        damage_list::rect r = decor::bounds(*w);
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        damage_list::rect r = decor::damage_rect(*w, w->x, w->y, static_cast<int32_t>(b.width),
+                                                 static_cast<int32_t>(b.height));
         m_damage.add(r.x, r.y, r.w, r.h);
     }
 }

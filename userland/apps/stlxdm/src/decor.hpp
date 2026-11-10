@@ -86,7 +86,8 @@ struct corner_table {
     int32_t         far_distance = 0;
 };
 
-/* Opens the chrome font. Returns 0, or -1 when the face is missing. */
+/* Opens the chrome font and prepares the tables and shadows the other
+ * calls read. Returns 0, or -1 when the face is missing. */
 int init();
 
 /* The table `init` fills, which the GPU compositor reads too */
@@ -98,17 +99,22 @@ bool decorated(const dm_window& w);
 damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
                              int32_t cw, int32_t ch);
 
-/* The full on-screen rect including chrome, the content rect when
- * borderless. Zero without a displayed buffer. */
-damage_list::rect bounds(const dm_window& w);
+/* The full on-screen rect including chrome and the shadow the window
+ * casts when focused or not as `is_focused` says, the content rect
+ * when borderless. Zero without a displayed buffer. */
+damage_list::rect bounds(const dm_window& w, bool is_focused);
+
+/* The rect a window with an explicit content geometry paints focused or
+ * not, which damage for it must cover. */
+damage_list::rect damage_rect(const dm_window& w, int32_t x, int32_t y, int32_t cw, int32_t ch);
 
 constexpr uint32_t FRAME_STRIPS = 4;
 
-/* `bounds` of a decorated window less the content above its last CONTENT_R
- * rows, as the top with the title bar, the left and right sides and the
- * bottom, each in desktop coordinates and empty where nothing lies. All
- * zero when borderless or without a displayed buffer. */
-void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS]);
+/* `bounds(w, is_focused)` of a decorated window less the content above its
+ * last CONTENT_R rows, as the top with the title bar, the left and right
+ * sides and the bottom, each in desktop coordinates and empty where
+ * nothing lies. All zero when borderless or without a displayed buffer. */
+void frame_strips(const dm_window& w, bool is_focused, damage_list::rect (&strips)[FRAME_STRIPS]);
 
 /* Zone under a desktop point, none when outside the window. Resize
  * zones exist only for resizable decorated windows. */
@@ -122,8 +128,10 @@ bool is_control(zone z);
  * only the controls that fit with the inset on both sides. */
 damage_list::rect controls_rect(const dm_window& w);
 
-/* Draws the rounded chrome around the content area inside `clip`, which
- * is in desktop coordinates and must lie inside `back`. */
+/* Draws the window's shadow and rounded chrome around the content area
+ * inside `clip`, which is in desktop coordinates and must lie inside
+ * `back`. The shadow replaces the pixels around the frame's body instead
+ * of blending over them, so `back` must be transparent there. */
 void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 

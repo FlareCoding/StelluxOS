@@ -189,12 +189,13 @@ private:
     std::vector<damage_list::rect> m_last_drawn;
 };
 
-/* A decorated window's frame as four strips of one picture: the top with
- * the title bar, the two sides, and the bottom with the content's last
- * rows, whose rounded corners the content's copy leaves showing. Each strip
- * holds the frame drawn in straight alpha over transparent pixels, so
- * blending it over what lies beneath gives what drawing the frame there
- * gives, but for rounding where two translucent draws stack. */
+/* A decorated window's frame and the shadow it casts as four strips
+ * of one picture: the top with the title bar, the two sides, and the
+ * bottom with the content's last rows, whose rounded corners the
+ * content's copy leaves showing. Each strip holds both in straight
+ * alpha over transparent pixels, so blending it over what lies beneath
+ * paints the shadow and then the frame there, but for rounding where
+ * two translucent draws stack. */
 class frame_picture {
 public:
     static constexpr uint32_t STRIPS = layer_window::FRAME_STRIPS;
