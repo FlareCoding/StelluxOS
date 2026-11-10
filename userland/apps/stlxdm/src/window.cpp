@@ -1392,8 +1392,8 @@ picture_maker& server::frame_maker() {
     return m_heap_picture_maker;
 }
 
-/* Compose one rect of `out` in desktop coordinates, bottom-up, each layer
- * clipped to the damage minus what every window above it hides */
+/* Compose one rect of `out` in desktop coordinates, bottom-up, each layer clipped to the damage minus what lies above
+ * it hides: opaque content, glass under premultiplied content, and an animation's glass but its corner squares */
 void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
                           const damage_list::rect& r) {
     /* Walk top-down recording what each window may paint, then
@@ -1402,6 +1402,11 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
     std::vector<std::vector<damage_list::rect>> visible(m_zorder.size());
     bool subtracting = true;
     const stlxgfx_surface_t* frost = frost_of(out);
+
+    /* Animations lie above every window, and their glass hides all beneath it but its corner squares */
+    for (size_t i = 0; frost && subtracting && i < m_animations.size(); i++) {
+        subtracting = subtract_glass(pieces, animation_glass(m_animations[i], 0, 0));
+    }
 
     for (size_t i = m_zorder.size(); i-- > 0;) {
         dm_window* w = m_zorder[i];
