@@ -23,25 +23,39 @@ class section_head;
 class QPixmap;
 class QWidget;
 
+enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE, ABOUT_PAGE };
+
+/* A setting search can find: the page and card it sits in, its label, its key and its value as edited.
+ * Opening it finds the row named `row` on the page, or shows the page's top when `row` is empty */
+struct search_entry {
+    page_index page;
+    QString card;
+    QString label;
+    QString key;
+    QString value;
+    QString row; /* the object name of its row on the page */
+};
+
 extern stlxconf_t g_conf;
 
 /* The configuration as last loaded or saved, which the pending changes count against */
 const stlxconf_t& saved_conf();
 
-/* Recounts the unsaved changes and shows their count in the footer, naming the change when there is only one. About
- * drops Save and Revert while nothing is pending and says there is nothing to save. A page must call it after each edit
- * of `g_conf`. */
+/* Recounts the unsaved changes and shows their count in the footer, naming the change when there is only one. While a
+ * search runs its key hints show instead. About and the search results drop Save and Revert while nothing is pending,
+ * and About says there is nothing to save. A page must call it after each edit of `g_conf`. */
 void show_pending_changes();
 
-/* Shows `text` in the footer as a sentence whatever case it starts in, until the next message or recount of the changes
- * replaces it */
+/* Shows `text` in the footer as a sentence whatever case it starts in, over the search's key hints, until the next
+ * message or recount of the changes replaces it */
 void set_status(const QString& text);
 
 /* Rebuilds the shown page once the event that asked for it is done, since the rebuild deletes that
  * event's widget. The page takes no input until then, so no click reaches a widget the rebuild replaces */
 void rebuild_page_later();
 
-/* Rebuilds the Displays page the same way, and only while it is the page shown */
+/* Rebuilds the pane the same way, and only while it shows the Displays page or search results, which list
+ * the Displays page's settings */
 void rebuild_displays_page_later();
 
 /* Copies text as UTF-8 into a configuration char array, cut on a byte to fit. `capacity` must be at least 1 */
@@ -80,9 +94,9 @@ void add_entry_menu(
  * and -1, then rebuild the page. The page builder must add the entry's editor under an open row */
 void make_openable(list_row* row, int index, int* open_index);
 
-/* Shows `row` read only, with a chip naming the drop-in file that holds its entry `[<prefix>:<name>]`, or conf.d
- * when no readable .conf file holds it. The caller must not give the row a menu or an editor */
-void lock_drop_in_row(list_row* row, const char* prefix, const char* name);
+/* Shows `row` read only, with a chip naming the drop-in file that holds its entry `[<section>]`, or conf.d when
+ * no readable .conf file holds it. The caller must not give the row a menu or an editor */
+void lock_drop_in_row(list_row* row, const QString& section);
 
 /* A list footer's small add button, with a plus glyph. It runs `add` and is disabled unless `is_room_left` */
 push_button* make_add_button(const QString& text, bool is_room_left, std::function<void()> add);
@@ -196,5 +210,13 @@ void build_displays_page(QWidget* page);
 void build_dock_page(QWidget* page);
 void build_input_page(QWidget* page);
 void build_startup_page(QWidget* page);
+
+/* Each page lists the settings it shows, in the order it shows them, for search. Displays lists the
+ * arrangement and the selected display's settings, not those of outputs the desktop does not place */
+void add_appearance_entries(QList<search_entry>& entries);
+void add_displays_entries(QList<search_entry>& entries);
+void add_dock_entries(QList<search_entry>& entries);
+void add_input_entries(QList<search_entry>& entries);
+void add_startup_entries(QList<search_entry>& entries);
 
 #endif /* STLXSETTINGS_SETTINGS_HPP */

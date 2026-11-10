@@ -20,6 +20,17 @@
 
 constexpr const char* WALLPAPER_DIR = "/etc/res/wallpapers";
 
+constexpr const char* WALLPAPER_CARD = "Wallpaper";
+constexpr const char* STYLE_CARD = "Style";
+constexpr const char* IMAGE_LABEL = "Image";
+constexpr const char* WALLPAPER_KEY = "wallpaper";
+constexpr const char* GLASS_LABEL = "Glass";
+constexpr const char* GLASS_KEY = "glass_level";
+constexpr const char* TINT_LABEL = "Tint";
+constexpr const char* TINT_KEY = "glass_tint";
+constexpr const char* ACCENT_LABEL = "Accent";
+constexpr const char* ACCENT_NAME = "Amber";
+
 constexpr int PREVIEW_W = 185;
 constexpr int PREVIEW_H = 104;
 constexpr int PREVIEW_BAR_H = 4;
@@ -239,7 +250,7 @@ protected:
     }
 
 private:
-    static QString name() { return QStringLiteral("Amber"); }
+    static QString name() { return QLatin1String(ACCENT_NAME); }
 
     /* From the swatch's center to the outside of its selection ring */
     static qreal swatch_reach() { return ACCENT_DOT_SIZE / 2.0 + SELECTION_RING_OFFSET + SELECTION_RING_WIDTH; }
@@ -385,7 +396,7 @@ static QWidget* make_wallpaper_details() {
     auto* layout = new QVBoxLayout(details);
     layout->setContentsMargins(0, DETAILS_PADDING_Y, 0, DETAILS_PADDING_Y);
     layout->setSpacing(DETAILS_SPACING);
-    layout->addWidget(new setting_label(QStringLiteral("Image"), QStringLiteral("wallpaper")));
+    layout->addWidget(new setting_label(QLatin1String(IMAGE_LABEL), QLatin1String(WALLPAPER_KEY)));
 
     g_wallpaper.field = new QLineEdit(QString::fromUtf8(g_conf.wallpaper));
     g_wallpaper.field->setFont(mono_font(STLXTHEME_BODY_SIZE));
@@ -408,8 +419,10 @@ static QWidget* make_wallpaper_details() {
     return details;
 }
 
+/* The summary is the image's row, named for search as a setting row is */
 static QWidget* make_wallpaper_summary() {
     auto* summary = new QWidget;
+    summary->setObjectName(QLatin1String(IMAGE_LABEL));
     auto* layout = new QHBoxLayout(summary);
     layout->setContentsMargins(
         WALLPAPER_CARD_PADDING,
@@ -465,7 +478,8 @@ static void paint_tint_mark(QPainter& painter, const QRectF& box, int tint, cons
 }
 
 static QString glass_key() {
-    return QStringLiteral("glass_level = %1").arg(QString::fromLatin1(stlxconf_glass_level_name(g_conf.glass_level)));
+    QString level = QString::fromLatin1(stlxconf_glass_level_name(g_conf.glass_level));
+    return QStringLiteral("%1 = %2").arg(QLatin1String(GLASS_KEY), level);
 }
 
 /* The position of the configured tint in `TINT_VALUES`, which must list every tint */
@@ -475,7 +489,8 @@ static int chosen_tint() {
 }
 
 static QString tint_key() {
-    return QStringLiteral("glass_tint = %1").arg(QString::fromLatin1(stlxconf_glass_tint_name(g_conf.glass_tint)));
+    QString tint = QString::fromLatin1(stlxconf_glass_tint_name(g_conf.glass_tint));
+    return QStringLiteral("%1 = %2").arg(QLatin1String(TINT_KEY), tint);
 }
 
 static QStringList names_of(const char* const* names, size_t count) {
@@ -488,7 +503,7 @@ static QStringList names_of(const char* const* names, size_t count) {
 }
 
 static void add_glass_row(card* style) {
-    auto* row = new setting_row(QStringLiteral("Glass"), glass_key());
+    auto* row = new setting_row(QLatin1String(GLASS_LABEL), glass_key());
     auto* levels = new segmented(
         names_of(GLASS_LEVEL_NAMES, std::size(GLASS_LEVEL_NAMES)),
         g_conf.glass_level,
@@ -505,7 +520,7 @@ static void add_glass_row(card* style) {
 }
 
 static void add_tint_row(card* style) {
-    auto* row = new setting_row(QStringLiteral("Tint"), tint_key());
+    auto* row = new setting_row(QLatin1String(TINT_LABEL), tint_key());
     auto* tints = new segmented(names_of(TINT_NAMES, std::size(TINT_NAMES)), chosen_tint(), paint_tint_mark);
     tints->on_choose = [row](int tint) {
         g_conf.glass_tint = TINT_VALUES[tint];
@@ -519,7 +534,7 @@ static void add_tint_row(card* style) {
 
 void build_appearance_page(QWidget* page) {
     g_wallpaper = wallpaper_widgets();
-    card* wallpaper = add_section(page, QStringLiteral("Wallpaper"), QStringLiteral("[desktop]"));
+    card* wallpaper = add_section(page, QLatin1String(WALLPAPER_CARD), QStringLiteral("[desktop]"));
     wallpaper->add_row(make_wallpaper_summary());
 
     QWidget* choices = make_wallpaper_choices();
@@ -531,11 +546,30 @@ void build_appearance_page(QWidget* page) {
 
     show_wallpaper(QString::fromUtf8(g_conf.wallpaper));
 
-    card* style = add_section(page, QStringLiteral("Style"), QStringLiteral("[theme]"));
+    card* style = add_section(page, QLatin1String(STYLE_CARD), QStringLiteral("[theme]"));
     add_glass_row(style);
     add_tint_row(style);
 
-    auto* accent = new setting_row(QStringLiteral("Accent"), QString());
+    auto* accent = new setting_row(QLatin1String(ACCENT_LABEL), QString());
     accent->add_control(new accent_readout);
     style->add_row(accent);
+}
+
+void add_appearance_entries(QList<search_entry>& entries) {
+    QString wallpaper = QLatin1String(WALLPAPER_CARD);
+    QString style = QLatin1String(STYLE_CARD);
+    QString image = QFileInfo(QString::fromUtf8(g_conf.wallpaper)).fileName();
+    QString level = QLatin1String(GLASS_LEVEL_NAMES[g_conf.glass_level]);
+    QString tint = QLatin1String(TINT_NAMES[chosen_tint()]);
+
+    /* Each of these rows takes its label as its object name */
+    QString image_label = QLatin1String(IMAGE_LABEL);
+    QString glass_label = QLatin1String(GLASS_LABEL);
+    QString tint_label = QLatin1String(TINT_LABEL);
+    QString accent_label = QLatin1String(ACCENT_LABEL);
+
+    entries.append({ APPEARANCE_PAGE, wallpaper, image_label, QLatin1String(WALLPAPER_KEY), image, image_label });
+    entries.append({ APPEARANCE_PAGE, style, glass_label, QLatin1String(GLASS_KEY), level, glass_label });
+    entries.append({ APPEARANCE_PAGE, style, tint_label, QLatin1String(TINT_KEY), tint, tint_label });
+    entries.append({ APPEARANCE_PAGE, style, accent_label, QString(), QLatin1String(ACCENT_NAME), accent_label });
 }

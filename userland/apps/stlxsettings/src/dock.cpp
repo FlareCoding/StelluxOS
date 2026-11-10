@@ -7,9 +7,15 @@
 #include <utility>
 
 constexpr const char* PIN_NAME_PREFIX = "pin";
+constexpr const char* PINS_CARD = "Pinned apps";
 
 /* The index of the pin whose editor shows under its row, or -1 for none */
 static int g_open_pin_index = -1;
+
+/* The config section a pin is written under, which also names its row for search */
+static QString pin_section(const stlxconf_pin_t& pin) {
+    return QStringLiteral("taskbar:%1").arg(QString::fromUtf8(pin.name));
+}
 
 static void move_pin(uint32_t from, uint32_t to) {
     std::swap(g_conf.pins[from], g_conf.pins[to]);
@@ -81,7 +87,7 @@ static QWidget* make_pin_editor(stlxconf_pin_t* pin, list_row* row) {
 
 void build_dock_page(QWidget* page) {
     QString columns = QStringLiteral("[taskbar:<id>]  label  path  args  icon");
-    card* pins = add_section(page, QStringLiteral("Pinned apps"), columns);
+    card* pins = add_section(page, QLatin1String(PINS_CARD), columns);
     auto* list = new list_box;
     uint32_t owned = owned_count(g_conf.pins, g_conf.pin_count);
 
@@ -89,11 +95,12 @@ void build_dock_page(QWidget* page) {
         stlxconf_pin_t* pin = &g_conf.pins[i];
         QString label = QString::fromUtf8(pin->label);
         auto* row = new list_row(label, QString::fromUtf8(pin->path), QString::fromUtf8(pin->args));
+        row->setObjectName(pin_section(*pin));
         row->set_icon(launcher_icon(*pin));
         list->add_row(row);
 
         if (pin->from_drop_in) {
-            lock_drop_in_row(row, "taskbar", pin->name);
+            lock_drop_in_row(row, pin_section(*pin));
             continue;
         }
 
@@ -109,4 +116,13 @@ void build_dock_page(QWidget* page) {
     QString drop_in_dir = code_text(QString::fromLatin1(STLXCONF_DROP_IN_DIR));
     list->set_footer(add, QStringLiteral("Click an app to edit it. Drop-ins come from %1").arg(drop_in_dir));
     pins->add_row(list);
+}
+
+/* A pin shows its program where a setting shows its key */
+void add_dock_entries(QList<search_entry>& entries) {
+    for (uint32_t i = 0; i < g_conf.pin_count; i++) {
+        const stlxconf_pin_t& pin = g_conf.pins[i];
+        entries.append({ DOCK_PAGE, QLatin1String(PINS_CARD), QString::fromUtf8(pin.label),
+                         QString::fromUtf8(pin.path), QString(), pin_section(pin) });
+    }
 }

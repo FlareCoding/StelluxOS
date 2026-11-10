@@ -11,6 +11,13 @@ constexpr int MAX_KEYS_PER_SECOND = 50;
 constexpr int SLIDER_TICK_COUNT = 8;
 constexpr qreal MS_PER_SECOND = 1000;
 
+constexpr const char* KEYBOARD_CARD = "Keyboard";
+constexpr const char* REPEAT_LABEL = "Repeat held keys";
+constexpr const char* DELAY_LABEL = "Delay before repeat";
+constexpr const char* DELAY_KEY = "key_repeat_delay_ms";
+constexpr const char* RATE_LABEL = "Repeat rate";
+constexpr const char* INTERVAL_KEY = "key_repeat_interval_ms";
+
 /* The delay turning repeat on writes, since turning repeat off writes 0: the last nonzero delay the page read or the
  * slider set since Settings started, or libstlxconf's default before either. */
 static uint32_t g_repeat_delay_ms = STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS;
@@ -22,12 +29,23 @@ static int keys_per_second(uint32_t interval_ms) {
     return qBound(MIN_KEYS_PER_SECOND, qRound(MS_PER_SECOND / shown_interval_ms), MAX_KEYS_PER_SECOND);
 }
 
+/* The delay the slider shows, kept to its range: the configured delay, or while that is 0 the delay turning
+ * repeat on writes */
+static int shown_delay_ms() {
+    uint32_t delay_ms = g_conf.key_repeat_delay_ms != 0 ? g_conf.key_repeat_delay_ms : g_repeat_delay_ms;
+    return qBound(MIN_REPEAT_DELAY_MS, static_cast<int>(delay_ms), MAX_REPEAT_DELAY_MS);
+}
+
+static QString repeat_key() {
+    return QStringLiteral("%1 > 0 and %2 > 0").arg(QLatin1String(DELAY_KEY), QLatin1String(INTERVAL_KEY));
+}
+
 static QString delay_key() {
-    return QStringLiteral("key_repeat_delay_ms = %1").arg(g_conf.key_repeat_delay_ms);
+    return QStringLiteral("%1 = %2").arg(QLatin1String(DELAY_KEY)).arg(g_conf.key_repeat_delay_ms);
 }
 
 static QString rate_key() {
-    return QStringLiteral("key_repeat_interval_ms = %1").arg(g_conf.key_repeat_interval_ms);
+    return QStringLiteral("%1 = %2").arg(QLatin1String(INTERVAL_KEY)).arg(g_conf.key_repeat_interval_ms);
 }
 
 void build_input_page(QWidget* page) {
@@ -35,18 +53,15 @@ void build_input_page(QWidget* page) {
         g_repeat_delay_ms = g_conf.key_repeat_delay_ms;
     }
 
-    card* keyboard = add_section(page, QStringLiteral("Keyboard"), QStringLiteral("[input]"));
+    card* keyboard = add_section(page, QLatin1String(KEYBOARD_CARD), QStringLiteral("[input]"));
     bool is_repeating = is_key_repeat_on(g_conf);
 
-    auto* repeat_row = new setting_row(
-        QStringLiteral("Repeat held keys"),
-        QStringLiteral("key_repeat_delay_ms > 0 and key_repeat_interval_ms > 0")
-    );
+    auto* repeat_row = new setting_row(QLatin1String(REPEAT_LABEL), repeat_key());
     auto* repeat_switch = new toggle(is_repeating);
     repeat_row->add_control(repeat_switch);
     keyboard->add_row(repeat_row);
 
-    int shown_delay = qBound(MIN_REPEAT_DELAY_MS, static_cast<int>(g_repeat_delay_ms), MAX_REPEAT_DELAY_MS);
+    int shown_delay = shown_delay_ms();
     auto* delay_slider = new slider(
         MIN_REPEAT_DELAY_MS,
         MAX_REPEAT_DELAY_MS,
@@ -56,7 +71,7 @@ void build_input_page(QWidget* page) {
     );
     auto* delay_value = new value_label(QString::number(shown_delay), QStringLiteral("ms"));
 
-    auto* delay_row = new setting_row(QStringLiteral("Delay before repeat"), delay_key());
+    auto* delay_row = new setting_row(QLatin1String(DELAY_LABEL), delay_key());
     delay_row->add_control(delay_slider);
     delay_row->add_control(delay_value);
     keyboard->add_row(delay_row);
@@ -65,7 +80,7 @@ void build_input_page(QWidget* page) {
     auto* rate_slider = new slider(MIN_KEYS_PER_SECOND, MAX_KEYS_PER_SECOND, 1, shown_rate, SLIDER_TICK_COUNT);
     auto* rate_value = new value_label(QString::number(shown_rate), QStringLiteral("/s"));
 
-    auto* rate_row = new setting_row(QStringLiteral("Repeat rate"), rate_key());
+    auto* rate_row = new setting_row(QLatin1String(RATE_LABEL), rate_key());
     rate_row->add_control(rate_slider);
     rate_row->add_control(rate_value);
     keyboard->add_row(rate_row);
@@ -110,4 +125,21 @@ void build_input_page(QWidget* page) {
         rate_row->set_key(rate_key());
         show_pending_changes();
     };
+}
+
+void add_input_entries(QList<search_entry>& entries) {
+    bool is_repeating = is_key_repeat_on(g_conf);
+    QString keyboard = QLatin1String(KEYBOARD_CARD);
+    QString repeat = is_repeating ? QStringLiteral("On") : QStringLiteral("Off");
+    QString delay = QStringLiteral("%1 ms").arg(shown_delay_ms());
+    QString rate = QStringLiteral("%1 /s").arg(keys_per_second(g_conf.key_repeat_interval_ms));
+
+    /* Each of these rows takes its label as its object name */
+    QString repeat_label = QLatin1String(REPEAT_LABEL);
+    QString delay_label = QLatin1String(DELAY_LABEL);
+    QString rate_label = QLatin1String(RATE_LABEL);
+
+    entries.append({ INPUT_PAGE, keyboard, repeat_label, repeat_key(), repeat, repeat_label });
+    entries.append({ INPUT_PAGE, keyboard, delay_label, QLatin1String(DELAY_KEY), delay, delay_label });
+    entries.append({ INPUT_PAGE, keyboard, rate_label, QLatin1String(INTERVAL_KEY), rate, rate_label });
 }
