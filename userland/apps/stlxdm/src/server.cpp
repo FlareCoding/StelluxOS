@@ -342,6 +342,11 @@ void server::switch_to_gpu() {
     m_panels->use_picture_maker(m_gpu_compositor.get());
     m_power->capture_into(m_gpu_capture->pixels());
 
+    /* An animation draws its frame again only once dropped, and the GPU cannot read a frame drawn in the heap */
+    for (window_animation& a : m_animations) {
+        a.window->frame = frame_picture();
+    }
+
     stlxgfx_destroy_surface(m_backdrop);
     stlxgfx_destroy_surface(m_frost);
     m_backdrop = nullptr;

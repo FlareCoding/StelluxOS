@@ -625,6 +625,7 @@ private:
                         const damage_list::rect& to);
     void advance_animations();
     void forget_animation(const dm_window* w);
+    const frame_picture* animation_frame(window_animation& a, picture_maker& maker);
     void damage_painted(const dm_window& w, const damage_list::rect& frame);
     void compose_animations(const decor::canvas& canvas, const damage_list::rect& r);
     bool add_animations(dm_output& out);
