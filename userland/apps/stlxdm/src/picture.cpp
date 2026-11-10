@@ -200,6 +200,21 @@ void frame_picture::blend(const decor::canvas& back, const dm_window& w, const d
     }
 }
 
+/* A picture in memory only the CPU reads has no GPU address to offset */
+picture_region frame_picture::strip_pixels(uint32_t index) const {
+    const damage_list::rect& strip = m_strips[index];
+    uint64_t address = m_memory->address();
+
+    picture_region region;
+    region.pixels = m_memory->pixels() + m_offsets[index];
+    region.address = address != 0 ? address + m_offsets[index] : 0;
+    region.pitch = static_cast<uint32_t>(strip.w) * BYTES_PER_PIXEL;
+    region.width = strip.w;
+    region.height = strip.h;
+
+    return region;
+}
+
 std::unique_ptr<top_picture> top_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
     uint32_t pitch = width * BYTES_PER_PIXEL;
     size_t bytes = static_cast<size_t>(pitch) * height;

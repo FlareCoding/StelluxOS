@@ -3,6 +3,7 @@
 
 #include "damage.hpp"
 
+#include <stlxgfx/blend.h>
 #include <stlxgfx/surface.h>
 #include <stlxtheme/theme.h>
 
@@ -59,6 +60,13 @@ constexpr window_shadow_layer FOCUSED_SHADOW[] = {
     { 12, 28, 0, 44 },
     { 28, 72, 0, 40 }
 };
+
+/* A pixel holds alpha above red, green and blue, each channel `CHANNEL_BITS` wide, and an alpha or opacity of
+ * `CHANNEL_MAX` is opaque */
+constexpr uint32_t CHANNEL_BITS = 8;
+constexpr uint32_t CHANNEL_MAX = 0xFF;
+constexpr uint32_t PIXEL_ALPHA_SHIFT = 24;
+constexpr uint32_t OPAQUE_PIXEL = 0xFF000000u;
 
 /* Pointer zones inside a window's decorated bounds */
 enum class zone {
@@ -121,10 +129,6 @@ int32_t rounded_rect_distance(const damage_list::rect& bounds, int32_t radius, i
  * eighth pixels outside an edge, negative inside */
 uint32_t distance_coverage(int32_t distance);
 
-/* Source-over of `color` at `alpha`, 0 to 255, onto the opaque `below`,
- * giving an opaque pixel */
-uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha);
-
 bool decorated(const dm_window& w);
 
 /* The decorated rect for an explicit content geometry. */
@@ -176,6 +180,31 @@ void draw(const canvas& back, const dm_window& w,
  * `CONTENT_BG` instead. */
 void blit_content(const canvas& back, const dm_window& w,
                   const damage_list::rect& clip);
+
+/* The coverage, 0 to 255, of the pixel at (x, y) by `r` with its corners
+ * rounded by `radius`, which must be at most `CORNER_R` */
+uint32_t rounded_coverage(const damage_list::rect& r, int32_t radius, int32_t x, int32_t y);
+
+/* compose.comp's `blend`: `color` at `alpha` from 0 to 255 over `below`, giving an opaque pixel */
+inline uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha) {
+    if (alpha == 0) {
+        return below | OPAQUE_PIXEL;
+    }
+
+    if (alpha == CHANNEL_MAX) {
+        return color | OPAQUE_PIXEL;
+    }
+
+    uint32_t inverse = CHANNEL_MAX - alpha;
+    uint32_t blended = OPAQUE_PIXEL;
+    for (uint32_t shift = 0; shift < PIXEL_ALPHA_SHIFT; shift += CHANNEL_BITS) {
+        uint32_t premultiplied = ((color >> shift) & CHANNEL_MAX) * alpha;
+        uint32_t channel = stlxgfx_blend_channel((below >> shift) & CHANNEL_MAX, premultiplied, inverse);
+        blended |= channel << shift;
+    }
+
+    return blended;
+}
 
 /* Draws the interactive-resize rubber band `r`, inside `clip` only,
  * both in desktop coordinates, and `clip` must lie inside `back`. */

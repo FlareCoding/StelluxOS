@@ -21,6 +21,7 @@ enum class layer_op : uint32_t {
     spin,                 /* 1 added to the pixel without end, which runs a test's compose past its deadline */
     glass,                /* glass from the frost source, its corners blended by coverage when rounded */
     blend_premultiplied,  /* the source's premultiplied alpha pixels over what lies beneath, rounded as `copy` */
+    scale,                /* a picture region resampled into the rectangle at an opacity, as `layer_scaled` says */
 };
 
 /* One layer as the compose shader reads it, which compose.comp's `layer`
@@ -29,15 +30,19 @@ struct layer {
     int32_t  x0, y0;
     int32_t  x1, y1;                /* past the layer's last pixel */
     uint64_t address;
-    int32_t  origin_x, origin_y;    /* the output pixel the source's first pixel lies at */
+    int32_t  origin_x, origin_y;    /* the output pixel the source's first pixel lies at, or a `scale` source's size */
     uint32_t pitch;
     layer_op op;
-    uint32_t color;                 /* a fill's or dim's color, or `blend`'s opacity, 255 opaque */
+    uint32_t color;                 /* a fill's or dim's color, `blend`'s opacity out of 255, or `scale` bits */
     uint32_t radius;                /* of the rectangle's rounded bottom corners, all four for glass, 0 when square */
     uint32_t rim_fade;              /* rows a glass rectangle's rim light fades over, 0 for none */
 };
 
 static_assert(sizeof(layer) == 56);
+
+/* A `scale` layer holds its source's width and height in `origin_x` and `origin_y`, its opacity in `color`'s alpha
+ * byte, and in `color` this bit for a window's content, whose alpha byte means nothing */
+constexpr uint32_t SCALE_CONTENT = 1u;
 
 /* A picture's first pixel in GPU memory, its pitch, and the output pixel it
  * lies at */
@@ -56,20 +61,41 @@ struct layer_piece {
     uint32_t          opacity = 255;
 };
 
-/* A window as its layers show it. A borderless one has no frame strips,
- * one without a picture the GPU reads shows the content color, and
- * glass with empty bounds shows none. */
+/* A region of a picture: its first pixel as the CPU reads it, null without
+ * a mapping, and as the GPU reads it, 0 where the GPU cannot reach it */
+struct picture_region {
+    const uint8_t* pixels = nullptr;
+    uint64_t       address = 0;
+    uint32_t       pitch = 0;
+    int32_t        width = 0;
+    int32_t        height = 0;
+};
+
+/* A picture region resampled bilinearly into `bounds` at `opacity` from 0 to 255. A window's content ignores its
+ * alpha and rounds its bottom corners by `radius`, and any other picture blends by its straight alpha. */
+struct layer_scaled {
+    damage_list::rect bounds;
+    picture_region    source;
+    uint32_t          opacity = 0;
+    bool              is_content = false;
+    uint32_t          radius = 0;
+};
+
+/* A window as its layers show it: no frame strips when borderless, the content color without a picture the GPU
+ * reads, no glass when its bounds are empty, and only `scaled` pieces, covering nothing, while it animates */
 struct layer_window {
     static constexpr uint32_t FRAME_STRIPS = 4;
+    static constexpr uint32_t SCALED_MAX = FRAME_STRIPS * 3 + 1;  /* up to three pieces per strip, and the content */
 
-    material::surface    glass;
-    damage_list::rect    content;
-    uint32_t             radius = 0;
-    layer_piece          frame[FRAME_STRIPS];
-    bool                 has_picture = false;
-    bool                 is_premultiplied = false;  /* `picture` blends over what lies beneath */
-    layer_picture        picture;
-    const window_import* import = nullptr;          /* the window buffer `picture` lies in */
+    material::surface         glass;
+    damage_list::rect         content;
+    uint32_t                  radius = 0;
+    layer_piece               frame[FRAME_STRIPS];
+    bool                      has_picture = false;
+    bool                      is_premultiplied = false;  /* `picture` blends over what lies beneath */
+    layer_picture             picture;
+    const window_import*      import = nullptr;          /* the window buffer `picture` or the scaled content lies in */
+    std::vector<layer_scaled> scaled;
 };
 
 /* What one output shows, bottom to top, the dim only while the power

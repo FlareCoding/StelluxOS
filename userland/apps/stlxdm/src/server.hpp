@@ -1,6 +1,7 @@
 #ifndef STLXDM_SERVER_HPP
 #define STLXDM_SERVER_HPP
 
+#include "animation.hpp"
 #include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
@@ -616,8 +617,17 @@ private:
     void minimize_window(dm_window* w);
     void unminimize_window(dm_window* w);
     bool has_launcher(const dm_client& c) const;
+    damage_list::rect launcher_tile_of(const dm_client& c) const;
     bool unminimize_app_window(const stlxconf_pin_t& pin);
     void unminimize_windows_without_launcher();
+    window_animation* find_animation(const dm_window* w);
+    bool animate_window(dm_window* w, window_transition transition, const damage_list::rect& from,
+                        const damage_list::rect& to);
+    void advance_animations();
+    void forget_animation(const dm_window* w);
+    void damage_painted(const dm_window& w, const damage_list::rect& frame);
+    void compose_animations(const decor::canvas& canvas, const damage_list::rect& r);
+    bool add_animations(dm_output& out);
 
     /* modes.cpp */
     bool keeps_place_for_mode_request(uint32_t output) const;
@@ -722,6 +732,10 @@ private:
     /* Mapped windows bottom to top. Popups sit directly above their
      * parent and travel with it on raise. */
     std::vector<dm_window*> m_zorder;
+
+    /* Toplevels out of the scene while they show resampled between two
+     * places, above every window in the scene, in the order they started */
+    std::vector<window_animation> m_animations;
 
     /* Input routing state, cleared by forget_window on death */
     dm_window* m_focus = nullptr;

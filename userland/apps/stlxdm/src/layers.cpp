@@ -1,9 +1,11 @@
 #include "layers.hpp"
+#include "decor.hpp"
 
-/* The backdrop, each window's glass, frame strips and content, and above
- * them the shell's popover and the two top pictures with the dim between */
-constexpr uint32_t LAYERS_PER_WINDOW = layer_window::FRAME_STRIPS + 2;
+/* The backdrop, each window's glass, frame strips and content or an animating window's more numerous scaled
+ * pieces, and above them the shell's popover and the two top pictures with the dim between */
+constexpr uint32_t LAYERS_PER_WINDOW = layer_window::SCALED_MAX;
 constexpr uint32_t LAYERS_AROUND_WINDOWS = 5;
+static_assert(LAYERS_PER_WINDOW >= layer_window::FRAME_STRIPS + 2);
 
 static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -134,6 +136,25 @@ static void append_content(
     list.push_back(content);
 }
 
+/* A piece without a picture the GPU reads shows nothing */
+static void append_scaled(std::vector<layer>& list, const damage_list::rect& r, const layer_window& w) {
+    for (const layer_scaled& piece : w.scaled) {
+        if (!overlaps(piece.bounds, r) || piece.source.address == 0) {
+            continue;
+        }
+
+        layer scaled = layer_over(piece.bounds, layer_op::scale);
+        scaled.address = piece.source.address;
+        scaled.origin_x = piece.source.width;
+        scaled.origin_y = piece.source.height;
+        scaled.pitch = piece.source.pitch;
+
+        scaled.color = piece.opacity << decor::PIXEL_ALPHA_SHIFT | (piece.is_content ? SCALE_CONTENT : 0);
+        scaled.radius = piece.radius;
+        list.push_back(scaled);
+    }
+}
+
 uint32_t max_layers(size_t windows) {
     return static_cast<uint32_t>(windows) * LAYERS_PER_WINDOW + LAYERS_AROUND_WINDOWS;
 }
@@ -159,6 +180,7 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
         append_glass(list, r, scene.windows[i], scene.frost);
         append_frame(list, r, scene.windows[i]);
         append_content(list, r, scene.windows[i], scene.content_color);
+        append_scaled(list, r, scene.windows[i]);
     }
 
     append_piece(list, r, scene.popover, layer_op::blend);

@@ -301,19 +301,6 @@ static inline uint32_t dist8_coverage(int32_t d8) {
     return c > 255 ? 255 : c;
 }
 
-static inline uint32_t blend_px(uint32_t dst, uint32_t color, uint32_t a) {
-    if (a >= 255) {
-        return 0xFF000000u | (color & 0x00FFFFFFu);
-    }
-
-    uint32_t inv = 255 - a;
-    uint32_t r = stlxgfx_blend_channel((dst >> 16) & 0xFF, ((color >> 16) & 0xFF) * a, inv);
-    uint32_t g = stlxgfx_blend_channel((dst >> 8) & 0xFF, ((color >> 8) & 0xFF) * a, inv);
-    uint32_t b = stlxgfx_blend_channel(dst & 0xFF, (color & 0xFF) * a, inv);
-
-    return 0xFF000000u | (r << 16) | (g << 8) | b;
-}
-
 /* Source-over of the premultiplied `source` onto the opaque `below`, clamping each channel at 255 since a client
  * may send a color above its alpha */
 static inline uint32_t blend_premultiplied_px(uint32_t below, uint32_t source) {
@@ -817,10 +804,6 @@ uint32_t distance_coverage(int32_t distance) {
     return dist8_coverage(distance);
 }
 
-uint32_t blend_over(uint32_t below, uint32_t color, uint32_t alpha) {
-    return blend_px(below, color, alpha);
-}
-
 bool decorated(const dm_window& w) {
     return (w.flags & SWP_WF_BORDERLESS) == 0;
 }
@@ -1092,11 +1075,15 @@ void blit_content(const canvas& back, const dm_window& w,
             uint32_t below = dst_row[x - back.x];
             uint32_t picture = src_row[x - w.x];
             uint32_t shown = b->is_premultiplied ? blend_premultiplied_px(below, picture) : picture;
-            dst_row[x - back.x] = blend_px(below, shown, a);
+            dst_row[x - back.x] = blend_over(below, shown, a);
         }
     }
 
     stlxgfx_destroy_surface(src);
+}
+
+uint32_t rounded_coverage(const damage_list::rect& r, int32_t radius, int32_t x, int32_t y) {
+    return coverage_of({ r.x, r.y, r.w, r.h, radius }, x, y);
 }
 
 void draw_outline(const canvas& back, const damage_list::rect& r,
