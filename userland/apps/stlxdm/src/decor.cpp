@@ -301,19 +301,6 @@ static inline uint32_t dist8_coverage(int32_t d8) {
     return c > 255 ? 255 : c;
 }
 
-/* Source-over of the premultiplied `source` onto the opaque `below`, clamping each channel at 255 since a client
- * may send a color above its alpha */
-static inline uint32_t blend_premultiplied_px(uint32_t below, uint32_t source) {
-    uint32_t inverse = 255 - (source >> 24);
-    uint32_t blended = 0xFF000000u;
-    for (uint32_t shift = 0; shift < 24; shift += 8) {
-        uint32_t channel = ((source >> shift) & 0xFF) + stlxgfx_div255(((below >> shift) & 0xFF) * inverse);
-        blended |= (channel < 255 ? channel : 255) << shift;
-    }
-
-    return blended;
-}
-
 static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
     return reinterpret_cast<uint32_t*>(back->pixels + static_cast<uint32_t>(y) * back->pitch);
 }
@@ -350,7 +337,7 @@ static void put_picture(
         uint32_t* target = back_row(back.surface, y - back.y) + (area.x - back.x);
         const uint32_t* source = picture_row(b, y - w.y) + (area.x - w.x);
         for (int32_t i = 0; i < area.w; i++) {
-            target[i] = blend_premultiplied_px(target[i], source[i]);
+            target[i] = decor::blend_premultiplied(target[i], source[i]);
         }
     }
 }
@@ -1074,7 +1061,7 @@ void blit_content(const canvas& back, const dm_window& w,
 
             uint32_t below = dst_row[x - back.x];
             uint32_t picture = src_row[x - w.x];
-            uint32_t shown = b->is_premultiplied ? blend_premultiplied_px(below, picture) : picture;
+            uint32_t shown = b->is_premultiplied ? blend_premultiplied(below, picture) : picture;
             dst_row[x - back.x] = blend_over(below, shown, a);
         }
     }
