@@ -34,11 +34,10 @@ enum class glyph {
     DOCUMENT,
     PROGRAM,
     COPY,
-    LOGO,
 };
 
-/* `LOGO` must stay last, since it ends the count */
-constexpr int GLYPH_COUNT = static_cast<int>(glyph::LOGO) + 1;
+/* `COPY` must stay last, since it ends the count */
+constexpr int GLYPH_COUNT = static_cast<int>(glyph::COPY) + 1;
 
 /* The ring that marks a chosen wallpaper, the accent or the selected display, and how far outside its edge it sits */
 constexpr qreal SELECTION_RING_WIDTH = 1.5;
