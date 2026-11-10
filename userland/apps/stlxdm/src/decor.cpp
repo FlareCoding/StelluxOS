@@ -742,7 +742,7 @@ static const window_shadow& shadow_of(bool is_focused) {
 namespace decor {
 
 int init() {
-    g_font = stlxgfx_font_open(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE);
+    g_font = stlxgfx_font_open(STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_BODY_SIZE);
     if (!g_font) {
         return -1;
     }
