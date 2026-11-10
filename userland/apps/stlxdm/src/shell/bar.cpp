@@ -11,6 +11,8 @@ constexpr int32_t TARGET_HEIGHT = 24;
 /* Space between a target's content and the sides of its hover background */
 constexpr int32_t TARGET_PADDING = 8;
 
+constexpr int32_t MARK_SIZE = 20;
+
 constexpr int32_t SEPARATOR_MARGIN = 12;
 constexpr int32_t SEPARATOR_HEIGHT = 16;
 constexpr int32_t SEPARATOR_WIDTH = 2 * SEPARATOR_MARGIN + 1;
@@ -155,21 +157,27 @@ ui::rect bar_target::slot() const {
     return target_slot(m_frame, m_reach_left, m_reach_right);
 }
 
-mark_target::mark_target() : bar_target(top_bar::TARGET_INSET, 0), m_mark(make_mark_picture(STLXTHEME_TEXT)) {}
+mark_target::mark_target() : bar_target(top_bar::TARGET_INSET, 0), m_mark(make_mark_picture(MARK_SIZE)) {}
 
 mark_target::~mark_target() {
     stlxgfx_destroy_surface(m_mark);
 }
 
 ui::size mark_target::measure(ui::size) {
-    return { top_bar::TARGET_INSET + STLXTHEME_GLYPH_SIZE + 2 * TARGET_PADDING, STLXTHEME_TOP_BAR_HEIGHT };
+    int32_t mark_width = m_mark ? static_cast<int32_t>(m_mark->width) : 0;
+    return { top_bar::TARGET_INSET + mark_width + 2 * TARGET_PADDING, STLXTHEME_TOP_BAR_HEIGHT };
 }
 
 void mark_target::paint(ui::painter& p) {
     bar_target::paint(p);
 
+    if (!m_mark) {
+        return;
+    }
+
     ui::rect content = slot();
-    p.image({ content.x + TARGET_PADDING, (m_frame.h - STLXTHEME_GLYPH_SIZE) / 2 }, m_mark);
+    int32_t top = (m_frame.h - static_cast<int32_t>(m_mark->height)) / 2;
+    p.image({ content.x + TARGET_PADDING, top }, m_mark);
 }
 
 readouts_target::readouts_target()

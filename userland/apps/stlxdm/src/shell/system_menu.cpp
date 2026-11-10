@@ -21,6 +21,7 @@ constexpr int32_t HEADER_PADDING_TOP = 8;
 constexpr int32_t HEADER_PADDING_BOTTOM = 9;
 constexpr int32_t HEADER_PADDING_X = 10;
 constexpr int32_t HEADER_GAP = 10;
+constexpr int32_t HEADER_MARK_SIZE = 24;
 
 constexpr int32_t DIVIDER_MARGIN_Y = 4;
 constexpr int32_t DIVIDER_INSET = 6;
@@ -250,7 +251,7 @@ std::unique_ptr<ui::widget> system_menu::build() {
     header->s().gap = HEADER_GAP;
     header->s().padding = { HEADER_PADDING_TOP, HEADER_PADDING_X, HEADER_PADDING_BOTTOM, HEADER_PADDING_X };
 
-    header->add<picture_view>(make_mark_picture(STLXTHEME_TEXT));
+    header->add<picture_view>(make_mark_picture(HEADER_MARK_SIZE));
     ui::label* title = header->add<ui::label>("Stellux " + release_name());
     title->set_weight(ui::weight::semibold);
     title->s().main = ui::length::flex();

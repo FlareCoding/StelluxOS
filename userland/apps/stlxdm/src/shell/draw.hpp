@@ -15,10 +15,9 @@ struct shadow_layer {
     uint32_t alpha; /* of the ink, 255 opaque */
 };
 
-/* The Stellux mark, a quarter disc at its top left and one at its bottom
- * right, in `color` on a transparent `STLXTHEME_GLYPH_SIZE` square. Null
- * when memory ran out. */
-stlxgfx_surface_t* make_mark_picture(uint32_t color);
+/* The Stellux mark, `size` pixels square, as /etc/res/icons/stellux-mark-<size>.png
+ * holds it. Null when that file cannot be read, cannot be decoded, or memory ran out. */
+stlxgfx_surface_t* make_mark_picture(int32_t size);
 
 /* A one pixel ring along the edge of a `w` by `h` rect with corners of
  * `radius`, in `color` on transparent pixels. `w` and `h` must be at least
