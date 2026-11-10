@@ -18,17 +18,21 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QSignalBlocker>
 #include <QSocketNotifier>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iterator>
+#include <vector>
 
 constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
 
@@ -62,6 +66,12 @@ constexpr int SNAP_PX = 24;
 constexpr uint32_t REPEAT_DELAY_MS = 400;
 constexpr uint32_t REPEAT_INTERVAL_MS = 40;
 
+constexpr uint64_t MILLIHERTZ_PER_HERTZ = 1000;
+constexpr int COUNTDOWN_TICK_MS = 1000;
+
+/* The display manager sets a trial's mode back this long after lighting it, unless it is kept */
+constexpr uint32_t TRIAL_SECONDS = 15;
+
 enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE };
 
 constexpr uint32_t PAGE_COUNT = STARTUP_PAGE + 1;
@@ -74,7 +84,7 @@ static_assert(std::size(PAGE_NAMES) == PAGE_COUNT);
 static const char* const PAGE_BLURBS[] = {
     "Wallpaper and the desktop's colors",
     "Pinned launchers and dock geometry",
-    "Each output's place on the desktop",
+    "Each output's resolution, refresh rate and place on the desktop",
     "Keyboard repeat behavior",
     "Programs and shortcuts at session start",
 };
@@ -173,8 +183,8 @@ private:
     const uint32_t* m_value;
 };
 
-/* The Display page's arrangement and its own connection to the display
- * manager, since libstlxqpa drops the layout results on Qt's connection */
+/* The Display page's arrangement, mode choices and own connection to the
+ * display manager, since libstlxqpa drops layout and mode results */
 struct display_state {
     stlxwin_conn* conn = nullptr;
     QSocketNotifier* notifier = nullptr;
@@ -183,6 +193,9 @@ struct display_state {
     stlxwin_output outputs[STLXWIN_OUTPUTS_MAX] = {};
     QPoint top_lefts[STLXWIN_OUTPUTS_MAX];
     uint32_t main_output = 0;
+    uint32_t mode_watches = 0;                           /* outputs whose modes the connection asked for, by bit */
+    uint32_t unchangeable_outputs = 0;                   /* outputs whose mode request was answered `-ENOTTY`, by bit */
+    stlxwin_mode chosen_modes[STLXWIN_OUTPUTS_MAX] = {}; /* each output's pick, its current mode again at its MODES */
 };
 
 /* The outputs to scale, the main one under an accent strip. A dragged
@@ -396,24 +409,42 @@ private:
     QPointF m_grab_pointer;
 };
 
-/* Everything the pages edit but the Display page's arrangement, shared
- * by the builders and the footer */
+/* Everything the pages edit but the Display page's arrangement and mode
+ * choices, shared by the builders and the footer */
 struct app_state {
     stlxconf_t conf;
     QWidget* page_slot = nullptr;
     QWidget* page = nullptr;
+    QScrollBar* page_scroll_bar = nullptr;
     QLabel* page_title = nullptr;
     QLabel* page_blurb = nullptr;
     QLabel* status = nullptr;
     nav_item* nav[PAGE_COUNT] = {};
     uint32_t active_page = 0;
+    int chosen_scroll = 0; /* where the person last scrolled the page to */
     bool dirty = false;
+};
+
+/* The Display page's mode request and its trial's keep prompt, which sits
+ * above the page since the trial's relight rebuilds the page */
+struct trial_state {
+    QWidget* bar = nullptr;
+    QLabel* prompt = nullptr;
+    QPushButton* keep = nullptr;
+    QPushButton* set_back = nullptr;
+    QTimer* countdown = nullptr;
+    bool awaits_answer = false; /* a request for `mode` on `output` is sent and its answer not read */
+    bool shows_prompt = false;  /* the bar shows the trial of `mode` on `output` */
+    uint32_t output = 0;
+    stlxwin_mode mode = {};
+    uint32_t seconds_left = 0;
 };
 
 } // namespace
 
 static app_state g_st;
 static display_state g_display;
+static trial_state g_trial;
 
 static void build_page(uint32_t index);
 
@@ -664,7 +695,7 @@ static void make_row_menu(QHBoxLayout* row, uint32_t index, uint32_t count, move
     });
 }
 
-static void add_list_button(card* parent, const char* text, std::function<void()> on_click) {
+static QPushButton* add_list_button(card* parent, const char* text, std::function<void()> on_click) {
     auto* button = new QPushButton(QString::fromUtf8(text));
     QObject::connect(button, &QPushButton::clicked, std::move(on_click));
 
@@ -672,6 +703,14 @@ static void add_list_button(card* parent, const char* text, std::function<void()
     row->addWidget(button);
     row->addStretch(1);
     layout_of(parent)->addLayout(row);
+
+    return button;
+}
+
+static void add_choice_row(card* parent, const char* label, QComboBox* choice) {
+    QHBoxLayout* row = make_row(parent, label);
+    row->addWidget(choice);
+    row->addStretch(1);
 }
 
 static void build_appearance(QWidget* page) {
@@ -769,6 +808,164 @@ static const char* layout_outcome_text(uint32_t outcome) {
     }
 }
 
+static bool sizes_equal(const stlxwin_mode& a, const stlxwin_mode& b) {
+    return a.width == b.width && a.height == b.height;
+}
+
+static bool modes_equal(const stlxwin_mode& a, const stlxwin_mode& b) {
+    return sizes_equal(a, b) && a.refresh_millihertz == b.refresh_millihertz;
+}
+
+/* What the display manager did, for an answer whose `result` is 0 */
+static const char* mode_outcome_text(uint32_t outcome) {
+    switch (outcome) {
+    case STLXWIN_MODE_SET:
+        return "display mode set";
+    case STLXWIN_MODE_TRIAL:
+        return "display mode on trial";
+    case STLXWIN_MODE_KEPT:
+        return "display mode kept";
+    case STLXWIN_MODE_SET_BACK:
+        return "display mode set back";
+    case STLXWIN_MODE_DEFAULT:
+        return "setting the display mode back failed, so the output's default was set";
+    case STLXWIN_MODE_NO_BUFFERS:
+        return "display mode set back, the desktop has no buffers at that size";
+    case STLXWIN_MODE_BUSY:
+        return "refused, a trial is running";
+    case STLXWIN_MODE_NO_TRIAL:
+        return "refused, the trial had already ended";
+    case STLXWIN_MODE_INVALID:
+        return "refused as invalid";
+    default:
+        return "answered";
+    }
+}
+
+/* What did not happen when the display refused the mode the display manager asked for last */
+static const char* mode_failure_text(uint32_t outcome) {
+    switch (outcome) {
+    case STLXWIN_MODE_SET:
+        return "display mode not set";
+    case STLXWIN_MODE_TRIAL:
+        return "display mode not set, so no trial started";
+    case STLXWIN_MODE_SET_BACK:
+        return "display mode not set back";
+    case STLXWIN_MODE_DEFAULT:
+        return "display mode not set back, nor set to the output's default";
+    case STLXWIN_MODE_NO_BUFFERS:
+        return "the desktop has no buffers at that size, and setting the display mode back failed";
+    default:
+        return "the display refused a display mode";
+    }
+}
+
+static QString mode_result_text(uint32_t outcome, int32_t result) {
+    if (result == 0) {
+        return QString::fromUtf8(mode_outcome_text(outcome));
+    }
+
+    if (result == -ENOTTY) {
+        return QStringLiteral("display mode not set, this display cannot change modes");
+    }
+
+    return QString::asprintf("%s, the display answered: %s", mode_failure_text(outcome), strerror(-result));
+}
+
+/* Whether an outcome answers a mode request. The page sends no keep
+ * that `STLXWIN_MODE_INVALID` would answer */
+static bool answers_request(uint32_t outcome) {
+    switch (outcome) {
+    case STLXWIN_MODE_SET:
+    case STLXWIN_MODE_TRIAL:
+    case STLXWIN_MODE_NO_BUFFERS:
+    case STLXWIN_MODE_BUSY:
+    case STLXWIN_MODE_INVALID:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Counted from the trial's answer, so 0 comes just after the display manager's own timer ends */
+static void show_countdown() {
+    if (g_trial.seconds_left == 0) {
+        g_trial.prompt->setText(QStringLiteral("Setting the display mode back"));
+        return;
+    }
+
+    const char* unit = g_trial.seconds_left == 1 ? "second" : "seconds";
+    QString text = QString::asprintf("Keep this display mode? Setting it back in %u %s", g_trial.seconds_left, unit);
+    g_trial.prompt->setText(text);
+}
+
+static void start_keep_prompt() {
+    g_trial.shows_prompt = true;
+    g_trial.seconds_left = TRIAL_SECONDS;
+
+    show_countdown();
+    g_trial.keep->setEnabled(true);
+    g_trial.set_back->setEnabled(true);
+    g_trial.bar->show();
+    g_trial.countdown->start(COUNTDOWN_TICK_MS);
+}
+
+static void end_keep_prompt() {
+    g_trial.shows_prompt = false;
+    g_trial.countdown->stop();
+    g_trial.bar->hide();
+}
+
+static void follow_modes(uint32_t output) {
+    stlxwin_modes_info info;
+    if (stlxwin_modes_get(g_display.conn, output, &info, nullptr, 0) < 0) {
+        return;
+    }
+
+    g_display.chosen_modes[output] = info.current;
+
+    uint32_t output_count = qMin(info.output_count, STLXWIN_OUTPUTS_MAX);
+    for (uint32_t i = 0; i < output_count; i++) {
+        bool is_watched = (g_display.mode_watches & (1u << i)) != 0;
+        if (!is_watched && stlxwin_modes_watch(g_display.conn, i) == 0) {
+            g_display.mode_watches |= 1u << i;
+        }
+    }
+
+    /* Leaving the trial's mode ends the prompt: a set-back's relight comes
+     * before its answer, and a trial that an output event ends gets none */
+    bool is_trial_output = g_trial.shows_prompt && output == g_trial.output;
+    if (is_trial_output && !modes_equal(info.current, g_trial.mode)) {
+        end_keep_prompt();
+        set_status("the display mode changed and the trial ended");
+    }
+}
+
+static void follow_mode_result(const stlxwin_event& event) {
+    uint32_t output = event.mode_result.output;
+    uint32_t outcome = event.mode_result.outcome;
+    int32_t result = event.mode_result.result;
+
+    set_status(mode_result_text(outcome, result).toUtf8().constData());
+
+    /* The display manager can answer a set-back after its relight ended the
+     * prompt, so only a request's own answers clear `awaits_answer` */
+    if (answers_request(outcome)) {
+        g_trial.awaits_answer = false;
+    }
+
+    if (result == -ENOTTY && output < STLXWIN_OUTPUTS_MAX) {
+        g_display.unchangeable_outputs |= 1u << output;
+    }
+
+    bool is_trial_output = g_trial.shows_prompt && output == g_trial.output;
+    if (outcome == STLXWIN_MODE_TRIAL && result == 0) {
+        start_keep_prompt();
+    } else if (is_trial_output && !answers_request(outcome)) {
+        end_keep_prompt();
+    }
+}
+
 static void close_display_connection() {
     g_display.notifier->setEnabled(false);
     g_display.notifier->deleteLater();
@@ -776,13 +973,19 @@ static void close_display_connection() {
 
     stlxwin_disconnect(g_display.conn);
     g_display.conn = nullptr;
+    g_display.mode_watches = 0;
+    g_display.unchangeable_outputs = 0;
+
+    g_trial.awaits_answer = false;
+    end_keep_prompt();
 }
 
-/* While the Display page shows, each `STLXWIN_EVT_OUTPUTS` or a lost
- * connection rebuilds it. A layout request's outcome shows in the footer */
+/* While the Display page shows, each `STLXWIN_EVT_OUTPUTS`, mode event or
+ * lost connection rebuilds it. The footer shows layout and mode results */
 static void read_display_events() {
     bool alive = stlxwin_dispatch(g_display.conn) >= 0;
     bool outputs_changed = false;
+    bool mode_event_read = false;
 
     stlxwin_event event;
     while (alive && stlxwin_next_event(g_display.conn, &event)) {
@@ -792,6 +995,12 @@ static void read_display_events() {
             outputs_changed = true;
         } else if (event.type == STLXWIN_EVT_LAYOUT_RESULT) {
             set_status(layout_outcome_text(event.layout_result.outcome));
+        } else if (event.type == STLXWIN_EVT_MODES) {
+            follow_modes(event.modes.output);
+            mode_event_read = true;
+        } else if (event.type == STLXWIN_EVT_MODE_RESULT) {
+            follow_mode_result(event);
+            mode_event_read = true;
         }
     }
 
@@ -799,7 +1008,7 @@ static void read_display_events() {
         close_display_connection();
     }
 
-    bool page_stale = outputs_changed || !alive;
+    bool page_stale = outputs_changed || mode_event_read || !alive;
     bool page_shown = g_st.active_page == DISPLAY_PAGE;
     if (page_stale && page_shown) {
         rebuild_page_later();
@@ -814,6 +1023,11 @@ static bool open_display_connection() {
     g_display.conn = stlxwin_connect("stlxsettings");
     if (!g_display.conn) {
         return false;
+    }
+
+    /* Output 0's MODES counts the outputs, which `follow_modes` then watches */
+    if (stlxwin_modes_watch(g_display.conn, 0) == 0) {
+        g_display.mode_watches = 1;
     }
 
     g_display.notifier = new QSocketNotifier(stlxwin_conn_fd(g_display.conn), QSocketNotifier::Read);
@@ -865,6 +1079,164 @@ static void apply_layout() {
     }
 }
 
+/* The output's name as the desktop lists it, or its number when the desktop does not place it */
+static QString output_title(uint32_t output) {
+    for (uint32_t i = 0; i < g_display.count; i++) {
+        if (g_display.outputs[i].output == output) {
+            return output_name(g_display.outputs[i]);
+        }
+    }
+
+    stlxwin_output unplaced = {};
+    unplaced.output = output;
+
+    return output_name(unplaced);
+}
+
+static bool can_apply_mode(uint32_t output, const stlxwin_mode& current) {
+    bool is_idle = !g_trial.awaits_answer && !g_trial.shows_prompt;
+    return is_idle && !modes_equal(g_display.chosen_modes[output], current);
+}
+
+/* The answer arrives as `STLXWIN_EVT_MODE_RESULT`, which `follow_mode_result` reads */
+static void apply_mode(uint32_t output) {
+    stlxwin_modes_info info;
+    if (stlxwin_modes_get(g_display.conn, output, &info, nullptr, 0) < 0) {
+        return;
+    }
+
+    /* Clicks can arrive before the posted rebuild greys Apply out, after an Apply or a MODES */
+    if (!can_apply_mode(output, info.current)) {
+        return;
+    }
+
+    const stlxwin_mode& chosen = g_display.chosen_modes[output];
+    if (stlxwin_mode_set(g_display.conn, output, &chosen, STLXWIN_SET_MODE_TRIAL) != 0) {
+        set_status("the display mode could not be sent to the display manager");
+        return;
+    }
+
+    g_trial.awaits_answer = true;
+    g_trial.output = output;
+    g_trial.mode = chosen;
+    rebuild_page_later();
+}
+
+static QString rate_text(uint64_t refresh_millihertz) {
+    if (refresh_millihertz == 0) {
+        return QStringLiteral("unknown rate");
+    }
+
+    return QString::asprintf(
+        "%llu.%03llu Hz",
+        static_cast<unsigned long long>(refresh_millihertz / MILLIHERTZ_PER_HERTZ),
+        static_cast<unsigned long long>(refresh_millihertz % MILLIHERTZ_PER_HERTZ)
+    );
+}
+
+static bool is_first_of_size(const std::vector<stlxwin_mode>& listed, size_t index) {
+    for (size_t i = 0; i < index; i++) {
+        if (sizes_equal(listed[i], listed[index])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool is_listed(const std::vector<stlxwin_mode>& listed, const stlxwin_mode& mode) {
+    for (const stlxwin_mode& entry : listed) {
+        if (modes_equal(entry, mode)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void fill_resolution_choice(QComboBox* choice, const std::vector<stlxwin_mode>& listed,
+                                   const stlxwin_mode& chosen) {
+    for (size_t i = 0; i < listed.size(); i++) {
+        if (!is_first_of_size(listed, i)) {
+            continue;
+        }
+
+        QString text = QString::asprintf("%ux%u", listed[i].width, listed[i].height);
+        if (i == 0) {
+            text += QStringLiteral(" (default)");
+        }
+
+        choice->addItem(text, static_cast<int>(i));
+        if (sizes_equal(listed[i], chosen)) {
+            choice->setCurrentIndex(choice->count() - 1);
+        }
+    }
+}
+
+static void fill_refresh_choice(QComboBox* choice, const std::vector<stlxwin_mode>& listed,
+                                const stlxwin_mode& chosen) {
+    QSignalBlocker blocker(choice);
+    choice->clear();
+
+    for (size_t i = 0; i < listed.size(); i++) {
+        if (!sizes_equal(listed[i], chosen)) {
+            continue;
+        }
+
+        QString text = rate_text(listed[i].refresh_millihertz);
+        if (i == 0) {
+            text += QStringLiteral(" (default)");
+        }
+
+        choice->addItem(text, static_cast<int>(i));
+        if (listed[i].refresh_millihertz == chosen.refresh_millihertz) {
+            choice->setCurrentIndex(choice->count() - 1);
+        }
+    }
+}
+
+static void build_mode_card(QWidget* page, uint32_t output) {
+    stlxwin_modes_info info;
+    stlxwin_mode modes[STLXWIN_MODES_MAX];
+    long count = stlxwin_modes_get(g_display.conn, output, &info, modes, STLXWIN_MODES_MAX);
+    if (count <= 0 || (info.flags & STLXWIN_OUTPUT_LIT) == 0) {
+        return;
+    }
+
+    /* A choice made from a list that a later MODES replaced may not be listed any more */
+    std::vector<stlxwin_mode> listed(modes, modes + count);
+    stlxwin_mode current = info.current;
+    if (!is_listed(listed, g_display.chosen_modes[output])) {
+        g_display.chosen_modes[output] = current;
+    }
+
+    auto* resolution = new QComboBox;
+    auto* refresh = new QComboBox;
+    fill_resolution_choice(resolution, listed, g_display.chosen_modes[output]);
+    fill_refresh_choice(refresh, listed, g_display.chosen_modes[output]);
+
+    bool is_greyed = count == 1 || (g_display.unchangeable_outputs & (1u << output)) != 0;
+    resolution->setEnabled(!is_greyed);
+    refresh->setEnabled(!is_greyed);
+
+    card* choices = make_card(page, output_title(output).toUpper().toUtf8().constData());
+    add_choice_row(choices, "Resolution", resolution);
+    add_choice_row(choices, "Refresh rate", refresh);
+    QPushButton* apply = add_list_button(choices, "Apply", [output] { apply_mode(output); });
+    apply->setEnabled(!is_greyed && can_apply_mode(output, current));
+
+    QObject::connect(resolution, &QComboBox::currentIndexChanged, [=](int index) {
+        g_display.chosen_modes[output] = listed[resolution->itemData(index).toUInt()];
+        fill_refresh_choice(refresh, listed, g_display.chosen_modes[output]);
+        apply->setEnabled(can_apply_mode(output, current));
+    });
+
+    QObject::connect(refresh, &QComboBox::currentIndexChanged, [=](int index) {
+        g_display.chosen_modes[output] = listed[refresh->itemData(index).toUInt()];
+        apply->setEnabled(can_apply_mode(output, current));
+    });
+}
+
 static void build_display(QWidget* page) {
     card* arrangement = make_card(page, "ARRANGEMENT");
 
@@ -902,9 +1274,7 @@ static void build_display(QWidget* page) {
         }
     }
 
-    QHBoxLayout* row = make_row(arrangement, "Main output");
-    row->addWidget(main_choice);
-    row->addStretch(1);
+    add_choice_row(arrangement, "Main output", main_choice);
     QObject::connect(main_choice, &QComboBox::currentIndexChanged, [view](int index) {
         if (index >= 0) {
             g_display.main_output = g_display.outputs[index].output;
@@ -913,6 +1283,10 @@ static void build_display(QWidget* page) {
     });
 
     add_list_button(arrangement, "Apply", apply_layout);
+
+    for (uint32_t output = 0; output < STLXWIN_OUTPUTS_MAX; output++) {
+        build_mode_card(page, output);
+    }
 }
 
 static void build_input(QWidget* page) {
@@ -1009,6 +1383,11 @@ static void build_startup(QWidget* page) {
 
 /* Swaps the page under the fixed chrome */
 static void build_page(uint32_t index) {
+    if (index != g_st.active_page) {
+        g_st.chosen_scroll = 0;
+        g_st.page_scroll_bar->setValue(0);
+    }
+
     g_st.active_page = index;
     for (uint32_t i = 0; i < PAGE_COUNT; i++) {
         g_st.nav[i]->set_selected(i == index);
@@ -1033,6 +1412,19 @@ static void build_page(uint32_t index) {
 
     page_layout->addStretch(1);
     layout_of(g_st.page_slot)->addWidget(g_st.page);
+}
+
+/* A rebuild can empty the scroll bar's range for a moment, which puts the
+ * page at its top, so each range change sets the person's last scroll */
+static void track_page_scroll(QScrollBar* page_scroll_bar) {
+    g_st.page_scroll_bar = page_scroll_bar;
+    QObject::connect(page_scroll_bar, &QAbstractSlider::actionTriggered, [page_scroll_bar] {
+        g_st.chosen_scroll = page_scroll_bar->sliderPosition();
+    });
+
+    QObject::connect(page_scroll_bar, &QAbstractSlider::rangeChanged, [page_scroll_bar] {
+        page_scroll_bar->setValue(g_st.chosen_scroll);
+    });
 }
 
 /* Clamp the fields a broken save could take the desktop down with */
@@ -1174,6 +1566,69 @@ static QWidget* make_footer() {
     return footer;
 }
 
+/* The prompt stays until the display manager's answer, the output's change
+ * of mode or a lost connection shows that the trial ended */
+static void answer_trial(bool keep) {
+    g_trial.keep->setEnabled(false);
+    g_trial.set_back->setEnabled(false);
+
+    if (!keep) {
+        g_trial.countdown->stop();
+        g_trial.seconds_left = 0;
+        show_countdown();
+    }
+
+    if (stlxwin_mode_keep(g_display.conn, g_trial.output, keep ? 1 : 0) != 0) {
+        set_status("the answer could not be sent to the display manager");
+    }
+}
+
+/* At 0 the display manager is setting the mode back, so the prompt takes no answer */
+static void count_trial_down() {
+    g_trial.seconds_left--;
+    if (g_trial.seconds_left == 0) {
+        g_trial.countdown->stop();
+        g_trial.keep->setEnabled(false);
+        g_trial.set_back->setEnabled(false);
+    }
+
+    show_countdown();
+}
+
+static QWidget* make_keep_bar() {
+    auto* bar = new QWidget;
+    auto* margins = new QVBoxLayout(bar);
+    margins->setContentsMargins(20, 4, 20, 4);
+
+    auto* panel = new card;
+    auto* row = new QHBoxLayout;
+    row->setSpacing(8);
+    layout_of(panel)->addLayout(row);
+    margins->addWidget(panel);
+
+    g_trial.prompt = new QLabel;
+    row->addWidget(g_trial.prompt);
+    row->addStretch(1);
+
+    g_trial.set_back = new QPushButton(QStringLiteral("Set back"));
+    QObject::connect(g_trial.set_back, &QPushButton::clicked, [] { answer_trial(false); });
+    row->addWidget(g_trial.set_back);
+
+    g_trial.keep = new QPushButton(QStringLiteral("Keep"));
+    QObject::connect(g_trial.keep, &QPushButton::clicked, [] { answer_trial(true); });
+    row->addWidget(g_trial.keep);
+
+    /* Coarse ticks can come early and end the count before the display manager's timer */
+    g_trial.countdown = new QTimer(bar);
+    g_trial.countdown->setTimerType(Qt::PreciseTimer);
+    QObject::connect(g_trial.countdown, &QTimer::timeout, count_trial_down);
+
+    g_trial.bar = bar;
+    bar->hide();
+
+    return bar;
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -1191,11 +1646,12 @@ int main(int argc, char** argv) {
     root->setSpacing(0);
     root->addWidget(make_rail());
 
-    /* The content column: header, the scrolling page, footer */
+    /* The content column: header, a trial's keep prompt, the scrolling page, footer */
     auto* content = new QVBoxLayout;
     content->setContentsMargins(0, 0, 0, 0);
     content->setSpacing(0);
     content->addWidget(make_header());
+    content->addWidget(make_keep_bar());
 
     g_st.page_slot = new QWidget;
     auto* slot_layout = new QVBoxLayout(g_st.page_slot);
@@ -1205,6 +1661,8 @@ int main(int argc, char** argv) {
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidget(g_st.page_slot);
+    track_page_scroll(scroll->verticalScrollBar());
+
     content->addWidget(scroll, 1);
     content->addWidget(make_footer());
     root->addLayout(content, 1);
