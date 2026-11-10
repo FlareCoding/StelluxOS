@@ -70,4 +70,18 @@ private:
     stlxgfx_surface_t* m_picture = nullptr;
 };
 
+/* One line of Plex Mono at the left of its frame */
+class mono_label : public ui::widget {
+public:
+    mono_label(std::string text, float em_px, uint32_t color);
+
+    void set_text(std::string text);
+
+    ui::size measure(ui::size avail) override;
+    void paint(ui::painter& p) override;
+
+private:
+    text_picture m_text;
+};
+
 #endif

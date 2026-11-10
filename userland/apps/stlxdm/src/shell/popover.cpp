@@ -126,6 +126,7 @@ void popover_host::open(popover_panel& panel, const stlxgfx_surface_t* frost) {
     if (!m_picture.make(m_maker, POPOVER_STYLE, width, height, left, PANEL_TOP, frost)) {
         printf("stlxdm: the popover's picture could not be made, memory ran out\r\n");
         content.reset();
+        panel.closed();
         return;
     }
 
@@ -244,12 +245,19 @@ void popover_host::pointer_button(int32_t x, int32_t y, uint8_t button, bool dow
     }
 }
 
+void popover_host::refresh() {
+    if (panel()) {
+        m_panel->refresh();
+    }
+}
+
 /* Takes the panel down without a fade, owing its region to the next flush */
 void popover_host::close_at_once() {
     if (!m_panel) {
         return;
     }
 
+    popover_panel* taken_down = m_panel;
     m_owed = damage_list::union_of(m_owed, m_shown);
     m_host.set_root(nullptr);
     m_panel = nullptr;
@@ -258,6 +266,7 @@ void popover_host::close_at_once() {
     m_shown = {};
     m_shown_opacity = 0;
     m_opacity = 0;
+    taken_down->closed();
 }
 
 void popover_host::paint_tree(damage_list& damage) {

@@ -247,3 +247,20 @@ void text_picture::render() {
         stlxgfx_draw_text(m_picture, font, TEXT_SPILL, metrics.ascent, m_text.data(), m_text.size(), m_color);
     }
 }
+
+mono_label::mono_label(std::string text, float em_px, uint32_t color)
+    : m_text(std::move(text), STLXTHEME_MONO_FONT_PATH, em_px, color) {}
+
+void mono_label::set_text(std::string text) {
+    if (m_text.set_text(std::move(text))) {
+        invalidate_layout();
+    }
+}
+
+ui::size mono_label::measure(ui::size) {
+    return { m_text.width(), m_text.line_height() };
+}
+
+void mono_label::paint(ui::painter& p) {
+    m_text.draw(p, 0, 0, m_frame.h);
+}

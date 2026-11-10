@@ -26,6 +26,12 @@ public:
 
     /* Builds the content the host shows until the panel closes */
     virtual std::unique_ptr<ui::widget> build() = 0;
+
+    /* Brings live values up to date, once a second while the panel is open */
+    virtual void refresh() {}
+
+    /* Runs after the content `build()` gave is gone, when the panel closed or could not be shown */
+    virtual void closed() {}
 };
 
 /* The shown panel, a closing one included, as both compositors blend it.
@@ -55,8 +61,8 @@ public:
     void use_picture_maker(picture_maker* maker);
 
     /* Opens `panel` on glass from the main output's `frost`, first closing any shown panel at once. `panel` must
-     * stay alive until the host takes it down. When its picture cannot be made, it logs, drops the content and
-     * shows no panel. */
+     * stay alive through the call to its `closed()`. When its picture cannot be made, it logs, drops the content,
+     * runs the panel's `closed()` and shows no panel. */
     void open(popover_panel& panel, const stlxgfx_surface_t* frost);
 
     /* Fades the open panel out */
@@ -84,6 +90,9 @@ public:
 
     void pointer_move(int32_t x, int32_t y);
     void pointer_button(int32_t x, int32_t y, uint8_t button, bool down);
+
+    /* Lets the open panel update its live values, once a second */
+    void refresh();
 
 private:
     enum class phase { closed, opening, open, closing };

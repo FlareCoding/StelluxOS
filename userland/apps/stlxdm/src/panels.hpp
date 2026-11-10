@@ -28,8 +28,8 @@ public:
 
     /* Builds the bar, the dock and the system menu on glass from the main output's `frost`, which must stay
      * valid until `rebind()` replaces it. The bar and the dock paint over `backdrop`, which must already hold the
-     * wallpaper. The bar shows `stats`, which must outlive the panels. Returns -1 when a view, a picture or the
-     * tooltip font cannot be made, after which the caller must still call `shutdown()`. */
+     * wallpaper. The bar and the menu show `stats`, which must outlive the panels. Returns -1 when a view, a
+     * picture or the tooltip font cannot be made, after which the caller must still call `shutdown()`. */
     int init(
         uint32_t screen_w,
         uint32_t screen_h,

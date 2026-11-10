@@ -2,6 +2,7 @@
 #define STLXDM_SHELL_STATS_HPP
 
 #include <cstdint>
+#include <string>
 
 /* How often the sampler reads, due at whole multiples of this period on the monotonic clock */
 constexpr uint64_t STATS_SAMPLE_PERIOD_NS = 1000000000ull;
@@ -9,7 +10,7 @@ constexpr uint64_t STATS_SAMPLE_PERIOD_NS = 1000000000ull;
 /* The full scale of a load, which is a percent */
 constexpr uint32_t STATS_PERCENT = 100;
 
-/* The system figures the bar shows, read from /dev/sysinfo once a second */
+/* The system figures the bar and the system menu show, read from /dev/sysinfo once a second */
 class stats_sampler {
 public:
     /* Takes a sample at the first call, then at the first call once a
@@ -24,9 +25,13 @@ public:
     uint64_t page_size() const { return m_page_size; }
     uint64_t used_pages() const { return m_used_pages; }
 
+    /* Time since boot at the last successful read, 0 before one */
+    uint64_t uptime_ns() const { return m_uptime_ns; }
+
 private:
     void read_cpus();
     void read_memory();
+    void read_uptime();
 
     uint64_t m_due_ns = 0;
 
@@ -38,6 +43,10 @@ private:
 
     uint64_t m_page_size = 0;
     uint64_t m_used_pages = 0;
+    uint64_t m_uptime_ns = 0;
 };
+
+/* `uptime_ns` in whole seconds as hours, minutes and seconds, such as 2:05:09 */
+std::string format_uptime(uint64_t uptime_ns);
 
 #endif
