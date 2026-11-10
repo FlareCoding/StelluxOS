@@ -21,9 +21,17 @@ constexpr int32_t POSITION_ONE = 1 << POSITION_BITS;
 constexpr uint32_t WEIGHT_BITS = 2 * POSITION_BITS;
 constexpr uint32_t WEIGHT_HALF = 1u << (WEIGHT_BITS - 1);
 
+constexpr uint32_t COLOR_MASK = 0x00FFFFFF;
 constexpr uint32_t CHANNEL_SHIFTS[] = { 16, 8, 0 };
 constexpr uint32_t CHANNELS = sizeof(CHANNEL_SHIFTS) / sizeof(CHANNEL_SHIFTS[0]);
 constexpr uint32_t BYTES_PER_PIXEL = 4;
+
+/* A row mix holds red and blue in the two 16 bit lanes of one word, which a weighted sum of two pixels' channels
+ * never carries across */
+constexpr uint32_t RED_BLUE_MASK = 0x00FF00FF;
+constexpr uint32_t GREEN_SHIFT = 8;
+constexpr uint32_t LANE_BITS = 16;
+constexpr uint32_t LANE_MASK = 0xFFFF;
 
 namespace {
 
@@ -34,11 +42,18 @@ struct axis_sample {
     uint32_t weight = 0;
 };
 
-/* The bilinear sums of an output pixel's source pixels: the weighted alpha and per channel the weighted alpha times
- * the channel, or for content the weights and the weighted channels */
+/* The bilinear sums of an output pixel's source pixels: alpha by weight, and each channel by alpha and weight, as
+ * compose.comp's `add_tap` sums a frame piece's */
 struct sample_sums {
     uint32_t alpha = 0;
     uint32_t channels[CHANNELS] = {};
+};
+
+/* One source row of a window's content mixed across the output columns by their bilinear weights, unrounded */
+struct row_mix {
+    int32_t               row = -1;
+    std::vector<uint32_t> red_blue;
+    std::vector<uint32_t> green;
 };
 
 /* How one axis of a window's frame maps into its animated rect, the shadow beyond it included: alike along the
@@ -88,7 +103,7 @@ static axis_sample sample_axis(int32_t offset, int32_t length, int32_t source_le
 static void add_tap(const layer_scaled& piece, int32_t x, int32_t y, uint32_t weight, sample_sums& sums) {
     const uint8_t* row = piece.source.pixels + static_cast<size_t>(y) * piece.source.pitch;
     uint32_t pixel = reinterpret_cast<const uint32_t*>(row)[x];
-    uint32_t weighted = piece.is_content ? weight : weight * (pixel >> decor::PIXEL_ALPHA_SHIFT);
+    uint32_t weighted = weight * (pixel >> decor::PIXEL_ALPHA_SHIFT);
 
     sums.alpha += weighted;
     for (uint32_t i = 0; i < CHANNELS; i++) {
@@ -101,7 +116,17 @@ static bool is_in_bottom_corner(const damage_list::rect& r, int32_t radius, int3
     return is_bottom_row && (x < r.x + radius || x >= r.x + r.w - radius);
 }
 
-/* compose.comp's `scale` for the output pixel at (x, y) over `below` */
+static uint32_t shown_alpha(const layer_scaled& piece, uint32_t alpha, int32_t x, int32_t y) {
+    int32_t radius = static_cast<int32_t>(piece.radius);
+    alpha = stlxgfx_div255(alpha * piece.opacity);
+    if (radius != 0 && is_in_bottom_corner(piece.bounds, radius, x, y)) {
+        alpha = stlxgfx_div255(alpha * decor::rounded_coverage(piece.bounds, radius, x, y));
+    }
+
+    return alpha;
+}
+
+/* compose.comp's `scale` of a frame piece for the output pixel at (x, y) over `below` */
 static uint32_t scale_pixel(
     uint32_t below,
     const layer_scaled& piece,
@@ -123,23 +148,113 @@ static uint32_t scale_pixel(
     }
 
     uint32_t sample = 0;
-    uint32_t alpha = decor::CHANNEL_MAX;
     for (uint32_t i = 0; i < CHANNELS; i++) {
-        uint32_t value = piece.is_content ? (sums.channels[i] + WEIGHT_HALF) >> WEIGHT_BITS
-                                          : (sums.channels[i] + (sums.alpha >> 1)) / sums.alpha;
+        uint32_t value = (sums.channels[i] + (sums.alpha >> 1)) / sums.alpha;
         sample |= value << CHANNEL_SHIFTS[i];
     }
 
-    if (!piece.is_content) {
-        alpha = (sums.alpha + WEIGHT_HALF) >> WEIGHT_BITS;
+    uint32_t alpha = (sums.alpha + WEIGHT_HALF) >> WEIGHT_BITS;
+
+    return decor::blend_over(below, sample, shown_alpha(piece, alpha, x, y));
+}
+
+/* `scale_pixel` where both weights are 0, so the first tap alone counts and its weighted mean is itself */
+static uint32_t blend_tap(
+    uint32_t below,
+    const layer_scaled& piece,
+    const axis_sample& column,
+    const axis_sample& row,
+    int32_t x,
+    int32_t y
+) {
+    const uint8_t* line = piece.source.pixels + static_cast<size_t>(row.first) * piece.source.pitch;
+    uint32_t pixel = reinterpret_cast<const uint32_t*>(line)[column.first];
+    uint32_t alpha = pixel >> decor::PIXEL_ALPHA_SHIFT;
+    if (alpha == 0) {
+        return below;
     }
 
-    alpha = stlxgfx_div255(alpha * piece.opacity);
-    if (piece.radius != 0 && is_in_bottom_corner(piece.bounds, static_cast<int32_t>(piece.radius), x, y)) {
-        alpha = stlxgfx_div255(alpha * decor::rounded_coverage(piece.bounds, static_cast<int32_t>(piece.radius), x, y));
+    return decor::blend_over(below, pixel & COLOR_MASK, shown_alpha(piece, alpha, x, y));
+}
+
+static void mix_row(const layer_scaled& piece, const std::vector<axis_sample>& columns, int32_t row, row_mix& mix) {
+    const uint8_t* line = piece.source.pixels + static_cast<size_t>(row) * piece.source.pitch;
+    const uint32_t* source = reinterpret_cast<const uint32_t*>(line);
+    mix.row = row;
+    mix.red_blue.resize(columns.size());
+    mix.green.resize(columns.size());
+
+    for (size_t i = 0; i < columns.size(); i++) {
+        const axis_sample& column = columns[i];
+        uint32_t first = source[column.first];
+        uint32_t second = source[column.second];
+        uint32_t rest = POSITION_ONE - column.weight;
+        uint32_t first_green = (first >> GREEN_SHIFT) & decor::CHANNEL_MAX;
+        uint32_t second_green = (second >> GREEN_SHIFT) & decor::CHANNEL_MAX;
+
+        mix.red_blue[i] = (first & RED_BLUE_MASK) * rest + (second & RED_BLUE_MASK) * column.weight;
+        mix.green[i] = first_green * rest + second_green * column.weight;
+    }
+}
+
+/* Keeps `top` and `bottom` holding the mixes of `row`'s two source rows, reusing those an earlier output row mixed */
+static void mix_rows(
+    const layer_scaled& piece,
+    const std::vector<axis_sample>& columns,
+    const axis_sample& row,
+    row_mix& top,
+    row_mix& bottom
+) {
+    if (top.row != row.first && bottom.row == row.first) {
+        std::swap(top, bottom);
     }
 
-    return decor::blend_over(below, sample, alpha);
+    if (top.row != row.first) {
+        mix_row(piece, columns, row.first, top);
+    }
+
+    if (bottom.row != row.second) {
+        mix_row(piece, columns, row.second, bottom);
+    }
+}
+
+static uint32_t mix_vertically(uint32_t top, uint32_t bottom, const axis_sample& row) {
+    return ((top * (POSITION_ONE - row.weight) + bottom * row.weight) + WEIGHT_HALF) >> WEIGHT_BITS;
+}
+
+/* compose.comp's `scale` of a window's content over the rows of `area`, its four taps summed as a mix along each row
+ * and one down the column, which sum to the same and round once */
+static void draw_content(
+    const decor::canvas& target,
+    const layer_scaled& piece,
+    const damage_list::rect& area,
+    const std::vector<axis_sample>& columns
+) {
+    row_mix top;
+    row_mix bottom;
+    int32_t corner_y = piece.bounds.y + piece.bounds.h - static_cast<int32_t>(piece.radius);
+
+    for (int32_t y = area.y; y < area.y + area.h; y++) {
+        axis_sample row = sample_axis(y - piece.bounds.y, piece.bounds.h, piece.source.height);
+        mix_rows(piece, columns, row, top, bottom);
+
+        uint8_t* line = target.surface->pixels + static_cast<size_t>(y - target.y) * target.surface->pitch;
+        uint32_t* pixels = reinterpret_cast<uint32_t*>(line) + (area.x - target.x);
+        bool is_corner_row = piece.radius != 0 && y >= corner_y;
+        for (size_t i = 0; i < columns.size(); i++) {
+            uint32_t upper = top.red_blue[i];
+            uint32_t lower = bottom.red_blue[i];
+            uint32_t red = mix_vertically(upper >> LANE_BITS, lower >> LANE_BITS, row);
+            uint32_t green = mix_vertically(top.green[i], bottom.green[i], row);
+            uint32_t blue = mix_vertically(upper & LANE_MASK, lower & LANE_MASK, row);
+            uint32_t color = red << CHANNEL_SHIFTS[0] | green << CHANNEL_SHIFTS[1] | blue << CHANNEL_SHIFTS[2];
+
+            /* Opaque content shows at the piece's opacity outside the corner squares */
+            int32_t x = area.x + static_cast<int32_t>(i);
+            uint32_t alpha = is_corner_row ? shown_alpha(piece, decor::CHANNEL_MAX, x, y) : piece.opacity;
+            pixels[i] = decor::blend_over(pixels[i], color, alpha);
+        }
+    }
 }
 
 /* Rounds down, so the shadow before the frame scales as evenly as what follows */
@@ -334,12 +449,20 @@ void draw_scaled(const decor::canvas& target, const layer_scaled& piece, const d
         columns[static_cast<size_t>(i)] = sample_axis(area.x + i - piece.bounds.x, piece.bounds.w, piece.source.width);
     }
 
+    if (piece.is_content) {
+        draw_content(target, piece, area, columns);
+        return;
+    }
+
     for (int32_t y = area.y; y < area.y + area.h; y++) {
         axis_sample row = sample_axis(y - piece.bounds.y, piece.bounds.h, piece.source.height);
         uint8_t* line = target.surface->pixels + static_cast<size_t>(y - target.y) * target.surface->pitch;
         uint32_t* pixels = reinterpret_cast<uint32_t*>(line) + (area.x - target.x);
         for (int32_t i = 0; i < area.w; i++) {
-            pixels[i] = scale_pixel(pixels[i], piece, columns[static_cast<size_t>(i)], row, area.x + i, y);
+            const axis_sample& column = columns[static_cast<size_t>(i)];
+            bool is_single_tap = column.weight == 0 && row.weight == 0;
+            pixels[i] = is_single_tap ? blend_tap(pixels[i], piece, column, row, area.x + i, y)
+                                      : scale_pixel(pixels[i], piece, column, row, area.x + i, y);
         }
     }
 }
