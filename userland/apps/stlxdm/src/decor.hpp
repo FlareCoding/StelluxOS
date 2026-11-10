@@ -148,8 +148,8 @@ constexpr uint32_t FRAME_STRIPS = 4;
  * nothing lies. All zero when borderless or without a displayed buffer. */
 void frame_strips(const dm_window& w, bool is_focused, damage_list::rect (&strips)[FRAME_STRIPS]);
 
-/* Zone under a desktop point, none when outside the window. Resize
- * zones exist only for resizable decorated windows. */
+/* Zone under a desktop point, none when outside the window. Resize zones
+ * exist only for resizable decorated windows in `window_state::normal`. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
 
 /* Whether `z` is one of the window controls. */

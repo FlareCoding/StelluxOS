@@ -10,10 +10,6 @@
 
 namespace ui {
 
-/* Presses this close in time and space chain into a double click */
-constexpr uint64_t CLICK_CHAIN_NS = 400000000ull;
-constexpr int32_t CLICK_SLOP = 4;
-
 static uint64_t click_now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -207,11 +203,11 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
         /* A press near the last one continues its click chain */
         uint64_t now = click_now_ns();
         bool chains = button == m_click_button &&
-                      now - m_click_time_ns <= CLICK_CHAIN_NS &&
-                      p.x - m_click_pos.x <= CLICK_SLOP &&
-                      m_click_pos.x - p.x <= CLICK_SLOP &&
-                      p.y - m_click_pos.y <= CLICK_SLOP &&
-                      m_click_pos.y - p.y <= CLICK_SLOP;
+                      now - m_click_time_ns <= DOUBLE_CLICK_NS &&
+                      p.x - m_click_pos.x <= DOUBLE_CLICK_SLOP &&
+                      m_click_pos.x - p.x <= DOUBLE_CLICK_SLOP &&
+                      p.y - m_click_pos.y <= DOUBLE_CLICK_SLOP &&
+                      m_click_pos.y - p.y <= DOUBLE_CLICK_SLOP;
         m_click_count = chains && m_click_count < 255
                       ? static_cast<uint8_t>(m_click_count + 1) : 1;
         m_click_time_ns = now;

@@ -892,7 +892,7 @@ zone hit(const dm_window& w, int32_t x, int32_t y) {
         return zone::none;
     }
 
-    bool resizable = decorated(w) && (w.flags & SWP_WF_RESIZABLE) != 0;
+    bool resizable = decorated(w) && (w.flags & SWP_WF_RESIZABLE) != 0 && w.placement.state == window_state::normal;
     int32_t slop = resizable ? RESIZE_SLOP : 0;
 
     damage_list::rect r = frame_rect(w, w.x, w.y,

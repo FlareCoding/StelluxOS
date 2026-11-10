@@ -1090,6 +1090,8 @@ void server::move_windows_with_outputs(const layout& before) {
 
             int32_t dx = was ? now->rect.x - was->rect.x : 0;
             int32_t dy = was ? now->rect.y - was->rect.y : 0;
+            w->placement.floating.x += dx;
+            w->placement.floating.y += dy;
             move_window_tree(*c, w.get(), dx, dy);
         }
     }
@@ -1176,11 +1178,14 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
     if (places_changed) {
         move_windows_with_outputs(before);
         moved = m_layout.follow_point(pointer, before);
+        m_title_press_x += moved.x - pointer.x;
+        m_title_press_y += moved.y - pointer.y;
     }
 
     /* A rebuild can move the dock's rows, which bound the main output's work area */
     if (places_changed || rebuilt) {
         keep_windows_in_reach();
+        refit_placed_windows();
     }
 
     m_cursor_x = moved.x;
