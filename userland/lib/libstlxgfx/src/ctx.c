@@ -284,6 +284,38 @@ void stlxgfx_ctx_fill_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
     stlxgfx_ctx_fill_arc_corner(ctx, xr, yb, radius, 0, -1, -1, 0, color);
 }
 
+void stlxgfx_ctx_draw_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
+                                    uint32_t w, uint32_t h, uint32_t radius,
+                                    uint32_t color) {
+    if (!ctx || !ctx->target || w < 2 || h < 2) {
+        return;
+    }
+
+    uint32_t max_r = (w < h ? w : h) / 2;
+    if (radius > max_r) {
+        radius = max_r;
+    }
+
+    if (radius == 0) {
+        stlxgfx_ctx_draw_rect(ctx, x, y, w, h, color);
+        return;
+    }
+
+    int32_t r = (int32_t)radius;
+    int32_t xr = x + (int32_t)w;
+    int32_t yb = y + (int32_t)h;
+
+    stlxgfx_ctx_fill_rect(ctx, x + r, y, w - 2 * radius, 1, color);
+    stlxgfx_ctx_fill_rect(ctx, x + r, yb - 1, w - 2 * radius, 1, color);
+    stlxgfx_ctx_fill_rect(ctx, x, y + r, 1, h - 2 * radius, color);
+    stlxgfx_ctx_fill_rect(ctx, xr - 1, y + r, 1, h - 2 * radius, color);
+
+    stlxgfx_ctx_fill_arc_corner(ctx, x,  y,  radius, radius - 1,  1,  1, 0, color);
+    stlxgfx_ctx_fill_arc_corner(ctx, xr, y,  radius, radius - 1, -1,  1, 0, color);
+    stlxgfx_ctx_fill_arc_corner(ctx, x,  yb, radius, radius - 1,  1, -1, 0, color);
+    stlxgfx_ctx_fill_arc_corner(ctx, xr, yb, radius, radius - 1, -1, -1, 0, color);
+}
+
 /* Plot one Wu line pixel: (major, minor) swaps back to (x, y) when the
  * line is steep, clips against the ctx clip rect, then blends. */
 static void line_plot(stlxgfx_ctx_t *ctx, int32_t major, int32_t minor,

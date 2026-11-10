@@ -107,12 +107,20 @@ struct theme {
     color surface = STLXTHEME_SURFACE;
     color surface_hover = STLXTHEME_SURFACE_HOVER;
     color surface_press = STLXTHEME_SURFACE_PRESS;
+    color surface_selected = STLXTHEME_SURFACE_SELECTED;
+    color recess = STLXTHEME_RECESS;
+    color line = STLXTHEME_LINE;
+    color line_strong = STLXTHEME_LINE_STRONG;
+    color menu_bg = STLXTHEME_MENU_BG;
     color accent = STLXTHEME_ACCENT;
     color accent_hover = STLXTHEME_ACCENT_HOVER;
     color accent_press = STLXTHEME_ACCENT_PRESS;
+    color accent_text = STLXTHEME_ACCENT_TEXT;
     color danger = STLXTHEME_DANGER;
     color text = STLXTHEME_TEXT;
+    color text_secondary = STLXTHEME_TEXT_SECONDARY;
     color text_dim = STLXTHEME_TEXT_DIM;
+    color text_disabled = STLXTHEME_TEXT_DISABLED;
     float font_size = STLXTHEME_BODY_SIZE;
     int32_t control_h = STLXTHEME_CONTROL_HEIGHT; /* default height of one line controls */
 
@@ -177,6 +185,9 @@ public:
 
     /** @brief Fills a rounded rect, clipped by its bounding box. */
     void rounded_rect(const rect& r, int32_t radius, color c);
+
+    /** @brief Outlines a rounded rect in 1 px, clipped by its bounding box. */
+    void rounded_stroke(const rect& r, int32_t radius, color c);
 
     void push_clip(const rect& r);
     void pop_clip();
@@ -367,6 +378,8 @@ public:
     size measure(size avail) override;
     void paint(painter& p) override;
     bool on_pointer_up(const pointer_event& e) override;
+    void on_pointer_enter() override;
+    void on_pointer_leave() override;
     bool on_key_down(const key_event& e) override;
 
 private:

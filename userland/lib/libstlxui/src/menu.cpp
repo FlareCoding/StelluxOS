@@ -35,16 +35,17 @@ public:
 
     void paint(painter& p) override {
         const theme& t = theme::active();
+        bool is_lit = m_hot && m_enabled;
 
-        if (m_hot && m_enabled) {
-            p.fill({ 0, 0, m_frame.w, m_frame.h }, t.surface_hover);
+        if (is_lit) {
+            p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_MENU_ITEM_RADIUS, t.surface_selected);
         }
 
         size text = p.measure_text(m_text, 0);
         int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
+        color fg = !m_enabled ? t.text_disabled : is_lit ? t.text : t.text_secondary;
 
-        p.text({ STLXTHEME_MENU_ROW_PADDING_X, baseline }, m_text, 0,
-               m_enabled ? t.text : t.text_dim);
+        p.text({ STLXTHEME_MENU_ROW_PADDING_X, baseline }, m_text, 0, fg);
     }
 
     void on_pointer_enter() override {
@@ -79,7 +80,7 @@ public:
     explicit menu_list(const std::vector<menu_item>& items) {
         m_style.direction = axis::column;
         m_style.padding = edge_insets::all(STLXTHEME_MENU_PADDING);
-        m_style.background = theme::active().surface;
+        m_style.background = theme::active().menu_bg;
 
         for (size_t i = 0; i < items.size(); i++) {
             m_enabled.push_back(items[i].enabled);
@@ -102,8 +103,7 @@ public:
 
     void paint(painter& p) override {
         widget::paint(p);
-        p.stroke({ 0, 0, m_frame.w, m_frame.h },
-                 theme::active().surface_hover);
+        p.stroke({ 0, 0, m_frame.w, m_frame.h }, theme::active().line);
     }
 
     bool on_key_down(const key_event& e) override {
