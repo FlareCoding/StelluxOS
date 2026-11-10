@@ -42,6 +42,24 @@ constexpr uint32_t MIN_CONTENT_W =
     2 * CONTROL_INSET + CONTROL_COUNT * CONTROL_SIZE + (CONTROL_COUNT - 1) * CONTROL_GAP - 2 * BORDER;
 constexpr uint32_t MIN_CONTENT_H = 48;
 
+constexpr int32_t CONTACT_SPREAD = 1;  /* of the contact ring, which keeps a frame's edge visible on any wallpaper */
+
+/* One layer of a window's shadow in ink, with lengths in px as in a CSS box shadow */
+struct window_shadow_layer {
+    int32_t offset_y;
+    int32_t blur;
+    int32_t spread;
+    int32_t alpha_percent;
+};
+
+/* The focused window's shadow, which the shell's popovers cast too */
+constexpr window_shadow_layer FOCUSED_SHADOW[] = {
+    { 0, 0, CONTACT_SPREAD, 82 },
+    { 2, 4, 0, 34 },
+    { 12, 28, 0, 44 },
+    { 28, 72, 0, 40 }
+};
+
 /* Pointer zones inside a window's decorated bounds */
 enum class zone {
     none,

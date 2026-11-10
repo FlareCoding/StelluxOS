@@ -1450,13 +1450,17 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         }
     }
 
+    damage_list::rect local = { r.x - ox, r.y - oy, r.w, r.h };
+    if (is_main) {
+        blend_popover_layer(back, local, m_panels->popover());
+    }
+
     if (m_resize) {
         decor::draw_outline(canvas, m_outline, r);
     }
 
     /* Above the windows: the tooltip, star and overlay on the main output,
      * the overlay's dim on the others, then the pointer the frames draw */
-    damage_list::rect local = { r.x - ox, r.y - oy, r.w, r.h };
     if (is_main) {
         m_panels->compose_top(back, local);
         m_power->draw_star(back, local);
@@ -1500,16 +1504,16 @@ static compose_target output_target(const presenter::target& t) {
     return target;
 }
 
-/* Paints the panels' changes into the main output's backdrop and adds them
- * to the damage, noting the rows a GPU compose copies into its twin */
+/* Paints the bar's and the dock's changes into the main output's backdrop, noting the rows a GPU compose
+ * copies into its twin, and adds them and the popover's and the tooltip's changes to the damage */
 void server::flush_panels() {
     if (!m_gpu_backdrop) {
-        m_panels->flush(m_damage);
+        m_panels->flush(m_damage, m_damage);
         return;
     }
 
     damage_list painted;
-    m_panels->flush(painted);
+    m_panels->flush(painted, m_damage);
     if (painted.full()) {
         m_gpu_backdrop->mark_rows(0, static_cast<int32_t>(m_gpu_backdrop->surface()->height));
         m_damage.add_full();
@@ -1760,6 +1764,8 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
     draw_top_pictures(out, rects, is_capture);
 
+    bool is_main = &out == &m_outputs[m_layout.main_output()];
+    scene.popover = is_main ? popover_layer_piece(m_panels->popover()) : layer_piece();
     scene.lower_top = out.pictures.lower_top->layer();
     scene.is_dimmed = m_power->active();
     scene.dim_color = m_power->dim_color();
@@ -1888,6 +1894,7 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
     scene.backdrop = gpu_backdrop_of(out).twin_layer();
     scene.windows.clear();
 
+    scene.popover = {};
     scene.lower_top = {};
     scene.is_dimmed = false;
     scene.upper_top = upper.layer();

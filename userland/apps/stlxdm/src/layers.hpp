@@ -32,7 +32,7 @@ struct layer {
     int32_t  origin_x, origin_y;    /* the output pixel the source's first pixel lies at */
     uint32_t pitch;
     layer_op op;
-    uint32_t color;
+    uint32_t color;                 /* a fill's or dim's color, or `blend`'s opacity, 255 opaque */
     uint32_t radius;                /* of the rectangle's rounded bottom corners, all four for glass, 0 when square */
     uint32_t rim_fade;              /* rows a glass rectangle's rim light fades over, 0 for none */
 };
@@ -48,10 +48,12 @@ struct layer_picture {
     int32_t  y = 0;
 };
 
-/* A picture over the part of the output it shows */
+/* A picture over the part of the output it shows, and the opacity a blend
+ * shows it at */
 struct layer_piece {
     damage_list::rect bounds;
     layer_picture     picture;
+    uint32_t          opacity = 255;
 };
 
 /* A window as its layers show it. A borderless one has no frame strips,
@@ -80,6 +82,7 @@ struct layer_scene {
     layer_picture             frost;          /* address 0 without one, and then no glass shows */
     std::vector<layer_window> windows;
     uint32_t                  content_color = 0;
+    layer_piece               popover;        /* the shell's popover, a closing one included */
     layer_piece               lower_top;
     bool                      is_dimmed = false;
     uint32_t                  dim_color = 0;

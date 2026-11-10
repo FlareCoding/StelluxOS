@@ -52,7 +52,6 @@ constexpr int64_t CLOSE_END = SAMPLE_UNITS_PER_PIXEL * 13 / 2;
 constexpr int32_t SHADOW_SHIFT = 15;
 constexpr int32_t SHADOW_ONE = 1 << SHADOW_SHIFT;
 constexpr int32_t SHADOW_LAYERS_MAX = 4;
-constexpr int32_t CONTACT_SPREAD = 1;  /* of the contact ring, which keeps a frame's edge visible on any wallpaper */
 
 /* A CSS blur of B px is a Gaussian of sigma B / 2, which the SVG filter
  * spec approximates by three box blurs 3 sqrt(2 pi) / 4 sigma wide */
@@ -61,7 +60,7 @@ constexpr int32_t PERCENT = 100;
 
 /* Corner distances out to the shadow's contact ring run through a table of
  * squared half pixel offsets, so the arcs never need a square root per pixel */
-constexpr int32_t SDF_Q_MAX = 2 * (decor::CORNER_R + CONTACT_SPREAD);
+constexpr int32_t SDF_Q_MAX = 2 * (decor::CORNER_R + decor::CONTACT_SPREAD);
 constexpr int32_t SDF_LUT_N = 2 * SDF_Q_MAX * SDF_Q_MAX + 1;
 
 /* A rounded rect in pixels */
@@ -88,25 +87,10 @@ constexpr control_look CONTROL_DIM = {
     STLXTHEME_WINDOW_CONTROL_GLYPH_DIM
 };
 
-/* One layer of a window's shadow in ink, with lengths in px as in a CSS box shadow */
-struct window_shadow_layer {
-    int32_t offset_y;
-    int32_t blur;
-    int32_t spread;
-    int32_t alpha_percent;
-};
-
-constexpr window_shadow_layer UNFOCUSED_SHADOW[] = {
-    { 0, 0, CONTACT_SPREAD, 72 },
+constexpr decor::window_shadow_layer UNFOCUSED_SHADOW[] = {
+    { 0, 0, decor::CONTACT_SPREAD, 72 },
     { 2, 4, 0, 24 },
     { 8, 20, 0, 36 }
-};
-
-constexpr window_shadow_layer FOCUSED_SHADOW[] = {
-    { 0, 0, CONTACT_SPREAD, 82 },
-    { 2, 4, 0, 34 },
-    { 12, 28, 0, 44 },
-    { 28, 72, 0, 40 }
 };
 
 /* A layer's blur as running sums of its weights out to `reach` either side,
@@ -121,13 +105,13 @@ struct shadow_kernel {
 /* A window's shadow with its layers prepared, each layer's opacity in
  * fractions of `SHADOW_ONE`, and how far it reaches past each frame side */
 struct window_shadow {
-    const window_shadow_layer* layers = nullptr;
-    int32_t                    layer_count = 0;
-    shadow_kernel              kernels[SHADOW_LAYERS_MAX];
-    int32_t                    opacities[SHADOW_LAYERS_MAX] = {};
-    int32_t                    reach_side = 0;
-    int32_t                    reach_top = 0;
-    int32_t                    reach_bottom = 0;
+    const decor::window_shadow_layer* layers = nullptr;
+    int32_t                           layer_count = 0;
+    shadow_kernel                     kernels[SHADOW_LAYERS_MAX];
+    int32_t                           opacities[SHADOW_LAYERS_MAX] = {};
+    int32_t                           reach_side = 0;
+    int32_t                           reach_top = 0;
+    int32_t                           reach_bottom = 0;
 };
 
 /* One shadow layer's blurred spans along the drawn area's columns and rows,
@@ -583,7 +567,7 @@ static int32_t weight_at(const shadow_kernel& kernel, int32_t offset) {
 
 /* Builds the running weights of the SVG filter spec's three box blurs, the
  * last a pixel wider when the box width is even so the blur stays centered */
-static void prepare_blur(shadow_kernel& kernel, const window_shadow_layer& layer) {
+static void prepare_blur(shadow_kernel& kernel, const decor::window_shadow_layer& layer) {
     int32_t box = std::max(1, (layer.blur * BOX_PER_BLUR_PERCENT + PERCENT / 2) / PERCENT);
     int32_t last_box = box % 2 == 0 ? box + 1 : box;
     std::vector<int64_t> weights = convolve_box(convolve_box(convolve_box({ 1 }, box), box), last_box);
@@ -643,9 +627,9 @@ static void prepare_corner(shadow_kernel& kernel, int32_t radius) {
 
 /* Whether no layer spreads past the contact ring, the farthest the corner
  * distance table reaches */
-static constexpr bool fits_distance_table(const window_shadow_layer* layers, size_t count) {
+static constexpr bool fits_distance_table(const decor::window_shadow_layer* layers, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        if (layers[i].spread > CONTACT_SPREAD) {
+        if (layers[i].spread > decor::CONTACT_SPREAD) {
             return false;
         }
     }
@@ -653,11 +637,11 @@ static constexpr bool fits_distance_table(const window_shadow_layer* layers, siz
     return true;
 }
 
-static void prepare_shadow(window_shadow& shadow, const window_shadow_layer* layers, int32_t layer_count) {
+static void prepare_shadow(window_shadow& shadow, const decor::window_shadow_layer* layers, int32_t layer_count) {
     shadow.layers = layers;
     shadow.layer_count = layer_count;
     for (int32_t i = 0; i < layer_count; i++) {
-        const window_shadow_layer& layer = layers[i];
+        const decor::window_shadow_layer& layer = layers[i];
         prepare_blur(shadow.kernels[i], layer);
         prepare_corner(shadow.kernels[i], decor::CORNER_R + layer.spread);
         shadow.opacities[i] = (layer.alpha_percent * SHADOW_ONE + PERCENT / 2) / PERCENT;
@@ -713,7 +697,7 @@ static int32_t blurred_span(const shadow_kernel& kernel, int32_t start, int32_t 
     return running_weight(kernel, position - start) - running_weight(kernel, position - start - length);
 }
 
-static layer_profile profile_layer(const window_shadow_layer& layer, const shadow_kernel& kernel,
+static layer_profile profile_layer(const decor::window_shadow_layer& layer, const shadow_kernel& kernel,
                                    const damage_list::rect& frame, const damage_list::rect& area) {
     layer_profile profile;
     profile.shape = grow({ frame.x, frame.y + layer.offset_y, frame.w, frame.h }, layer.spread, layer.spread,

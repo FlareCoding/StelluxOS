@@ -1,5 +1,5 @@
-/* The compositor's panels on its own toolkit hosts. Each tree paints straight
- * into the backdrop rows it owns, so compose needs no separate panel step. */
+/* The compositor's panels on its own toolkit hosts. The bar's and the dock's trees paint straight into the backdrop
+ * rows they own, so compose needs no step for them, and the popover's tree paints into a picture above the windows. */
 #include "panels.hpp"
 #include "material.hpp"
 
@@ -220,6 +220,17 @@ static void format_net(char* out, size_t cap) {
              (ip >> 8) & 0xFF, ip & 0xFF);
 }
 
+/* `widget`'s frame in the coordinates of its tree's root */
+static ui::rect frame_on_tree(const ui::widget* widget) {
+    ui::rect frame = widget->frame();
+    for (const ui::widget* up = widget->parent(); up; up = up->parent()) {
+        frame.x += up->frame().x;
+        frame.y += up->frame().y;
+    }
+
+    return frame;
+}
+
 /* The file name of a launcher's program, which by convention is the id the program gives when it connects */
 static const char* launcher_app_id(const stlxconf_pin_t& pin) {
     const char* slash = strrchr(pin.path, '/');
@@ -236,6 +247,8 @@ int dm_panels::init(
 ) {
     m_conf = &conf;
     m_stats = &stats;
+    m_frost = frost;
+
     m_width = screen_w;
     m_height = screen_h;
     m_dock_h = static_cast<int32_t>(conf.taskbar_height);
@@ -266,6 +279,26 @@ int dm_panels::init(
 
     m_host.set_root(m_bar.build(m_bar_glass));
     m_bar.readouts()->show_stats(*m_stats);
+
+    m_menu = std::make_unique<system_menu>();
+
+    m_menu->on_spawn = [this](const char* path, const char* args) {
+        m_popover.close();
+        if (on_spawn) {
+            on_spawn(path, args);
+        }
+    };
+
+    m_menu->on_power = [this]() {
+        m_popover.close_now();
+        if (on_power) {
+            on_power();
+        }
+    };
+
+    m_bar.mark()->on_press = [this]() {
+        toggle_popover(*m_menu);
+    };
 
     char net[32];
     format_net(net, sizeof(net));
@@ -324,14 +357,17 @@ int dm_panels::init(
 }
 
 /* The views keep their rows and only follow the pixels, so a rebind cannot fail */
-void dm_panels::rebind(stlxgfx_surface_t* backdrop) {
+void dm_panels::rebind(stlxgfx_surface_t* backdrop, const stlxgfx_surface_t* frost) {
     m_band->pixels = backdrop->pixels;
     m_band->pitch = backdrop->pitch;
     m_dock->pixels = backdrop->pixels + static_cast<uint32_t>(m_dock_y) * backdrop->pitch;
     m_dock->pitch = backdrop->pitch;
+    m_frost = frost;
 }
 
 void dm_panels::shutdown() {
+    m_popover.use_picture_maker(nullptr);
+
     /* Roots go first, dock buttons reference the icon surfaces */
     m_host.set_root(nullptr);
     m_dock_host.set_root(nullptr);
@@ -386,7 +422,10 @@ damage_list::rect dm_panels::pin_icon_rect(int32_t index) const {
     return { x, y, icon, icon };
 }
 
-void dm_panels::flush(damage_list& damage) {
+void dm_panels::flush(damage_list& backdrop_damage, damage_list& top_damage) {
+    m_popover.flush(top_damage);
+    sync_bar_targets();
+
     if (m_band && m_host.dirty()) {
         m_host.layout_now(static_cast<int32_t>(m_width), BAR_H);
 
@@ -394,7 +433,7 @@ void dm_panels::flush(damage_list& damage) {
         m_host.paint_now(m_band, out);
 
         for (const ui::rect& r : out) {
-            damage.add(r.x, r.y, r.w, r.h);
+            backdrop_damage.add(r.x, r.y, r.w, r.h);
         }
     }
 
@@ -407,17 +446,42 @@ void dm_panels::flush(damage_list& damage) {
 
         /* Dock rects translate down to the band's screen position */
         for (const ui::rect& r : out) {
-            damage.add(r.x, r.y + m_dock_y, r.w, r.h);
+            backdrop_damage.add(r.x, r.y + m_dock_y, r.w, r.h);
         }
     }
 
     /* A tooltip appearing or vanishing repaints the dock strip plus
      * its reach above the band */
     if (m_hover_pin != m_drawn_hover_pin) {
-        damage.add(0, m_dock_y - TIP_REACH,
-                   static_cast<int32_t>(m_width), TIP_REACH + m_dock_h);
+        top_damage.add(0, m_dock_y - TIP_REACH,
+                       static_cast<int32_t>(m_width), TIP_REACH + m_dock_h);
         m_drawn_hover_pin = m_hover_pin;
     }
+}
+
+/* A press on a target opens its panel or, when that panel is open, closes it */
+void dm_panels::toggle_popover(popover_panel& panel) {
+    if (m_popover.panel() == &panel) {
+        m_popover.close();
+        return;
+    }
+
+    m_popover.open(panel, m_frost);
+}
+
+void dm_panels::sync_bar_targets() {
+    popover_panel* open = m_popover.panel();
+    m_bar.mark()->set_open(open == m_menu.get());
+}
+
+bool dm_panels::dismisses_popover(int32_t x, int32_t y) const {
+    popover_panel* open = m_popover.panel();
+    if (!open || m_popover.contains(x, y)) {
+        return false;
+    }
+
+    ui::point at = { x, y };
+    return !frame_on_tree(m_bar.mark()).contains(at);
 }
 
 bool dm_panels::find_tooltip(damage_list::rect& tip, const char*& label) const {
@@ -503,6 +567,14 @@ void dm_panels::compose_top(stlxgfx_surface_t* back,
 }
 
 void dm_panels::pointer_move(int32_t x, int32_t y) {
+    if (m_popover.contains(x, y)) {
+        m_host.pointer_move(-1, -1);
+        m_dock_host.pointer_move(-1, -1);
+        m_popover.pointer_move(x, y);
+        return;
+    }
+
+    m_popover.pointer_move(-1, -1);
     if (y >= m_dock_y) {
         m_host.pointer_move(-1, -1);
         m_dock_host.pointer_move(x, y - m_dock_y);
@@ -515,6 +587,11 @@ void dm_panels::pointer_move(int32_t x, int32_t y) {
 
 void dm_panels::pointer_button(int32_t x, int32_t y, uint8_t btn,
                                bool down) {
+    if (m_popover.contains(x, y)) {
+        m_popover.pointer_button(x, y, btn, down);
+        return;
+    }
+
     if (y >= m_dock_y) {
         m_dock_host.pointer_button(x, y - m_dock_y, btn, down);
         return;

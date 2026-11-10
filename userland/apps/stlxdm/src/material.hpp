@@ -18,8 +18,8 @@ namespace material {
 constexpr int32_t  GRAIN_TILE = 160;
 constexpr uint32_t VEIL_STEPS = 256;
 
-/* Rows over which the rim light of a window, of a rounded popup and of
- * the dock fades out below their top edge */
+/* Rows over which the rim light of a window, of a rounded popup, of a
+ * shell panel and of the dock fades out below their top edge */
 constexpr int32_t WINDOW_RIM_FADE = 72;
 constexpr int32_t PANEL_RIM_FADE = 72;
 constexpr int32_t DOCK_RIM_FADE = 36;
