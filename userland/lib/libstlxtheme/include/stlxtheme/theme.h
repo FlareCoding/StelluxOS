@@ -4,24 +4,48 @@
 /* The desktop's palette, control metrics and typefaces. Colors are 0xAARRGGBB
  * with straight alpha, and lengths are pixels. */
 
-/* Palette */
-#define STLXTHEME_WINDOW_BG     0xFF1E1E2E
-#define STLXTHEME_ALTERNATE_ROW 0xFF212131 /* a step off the window, under the hover and selection fills */
-#define STLXTHEME_SURFACE       0xFF313244
-#define STLXTHEME_SURFACE_HOVER 0xFF45475A
-#define STLXTHEME_SURFACE_PRESS 0xFF585B70
-#define STLXTHEME_RAISED_DARK   0xFF181825
-#define STLXTHEME_SHADOW        0xFF11111B
-#define STLXTHEME_ACCENT        0xFF89B4FA
-#define STLXTHEME_ACCENT_HOVER  0xFFA5C8FC
-#define STLXTHEME_ACCENT_PRESS  0xFF6E9DE8
-#define STLXTHEME_DANGER        0xFFF38BA8
-#define STLXTHEME_TEXT          0xFFCDD6F4
-#define STLXTHEME_TEXT_DIM      0xFF585B70
+/* Text */
+#define STLXTHEME_TEXT           0xFFF6EEE1 /* titles, values and body text */
+#define STLXTHEME_TEXT_SECONDARY 0xFFC4BAAB /* quieter text and marks */
+#define STLXTHEME_TEXT_DIM       0xFFA39A8D /* the dimmest readable text, such as captions and placeholders */
+#define STLXTHEME_TEXT_DISABLED  0xFF6E675D
+#define STLXTHEME_TERMINAL_TEXT  0xFFE8E0D2
+
+/* The one accent, and the danger color */
+#define STLXTHEME_ACCENT       0xFFFFB224
+#define STLXTHEME_ACCENT_HOVER 0xFFFFBA47
+#define STLXTHEME_ACCENT_PRESS 0xFFD1911B
+#define STLXTHEME_ACCENT_TEXT  0xFF1E1206
+#define STLXTHEME_DANGER       0xFFB4483E
+
+/* Lines, all brass */
+#define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines */
+#define STLXTHEME_LINE        0x36E2C496 /* control borders */
+#define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
+
+/* Light overlays, cream laid over a window's background */
+#define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces */
+#define STLXTHEME_SURFACE_HOVER    0x0FFFF0D7
+#define STLXTHEME_SURFACE_PRESS    0x17FFF0D7
+#define STLXTHEME_SURFACE_SELECTED 0x17FFF0D7 /* highlighted items */
+
+/* Dark overlays and solid fills */
+#define STLXTHEME_WINDOW_BG 0xFF12100D /* an opaque window's background */
+#define STLXTHEME_CARD      0x24080502 /* fills a step darker than the window background, such as alternate rows */
+#define STLXTHEME_SHADE     0x42080502 /* darker panels, such as sidebars */
+#define STLXTHEME_RECESS    0x80080502 /* the recessed parts of controls */
+#define STLXTHEME_INK       0xFF060402 /* the shadow color */
+
+/* Corner radii */
+#define STLXTHEME_CONTROL_RADIUS   6
+#define STLXTHEME_MENU_ITEM_RADIUS 4
+
+/* Sizes */
+#define STLXTHEME_CONTROL_HEIGHT         32
+#define STLXTHEME_LIST_ROW_HEIGHT        30
+#define STLXTHEME_FOCUS_RULE_WIDTH       2
 
 /* Control metrics */
-#define STLXTHEME_CONTROL_HEIGHT          28
-#define STLXTHEME_CONTROL_RADIUS          6
 #define STLXTHEME_BUTTON_PADDING_X        12
 #define STLXTHEME_FIELD_PADDING_X         8
 #define STLXTHEME_CHECK_SIZE              16
