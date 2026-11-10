@@ -17,6 +17,7 @@ public:
     ~QStelluxWindow() override;
 
     stlxwin_window* handle() const;
+    bool shows_glass() const;
     void present(const QImage& image, const QRegion& region);
     void handle_event(const stlxwin_event& event);
 
@@ -40,6 +41,9 @@ private:
     QPointF global_position(const QPointF& local) const;
 
     stlxwin_window* m_handle = nullptr;
+
+    // Decided once, so every native window and backing store image of the window agree on the pixel format
+    bool m_shows_glass;
 
     // The window a popup opened over, kept while it is shown since focus moves into the popup
     QPointer<QWindow> m_parent;

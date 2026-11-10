@@ -40,7 +40,8 @@ typedef struct {
 
 /* A frame being painted. pixels is writable between begin_frame and
  * commit. Rows lie stride bytes apart, in 32-bit XRGB, or premultiplied
- * ARGB for a window made with STLXWIN_WF_PREMULTIPLIED. */
+ * ARGB for a window made with STLXWIN_WF_PREMULTIPLIED or
+ * STLXWIN_PF_PREMULTIPLIED. */
 typedef struct {
     uint32_t* pixels;
     uint32_t  width;
@@ -65,7 +66,9 @@ enum {
 };
 
 enum {
-    STLXWIN_PF_GRAB = 1u << 0,  /* outside input dismisses the popup */
+    STLXWIN_PF_GRAB          = 1u << 0,  /* outside input dismisses the popup */
+    STLXWIN_PF_GLASS         = 1u << 1,  /* as STLXWIN_WF_GLASS */
+    STLXWIN_PF_PREMULTIPLIED = 1u << 2,  /* as STLXWIN_WF_PREMULTIPLIED */
 };
 
 typedef enum {

@@ -27,6 +27,7 @@ static const QColor ACCENT_HOVER = QColor::fromRgba(STLXTHEME_ACCENT_HOVER);
 static const QColor ACCENT_PRESS = QColor::fromRgba(STLXTHEME_ACCENT_PRESS);
 static const QColor ACCENT_TEXT = QColor::fromRgba(STLXTHEME_ACCENT_TEXT);
 static const QColor CHECKED = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
+static const QColor CHECK_MARK = QColor::fromRgba(STLXTHEME_WINDOW_BG);
 static const QColor LINE_STRONG = QColor::fromRgba(STLXTHEME_LINE_STRONG);
 static const QColor MENU_TEXT = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
 static const QColor MENU_BG = QColor::fromRgba(STLXTHEME_MENU_BG);
@@ -136,8 +137,7 @@ static void draw_check_box(const QStyleOption* option, QPainter* painter) {
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
-    painter->setPen(QPen(palette.color(QPalette::Window), CHECK_MARK_WIDTH, Qt::SolidLine, Qt::RoundCap,
-                         Qt::RoundJoin));
+    painter->setPen(QPen(CHECK_MARK, CHECK_MARK_WIDTH, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter->translate(box.topLeft());
     if (option->state & QStyle::State_NoChange) {
         painter->drawLine(QPointF(4, 8), QPointF(12, 8));
