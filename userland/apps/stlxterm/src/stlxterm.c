@@ -29,49 +29,49 @@
 #define INITIAL_HEIGHT    600
 #define MIN_COLS          20
 #define MIN_ROWS          5
-#define CURSOR_COLOR      0xFFF5E0DC
-#define PADDING           4
+#define PADDING_X         14
+#define PADDING_Y         10
 #define BLINK_MS          500
 #define PTY_DRAIN_MAX     16
 
 static const uint32_t FG_PALETTE[17] = {
-    STLXTHEME_TEXT, // 0: default foreground
-    0xFF45475A, // 1: black (30)
-    0xFFF38BA8, // 2: red (31)
-    0xFFA6E3A1, // 3: green (32)
-    0xFFF9E2AF, // 4: yellow (33)
-    0xFF89B4FA, // 5: blue (34)
-    0xFFF5C2E7, // 6: magenta (35)
-    0xFF94E2D5, // 7: cyan (36)
-    0xFFBAC2DE, // 8: white (37)
-    0xFF585B70, // 9: bright black (90)
-    0xFFF38BA8, // 10: bright red (91)
-    0xFFA6E3A1, // 11: bright green (92)
-    0xFFF9E2AF, // 12: bright yellow (93)
-    0xFF89B4FA, // 13: bright blue (94)
-    0xFFF5C2E7, // 14: bright magenta (95)
-    0xFF94E2D5, // 15: bright cyan (96)
-    0xFFA6ADC8, // 16: bright white (97)
+    STLXTHEME_TERMINAL_TEXT, // 0: default foreground
+    0xFF3A342C, // 1: black (30)
+    0xFFE0705F, // 2: red (31)
+    0xFFA9C27A, // 3: green (32)
+    0xFFE9B44C, // 4: yellow (33)
+    0xFF8FA7C9, // 5: blue (34)
+    0xFFC795B8, // 6: magenta (35)
+    0xFF89BFB0, // 7: cyan (36)
+    0xFFC4BAAB, // 8: white (37)
+    0xFF6E675D, // 9: bright black (90)
+    0xFFF08E7E, // 10: bright red (91)
+    0xFFC2D795, // 11: bright green (92)
+    0xFFFFC864, // 12: bright yellow (93)
+    0xFFAFC3E0, // 13: bright blue (94)
+    0xFFDDB1D0, // 14: bright magenta (95)
+    0xFFA8D6C9, // 15: bright cyan (96)
+    0xFFF6EEE1, // 16: bright white (97)
 };
 
 static const uint32_t BG_PALETTE[17] = {
     STLXTHEME_WINDOW_BG, // 0: default background
-    0xFF45475A, // 1: black (40)
-    0xFFF38BA8, // 2: red (41)
-    0xFFA6E3A1, // 3: green (42)
-    0xFFF9E2AF, // 4: yellow (43)
-    0xFF89B4FA, // 5: blue (44)
-    0xFFF5C2E7, // 6: magenta (45)
-    0xFF94E2D5, // 7: cyan (46)
-    0xFFBAC2DE, // 8: white (47)
-    0xFF585B70, // 9: bright black (100)
-    0xFFF38BA8, // 10: bright red (101)
-    0xFFA6E3A1, // 11: bright green (102)
-    0xFFF9E2AF, // 12: bright yellow (103)
-    0xFF89B4FA, // 13: bright blue (104)
-    0xFFF5C2E7, // 14: bright magenta (105)
-    0xFF94E2D5, // 15: bright cyan (106)
-    0xFFA6ADC8, // 16: bright white (107)
+    0xFF3A342C, // 1: black (40)
+    0xFFE0705F, // 2: red (41)
+    0xFFA9C27A, // 3: green (42)
+    0xFFE9B44C, // 4: yellow (43)
+    0xFF8FA7C9, // 5: blue (44)
+    0xFFC795B8, // 6: magenta (45)
+    0xFF89BFB0, // 7: cyan (46)
+    0xFFC4BAAB, // 8: white (47)
+    0xFF6E675D, // 9: bright black (100)
+    0xFFF08E7E, // 10: bright red (101)
+    0xFFC2D795, // 11: bright green (102)
+    0xFFFFC864, // 12: bright yellow (103)
+    0xFFAFC3E0, // 13: bright blue (104)
+    0xFFDDB1D0, // 14: bright magenta (105)
+    0xFFA8D6C9, // 15: bright cyan (106)
+    0xFFF6EEE1, // 16: bright white (107)
 };
 
 static term_state_t g_term;
@@ -152,15 +152,15 @@ static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
     char ch_buf[2] = { 0, 0 };
 
     for (int c = c0; c <= c1; c++) {
-        int32_t px = PADDING + (int32_t)((uint32_t)c * g_cell_w);
-        int32_t py = PADDING + (int32_t)((uint32_t)row * g_cell_h);
+        int32_t px = PADDING_X + (int32_t)((uint32_t)c * g_cell_w);
+        int32_t py = PADDING_Y + (int32_t)((uint32_t)row * g_cell_h);
 
         int cc = g_term.cursor_col < g_term.cols
                ? g_term.cursor_col : g_term.cols - 1;
         int at_cursor = cursor_on &&
                         row == g_term.cursor_row && c == cc;
 
-        uint32_t bg = at_cursor ? CURSOR_COLOR
+        uint32_t bg = at_cursor ? STLXTHEME_TEXT
                     : BG_PALETTE[g_term.attrs[row][c].bg];
         stlxgfx_fill_rect(s, px, py, g_cell_w, g_cell_h, bg);
 
@@ -273,9 +273,9 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
             if (n_rects > 0) {
                 stlxwin_rect* prev = &rects[n_rects - 1];
                 int32_t prev_end = prev->y + prev->h;
-                int32_t row_y = PADDING + r * (int32_t)g_cell_h;
+                int32_t row_y = PADDING_Y + r * (int32_t)g_cell_h;
                 if (prev_end == row_y &&
-                    prev->x == PADDING +
+                    prev->x == PADDING_X +
                         g_span_min[r] * (int32_t)g_cell_w &&
                     prev->w == (g_span_max[r] - g_span_min[r] + 1) *
                         (int32_t)g_cell_w) {
@@ -289,8 +289,8 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
                 break;
             }
 
-            rects[n_rects].x = PADDING + g_span_min[r] * (int32_t)g_cell_w;
-            rects[n_rects].y = PADDING + r * (int32_t)g_cell_h;
+            rects[n_rects].x = PADDING_X + g_span_min[r] * (int32_t)g_cell_w;
+            rects[n_rects].y = PADDING_Y + r * (int32_t)g_cell_h;
             rects[n_rects].w = (g_span_max[r] - g_span_min[r] + 1) *
                                (int32_t)g_cell_w;
             rects[n_rects].h = (int32_t)g_cell_h;
@@ -446,18 +446,20 @@ int main(void) {
         return 1;
     }
 
-    /* The cell grid comes straight from the face metrics */
+    /* A cell is one advance wide and at least the theme's line height
+     * tall, with the glyphs centered in the row */
     stlxgfx_font_metrics fm;
     stlxgfx_font_metrics_get(g_font, &fm);
     g_cell_w = fm.advance_mono > 0 ? (uint32_t)fm.advance_mono : 8;
-    g_cell_h = (uint32_t)fm.line_height;
-    g_ascent = fm.ascent;
+    g_cell_h = fm.line_height > STLXTHEME_TERMINAL_LINE_HEIGHT ? (uint32_t)fm.line_height
+                                                               : STLXTHEME_TERMINAL_LINE_HEIGHT;
+    g_ascent = fm.ascent + ((int32_t)g_cell_h - fm.line_height) / 2;
     stlxwin_window_set_min_size(win,
-        2 * PADDING + MIN_COLS * g_cell_w,
-        2 * PADDING + MIN_ROWS * g_cell_h);
+        2 * PADDING_X + MIN_COLS * g_cell_w,
+        2 * PADDING_Y + MIN_ROWS * g_cell_h);
 
-    int cols = (int)((INITIAL_WIDTH - 2 * PADDING) / g_cell_w);
-    int rows = (int)((INITIAL_HEIGHT - 2 * PADDING) / g_cell_h);
+    int cols = (int)((INITIAL_WIDTH - 2 * PADDING_X) / g_cell_w);
+    int rows = (int)((INITIAL_HEIGHT - 2 * PADDING_Y) / g_cell_h);
     term_init(&g_term, rows, cols);
 
     int master_fd = -1;
@@ -537,9 +539,9 @@ int main(void) {
                 running = 0;
                 break;
             case STLXWIN_EVT_CONFIGURE: {
-                int new_cols = (int)((ev.configure.width - 2 * PADDING)
+                int new_cols = (int)((ev.configure.width - 2 * PADDING_X)
                                      / g_cell_w);
-                int new_rows = (int)((ev.configure.height - 2 * PADDING)
+                int new_rows = (int)((ev.configure.height - 2 * PADDING_Y)
                                      / g_cell_h);
                 term_resize(&g_term, new_rows, new_cols);
 
