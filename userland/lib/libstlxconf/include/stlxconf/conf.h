@@ -32,6 +32,20 @@ typedef enum {
     STLXCONF_COMPOSE_FAULT_HANG,
 } stlxconf_compose_fault_t;
 
+/* How much frosted wallpaper a glass surface shows, none at solid */
+typedef enum {
+    STLXCONF_GLASS_LEVEL_SOLID,
+    STLXCONF_GLASS_LEVEL_SUBTLE,
+    STLXCONF_GLASS_LEVEL_GLASS,
+    STLXCONF_GLASS_LEVEL_CLEAR,
+} stlxconf_glass_level_t;
+
+/* The tint of glass surfaces, a warm dark brown or a neutral dark gray */
+typedef enum {
+    STLXCONF_GLASS_TINT_WARM,
+    STLXCONF_GLASS_TINT_NEUTRAL,
+} stlxconf_glass_tint_t;
+
 /* One pinned launcher in the dock, order preserved from the file, args space
  * separated. The name is the section suffix, kept for faithful re-serialization. */
 typedef struct {
@@ -87,11 +101,13 @@ typedef struct {
     bool                     compare_frames;
     stlxconf_compose_fault_t compose_fault;
 
-    /* [theme] bar colors and the bar text size */
+    /* [theme] bar colors, the bar text size, and the glass level and tint */
     uint32_t bar_color;
     uint32_t bar_font_size;
     uint32_t accent_color;
     uint32_t text_color;
+    stlxconf_glass_level_t glass_level;
+    stlxconf_glass_tint_t  glass_tint;
 
     /* [taskbar] dock geometry */
     uint32_t taskbar_height;
