@@ -4,26 +4,46 @@
 #include <stlxgfx/surface.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 static_assert(frame_picture::STRIPS == decor::FRAME_STRIPS);
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
 
+namespace {
+
+/* A picture in stlxdm's heap, which no GPU reads */
+class heap_picture : public picture {
+public:
+    heap_picture(uint8_t* pixels, size_t bytes) : picture(pixels, 0, bytes) {}
+    ~heap_picture() override { free(pixels()); }
+};
+
+} // namespace
+
 picture::picture(uint8_t* pixels, uint64_t address, size_t bytes)
     : m_pixels(pixels), m_address(address), m_bytes(bytes) {}
+
+std::unique_ptr<picture> heap_picture_maker::make_picture(size_t bytes) {
+    uint8_t* pixels = static_cast<uint8_t*>(malloc(bytes));
+    if (!pixels) {
+        return nullptr;
+    }
+
+    return std::make_unique<heap_picture>(pixels, bytes);
+}
 
 static size_t strip_bytes(const damage_list::rect& strip) {
     return static_cast<size_t>(strip.w) * static_cast<size_t>(strip.h) * BYTES_PER_PIXEL;
 }
 
-static bool draw_strip(
-    uint8_t* pixels,
-    const damage_list::rect& strip,
-    const dm_window& w,
-    const decor::chrome_state& st
-) {
-    stlxgfx_surface_t* surface = stlxgfx_surface_from_buffer(
+static damage_list::rect placed_strip(const dm_window& w, const damage_list::rect& strip) {
+    return { w.x + strip.x, w.y + strip.y, strip.w, strip.h };
+}
+
+static stlxgfx_surface_t* make_strip_surface(uint8_t* pixels, const damage_list::rect& strip) {
+    return stlxgfx_surface_from_buffer(
         pixels,
         static_cast<uint32_t>(strip.w),
         static_cast<uint32_t>(strip.h),
@@ -33,6 +53,15 @@ static bool draw_strip(
         8,
         0
     );
+}
+
+static bool draw_strip(
+    uint8_t* pixels,
+    const damage_list::rect& strip,
+    const dm_window& w,
+    const decor::chrome_state& st
+) {
+    stlxgfx_surface_t* surface = make_strip_surface(pixels, strip);
     if (!surface) {
         return false;
     }
@@ -64,7 +93,8 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     bool is_same_size = b.width == m_width && b.height == m_height;
     bool is_same_title = memcmp(w.title, m_title, sizeof(m_title)) == 0;
     bool is_same_state = st == m_state;
-    if (m_is_drawn && is_same_size && is_same_title && is_same_state) {
+    bool is_same_maker = &maker == m_maker;
+    if (m_is_drawn && is_same_maker && is_same_size && is_same_title && is_same_state) {
         return true;
     }
 
@@ -79,12 +109,15 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
     }
 
     /* No compose still reads the old memory, since frames are drawn only after the last compose ended */
-    if (!m_memory || m_memory->bytes() < bytes) {
+    bool has_room = m_memory && m_memory->bytes() >= bytes;
+    if (!is_same_maker || !has_room) {
         m_memory.reset();
         m_memory = maker.make_picture(bytes);
         if (!m_memory) {
             return false;
         }
+
+        m_maker = &maker;
     }
 
     memset(m_memory->pixels(), 0, bytes);
@@ -111,8 +144,9 @@ bool frame_picture::update(picture_maker& maker, const dm_window& w, const decor
 void frame_picture::place(const dm_window& w, int32_t origin_x, int32_t origin_y, layer_window& shown) const {
     for (uint32_t i = 0; i < STRIPS; i++) {
         const damage_list::rect& strip = m_strips[i];
-        int32_t x = w.x + strip.x - origin_x;
-        int32_t y = w.y + strip.y - origin_y;
+        damage_list::rect placed = placed_strip(w, strip);
+        int32_t x = placed.x - origin_x;
+        int32_t y = placed.y - origin_y;
 
         shown.frame[i].bounds = { x, y, strip.w, strip.h };
         shown.frame[i].picture = {
@@ -121,6 +155,26 @@ void frame_picture::place(const dm_window& w, int32_t origin_x, int32_t origin_y
             x,
             y
         };
+    }
+}
+
+void frame_picture::blend(const decor::canvas& back, const dm_window& w, const damage_list::rect& clip) const {
+    for (uint32_t i = 0; i < STRIPS; i++) {
+        const damage_list::rect& strip = m_strips[i];
+        damage_list::rect placed = placed_strip(w, strip);
+        damage_list::rect shown = damage_list::intersect(placed, clip);
+        if (shown.w <= 0 || shown.h <= 0) {
+            continue;
+        }
+
+        stlxgfx_surface_t* source = make_strip_surface(m_memory->pixels() + m_offsets[i], strip);
+        if (!source) {
+            continue;
+        }
+
+        stlxgfx_blit_alpha(back.surface, shown.x - back.x, shown.y - back.y, source, shown.x - placed.x,
+                           shown.y - placed.y, static_cast<uint32_t>(shown.w), static_cast<uint32_t>(shown.h));
+        stlxgfx_destroy_surface(source);
     }
 }
 
@@ -187,7 +241,7 @@ layer_piece top_picture::layer() const {
     return { { x0, y0, x1 - x0, y1 - y0 }, { m_memory->address(), m_surface->pitch, 0, 0 } };
 }
 
-std::unique_ptr<backdrop_picture> backdrop_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
+std::unique_ptr<backdrop_picture> backdrop_picture::make(twin_maker& maker, uint32_t width, uint32_t height) {
     uint32_t pitch = width * BYTES_PER_PIXEL;
     size_t bytes = static_cast<size_t>(pitch) * height;
 

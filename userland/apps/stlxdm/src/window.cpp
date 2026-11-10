@@ -546,8 +546,8 @@ bool server::import_attached_buffers() {
     return true;
 }
 
-/* Drops what composing on the GPU made for windows: each frame picture and Vulkan import, and each shared memory
- * buffer's GPU_BUFFER_IMPORT handle */
+/* Drops each window's frame picture, which may hold GPU memory, and what composing on the GPU made for windows:
+ * each Vulkan import and each shared memory buffer's GPU_BUFFER_IMPORT handle */
 void server::drop_window_imports() {
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
@@ -1287,6 +1287,16 @@ decor::chrome_state server::chrome_of(const dm_window& w) const {
     return st;
 }
 
+/* Frame pictures come from the GPU compositor while it exists, since the GPU
+ * reads them, and from stlxdm's heap otherwise */
+picture_maker& server::frame_maker() {
+    if (m_gpu_compositor) {
+        return *m_gpu_compositor;
+    }
+
+    return m_heap_picture_maker;
+}
+
 /* Compose one rect of `out` in desktop coordinates, bottom-up, each layer
  * clipped to the damage minus the opaque content of every window above it */
 void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
@@ -1354,12 +1364,14 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
             continue;
         }
 
-        decor::chrome_state st = chrome_of(*w);
-
         /* The frame first, then the content with the frame's rounding
          * applied at its bottom corners */
+        bool has_frame = decor::decorated(*w) && w->frame.update(frame_maker(), *w, chrome_of(*w));
         for (const damage_list::rect& p : visible[i]) {
-            decor::draw(canvas, *w, st, p);
+            if (has_frame) {
+                w->frame.blend(canvas, *w, p);
+            }
+
             decor::blit_content(canvas, *w, p);
         }
     }
@@ -1632,7 +1644,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
         layer_window shown;
         shown.content = { w->x - ox, w->y - oy, static_cast<int32_t>(b.width), static_cast<int32_t>(b.height) };
         if (decor::decorated(*w)) {
-            if (!w->frame.update(*m_gpu_compositor, *w, chrome_of(*w))) {
+            if (!w->frame.update(frame_maker(), *w, chrome_of(*w))) {
                 return false;
             }
 
@@ -1854,8 +1866,8 @@ void server::compare_with_cpu(dm_output& out, uint32_t pitch, bool is_collapse) 
            difference.outside_count, difference.inside_count, difference.first_x, difference.first_y);
 }
 
-/* Adds where `out`'s GPU frame may round apart from the CPU's to its rounding regions, in its pixels: glow rings, the
- * frames of windows whose content is no wider than two corner radii, and this compose's draws into both top pictures */
+/* Adds where `out`'s GPU frame may round apart from the CPU's to its rounding regions, in its pixels: the frames of
+ * windows whose content is no wider than two corner radii, and this compose's draws into both top pictures */
 void server::rounding_regions(dm_output& out) {
     std::vector<damage_list::rect>& regions = out.pictures.rounding;
     int32_t ox = out.place.x;
@@ -1866,24 +1878,15 @@ void server::rounding_regions(dm_output& out) {
         }
 
         const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
-        if (static_cast<int32_t>(b.width) <= 2 * decor::CONTENT_R) {
-            damage_list::rect strips[decor::FRAME_STRIPS];
-            decor::frame_strips(*w, strips);
-            for (const damage_list::rect& strip : strips) {
-                regions.push_back({ strip.x - ox, strip.y - oy, strip.w, strip.h });
-            }
-
+        if (static_cast<int32_t>(b.width) > 2 * decor::CONTENT_R) {
             continue;
         }
 
-        damage_list::rect ring = decor::bounds(*w);
-        ring.x -= ox;
-        ring.y -= oy;
-
-        regions.push_back({ ring.x, ring.y, ring.w, 1 });
-        regions.push_back({ ring.x, ring.y + ring.h - 1, ring.w, 1 });
-        regions.push_back({ ring.x, ring.y + 1, 1, ring.h - 2 });
-        regions.push_back({ ring.x + ring.w - 1, ring.y + 1, 1, ring.h - 2 });
+        damage_list::rect strips[decor::FRAME_STRIPS];
+        decor::frame_strips(*w, strips);
+        for (const damage_list::rect& strip : strips) {
+            regions.push_back({ strip.x - ox, strip.y - oy, strip.w, strip.h });
+        }
     }
 
     const std::vector<damage_list::rect>& lower = out.pictures.lower_top->drawn();

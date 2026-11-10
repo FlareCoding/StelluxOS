@@ -78,7 +78,7 @@ enum class window_import_result {
  * of the compositor's own context.
  *
  * stlxdm's one thread makes every call. */
-class gpu_compositor : public picture_maker, public output_buffer_maker {
+class gpu_compositor : public twin_maker, public output_buffer_maker {
 public:
     class compose_buffers;
 

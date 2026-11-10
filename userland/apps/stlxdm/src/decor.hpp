@@ -102,9 +102,8 @@ void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS])
  * zones exist only for resizable decorated windows. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
 
-/* Draws the rounded chrome around the content area, clipped to one
- * compose rect so lower chrome never overpaints higher windows. The
- * rect is in desktop coordinates and must lie inside `back`. */
+/* Draws the rounded chrome around the content area inside `clip`, which
+ * is in desktop coordinates and must lie inside `back`. */
 void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 

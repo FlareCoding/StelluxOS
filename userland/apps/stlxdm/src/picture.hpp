@@ -15,12 +15,13 @@
 
 struct dm_window;
 
-/* Memory the CPU keeps mapped and the GPU reaches coherently, or a twin's
- * video memory, which has no `pixels()`: pixels stlxdm draws with the CPU
- * for the GPU compositor to read where they lie, pixels the GPU writes for
- * the CPU to read (the collapse backdrop, comparison mode's readback), or
- * comparison mode's CPU frame. Its maker frees the memory when the picture
- * drops, which must come before the maker is destroyed. */
+/* Memory the CPU keeps mapped and the GPU reaches coherently, a twin's
+ * video memory, which has no `pixels()`, or memory in stlxdm's heap, which
+ * has no `address()`: pixels stlxdm draws with the CPU for a compositor to
+ * read where they lie, pixels the GPU writes for the CPU to read (the
+ * collapse backdrop, comparison mode's readback), or comparison mode's CPU
+ * frame. The memory is freed when the picture drops, which must come before
+ * its maker is destroyed. */
 class picture {
 public:
     virtual ~picture() = default;
@@ -60,18 +61,28 @@ private:
     uint64_t m_address;
 };
 
-/* Makes pictures in memory its GPU reads */
+/* Makes pictures in memory a compositor reads */
 class picture_maker {
 public:
     virtual ~picture_maker() = default;
 
     /* A picture of at least `bytes`, or null when no memory is left */
     virtual std::unique_ptr<picture> make_picture(size_t bytes) = 0;
+};
 
+/* Makes pictures in memory its GPU reads, and twins of them */
+class twin_maker : public picture_maker {
+public:
     /* A twin of at least `bytes`: a copy of a picture in video memory that
      * the CPU cannot reach, read by the compose in its place. Null when no
      * memory is left. */
     virtual std::unique_ptr<picture> make_twin(size_t bytes) = 0;
+};
+
+/* Makes pictures in stlxdm's heap, which only the CPU compositor reads */
+class heap_picture_maker : public picture_maker {
+public:
+    std::unique_ptr<picture> make_picture(size_t bytes) override;
 };
 
 /* Bytes at the same offset in a picture and in its twin */
@@ -89,7 +100,7 @@ class backdrop_picture {
 public:
     /* Makes the picture and its twin at `width` by `height`, every row
      * marked changed, or returns null when memory runs out */
-    static std::unique_ptr<backdrop_picture> make(picture_maker& maker, uint32_t width, uint32_t height);
+    static std::unique_ptr<backdrop_picture> make(twin_maker& maker, uint32_t width, uint32_t height);
 
     ~backdrop_picture();
 
@@ -189,10 +200,10 @@ public:
     static constexpr uint32_t STRIPS = layer_window::FRAME_STRIPS;
 
     /* Draws the frame of `w`, which must be decorated and have a current
-     * buffer, when its size, its title or `st` differs from the last draw,
-     * making the strips' memory first when they outgrew it. Returns false
-     * when memory runs out, and `place` then waits for an update that
-     * returns true. */
+     * buffer, when its size, its title, `st` or `maker` differs from the
+     * last draw, making the strips' memory first when they outgrew it or
+     * `maker` did not make it. Returns false when memory runs out, and
+     * `place` and `blend` then wait for an update that returns true. */
     bool update(picture_maker& maker, const dm_window& w, const decor::chrome_state& st);
 
     /* Puts the strips at `w`'s place into `shown`, in the pixels of an
@@ -200,7 +211,13 @@ public:
      * desktop. The last update must have returned true. */
     void place(const dm_window& w, int32_t origin_x, int32_t origin_y, layer_window& shown) const;
 
+    /* Blends the strips at `w`'s place over the opaque `back` as the compose
+     * shader's blend layers do, inside `clip`, which must lie in desktop
+     * coordinates inside `back`. The last update must have returned true. */
+    void blend(const decor::canvas& back, const dm_window& w, const damage_list::rect& clip) const;
+
 private:
+    picture_maker*           m_maker = nullptr;  /* the maker of `m_memory` */
     std::unique_ptr<picture> m_memory;
     damage_list::rect        m_strips[STRIPS];   /* from the content's top-left pixel */
     size_t                   m_offsets[STRIPS] = {};
