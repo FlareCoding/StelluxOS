@@ -1,5 +1,6 @@
 #include "chord.hpp"
 
+#include <cctype>
 #include <cstring>
 
 constexpr uint16_t HID_USAGE_A = 0x04;
@@ -52,4 +53,42 @@ bool parse_chord(const char* chord, uint8_t* out_mods, uint16_t* out_usage) {
     *out_mods = mods;
     *out_usage = usage;
     return true;
+}
+
+static std::string keycap_name(const std::string& key) {
+    if (key == "ctrl") {
+        return "Ctrl";
+    }
+
+    if (key == "alt") {
+        return "Alt";
+    }
+
+    if (key == "shift") {
+        return "Shift";
+    }
+
+    if (key == "gui" || key == "super") {
+        return "Super";
+    }
+
+    return std::string(1, static_cast<char>(toupper(static_cast<unsigned char>(key[0]))));
+}
+
+std::vector<std::string> chord_keycaps(const char* chord) {
+    uint8_t mods = 0;
+    uint16_t usage = 0;
+    if (!parse_chord(chord, &mods, &usage)) {
+        return {};
+    }
+
+    std::vector<std::string> keys;
+    for (const char* key = chord; *key;) {
+        size_t length = 0;
+        const char* next = next_chord_key(key, &length);
+        keys.push_back(keycap_name(std::string(key, length)));
+        key = next;
+    }
+
+    return keys;
 }

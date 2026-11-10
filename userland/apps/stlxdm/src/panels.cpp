@@ -280,7 +280,7 @@ int dm_panels::init(
     m_host.set_root(m_bar.build(m_bar_glass));
     m_bar.readouts()->show_stats(*m_stats);
 
-    m_menu = std::make_unique<system_menu>(*m_stats);
+    m_menu = std::make_unique<system_menu>(conf, *m_stats);
 
     m_menu->on_spawn = [this](const char* path, const char* args) {
         m_popover.close();

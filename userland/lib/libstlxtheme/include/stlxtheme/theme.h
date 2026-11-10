@@ -42,7 +42,7 @@
 #define STLXTHEME_METER_IDLE 0x38E2C496 /* the bar's load meter */
 
 /* Overlays laid over a window's background, and the menu panel */
-#define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces */
+#define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces and the system menu's keycaps */
 #define STLXTHEME_SURFACE_HOVER    0x17FFF0D7
 #define STLXTHEME_SURFACE_PRESS    0x4D000000
 #define STLXTHEME_ROW_HOVER        0x0FFFF0D7
@@ -71,6 +71,7 @@
 #define STLXTHEME_CONTROL_RADIUS   6
 #define STLXTHEME_MENU_RADIUS      8
 #define STLXTHEME_MENU_ITEM_RADIUS 4
+#define STLXTHEME_CHIP_RADIUS      4
 
 /* Sizes */
 #define STLXTHEME_TOP_BAR_HEIGHT         32

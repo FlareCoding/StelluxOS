@@ -1,12 +1,16 @@
 #include "system_menu.hpp"
 
 #include "bar.hpp"
+#include "chord.hpp"
 #include "draw.hpp"
 
 #include <stlxtheme/theme.h>
 
+#include <algorithm>
+#include <cstring>
 #include <string>
 #include <sys/utsname.h>
+#include <vector>
 
 constexpr int32_t MENU_WIDTH = 272;
 constexpr int32_t MENU_LEFT = top_bar::TARGET_INSET;
@@ -22,6 +26,12 @@ constexpr int32_t DIVIDER_INSET = 6;
 
 constexpr int32_t ROW_HEIGHT = 28;
 constexpr int32_t ROW_PADDING_LEFT = 10;
+constexpr int32_t ROW_PADDING_RIGHT = 6;
+
+constexpr int32_t KEYCAP_HEIGHT = 18;
+constexpr int32_t KEYCAP_PADDING_X = 5;
+constexpr int32_t KEYCAP_GAP = 3;
+constexpr float KEYCAP_TEXT_SIZE = 11.0f;
 
 /* A menu row's label and the program it spawns, by its path and its space separated args */
 struct menu_program {
@@ -73,12 +83,46 @@ public:
     }
 };
 
+/* One key of a shortcut, as a chip with the key's name */
+class keycap {
+public:
+    explicit keycap(const std::string& name)
+        : m_text(name, STLXTHEME_MONO_FONT_PATH, KEYCAP_TEXT_SIZE, STLXTHEME_TEXT_DIM),
+          m_width(std::max(KEYCAP_HEIGHT, m_text.width() + 2 * KEYCAP_PADDING_X)),
+          m_ring(make_ring_picture(m_width, KEYCAP_HEIGHT, STLXTHEME_CHIP_RADIUS, STLXTHEME_LINE)),
+          m_hover_ring(make_ring_picture(m_width, KEYCAP_HEIGHT, STLXTHEME_CHIP_RADIUS, STLXTHEME_LINE_STRONG)) {}
+
+    ~keycap() {
+        stlxgfx_destroy_surface(m_ring);
+        stlxgfx_destroy_surface(m_hover_ring);
+    }
+
+    keycap(const keycap&) = delete;
+    keycap& operator=(const keycap&) = delete;
+
+    int32_t width() const { return m_width; }
+
+    void set_hover(bool hover);
+    void paint(ui::painter& p, int32_t x, int32_t top) const;
+
+private:
+    text_picture       m_text;
+    int32_t            m_width;
+    stlxgfx_surface_t* m_ring;
+    stlxgfx_surface_t* m_hover_ring;
+    bool               m_hover = false;
+};
+
 /* An item, chosen by a release over it wherever the press began, so the pointer can press the mark and
  * release over an item */
 class menu_row : public ui::widget {
 public:
-    explicit menu_row(const char* label)
-        : m_label(label, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT) {}
+    menu_row(const char* label, const std::vector<std::string>& keys)
+        : m_label(label, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT) {
+        for (const std::string& key : keys) {
+            m_keycaps.push_back(std::make_unique<keycap>(key));
+        }
+    }
 
     std::function<void()> on_choose;
 
@@ -107,11 +151,23 @@ public:
 private:
     void set_hover(bool hover);
 
-    text_picture m_label;
-    bool         m_hover = false;
+    text_picture                         m_label;
+    std::vector<std::unique_ptr<keycap>> m_keycaps;
+    bool                                 m_hover = false;
 };
 
 } // namespace
+
+void keycap::set_hover(bool hover) {
+    m_hover = hover;
+    m_text.set_color(hover ? STLXTHEME_TEXT_SECONDARY : STLXTHEME_TEXT_DIM);
+}
+
+void keycap::paint(ui::painter& p, int32_t x, int32_t top) const {
+    p.rounded_rect({ x, top, m_width, KEYCAP_HEIGHT }, STLXTHEME_CHIP_RADIUS, STLXTHEME_SURFACE);
+    p.image({ x, top }, m_hover ? m_hover_ring : m_ring);
+    m_text.draw(p, x + (m_width - m_text.width()) / 2, top, KEYCAP_HEIGHT);
+}
 
 void menu_row::paint(ui::painter& p) {
     if (m_hover) {
@@ -119,10 +175,23 @@ void menu_row::paint(ui::painter& p) {
     }
 
     m_label.draw(p, ROW_PADDING_LEFT, 0, m_frame.h);
+
+    int32_t x = m_frame.w - ROW_PADDING_RIGHT;
+    int32_t top = (m_frame.h - KEYCAP_HEIGHT) / 2;
+    for (size_t i = m_keycaps.size(); i-- > 0;) {
+        const keycap& key = *m_keycaps[i];
+        x -= key.width();
+        key.paint(p, x, top);
+        x -= KEYCAP_GAP;
+    }
 }
 
 void menu_row::set_hover(bool hover) {
     m_hover = hover;
+    for (const std::unique_ptr<keycap>& key : m_keycaps) {
+        key->set_hover(hover);
+    }
+
     invalidate();
 }
 
@@ -145,6 +214,27 @@ static std::string uptime_text(const stats_sampler& stats) {
     }
 
     return "up " + format_uptime(stats.uptime_ns());
+}
+
+/* The keys of the first live hotkey that runs the same program, none when no hotkey does. A hotkey is live
+ * when it is an exec shortcut with a path and a chord that parses, as the server binds them. */
+static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, const menu_program& program) {
+    for (uint32_t i = 0; i < conf.shortcut_count; i++) {
+        const stlxconf_shortcut_t& shortcut = conf.shortcuts[i];
+        bool runs_program = strcmp(shortcut.action, "exec") == 0;
+        bool same_path = strcmp(shortcut.path, program.path) == 0;
+        bool same_args = strcmp(shortcut.args, program.args) == 0;
+        if (!runs_program || !same_path || !same_args) {
+            continue;
+        }
+
+        std::vector<std::string> keys = chord_keycaps(shortcut.key);
+        if (!keys.empty()) {
+            return keys;
+        }
+    }
+
+    return {};
 }
 
 int32_t system_menu::width() const {
@@ -172,14 +262,14 @@ std::unique_ptr<ui::widget> system_menu::build() {
 
     root->add<menu_divider>();
     for (const menu_program& program : MENU_PROGRAMS) {
-        menu_row* row = root->add<menu_row>(program.label);
+        menu_row* row = root->add<menu_row>(program.label, shortcut_keys(m_conf, program));
         row->on_choose = [this, &program]() {
             on_spawn(program.path, program.args);
         };
     }
 
     root->add<menu_divider>();
-    menu_row* power = root->add<menu_row>(POWER_LABEL);
+    menu_row* power = root->add<menu_row>(POWER_LABEL, std::vector<std::string>());
     power->on_choose = [this]() {
         on_power();
     };

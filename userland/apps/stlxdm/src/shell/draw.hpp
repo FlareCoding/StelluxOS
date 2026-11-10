@@ -50,8 +50,9 @@ public:
     text_picture(const text_picture&) = delete;
     text_picture& operator=(const text_picture&) = delete;
 
-    /* Returns whether the text changed */
+    /* Each returns whether the value it sets changed */
     bool set_text(std::string text);
+    bool set_color(uint32_t color);
 
     int32_t width() const;
     int32_t line_height() const;

@@ -196,6 +196,17 @@ bool text_picture::set_text(std::string text) {
     return true;
 }
 
+bool text_picture::set_color(uint32_t color) {
+    if (color == m_color) {
+        return false;
+    }
+
+    m_color = color;
+    render();
+
+    return true;
+}
+
 int32_t text_picture::width() const {
     stlxgfx_font* font = shell_font(m_face_path.c_str(), m_em_px);
     return font ? stlxgfx_text_width(font, m_text.data(), m_text.size()) : 0;
