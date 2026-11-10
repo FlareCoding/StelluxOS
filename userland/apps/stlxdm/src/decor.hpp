@@ -19,8 +19,6 @@ constexpr int32_t TITLE_H = STLXTHEME_TITLE_BAR_HEIGHT;
 constexpr int32_t BORDER = 1;
 constexpr int32_t CORNER_R = STLXTHEME_WINDOW_RADIUS;
 constexpr int32_t CONTENT_R = CORNER_R - BORDER;  /* content's bottom corners */
-constexpr int32_t CLOSE_R = 10;
-constexpr int32_t CLOSE_MARGIN = 8;
 
 /* The solid material of a frame, which a window's content area shows
  * where no picture of its own covers it */
@@ -32,11 +30,25 @@ constexpr int32_t RESIZE_SLOP = 4;
 constexpr int32_t CORNER_REACH = 16;
 constexpr int32_t OUTLINE_T = 2;
 
+/* The window controls sit in a row at the title bar's right end */
+constexpr int32_t CONTROL_COUNT = 3;
+constexpr int32_t CONTROL_SIZE = STLXTHEME_WINDOW_CONTROL_SIZE;
+constexpr int32_t CONTROL_GAP = STLXTHEME_WINDOW_CONTROL_GAP;
+constexpr int32_t CONTROL_INSET = 8;  /* from the close control to the frame's right edge */
+
+/* The minimum content size of an interactive resize, whose width leaves
+ * the controls their inset on both sides */
+constexpr uint32_t MIN_CONTENT_W =
+    2 * CONTROL_INSET + CONTROL_COUNT * CONTROL_SIZE + (CONTROL_COUNT - 1) * CONTROL_GAP - 2 * BORDER;
+constexpr uint32_t MIN_CONTENT_H = 48;
+
 /* Pointer zones inside a window's decorated bounds */
 enum class zone {
     none,
     content,
     title,
+    minimize,
+    maximize,
     close,
     resize_l,
     resize_r,
@@ -56,12 +68,12 @@ struct canvas {
     int32_t            y = 0;
 };
 
-/* Interaction state the chrome renders: the focus palette and rule, and
- * the close control's hover and press shades */
+/* Interaction state the chrome renders: the focus palette and rule, the
+ * window control under the pointer and the one a press holds */
 struct chrome_state {
     bool focused = false;
-    bool close_hover = false;
-    bool close_pressed = false;
+    zone hovered = zone::none;
+    zone pressed = zone::none;
 
     bool operator==(const chrome_state&) const = default;
 };
@@ -101,6 +113,14 @@ void frame_strips(const dm_window& w, damage_list::rect (&strips)[FRAME_STRIPS])
 /* Zone under a desktop point, none when outside the window. Resize
  * zones exist only for resizable decorated windows. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
+
+/* Whether `z` is one of the window controls. */
+bool is_control(zone z);
+
+/* The rect around the window controls `w` shows, in desktop coordinates,
+ * empty when it shows none. A window narrower than `MIN_CONTENT_W` shows
+ * only the controls that fit with the inset on both sides. */
+damage_list::rect controls_rect(const dm_window& w);
 
 /* Draws the rounded chrome around the content area inside `clip`, which
  * is in desktop coordinates and must lie inside `back`. */

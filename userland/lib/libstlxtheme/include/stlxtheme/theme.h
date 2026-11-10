@@ -20,6 +20,8 @@
 #define STLXTHEME_ACCENT_PRESS 0xFFD1911B
 #define STLXTHEME_ACCENT_TEXT  0xFF1E1206
 #define STLXTHEME_DANGER       0xFFB4483E
+#define STLXTHEME_DANGER_BEZEL 0x29000000 /* the ring of a window control whose face is `STLXTHEME_DANGER` */
+#define STLXTHEME_DANGER_TEXT  0xFFFFF3E6
 
 /* Lines, all brass */
 #define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines, such as a disabled control's border */
@@ -27,6 +29,8 @@
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
 #define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window */
 #define STLXTHEME_RIM_DIM     0x26E2C496
+#define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
+#define STLXTHEME_BEZEL_DIM   0x1CE2C496 /* on an unfocused window */
 
 /* Overlays laid over a window's background, and the menu panel */
 #define STLXTHEME_SURFACE          0x0DFFF0D7 /* button faces */
@@ -44,6 +48,14 @@
 #define STLXTHEME_RECESS    0x80080502 /* the recessed parts of controls, such as fields and unchecked check boxes */
 #define STLXTHEME_INK       0xFF060402 /* the shadow color */
 
+/* Window controls, the round minimize, maximize and close buttons of a title bar */
+#define STLXTHEME_WINDOW_CONTROL           0x14FFF0D7 /* the face */
+#define STLXTHEME_WINDOW_CONTROL_HOVER     0x33FFF0D7
+#define STLXTHEME_WINDOW_CONTROL_PRESS     0x6B000000
+#define STLXTHEME_WINDOW_CONTROL_DIM       0x09FFF0D7 /* the face on an unfocused window */
+#define STLXTHEME_WINDOW_CONTROL_GLYPH     0xD1F6EEE1
+#define STLXTHEME_WINDOW_CONTROL_GLYPH_DIM 0x4DF6EEE1
+
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CONTROL_RADIUS   6
@@ -53,6 +65,8 @@
 #define STLXTHEME_TITLE_BAR_HEIGHT       32
 #define STLXTHEME_CONTROL_HEIGHT         32
 #define STLXTHEME_LIST_ROW_HEIGHT        30
+#define STLXTHEME_WINDOW_CONTROL_SIZE    16
+#define STLXTHEME_WINDOW_CONTROL_GAP     8
 #define STLXTHEME_FOCUS_RULE_WIDTH       2
 #define STLXTHEME_TERMINAL_LINE_HEIGHT   22
 

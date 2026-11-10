@@ -1274,8 +1274,8 @@ static bool subtract_hole(std::vector<damage_list::rect>& pieces,
 decor::chrome_state server::chrome_of(const dm_window& w) const {
     decor::chrome_state st;
     st.focused = &w == m_focus;
-    st.close_hover = &w == m_close_hover;
-    st.close_pressed = &w == m_close_press;
+    st.hovered = m_control_hover.window == &w ? m_control_hover.zone : decor::zone::none;
+    st.pressed = m_control_press.window == &w ? m_control_press.zone : decor::zone::none;
 
     return st;
 }

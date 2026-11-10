@@ -216,6 +216,14 @@ struct dm_window {
     frame_picture frame;
 };
 
+/* One window control of one window, none when `window` is null */
+struct dm_control {
+    dm_window*  window = nullptr;
+    decor::zone zone = decor::zone::none;
+
+    bool operator==(const dm_control&) const = default;
+};
+
 /* A dismissed window's release-only record, kept until the client
  * detaches it or destroys the window, as commits may still name it */
 struct dm_dismissed_buffer {
@@ -728,14 +736,17 @@ private:
     damage_list::rect cursor_bounds() const;
     void damage_cursor();
 
-    /* Title drag and close-control hover, decoration hit zones */
+    /* State of the decoration hit zones: the title drag, the window control
+     * under the pointer and the one a press holds */
     dm_window* m_drag = nullptr;
     int32_t m_drag_dx = 0;
     int32_t m_drag_dy = 0;
-    dm_window* m_close_hover = nullptr;
-    dm_window* m_close_press = nullptr;
+    dm_control m_control_hover;
+    dm_control m_control_press;
 
     void move_window(dm_window* w, int32_t dx, int32_t dy);
+    void damage_controls(const dm_control& control);
+    void release_control_press();
 
     /* Interactive resize: the grabbed window, which content edges the
      * pointer moves, the fixed opposite content corner, the rubber
