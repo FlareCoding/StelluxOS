@@ -1,14 +1,14 @@
 #include "draw.hpp"
 
 #include <stlxgfx/ctx.h>
+#include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
-/* The radius of the mark's two quarter discs */
-constexpr int32_t MARK_RADIUS = 7;
+constexpr const char* MARK_PATH_PREFIX = "/etc/res/icons/stellux-mark-";
 
 /* Glyph edges reach one pixel either side of their advance */
 constexpr int32_t TEXT_SPILL = 1;
@@ -34,18 +34,9 @@ static stlxgfx_surface_t* make_clear_picture(int32_t w, int32_t h) {
     return picture;
 }
 
-stlxgfx_surface_t* make_mark_picture(uint32_t color) {
-    stlxgfx_surface_t* picture = make_clear_picture(STLXTHEME_GLYPH_SIZE, STLXTHEME_GLYPH_SIZE);
-    if (!picture) {
-        return nullptr;
-    }
-
-    stlxgfx_ctx_t ctx;
-    stlxgfx_ctx_init(&ctx, picture);
-    stlxgfx_ctx_fill_arc_corner(&ctx, 0, 0, MARK_RADIUS, 0, 1, 1, 0, color);
-    stlxgfx_ctx_fill_arc_corner(&ctx, STLXTHEME_GLYPH_SIZE, STLXTHEME_GLYPH_SIZE, MARK_RADIUS, 0, -1, -1, 0, color);
-
-    return picture;
+stlxgfx_surface_t* make_mark_picture(int32_t size) {
+    std::string path = MARK_PATH_PREFIX + std::to_string(size) + ".png";
+    return stlxgfx_load_image(path.c_str());
 }
 
 stlxgfx_surface_t* make_ring_picture(int32_t w, int32_t h, int32_t radius, uint32_t color) {
