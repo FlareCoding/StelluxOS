@@ -121,7 +121,12 @@ stlxwin_window* stlxwin_popup_create(stlxwin_window* parent,
         window_flags |= SWP_WF_PREMULTIPLIED;
     }
 
-    return window_new(parent->conn, parent->win_id, x, y, width, height, NULL, window_flags, flags & STLXWIN_PF_GRAB);
+    uint32_t popup_flags = flags & STLXWIN_PF_GRAB;
+    if (flags & STLXWIN_PF_ROUNDED) {
+        popup_flags |= SWP_PF_ROUNDED;
+    }
+
+    return window_new(parent->conn, parent->win_id, x, y, width, height, NULL, window_flags, popup_flags);
 }
 
 void stlxwin_window_free(stlxwin_window* win) {

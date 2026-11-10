@@ -1290,6 +1290,36 @@ static bool subtract_content(std::vector<damage_list::rect>& pieces, const dm_wi
     return subtract_hole(pieces, { w.x, w.y, bw, bh });
 }
 
+/* Takes `glass` out of every piece but for the squares at its rounded corners, where what lies beneath shows through,
+ * and nothing from glass at most twice its radius wide or tall. Returns false like `subtract_hole`. */
+static bool subtract_glass(std::vector<damage_list::rect>& pieces, const material::surface& glass) {
+    const damage_list::rect& b = glass.bounds;
+    int32_t r = glass.radius;
+    if (r == 0) {
+        return subtract_hole(pieces, b);
+    }
+
+    if (b.w <= 2 * r || b.h <= 2 * r) {
+        return true;
+    }
+
+    return subtract_hole(pieces, { b.x, b.y + r, b.w, b.h - 2 * r }) &&
+           subtract_hole(pieces, { b.x + r, b.y, b.w - 2 * r, b.h });
+}
+
+/* The glass of a borderless window over its `content`, which a rounded popup rounds like the panel it draws */
+static material::surface borderless_glass(const dm_window& w, const damage_list::rect& content) {
+    if ((w.flags & SWP_WF_GLASS) == 0) {
+        return {};
+    }
+
+    if ((w.popup_flags & SWP_PF_ROUNDED) == 0) {
+        return { content };
+    }
+
+    return { content, STLXTHEME_MENU_RADIUS, material::PANEL_RIM_FADE };
+}
+
 /* The glass beneath `w`, which must have a current buffer, in the pixels of an output whose top-left pixel lies at
  * (`origin_x`, `origin_y`) on the desktop: its decorated rect, the content of a borderless glass window, else none */
 static material::surface glass_under(const dm_window& w, int32_t origin_x, int32_t origin_y) {
@@ -1297,8 +1327,7 @@ static material::surface glass_under(const dm_window& w, int32_t origin_x, int32
     int32_t bw = static_cast<int32_t>(b.width);
     int32_t bh = static_cast<int32_t>(b.height);
     if (!decor::decorated(w)) {
-        bool is_glass = (w.flags & SWP_WF_GLASS) != 0;
-        return is_glass ? material::surface{ { w.x - origin_x, w.y - origin_y, bw, bh } } : material::surface{};
+        return borderless_glass(w, { w.x - origin_x, w.y - origin_y, bw, bh });
     }
 
     damage_list::rect frame = decor::frame_rect(w, w.x - origin_x, w.y - origin_y, bw, bh);
@@ -1371,8 +1400,10 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         visible[i] = pieces;
 
         /* Premultiplied content hides what lies below only through the glass beneath it, absent without frost */
-        bool shows_below = w->buffers[static_cast<size_t>(w->current)].is_premultiplied && !frost;
-        if (subtracting && !shows_below) {
+        bool is_premultiplied = w->buffers[static_cast<size_t>(w->current)].is_premultiplied;
+        if (subtracting && is_premultiplied && frost) {
+            subtracting = subtract_glass(pieces, glass_under(*w, 0, 0));
+        } else if (subtracting && !is_premultiplied) {
             subtracting = subtract_content(pieces, *w);
         }
     }

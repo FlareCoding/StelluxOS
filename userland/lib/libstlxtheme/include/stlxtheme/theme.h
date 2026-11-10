@@ -32,7 +32,7 @@
 #define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines, such as a disabled control's border */
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
-#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window */
+#define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window and of a menu */
 #define STLXTHEME_RIM_DIM     0x26E2C496
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
 #define STLXTHEME_BEZEL_DIM   0x1CE2C496 /* on an unfocused window */
@@ -64,6 +64,7 @@
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CONTROL_RADIUS   6
+#define STLXTHEME_MENU_RADIUS      8
 #define STLXTHEME_MENU_ITEM_RADIUS 4
 
 /* Sizes */

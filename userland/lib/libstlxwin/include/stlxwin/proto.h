@@ -109,7 +109,8 @@ enum {
 };
 
 enum {
-    SWP_PF_GRAB = 1u << 0,  /* outside input dismisses, keyboard follows */
+    SWP_PF_GRAB    = 1u << 0,  /* outside input dismisses, keyboard follows */
+    SWP_PF_ROUNDED = 1u << 1,  /* glass rounded by STLXTHEME_MENU_RADIUS to match a panel the client draws */
 };
 
 typedef struct {

@@ -15,7 +15,21 @@ static bool contains(const damage_list::rect& outer, const damage_list::rect& in
     return holds_columns && holds_rows;
 }
 
+/* Whether `r`, which lies inside `bounds`, stays clear of the corner squares of `bounds`, which round by `radius` */
+static bool avoids_corners(const damage_list::rect& bounds, int32_t radius, const damage_list::rect& r) {
+    bool is_between_columns = r.x >= bounds.x + radius && r.x + r.w <= bounds.x + bounds.w - radius;
+    bool is_between_rows = r.y >= bounds.y + radius && r.y + r.h <= bounds.y + bounds.h - radius;
+
+    return is_between_columns || is_between_rows;
+}
+
+/* Opaque content covers `r` clear of its rounded bottom corners, and a premultiplied window by its glass, clear of the
+ * glass's rounded corners */
 static bool covers(const layer_window& w, const damage_list::rect& r) {
+    if (w.is_premultiplied) {
+        return contains(w.glass.bounds, r) && avoids_corners(w.glass.bounds, w.glass.radius, r);
+    }
+
     if (!contains(w.content, r)) {
         return false;
     }
