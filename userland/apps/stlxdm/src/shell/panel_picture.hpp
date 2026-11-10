@@ -28,8 +28,7 @@ struct panel_style {
 
 /* The straight alpha picture of a shell panel: its drop shadow, drawn once, and its toolkit tree's opaque
  * pixels in a rounded box. The tree paints into `content()`, its root drawing `background()` (the glass with
- * the rim), and after every paint the caller must pass the painted rects to `round_corners()`, which blends
- * the corners the paint reached over the shadow beneath them. */
+ * the rim), and after every paint the caller must pass the painted rects to `finish_paint()`. */
 class panel_picture {
 public:
     panel_picture() = default;
@@ -48,26 +47,27 @@ public:
     stlxgfx_surface_t* content() const { return m_content; }
     const stlxgfx_surface_t* background() const { return m_background; }
 
-    /* The GPU's address of the first pixel, 0 in the CPU's own memory */
-    uint64_t address() const { return m_memory ? m_memory->address() : 0; }
+    /* The picture a GPU compose reads, null in the CPU's own memory */
+    twinned_picture* twinned() const { return m_memory.get(); }
 
     /* The panel's box inside the picture */
     ui::rect box() const { return m_box; }
 
-    /* Rounds the corners inside any of `painted`, the rects of `content()` the tree just painted. A paint must
-     * round once, since rounding a corner pixel again blends it over the shadow a second time. */
-    void round_corners(const std::vector<ui::rect>& painted);
+    /* Finishes a paint of `painted`, the rects of `content()` the tree just painted: blends the corners the paint
+     * reached over the shadow beneath them and marks the painted rows changed. A paint must finish once, since
+     * rounding a corner pixel again blends it over the shadow a second time. */
+    void finish_paint(const std::vector<ui::rect>& painted);
 
 private:
-    std::unique_ptr<picture> m_memory;
-    stlxgfx_surface_t*       m_surface = nullptr;
-    stlxgfx_surface_t*       m_content = nullptr;
-    stlxgfx_surface_t*       m_background = nullptr;
-    ui::rect                 m_box;
-    int32_t                  m_radius = 0;
+    std::unique_ptr<twinned_picture> m_memory;
+    stlxgfx_surface_t*               m_surface = nullptr;
+    stlxgfx_surface_t*               m_content = nullptr;
+    stlxgfx_surface_t*               m_background = nullptr;
+    ui::rect                         m_box;
+    int32_t                          m_radius = 0;
 
     /* The shadow under the four corner squares, each `m_radius` rows of `m_radius` pixels */
-    std::vector<uint32_t>    m_under_corners;
+    std::vector<uint32_t>            m_under_corners;
 };
 
 #endif

@@ -38,7 +38,7 @@ struct compose_target {
 /* How a compose ended */
 enum class compose_result {
     composed,       /* its target holds the frame */
-    not_submitted,  /* memory ran out before the GPU had any of it, and the twin may lack rows the CPU changed */
+    not_submitted,  /* memory ran out before the GPU had any of it, and twins may lack bytes the CPU changed */
     lost,           /* the device is lost, so none of the compositor's work runs any more */
     unfinished,     /* it did not end within `COMPOSE_DEADLINE_NS`, or its wait failed, and may still run */
 };
@@ -78,7 +78,7 @@ enum class window_import_result {
  * of the compositor's own context.
  *
  * stlxdm's one thread makes every call. */
-class gpu_compositor : public twin_maker, public output_buffer_maker {
+class gpu_compositor : public picture_maker, public output_buffer_maker {
 public:
     class compose_buffers;
 
@@ -92,6 +92,7 @@ public:
     gpu_compositor& operator=(const gpu_compositor&) = delete;
 
     std::unique_ptr<picture> make_picture(size_t bytes) override;
+    bool makes_twins() const override { return true; }
     std::unique_ptr<picture> make_twin(size_t bytes) override;
 
     /* The bytes from one row to the next of every output buffer `width`
@@ -130,18 +131,16 @@ public:
 
     /* Composes `rects` of `scene`, in the output's pixels and clipped to
      * it, into `target` through `buffers`, after copying into their twins
-     * the rows the CPU changed in `backdrop` and in `frost` (null without
-     * one), and waits at most `COMPOSE_DEADLINE_NS` for the compose to end.
-     * Every picture and import the scene, `backdrop` and `frost` name must
-     * be this compositor's and stay until the compose ended. The rects must
-     * not overlap, since their dispatches may run at the same time. */
+     * the bytes marked changed in the scene's twinned pictures, and waits
+     * at most `COMPOSE_DEADLINE_NS` for the compose to end. Every picture
+     * and import the scene names must be this compositor's and stay until
+     * the compose ended. The rects must not overlap, since their dispatches
+     * may run at the same time. */
     compose_result compose(
         compose_buffers& buffers,
         const compose_target& target,
         const layer_scene& scene,
-        const std::vector<damage_list::rect>& rects,
-        backdrop_picture& backdrop,
-        frost_picture* frost
+        const std::vector<damage_list::rect>& rects
     );
 
     /* Has the next compose that lists a rectangle make `failure` at one
@@ -274,19 +273,8 @@ private:
 
     bool list_layers(compose_buffers& buffers, const layer_scene& scene, const std::vector<damage_list::rect>& rects);
     layer failure_layer(const damage_list::rect& r) const;
-    bool record_compose(
-        compose_buffers& buffers,
-        const compose_target& target,
-        const layer_scene& scene,
-        const backdrop_picture& backdrop,
-        const frost_picture* frost
-    );
-    void record_copies(
-        VkCommandBuffer commands,
-        const backdrop_picture& picture,
-        const std::vector<picture_copy>& copies,
-        std::vector<VkBufferCopy>& regions
-    );
+    bool record_compose(compose_buffers& buffers, const compose_target& target, const layer_scene& scene);
+    bool record_copies(compose_buffers& buffers, twinned_picture& picture);
     void record_readback(compose_buffers& buffers, const compose_target& target);
     void write_timestamp(VkCommandBuffer commands, uint32_t query);
     compose_result submit_and_wait(compose_buffers& buffers, uint64_t& submitted_ns);
@@ -391,8 +379,8 @@ private:
     std::vector<damage_list::rect> m_list_rects;
     std::vector<uint32_t>          m_list_starts;
 
+    std::vector<twinned_picture*>      m_twinned;
     std::vector<picture_copy>          m_copies;
-    std::vector<picture_copy>          m_frost_copies;
     std::vector<VkBufferCopy>          m_copy_regions;
     std::vector<span>                  m_readback_rows;
     std::vector<VkBufferMemoryBarrier> m_transfers;

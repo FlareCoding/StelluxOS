@@ -42,10 +42,10 @@ public:
  * `surface` is null while no panel shows. */
 struct popover_layer {
     const stlxgfx_surface_t* surface = nullptr;
-    uint64_t                 address = 0; /* the GPU's address of the first pixel, 0 in the CPU's own memory */
-    int32_t                  x = 0;       /* with `y`, the output pixel the first pixel lies at */
+    twinned_picture*         picture = nullptr; /* the picture a GPU compose reads, null in the CPU's own memory */
+    int32_t                  x = 0;             /* with `y`, the output pixel the first pixel lies at */
     int32_t                  y = 0;
-    uint32_t                 opacity = 0; /* the straight alpha pixels' blend opacity, 255 opaque */
+    uint32_t                 opacity = 0;       /* the straight alpha pixels' blend opacity, 255 opaque */
 };
 
 /* The popover's blend layer on the CPU, bit for bit what compose.comp draws:

@@ -35,7 +35,7 @@ bool panel_picture::make(picture_maker* maker, const panel_style& style, int32_t
     uint32_t picture_h = static_cast<uint32_t>(style.shadow_top + h + style.shadow_bottom);
     uint32_t pitch = picture_w * BYTES_PER_PIXEL;
     if (maker) {
-        m_memory = maker->make_picture(static_cast<size_t>(pitch) * picture_h);
+        m_memory = twinned_picture::make(*maker, static_cast<size_t>(pitch) * picture_h);
     }
 
     if (m_memory) {
@@ -97,7 +97,17 @@ void panel_picture::drop() {
     m_under_corners.clear();
 }
 
-void panel_picture::round_corners(const std::vector<ui::rect>& painted) {
+void panel_picture::finish_paint(const std::vector<ui::rect>& painted) {
+    size_t pitch = m_surface->pitch;
+    for (const ui::rect& r : painted) {
+        int32_t first_row = std::max(r.y, 0);
+        int32_t end_row = std::min(r.y + r.h, m_box.h);
+        if (m_memory && first_row < end_row) {
+            size_t offset = static_cast<size_t>(m_box.y + first_row) * pitch;
+            m_memory->mark_changed(offset, static_cast<size_t>(end_row - first_row) * pitch);
+        }
+    }
+
     ui::rect whole = { 0, 0, m_box.w, m_box.h };
     for (uint32_t corner = 0; corner < CORNERS; corner++) {
         ui::point origin = corner_origin(corner, m_box, m_radius);

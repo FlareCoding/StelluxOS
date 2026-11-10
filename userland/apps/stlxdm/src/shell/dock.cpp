@@ -135,7 +135,7 @@ dock_band::dock_band(const stlxgfx_surface_t* backdrop, const stlxgfx_surface_t*
         static_cast<uint32_t>(shelf.w),
         static_cast<uint32_t>(shelf.h)
     );
-    glass.round_corners({ { 0, 0, shelf.w, shelf.h } });
+    glass.finish_paint({ { 0, 0, shelf.w, shelf.h } });
 
     ui::rect box = glass.box();
     const stlxgfx_surface_t* shadowed = glass.surface();
