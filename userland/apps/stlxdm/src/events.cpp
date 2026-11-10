@@ -30,10 +30,6 @@ constexpr uint8_t EDGE_R = 1u << 1;
 constexpr uint8_t EDGE_T = 1u << 2;
 constexpr uint8_t EDGE_B = 1u << 3;
 
-/* Windows never shrink below this content size */
-constexpr uint32_t MIN_CONTENT_W = 64;
-constexpr uint32_t MIN_CONTENT_H = 48;
-
 /* Wire modifier bits from the raw HID modifier byte */
 static uint8_t cook_modifiers(uint8_t hid) {
     uint8_t out = 0;
@@ -191,8 +187,15 @@ void server::forget_window(dm_window* w) {
     if (m_grab_popup == w) m_grab_popup = nullptr;
     if (m_focus_restore == w) m_focus_restore = nullptr;
     if (m_drag == w) m_drag = nullptr;
-    if (m_close_hover == w) m_close_hover = nullptr;
-    if (m_close_press == w) m_close_press = nullptr;
+
+    if (m_control_hover.window == w) {
+        m_control_hover = {};
+    }
+
+    if (m_control_press.window == w) {
+        m_control_press = {};
+    }
+
     if (m_resize == w) {
         damage_outline();
         m_resize = nullptr;
@@ -392,6 +395,21 @@ void server::damage_outline() {
     m_damage.add(r.x + r.w - decor::OUTLINE_T, r.y, decor::OUTLINE_T, r.h);
 }
 
+/* A hover or press changes the look of its window's controls alone, so only they repaint */
+void server::damage_controls(const dm_control& control) {
+    if (!control.window) {
+        return;
+    }
+
+    damage_list::rect r = decor::controls_rect(*control.window);
+    m_damage.add(r.x, r.y, r.w, r.h);
+}
+
+void server::release_control_press() {
+    damage_controls(m_control_press);
+    m_control_press = {};
+}
+
 /* Promised positions and a held resize's anchors move with the window, or
  * a late resize ack or the resize's next motion would snap it back */
 void server::move_window(dm_window* w, int32_t dx, int32_t dy) {
@@ -442,8 +460,8 @@ void server::update_resize(int32_t px, int32_t py) {
     dm_window* w = m_resize;
     const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
 
-    uint32_t min_w = w->min_w > MIN_CONTENT_W ? w->min_w : MIN_CONTENT_W;
-    uint32_t min_h = w->min_h > MIN_CONTENT_H ? w->min_h : MIN_CONTENT_H;
+    uint32_t min_w = w->min_w > decor::MIN_CONTENT_W ? w->min_w : decor::MIN_CONTENT_W;
+    uint32_t min_h = w->min_h > decor::MIN_CONTENT_H ? w->min_h : decor::MIN_CONTENT_H;
 
     uint32_t tw = b.width;
     uint32_t th = b.height;
@@ -500,6 +518,7 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
                                    uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
+    bool is_last_release = changed != 0 && all_released;
 
     /* An active overlay owns the pointer entirely. Hover and hold
      * transitions repaint the orb boxes. */
@@ -536,6 +555,7 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     /* A press on the star opens the overlay above everything */
     if (press && m_power->star_hit(x, y)) {
+        release_control_press();
         m_power->open();
         m_damage.add_full();
         return;
@@ -550,6 +570,7 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
         if (all_released) {
             damage_outline();
             m_resize = nullptr;
+            release_control_press();
         }
         return;
     }
@@ -580,6 +601,7 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
 
         if (all_released) {
             m_drag = nullptr;
+            release_control_press();
         }
         return;
     }
@@ -621,12 +643,6 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
         zone = decor::zone::content;
     }
 
-    /* The close control is only drawn on the focused window, so an
-     * unfocused frame treats its circle as plain title */
-    if (zone == decor::zone::close && struck != m_focus) {
-        zone = decor::zone::title;
-    }
-
     /* The shape follows the content window's request, and the frame
      * band advertises the resize direction it would grab */
     uint8_t resize_edges = zone_edges(zone);
@@ -636,57 +652,57 @@ void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
                                        : SWP_CURSOR_ARROW;
     move_cursor(x, y, shape);
 
-    /* Close-control hover repaints the title bars it touches */
-    dm_window* hover_close =
-        zone == decor::zone::close ? struck : nullptr;
-    if (hover_close != m_close_hover) {
-        if (m_close_hover) {
-            scene_damage_window(m_close_hover);
-        }
-        m_close_hover = hover_close;
-        if (m_close_hover) {
-            scene_damage_window(m_close_hover);
-        }
+    dm_control hovered;
+    if (decor::is_control(zone)) {
+        hovered = { struck, zone };
+    }
+
+    if (hovered != m_control_hover) {
+        damage_controls(m_control_hover);
+        m_control_hover = hovered;
+        damage_controls(m_control_hover);
     }
 
     /* Decoration interactions never reach the client */
-    if (zone == decor::zone::title || zone == decor::zone::close ||
-        resize_edges != 0) {
+    bool is_title = zone == decor::zone::title;
+    bool is_resize_band = resize_edges != 0;
+    if (is_title || decor::is_control(zone) || is_resize_band) {
+        bool is_on_pressed_control = decor::is_control(zone) && m_control_press == hovered;
         if (press) {
             set_focus(struck);
             scene_raise(struck);
 
-            if (resize_edges != 0) {
+            if (is_resize_band) {
                 begin_resize(struck, zone, shape);
-            } else if (zone == decor::zone::title) {
+            } else if (is_title) {
                 m_drag = struck;
                 m_drag_dx = x - struck->x;
                 m_drag_dy = y - struck->y;
             } else {
-                m_close_press = struck;
-                scene_damage_window(struck);
+                m_control_press = hovered;
+                damage_controls(m_control_press);
             }
-        } else if (changed != 0 && m_close_press == struck &&
-                   zone == decor::zone::close) {
-            swp_event_rec rec;
-            memset(&rec, 0, sizeof(rec));
-            rec.kind = SWP_EV_CLOSE;
-            send_event(struck, rec);
-            m_close_press = nullptr;
-            scene_damage_window(struck);
+        } else if (changed != 0 && is_on_pressed_control) {
+            /* Close acts on its release, and minimize and maximize have no action */
+            if (zone == decor::zone::close) {
+                swp_event_rec rec;
+                memset(&rec, 0, sizeof(rec));
+                rec.kind = SWP_EV_CLOSE;
+                send_event(struck, rec);
+            }
+
+            release_control_press();
         }
 
         /* A press that ended anywhere else sheds the pressed shade */
-        if (changed != 0 && all_released && m_close_press) {
-            scene_damage_window(m_close_press);
-            m_close_press = nullptr;
+        if (is_last_release && m_control_press.window) {
+            release_control_press();
         }
         return;
     }
 
-    if (changed != 0 && all_released && m_close_press) {
-        scene_damage_window(m_close_press);
-        m_close_press = nullptr;
+    if (is_last_release && m_control_press.window) {
+        release_control_press();
     }
 
     dm_window* target = zone == decor::zone::content ? struck : nullptr;
