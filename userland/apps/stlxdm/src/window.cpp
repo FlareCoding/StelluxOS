@@ -1515,10 +1515,10 @@ void server::compose_animations(
         pieces.clear();
         animation_pieces(a, *w, animation_frame(a, frame_maker()), pieces);
 
-        /* Only content the CPU draws covers the glass */
+        /* Only content the CPU draws opaque covers the glass, premultiplied content showing it through */
         material::surface glass = animation_glass(a, canvas.x, canvas.y);
         const layer_scaled* content = pieces.empty() ? nullptr : &pieces.back();
-        bool covers_glass = content && content->is_content && content->source.pixels;
+        bool covers_glass = content && content->is_content && !content->is_premultiplied && content->source.pixels;
         damage_list::rect opaque = {};
         int32_t radius = 0;
         if (covers_glass) {

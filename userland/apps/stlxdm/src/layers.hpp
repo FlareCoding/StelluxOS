@@ -40,9 +40,10 @@ struct layer {
 
 static_assert(sizeof(layer) == 56);
 
-/* A `scale` layer holds its source's width and height in `origin_x` and `origin_y`, its opacity in `color`'s alpha
- * byte, and in `color` this bit for a window's content, whose alpha byte means nothing */
+/* A `scale` layer holds its source's size in `origin_x` and `origin_y`, its opacity in `color`'s alpha byte, and in
+ * `color` bits for a window's content, whose alpha means nothing unless its pixels are premultiplied */
 constexpr uint32_t SCALE_CONTENT = 1u;
+constexpr uint32_t SCALE_PREMULTIPLIED = 2u;
 
 /* A picture's first pixel in GPU memory, its pitch, and the output pixel it
  * lies at */
@@ -71,13 +72,14 @@ struct picture_region {
     int32_t        height = 0;
 };
 
-/* A picture region resampled bilinearly into `bounds` at `opacity` from 0 to 255. A window's content ignores its
- * alpha and rounds its bottom corners by `radius`, and any other picture blends by its straight alpha. */
+/* A picture region resampled bilinearly into `bounds` at `opacity` from 0 to 255. Content rounds its bottom corners
+ * by `radius` and is opaque unless premultiplied, and any other picture blends by its straight alpha. */
 struct layer_scaled {
     damage_list::rect bounds;
     picture_region    source;
     uint32_t          opacity = 0;
     bool              is_content = false;
+    bool              is_premultiplied = false;
     uint32_t          radius = 0;
 };
 
