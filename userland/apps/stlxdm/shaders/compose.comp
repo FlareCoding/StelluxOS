@@ -227,7 +227,9 @@ void main() {
         } else if (l.op == LAYER_BLEND) {
             uint source = read_source(l, pixel);
             color = blend(color, source, source >> 24);
-        } else if (l.op == LAYER_FILL && !is_bottom_corner) {
+        } else if (l.op == LAYER_FILL && is_bottom_corner) {
+            color = blend(color, l.color, coverage(rounded_distance(l, pixel)));
+        } else if (l.op == LAYER_FILL) {
             color = l.color;
         } else if (l.op == LAYER_DIM) {
             color = dim(color, l.color);

@@ -20,8 +20,8 @@ constexpr int32_t BORDER = 1;
 constexpr int32_t CORNER_R = STLXTHEME_WINDOW_RADIUS;
 constexpr int32_t CONTENT_R = CORNER_R - BORDER;  /* content's bottom corners */
 
-/* The solid material of a frame, which a window's content area shows
- * where no picture of its own covers it */
+/* The color a window's content area shows where no picture of its own
+ * covers it */
 constexpr uint32_t CONTENT_BG = STLXTHEME_GLASS_TINT_WARM;
 
 /* The thin border is a hard target, so resize grips extend this far
@@ -143,9 +143,11 @@ bool is_control(zone z);
 damage_list::rect controls_rect(const dm_window& w);
 
 /* Draws the window's shadow and rounded chrome around the content area
- * inside `clip`, which is in desktop coordinates and must lie inside
- * `back`. The shadow replaces the pixels around the frame's body instead
- * of blending over them, so `back` must be transparent there. */
+ * into the straight alpha `back` inside `clip`, which is in desktop
+ * coordinates and must lie inside `back`, and leaves the frame's inside
+ * clear for what is composed beneath the window to show. The shadow
+ * replaces the pixels around the frame's body instead of blending over
+ * them, so `back` must be transparent there. */
 void draw(const canvas& back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 
