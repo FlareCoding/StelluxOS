@@ -9,17 +9,23 @@
 #include <stlxtheme/theme.h>
 
 static const QColor WINDOW_BG = QColor::fromRgba(STLXTHEME_WINDOW_BG);
+static const QColor RECESS = QColor::fromRgba(STLXTHEME_RECESS);
 static const QColor CARD = QColor::fromRgba(STLXTHEME_CARD);
 static const QColor SURFACE = QColor::fromRgba(STLXTHEME_SURFACE);
 static const QColor SURFACE_HOVER = QColor::fromRgba(STLXTHEME_SURFACE_HOVER);
 static const QColor SURFACE_PRESS = QColor::fromRgba(STLXTHEME_SURFACE_PRESS);
+static const QColor SURFACE_SELECTED = QColor::fromRgba(STLXTHEME_SURFACE_SELECTED);
+static const QColor LINE_SUBTLE = QColor::fromRgba(STLXTHEME_LINE_SUBTLE);
+static const QColor LINE = QColor::fromRgba(STLXTHEME_LINE);
 static const QColor SHADE = QColor::fromRgba(STLXTHEME_SHADE);
 static const QColor INK = QColor::fromRgba(STLXTHEME_INK);
+static const QColor MENU_BG = QColor::fromRgba(STLXTHEME_MENU_BG);
 static const QColor ACCENT = QColor::fromRgba(STLXTHEME_ACCENT);
 static const QColor ACCENT_PRESS = QColor::fromRgba(STLXTHEME_ACCENT_PRESS);
 static const QColor DANGER = QColor::fromRgba(STLXTHEME_DANGER);
 static const QColor TEXT = QColor::fromRgba(STLXTHEME_TEXT);
 static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
+static const QColor TEXT_DISABLED = QColor::fromRgba(STLXTHEME_TEXT_DISABLED);
 
 static const qreal POINTS_PER_INCH = 72;
 
@@ -34,37 +40,41 @@ static const QFile::Permissions EXECUTE_PERMISSIONS = QFile::ExeOwner | QFile::E
 
 static QPalette desktop_palette() {
     QPalette palette;
+
     palette.setColor(QPalette::Window, WINDOW_BG);
     palette.setColor(QPalette::WindowText, TEXT);
-    palette.setColor(QPalette::Base, SURFACE);
+    palette.setColor(QPalette::Base, RECESS);
     palette.setColor(QPalette::AlternateBase, CARD);
     palette.setColor(QPalette::Text, TEXT);
-
     palette.setColor(QPalette::PlaceholderText, TEXT_DIM);
-    palette.setColor(QPalette::Button, SURFACE);
-    palette.setColor(QPalette::ButtonText, TEXT);
-    palette.setColor(QPalette::BrightText, DANGER);
 
-    palette.setColor(QPalette::Light, SURFACE_PRESS);
+    // Control faces at rest, hovered and pressed, the resting edge, the darker panel fill and the shadow color
+    palette.setColor(QPalette::Button, SURFACE);
     palette.setColor(QPalette::Midlight, SURFACE_HOVER);
-    palette.setColor(QPalette::Mid, SURFACE);
+    palette.setColor(QPalette::Light, SURFACE_PRESS);
+    palette.setColor(QPalette::Mid, LINE);
     palette.setColor(QPalette::Dark, SHADE);
     palette.setColor(QPalette::Shadow, INK);
 
-    palette.setColor(QPalette::Highlight, ACCENT);
-    palette.setColor(QPalette::HighlightedText, WINDOW_BG);
+    // Selection is a cream overlay, and the accent marks a focused field, the default button and links
+    palette.setColor(QPalette::Highlight, SURFACE_SELECTED);
+    palette.setColor(QPalette::HighlightedText, TEXT);
     palette.setColor(QPalette::Accent, ACCENT);
     palette.setColor(QPalette::Link, ACCENT);
     palette.setColor(QPalette::LinkVisited, ACCENT_PRESS);
 
-    palette.setColor(QPalette::ToolTipBase, SURFACE);
+    palette.setColor(QPalette::ButtonText, TEXT);
+    palette.setColor(QPalette::BrightText, DANGER);
+    palette.setColor(QPalette::ToolTipBase, MENU_BG);
     palette.setColor(QPalette::ToolTipText, TEXT);
 
-    palette.setColor(QPalette::Disabled, QPalette::WindowText, TEXT_DIM);
-    palette.setColor(QPalette::Disabled, QPalette::Text, TEXT_DIM);
-    palette.setColor(QPalette::Disabled, QPalette::ButtonText, TEXT_DIM);
-    palette.setColor(QPalette::Disabled, QPalette::Base, WINDOW_BG);
-    palette.setColor(QPalette::Disabled, QPalette::Button, WINDOW_BG);
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, TEXT_DISABLED);
+    palette.setColor(QPalette::Disabled, QPalette::Text, TEXT_DISABLED);
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, TEXT_DISABLED);
+
+    palette.setColor(QPalette::Disabled, QPalette::Base, Qt::transparent);
+    palette.setColor(QPalette::Disabled, QPalette::Button, Qt::transparent);
+    palette.setColor(QPalette::Disabled, QPalette::Mid, LINE_SUBTLE);
 
     return palette;
 }
