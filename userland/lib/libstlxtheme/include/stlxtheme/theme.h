@@ -32,7 +32,7 @@
 #define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines, such as a disabled control's border */
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
-#define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target and of a set pin */
+#define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target, of a set pin and of the chosen segment */
 #define STLXTHEME_CARD_LINE   0x2BE2C496
 #define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window, the dock, a popover panel and a Qt menu */
 #define STLXTHEME_RIM_DIM     0x26E2C496
@@ -52,7 +52,7 @@
 #define STLXTHEME_DOCK_TILE_HOVER  0x1AFFF0D7
 #define STLXTHEME_SURFACE_SELECTED 0x17FFF0D7 /* highlighted items, such as a selected row and the hovered menu item */
 #define STLXTHEME_SELECTED_RING    0x33E2C496
-#define STLXTHEME_SURFACE_ON       0x1CFFF0D7 /* the face of an open bar target and of a set pin */
+#define STLXTHEME_SURFACE_ON       0x1CFFF0D7 /* the face of an open bar target, a set pin and the chosen segment */
 #define STLXTHEME_MENU_BG          0xF5181511
 
 /* Dark overlays and solid fills */
@@ -70,10 +70,19 @@
 #define STLXTHEME_WINDOW_CONTROL_GLYPH     0xD1F6EEE1
 #define STLXTHEME_WINDOW_CONTROL_GLYPH_DIM 0x4DF6EEE1
 
+/* Wallpaper pictures and tint swatches in Settings */
+#define STLXTHEME_THUMBNAIL_RING      0x29FFF0D7 /* the faint ring inside a wallpaper picture's edge */
+#define STLXTHEME_PREVIEW_CHROME      0xC712100D /* the bar and dock on a wallpaper preview, the warm tint at .78 */
+#define STLXTHEME_TINT_SWATCH_RING    0x47FFF0D7
+#define STLXTHEME_TINT_SWATCH_NEUTRAL 0xFF4A4C52
+#define STLXTHEME_TINT_SWATCH_WARM    0xFF6A5640
+
 /* Corner radii */
 #define STLXTHEME_WINDOW_RADIUS    10
 #define STLXTHEME_CARD_RADIUS      8
+#define STLXTHEME_THUMBNAIL_RADIUS 4
 #define STLXTHEME_CONTROL_RADIUS   6
+#define STLXTHEME_INNER_RADIUS     4
 #define STLXTHEME_MENU_RADIUS      8
 #define STLXTHEME_MENU_ITEM_RADIUS 4
 #define STLXTHEME_DOCK_RADIUS      16

@@ -5,6 +5,7 @@
  * accent fill is a translucent overlay on the window background, so it shows glass wherever the window does. */
 #include <QAbstractButton>
 #include <QFont>
+#include <QStringList>
 #include <QWidget>
 
 #include <cstdint>
@@ -81,6 +82,8 @@ class setting_label : public QWidget {
 public:
     setting_label(const QString& label, const QString& key);
 
+    void set_key(const QString& key);
+
 private:
     QLabel* m_key;
 };
@@ -90,6 +93,9 @@ class setting_row : public QWidget {
 public:
     setting_row(const QString& label, const QString& key);
 
+    void add_control(QWidget* control);
+
+    void set_key(const QString& key) { m_label->set_key(key); }
     QHBoxLayout* controls() const { return m_layout; }
 
 private:
@@ -116,6 +122,35 @@ protected:
 private:
     bool m_is_primary = false;
     bool m_is_small = false;
+};
+
+/* Paints the mark a segment shows before its label into `box`. `color` is the label's color, which a mark may use */
+using mark_painter = std::function<void(QPainter& painter, const QRectF& box, int index, const QColor& color)>;
+
+/* Choices on a recessed track, exactly one of them chosen. The chosen one is filled in cream, never amber */
+class segmented : public QWidget {
+public:
+    segmented(const QStringList& labels, int chosen, mark_painter paint_mark);
+
+    std::function<void(int)> on_choose;
+
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
+
+private:
+    qreal segment_width(int index) const;
+    QRectF segment_rect(int index) const;
+    int segment_at(const QPointF& position) const;
+
+    QStringList m_labels;
+    mark_painter m_paint_mark;
+    int m_chosen;
+    int m_hovered = -1;
 };
 
 #endif /* STLXSETTINGS_KIT_HPP */
