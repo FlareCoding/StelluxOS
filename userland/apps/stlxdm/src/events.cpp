@@ -140,14 +140,6 @@ void server::send_event(dm_window* w, const swp_event_rec& rec) {
     }
 
     w->ev_batch[w->ev_batch_count++] = rec;
-
-    /* A key press delivered while the timed input is fresh is what the
-     * client's next commit responds to. Pointer input is not matched,
-     * a client's unprompted repaint could not be told from a response. */
-    if (m_perf.fresh() &&
-        (rec.kind == SWP_EV_KEY_DOWN || rec.kind == SWP_EV_KEY_REPEAT)) {
-        w->event_seq = m_perf.seq();
-    }
 }
 
 void server::set_focus(dm_window* w) {
@@ -215,11 +207,6 @@ void server::forget_window(dm_window* w) {
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
-    /* Releases and bare modifiers paint nothing, so they are not timed */
-    if (down && (usage < 0xE0 || usage > 0xE7)) {
-        m_perf.note_input(m_wake_ns);
-    }
-
     /* An active overlay swallows the keyboard, escape backs out */
     if (m_power->active()) {
         if (down && !repeat && usage == 0x29) {
@@ -510,12 +497,6 @@ void server::update_resize(int32_t px, int32_t py) {
 
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
-    m_perf.note_input(m_wake_ns);
-    route_untimed_pointer(x, y, buttons, changed, wheel);
-}
-
-void server::route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
-                                   uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
     bool is_last_release = changed != 0 && all_released;

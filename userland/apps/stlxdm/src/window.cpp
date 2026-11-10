@@ -1152,12 +1152,6 @@ void server::latch_window(dm_client& c, dm_window& w) {
     bool first_map = !w.mapped;
     bool resized = false;
 
-    /* A commit from a client that received the timed input counts as
-     * its response, whichever of its windows repainted */
-    for (const auto& win : c.windows) {
-        m_perf.answer(win->event_seq);
-    }
-
     /* Clients may rely on the latch point coming before the replaced
      * picture's release and FRAME_DONE */
     if (nb.is_gpu && nb.latch_point != 0) {
@@ -1606,7 +1600,6 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         return false;
     }
 
-    note_gpu_frame(out);
     if (target.readback) {
         compare_with_cpu(out, t.stride, false);
     }
@@ -1684,14 +1677,16 @@ bool server::switch_to_cpu_on_failed_compose(compose_result result) {
     return true;
 }
 
-/* Adds the frame the GPU just composed into `out`, over `out.pictures.rects`, to its frame statistics */
+/* Adds the frame the GPU just composed into `out`, over `out.pictures.rects`, to its frame statistics. Callers must
+ * present the frame first, since a statistics line printed before the present could delay it past its vertical blank */
 void server::note_gpu_frame(dm_output& out) {
     uint32_t output = static_cast<uint32_t>(&out - m_outputs);
     int32_t width = static_cast<int32_t>(out.pres->width());
     int32_t height = static_cast<int32_t>(out.pres->height());
     bool is_whole_output = has_whole_output(out.pictures.rects, width, height);
+    const compose_times& times = m_gpu_compositor->last_times();
 
-    out.pictures.stats.add(output, now_ns(), is_whole_output, m_gpu_compositor->last_times());
+    out.pictures.stats.add(output, now_ns(), is_whole_output, times, out.pres->missed_frames());
 }
 
 backdrop_picture& server::gpu_backdrop_of(dm_output& out) {
@@ -1835,6 +1830,10 @@ void server::compose_collapse(dm_output& out) {
         out.pres->present(full);
         out.history[out.history_head] = full;
         out.history_head = (out.history_head + 1) % DM_DAMAGE_HISTORY;
+
+        if (t.gpu_buffer) {
+            note_gpu_frame(out);
+        }
     }
 
     out.damage.clear();
@@ -1909,7 +1908,6 @@ bool server::collapse_on_gpu(dm_output& out, const presenter::target& t) {
         return false;
     }
 
-    note_gpu_frame(out);
     if (target.readback) {
         compare_with_cpu(out, t.stride, true);
     }
@@ -2108,12 +2106,15 @@ void server::compose_tick(uint32_t output) {
     }
 
     out.pres->present(effective);
-    m_perf.note_present(now_ns());
 
     /* This frame's new damage joins the history for older targets */
     out.history[out.history_head] = out.damage;
     out.history_head = (out.history_head + 1) % DM_DAMAGE_HISTORY;
     out.damage.clear();
+
+    if (t.gpu_buffer) {
+        note_gpu_frame(out);
+    }
 
     /* Runs only after the collapse's final dark frame is on screen */
     if (is_main) {

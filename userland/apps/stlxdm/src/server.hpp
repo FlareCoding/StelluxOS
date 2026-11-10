@@ -5,11 +5,11 @@
 #include "damage.hpp"
 #include "decor.hpp"
 #include "display.hpp"
+#include "frame_stats.hpp"
 #include "gpu_compositor.hpp"
 #include "layout.hpp"
 #include "layout_store.hpp"
 #include "panels.hpp"
-#include "perf.hpp"
 #include "power.hpp"
 #include "presenter.hpp"
 
@@ -64,8 +64,7 @@ struct dm_output_pictures {
     layer_scene                                      scene;
     std::vector<damage_list::rect>                   rects;
 
-    /* The GPU frames since the output's last frame statistics line or the
-     * last clearing of its pictures */
+    /* GPU frames and missed vertical blanks since the last frame statistics line, cleared with the pictures */
     frame_stats                                      stats;
 
     /* In comparison mode: each GPU frame's rows read back at the output
@@ -203,10 +202,6 @@ struct dm_window {
 
     swp_event_rec ev_batch[DM_EV_BATCH_MAX];
     uint32_t ev_batch_count = 0;
-
-    /* The latency meter's id of the last timed input delivered here,
-     * so this client's next commit can be matched to it */
-    uint32_t event_seq = 0;
 
     /* Damage of the commits since the last latch, buffer coordinates,
      * unless the whole buffer changed. */
@@ -399,8 +394,8 @@ public:
      * and repaints every served output whole. A change of places moves
      * windows and popups with their outputs, and it or a rebuild keeps them
      * in reach. Returns the pointer, moved with its output or, once that
-     * left, to the main output's center, shown and routed as an untimed
-     * motion with `buttons` held. */
+     * left, to the main output's center, shown and routed as a motion with
+     * `buttons` held. */
     desktop_point follow_outputs(desktop_point pointer, uint16_t buttons);
 
     /* Decides the wakeup's layout requests in arrival order, applying and
@@ -483,22 +478,12 @@ public:
     int64_t mode_timeout_ns(uint64_t now) const;
     void mode_tick(uint64_t now);
 
-    /* Input routing entry points, fed by the input layer. */
+    /* Input routing entry points, fed by the input layer and, for the
+     * pointer, by `adopt_layout()`. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                    bool repeat);
     void route_pointer(int32_t x, int32_t y, uint16_t buttons,
                        uint16_t changed, int16_t wheel);
-
-    /* The input latency and missed frames readouts. The loop hands over
-     * the timestamp it already took for the wakeup, the routers stamp
-     * the inputs that may paint, settle judges the desktop's own
-     * reaction once routing is done, and the tick, run once the loop has
-     * read any present end the wakeup delivered, takes every output's
-     * missed frames and runs the refresh. */
-    void perf_wake(uint64_t now_ns);
-    void perf_settle();
-    int64_t perf_timeout_ns(uint64_t now_ns) const { return m_perf.timeout_ns(now_ns); }
-    void perf_tick(uint64_t now_ns);
 
 private:
     void accept_one();
@@ -603,11 +588,6 @@ private:
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
 
-    /* Takes `route_pointer()`'s steps without stamping an input for
-     * the latency meter, for a pointer event that no device sent. */
-    void route_untimed_pointer(int32_t x, int32_t y, uint16_t buttons,
-                               uint16_t changed, int16_t wheel);
-
     /* scene.cpp */
     void scene_map(dm_window* w);
     void scene_raise(dm_window* w);
@@ -709,17 +689,6 @@ private:
      * switches, and whether a switch to the GPU waits for a retired one */
     stlxconf_compositor_t m_compositor = STLXCONF_COMPOSITOR_AUTO;
     bool                  m_gpu_switch_waits = false;
-
-    /* The desktop's own input to paint latency and missed frames meter,
-     * the readout the bar last took, the arrival time of whatever input
-     * the current wakeup delivered, and the damage state before routing
-     * so the desktop's own reaction stands out */
-    perf_monitor m_perf;
-    perf_snapshot m_perf_readout;
-    uint64_t m_wake_ns = 0;
-    uint32_t m_wake_damage = 0;
-    bool m_wake_damage_full = false;
-    bool m_wake_panels_dirty = false;
 
     /* Exec shortcuts parsed from the config's key chords */
     std::vector<dm_hotkey> m_hotkeys;

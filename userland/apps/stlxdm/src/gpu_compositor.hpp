@@ -3,8 +3,8 @@
 
 #include "compare.hpp"
 #include "damage.hpp"
+#include "frame_stats.hpp"
 #include "layers.hpp"
-#include "perf.hpp"
 #include "picture.hpp"
 #include "presenter.hpp"
 

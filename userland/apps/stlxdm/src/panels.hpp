@@ -2,7 +2,6 @@
 #define STLXDM_PANELS_HPP
 
 #include "damage.hpp"
-#include "perf.hpp"
 
 #include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
@@ -33,10 +32,10 @@ public:
 };
 
 /* The compositor's chrome: a top bar with the product name, system
- * stats, the input latency and missed frames readouts, the clock, and
- * network state, and a bottom dock of pinned launchers with hover
- * tooltips. Both are toolkit trees painted straight into the shared
- * backdrop, so composing them is the same blit as the wallpaper. */
+ * stats, the clock, and network state, and a bottom dock of pinned
+ * launchers with hover tooltips. Both are toolkit trees painted
+ * straight into the shared backdrop, so composing them is the same
+ * blit as the wallpaper. */
 class dm_panels {
 public:
     static constexpr int32_t BAR_H = 28;
@@ -85,14 +84,9 @@ public:
     void pointer_button(int32_t x, int32_t y, uint8_t btn, bool down);
 
     /* Nanoseconds until the next second rollover, and the tick that
-     * applies it. The clock is the desktop's only idle timer once the
-     * perf readouts' window holds no missed frames. */
+     * applies it. The clock is the desktop's only idle timer. */
     int64_t clock_timeout_ns(uint64_t now_ns) const;
     void clock_tick();
-
-    /* Feeds the latency and missed frames readouts. Labels only repaint
-     * when their text or color changes. */
-    void set_perf(const perf_snapshot& s);
 
 private:
     void hover_pin(int32_t index, bool entered);
@@ -119,13 +113,6 @@ private:
     ui::label* m_clock = nullptr;
     ui::label* m_stats = nullptr;
     ui::label* m_net = nullptr;
-
-    /* The input latency readout: the percentile and the newest sample */
-    ui::label* m_inp = nullptr;
-    ui::label* m_inp_last = nullptr;
-
-    /* The frames presents missed over the latency readout's window */
-    ui::label* m_missed = nullptr;
 
     /* Last query times gating the refresh cadences */
     uint64_t m_stats_query_ns = 0;

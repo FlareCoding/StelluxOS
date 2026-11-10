@@ -2,8 +2,7 @@
  * straight into the backdrop rows it owns, so the toolkit repaints
  * only dirty widgets and compose needs no separate panel step. The
  * dock launches the config's pinned apps, and the top bar shows
- * system stats, the input latency and missed frames, the clock, and
- * network state.
+ * system stats, the clock, and network state.
  */
 #include "panels.hpp"
 #include "material.hpp"
@@ -43,14 +42,6 @@ constexpr int32_t TIP_REACH = 48;
  * changing network answer every third. */
 constexpr uint64_t STATS_POLL_NS = 1000000000ull;
 constexpr uint64_t NET_POLL_NS = 3000000000ull;
-
-/* Input to paint latency turns amber past the first threshold and red
- * past the second, in microseconds. Its two readouts sit as a pair. */
-constexpr uint32_t INP_WARN_US = 40000;
-constexpr uint32_t INP_BAD_US = 100000;
-constexpr uint32_t INP_WARN_COLOR = 0xFFFAB387;
-constexpr uint32_t INP_BAD_COLOR = 0xFFF38BA8;
-constexpr int32_t INP_GAP = 12;
 
 /* Letter-glyph fallback colors for pins without an icon file */
 static const uint32_t PIN_ACCENTS[] = {
@@ -396,22 +387,6 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf
     m_stats->s().main = ui::length::content();
     m_stats->set_color(conf.accent_color);
 
-    /* The latency percentile and the newest sample read as one group */
-    ui::box* inp = left->add<ui::box>(ui::axis::row);
-    inp->s().main = ui::length::content();
-    inp->s().align_items = ui::align::center;
-    inp->s().gap = INP_GAP;
-    m_inp = inp->add<ui::label>("INP --");
-    m_inp->s().main = ui::length::content();
-    m_inp->set_color(conf.accent_color);
-    m_inp_last = inp->add<ui::label>("last --");
-    m_inp_last->s().main = ui::length::content();
-    m_inp_last->set_color(conf.accent_color);
-
-    m_missed = left->add<ui::label>("missed frames --");
-    m_missed->s().main = ui::length::content();
-    m_missed->set_color(conf.accent_color);
-
     char text[64];
     format_clock(text, sizeof(text));
     m_clock = bar->add<ui::label>(text);
@@ -498,9 +473,6 @@ void dm_panels::shutdown() {
     m_clock = nullptr;
     m_stats = nullptr;
     m_net = nullptr;
-    m_inp = nullptr;
-    m_inp_last = nullptr;
-    m_missed = nullptr;
     m_hover_pin = -1;
     m_drawn_hover_pin = -1;
 
@@ -720,52 +692,4 @@ void dm_panels::clock_tick() {
         format_net(net, sizeof(net));
         m_net->set_text(net);
     }
-}
-
-/* Readout color for a latency against the thresholds */
-static uint32_t inp_color(uint32_t us, uint32_t accent) {
-    if (us >= INP_BAD_US) {
-        return INP_BAD_COLOR;
-    }
-    if (us >= INP_WARN_US) {
-        return INP_WARN_COLOR;
-    }
-
-    return accent;
-}
-
-/* One readout: "<label> <ms>ms", or dashes while the window holds no
- * latency sample */
-static void set_readout(ui::label* l, const char* label, bool valid,
-                        uint32_t us, uint32_t accent) {
-    char text[32];
-    if (valid) {
-        uint32_t ms = (us + 500) / 1000;
-        snprintf(text, sizeof(text), "%s %ums", label, ms < 1 ? 1 : ms);
-    } else {
-        snprintf(text, sizeof(text), "%s --", label);
-    }
-
-    l->set_color(valid ? inp_color(us, accent) : accent);
-    l->set_text(text);
-}
-
-void dm_panels::set_perf(const perf_snapshot& s) {
-    if (!m_inp) {
-        return;
-    }
-
-    set_readout(m_inp, "INP", s.valid, s.p95_us, m_conf->accent_color);
-    set_readout(m_inp_last, "last", s.valid, s.last_us, m_conf->accent_color);
-
-    /* The bar shows dashes for a presenter that cannot count, rather
-     * than a 0 it never measured */
-    char text[32];
-    if (s.counts_missed_frames) {
-        snprintf(text, sizeof(text), "missed frames %u", s.missed_frames);
-    } else {
-        snprintf(text, sizeof(text), "missed frames --");
-    }
-
-    m_missed->set_text(text);
 }
