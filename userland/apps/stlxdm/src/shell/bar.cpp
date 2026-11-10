@@ -6,12 +6,10 @@
 #include <cstdio>
 #include <ctime>
 
-/* Padding inside the mark's and the readouts' frames, left and right of their content */
-constexpr int32_t TARGET_PADDING = 8;
+constexpr int32_t TARGET_HEIGHT = 24;
 
-/* Where the bar's content starts from each side of the output, the targets' padding included */
-constexpr int32_t BAR_INSET_X = 16;
-constexpr int32_t BAR_PADDING_X = BAR_INSET_X - TARGET_PADDING;
+/* Padding left and right of the content inside the mark's hover background and the readouts' frame */
+constexpr int32_t TARGET_PADDING = 8;
 
 constexpr int32_t SEPARATOR_MARGIN = 12;
 constexpr int32_t SEPARATOR_HEIGHT = 16;
@@ -77,6 +75,11 @@ private:
 
 } // namespace
 
+/* The `TARGET_HEIGHT` rows centered in `frame`, `reach_left` in from its left side, counted from its top left */
+static ui::rect target_slot(const ui::rect& frame, int32_t reach_left) {
+    return { reach_left, (frame.h - TARGET_HEIGHT) / 2, frame.w - reach_left, TARGET_HEIGHT };
+}
+
 /* Used memory in whole mebibytes below a gibibyte, else in gibibytes cut to a tenth */
 static void format_memory(char* out, size_t cap, uint64_t used_bytes) {
     if (used_bytes < GIBIBYTE) {
@@ -89,18 +92,78 @@ static void format_memory(char* out, size_t cap, uint64_t used_bytes) {
              static_cast<unsigned long long>(tenths % 10));
 }
 
-mark_target::mark_target() : m_mark(make_mark_picture(STLXTHEME_TEXT)) {}
+bar_target::bar_target(int32_t reach_left) : m_reach_left(reach_left) {}
+
+bar_target::~bar_target() {
+    stlxgfx_destroy_surface(m_ring);
+}
+
+void bar_target::set_open(bool open) {
+    if (open != m_open) {
+        m_open = open;
+        invalidate();
+    }
+}
+
+void bar_target::paint(ui::painter& p) {
+    ui::rect background = slot();
+    if (!m_open) {
+        if (m_hover) {
+            p.rounded_rect(background, STLXTHEME_CONTROL_RADIUS, STLXTHEME_SURFACE_HOVER);
+        }
+
+        return;
+    }
+
+    bool ring_fits = m_ring && static_cast<int32_t>(m_ring->width) == background.w &&
+                     static_cast<int32_t>(m_ring->height) == background.h;
+    if (!ring_fits) {
+        stlxgfx_destroy_surface(m_ring);
+        m_ring = make_ring_picture(background.w, background.h, STLXTHEME_CONTROL_RADIUS, STLXTHEME_LINE_ON);
+    }
+
+    p.rounded_rect(background, STLXTHEME_CONTROL_RADIUS, STLXTHEME_SURFACE_ON);
+    p.image({ background.x, background.y }, m_ring);
+}
+
+void bar_target::on_pointer_enter() {
+    m_hover = true;
+    invalidate();
+}
+
+void bar_target::on_pointer_leave() {
+    m_hover = false;
+    invalidate();
+}
+
+/* A press takes no grab, since a release over the popover goes to its host and the bar's host would stay grabbed */
+bool bar_target::on_pointer_down(const ui::pointer_event&) {
+    if (on_press) {
+        on_press();
+    }
+
+    return false;
+}
+
+ui::rect bar_target::slot() const {
+    return target_slot(m_frame, m_reach_left);
+}
+
+mark_target::mark_target() : bar_target(top_bar::TARGET_INSET), m_mark(make_mark_picture(STLXTHEME_TEXT)) {}
 
 mark_target::~mark_target() {
     stlxgfx_destroy_surface(m_mark);
 }
 
 ui::size mark_target::measure(ui::size) {
-    return { STLXTHEME_GLYPH_SIZE + 2 * TARGET_PADDING, STLXTHEME_TOP_BAR_HEIGHT };
+    return { top_bar::TARGET_INSET + STLXTHEME_GLYPH_SIZE + 2 * TARGET_PADDING, STLXTHEME_TOP_BAR_HEIGHT };
 }
 
 void mark_target::paint(ui::painter& p) {
-    p.image({ TARGET_PADDING, (m_frame.h - STLXTHEME_GLYPH_SIZE) / 2 }, m_mark);
+    bar_target::paint(p);
+
+    ui::rect content = slot();
+    p.image({ content.x + TARGET_PADDING, (m_frame.h - STLXTHEME_GLYPH_SIZE) / 2 }, m_mark);
 }
 
 readouts_target::readouts_target()
@@ -186,14 +249,13 @@ int32_t readouts_target::paint_meter(ui::painter& p, int32_t x) const {
 
 std::unique_ptr<ui::widget> top_bar::build(const stlxgfx_surface_t* glass) {
     auto root = std::make_unique<bar_background>(glass);
-    root->s().padding = ui::edge_insets::xy(BAR_PADDING_X, 0);
     root->s().align_items = ui::align::center;
 
     ui::box* left = root->add<ui::box>(ui::axis::row);
     left->s().main = ui::length::flex();
     left->s().align_items = ui::align::center;
 
-    left->add<mark_target>();
+    m_mark = left->add<mark_target>();
     m_separator = left->add<bar_separator>(SEPARATOR_MARGIN - TARGET_PADDING);
     m_app_name = left->add<ui::label>("");
     m_app_name->set_weight(ui::weight::semibold);
@@ -212,6 +274,7 @@ std::unique_ptr<ui::widget> top_bar::build(const stlxgfx_surface_t* glass) {
     right->s().main = ui::length::flex();
     right->s().align_items = ui::align::center;
     right->s().justify = ui::align::end;
+    right->s().padding = { 0, TARGET_INSET, 0, 0 };
     m_readouts = right->add<readouts_target>();
 
     show_clock();

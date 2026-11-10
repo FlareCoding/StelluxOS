@@ -36,7 +36,7 @@ struct layer {
     ivec2  origin;
     uint   pitch;
     uint   op;
-    uint   color;
+    uint   color;   /* a fill's or dim's color, or `blend`'s opacity, 255 opaque */
     uint   radius;
     uint   rim_fade;
 };
@@ -239,7 +239,7 @@ void main() {
             color = read_source(l, pixel);
         } else if (l.op == LAYER_BLEND) {
             uint source = read_source(l, pixel);
-            color = blend(color, source, source >> 24);
+            color = blend(color, source, div255((source >> 24) * l.color));
         } else if (l.op == LAYER_FILL && is_bottom_corner) {
             color = blend(color, l.color, coverage(rounded_distance(l, pixel)));
         } else if (l.op == LAYER_FILL) {

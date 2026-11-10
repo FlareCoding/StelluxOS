@@ -380,8 +380,10 @@ void server::switch_to_gpu() {
         return;
     }
 
-    m_panels->rebind(m_gpu_backdrop->surface());
+    m_panels->rebind(m_gpu_backdrop->surface(), m_gpu_frost->surface());
+    m_panels->use_picture_maker(m_gpu_compositor.get());
     m_power->capture_into(m_gpu_capture->pixels());
+
     stlxgfx_destroy_surface(m_backdrop);
     stlxgfx_destroy_surface(m_frost);
     m_backdrop = nullptr;
@@ -407,6 +409,7 @@ void server::switch_to_gpu() {
  * composing when a flip presenter or a copy of the main output's backdrop or frost fails */
 void server::switch_to_cpu(const char* reason) {
     m_gpu_compositor->retire();
+    m_panels->use_picture_maker(nullptr);
 
     stlxgfx_surface_t* backdrop = copy_surface(m_gpu_backdrop->surface());
     stlxgfx_surface_t* frost = copy_surface(m_gpu_frost->surface());
@@ -434,7 +437,7 @@ void server::switch_to_cpu(const char* reason) {
         return;
     }
 
-    m_panels->rebind(backdrop);
+    m_panels->rebind(backdrop, frost);
     m_power->capture_into(nullptr);
     m_gpu_capture.reset();
 
@@ -702,7 +705,7 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     }
 
     if (out.gpu_backdrop) {
-        out.panels->rebind(out.gpu_backdrop->surface());
+        out.panels->rebind(out.gpu_backdrop->surface(), out.gpu_frost->surface());
         stlxgfx_destroy_surface(out.backdrop);
         stlxgfx_destroy_surface(out.frost);
         out.backdrop = nullptr;
@@ -712,6 +715,17 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     out.panels->on_launch = [](const stlxconf_pin_t& pin) {
         spawn_app(pin.path, pin.args);
     };
+
+    out.panels->on_spawn = [](const char* path, const char* args) {
+        spawn_app(path, args);
+    };
+
+    out.panels->on_power = [this]() {
+        m_power->open();
+        m_damage.add_full();
+    };
+
+    out.panels->use_picture_maker(m_gpu_composes ? m_gpu_compositor.get() : nullptr);
 
     /* Exec shortcuts with parseable chords become live hotkeys */
     for (uint32_t i = 0; i < m_conf->shortcut_count; i++) {

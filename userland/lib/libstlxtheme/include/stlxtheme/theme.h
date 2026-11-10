@@ -32,6 +32,7 @@
 #define STLXTHEME_LINE_SUBTLE 0x1FE2C496 /* the faintest lines, such as a disabled control's border */
 #define STLXTHEME_LINE        0x36E2C496 /* control borders */
 #define STLXTHEME_LINE_STRONG 0x52E2C496 /* hover and focus borders and scroll thumbs */
+#define STLXTHEME_LINE_ON     0x3DE2C496 /* the ring of an open bar target */
 #define STLXTHEME_RIM         0x4DE2C496 /* the edge of the focused window and of a menu */
 #define STLXTHEME_RIM_DIM     0x26E2C496
 #define STLXTHEME_BEZEL       0x42E2C496 /* the ring of a window control */
@@ -47,6 +48,7 @@
 #define STLXTHEME_ROW_HOVER        0x0FFFF0D7
 #define STLXTHEME_SURFACE_SELECTED 0x17FFF0D7 /* highlighted items, such as a selected row and the hovered menu item */
 #define STLXTHEME_SELECTED_RING    0x33E2C496
+#define STLXTHEME_SURFACE_ON       0x1CFFF0D7 /* the face of an open bar target */
 #define STLXTHEME_MENU_BG          0xF5181511
 
 /* Dark overlays and solid fills */

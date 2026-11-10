@@ -1,9 +1,9 @@
 #include "layers.hpp"
 
 /* The backdrop, each window's glass, frame strips and content, and above
- * them the two top pictures with the dim between */
+ * them the shell's popover and the two top pictures with the dim between */
 constexpr uint32_t LAYERS_PER_WINDOW = layer_window::FRAME_STRIPS + 2;
-constexpr uint32_t LAYERS_AROUND_WINDOWS = 4;
+constexpr uint32_t LAYERS_AROUND_WINDOWS = 5;
 
 static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -85,6 +85,7 @@ static void append_piece(
 
     layer l = layer_over(piece.bounds, op);
     set_source(l, piece.picture);
+    l.color = piece.opacity;
     list.push_back(l);
 }
 
@@ -160,6 +161,7 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
         append_content(list, r, scene.windows[i], scene.content_color);
     }
 
+    append_piece(list, r, scene.popover, layer_op::blend);
     append_piece(list, r, scene.lower_top, layer_op::blend);
 
     if (scene.is_dimmed) {

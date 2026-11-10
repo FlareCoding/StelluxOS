@@ -8,10 +8,31 @@
 #include <cstdint>
 #include <string>
 
+/* One blurred layer of an ink drop shadow, with CSS box-shadow's meaning of offset and blur */
+struct shadow_layer {
+    int32_t  offset_y;
+    int32_t  blur;
+    uint32_t alpha; /* of the ink, 255 opaque */
+};
+
 /* The Stellux mark, a quarter disc at its top left and one at its bottom
  * right, in `color` on a transparent `STLXTHEME_GLYPH_SIZE` square. Null
  * when memory ran out. */
 stlxgfx_surface_t* make_mark_picture(uint32_t color);
+
+/* A one pixel ring along the edge of a `w` by `h` rect with corners of
+ * `radius`, in `color` on transparent pixels. `w` and `h` must be at least
+ * twice `radius`. Null when memory ran out. */
+stlxgfx_surface_t* make_ring_picture(int32_t w, int32_t h, int32_t radius, uint32_t color);
+
+/* How much of the pixel at (`x`, `y`) a rect with corners of `radius` covers, 0 to 255 */
+uint32_t rounded_rect_coverage(int32_t x, int32_t y, const ui::rect& box, int32_t radius);
+
+/* Paints into `picture` the ink drop shadow of `box`, whose corners have `radius`: a one pixel contact ring
+ * at `ring_alpha` around it and the blurred `layers` beneath. The box clear of its corner squares comes out
+ * transparent, for the caller to cover. */
+void paint_drop_shadow(stlxgfx_surface_t* picture, const ui::rect& box, int32_t radius, uint32_t ring_alpha,
+                       const shadow_layer* layers, uint32_t layer_count);
 
 /* The face at `path` and `em_px`, kept for the process once an open
  * succeeds, or null when it cannot be opened */

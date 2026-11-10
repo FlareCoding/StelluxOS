@@ -30,6 +30,9 @@ public:
     /* The part of `a` inside `b`, all zero when they do not overlap. */
     static rect intersect(const rect& a, const rect& b);
 
+    /* The smallest rect holding `a` and `b`, ignoring one that is empty. */
+    static rect union_of(const rect& a, const rect& b);
+
 private:
     rect m_rects[MAX_RECTS];
     uint32_t m_count = 0;

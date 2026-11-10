@@ -15,6 +15,8 @@ constexpr uint8_t HID_ALT =
 constexpr uint8_t HID_GUI =
     STLX_INPUT_MOD_LGUI | STLX_INPUT_MOD_RGUI;
 
+constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
+
 constexpr char DIGIT_PLAIN[] = "1234567890";
 constexpr char DIGIT_SHIFT[] = "!@#$%^&*()";
 constexpr char PUNCT_PLAIN[] = {
@@ -207,11 +209,18 @@ void server::forget_window(dm_window* w) {
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
+    bool is_escape_press = down && !repeat && usage == HID_USAGE_ESCAPE;
+
     /* An active overlay swallows the keyboard, escape backs out */
     if (m_power->active()) {
-        if (down && !repeat && usage == 0x29) {
+        if (is_escape_press) {
             m_power->dismiss();
         }
+        return;
+    }
+
+    if (is_escape_press && m_panels->has_open_popover()) {
+        m_panels->close_popover();
         return;
     }
 
@@ -537,6 +546,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     /* A press on the star opens the overlay above everything */
     if (press && m_power->star_hit(x, y)) {
         release_control_press();
+        m_panels->close_popover_now();
         m_power->open();
         m_damage.add_full();
         return;
@@ -587,6 +597,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
+    /* A press that `dismisses_popover()` accepts closes the popover and reaches nothing else */
+    if (press && m_panels->dismisses_popover(x, y)) {
+        m_panels->close_popover();
+        return;
+    }
+
     /* A press outside a grabbing popup dismisses it and swallows the press.
      * `forget_window()` gives the focus back if the popup still holds it. */
     if (m_grab_popup && press) {
@@ -622,6 +638,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     dm_window* struck = m_grab ? m_grab : window_at(x, y, &zone);
     if (m_grab) {
         zone = decor::zone::content;
+    }
+
+    /* The shell's popover lies above every window */
+    if (m_panels->popover_contains(x, y)) {
+        struck = nullptr;
+        zone = decor::zone::none;
     }
 
     /* The shape follows the content window's request, and the frame

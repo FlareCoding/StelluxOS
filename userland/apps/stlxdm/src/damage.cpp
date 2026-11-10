@@ -45,3 +45,20 @@ damage_list::rect damage_list::intersect(const rect& a, const rect& b) {
 
     return { left, top, right - left, bottom - top };
 }
+
+damage_list::rect damage_list::union_of(const rect& a, const rect& b) {
+    if (a.w <= 0 || a.h <= 0) {
+        return b;
+    }
+
+    if (b.w <= 0 || b.h <= 0) {
+        return a;
+    }
+
+    int32_t left = std::min(a.x, b.x);
+    int32_t top = std::min(a.y, b.y);
+    int32_t right = std::max(a.x + a.w, b.x + b.w);
+    int32_t bottom = std::max(a.y + a.h, b.y + b.h);
+
+    return { left, top, right - left, bottom - top };
+}
