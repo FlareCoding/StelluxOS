@@ -1885,7 +1885,11 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
     lower.begin();
     upper.begin();
     if (m_resize) {
-        lower.add_bounds({ m_outline.x - ox, m_outline.y - oy, m_outline.w, m_outline.h });
+        damage_list::rect edges[decor::OUTLINE_EDGES];
+        decor::outline_edges(m_outline, edges);
+        for (const damage_list::rect& edge : edges) {
+            lower.add_bounds({ edge.x - ox, edge.y - oy, edge.w, edge.h });
+        }
     }
 
     if (is_main) {

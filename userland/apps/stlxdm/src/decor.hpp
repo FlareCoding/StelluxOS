@@ -30,6 +30,7 @@ constexpr uint32_t CONTENT_BG = STLXTHEME_GLASS_TINT_WARM;
 constexpr int32_t RESIZE_SLOP = 4;
 constexpr int32_t CORNER_REACH = 16;
 constexpr int32_t OUTLINE_T = 2;
+constexpr uint32_t OUTLINE_EDGES = 4;
 
 /* The window controls sit in a row at the title bar's right end */
 constexpr int32_t CONTROL_COUNT = 3;
@@ -234,6 +235,11 @@ inline uint32_t blend_premultiplied(uint32_t below, uint32_t source) {
 
     return OPAQUE_PIXEL | green << CHANNEL_BITS | saturate_lanes(red_blue);
 }
+
+/* The four edges of the interactive-resize rubber band `r`, each
+ * `OUTLINE_T` thick and in `r`'s coordinates, which hold every pixel
+ * that `draw_outline` paints. */
+void outline_edges(const damage_list::rect& r, damage_list::rect (&edges)[OUTLINE_EDGES]);
 
 /* Draws the interactive-resize rubber band `r`, inside `clip` only,
  * both in desktop coordinates, and `clip` must lie inside `back`. */

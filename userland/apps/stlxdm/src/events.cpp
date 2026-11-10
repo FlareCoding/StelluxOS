@@ -425,15 +425,15 @@ void server::damage_cursor() {
 }
 
 void server::damage_outline() {
-    const damage_list::rect& r = m_outline;
-    if (r.w <= 0 || r.h <= 0) {
+    if (m_outline.w <= 0 || m_outline.h <= 0) {
         return;
     }
 
-    m_damage.add(r.x, r.y, r.w, decor::OUTLINE_T);
-    m_damage.add(r.x, r.y + r.h - decor::OUTLINE_T, r.w, decor::OUTLINE_T);
-    m_damage.add(r.x, r.y, decor::OUTLINE_T, r.h);
-    m_damage.add(r.x + r.w - decor::OUTLINE_T, r.y, decor::OUTLINE_T, r.h);
+    damage_list::rect edges[decor::OUTLINE_EDGES];
+    decor::outline_edges(m_outline, edges);
+    for (const damage_list::rect& edge : edges) {
+        m_damage.add(edge.x, edge.y, edge.w, edge.h);
+    }
 }
 
 /* A hover or press changes the look of its window's controls alone, so only they repaint */

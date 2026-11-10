@@ -1219,6 +1219,13 @@ uint32_t rounded_coverage(const damage_list::rect& r, int32_t radius, int32_t x,
     return coverage_of({ r.x, r.y, r.w, r.h, radius }, x, y);
 }
 
+void outline_edges(const damage_list::rect& r, damage_list::rect (&edges)[OUTLINE_EDGES]) {
+    edges[0] = { r.x, r.y, r.w, OUTLINE_T };
+    edges[1] = { r.x, r.y + r.h - OUTLINE_T, r.w, OUTLINE_T };
+    edges[2] = { r.x, r.y, OUTLINE_T, r.h };
+    edges[3] = { r.x + r.w - OUTLINE_T, r.y, OUTLINE_T, r.h };
+}
+
 void draw_outline(const canvas& back, const damage_list::rect& r,
                   const damage_list::rect& clip) {
     /* A fill outside the composed rect would cover the pointer that an
@@ -1228,16 +1235,12 @@ void draw_outline(const canvas& back, const damage_list::rect& r,
         return;
     }
 
-    int32_t x = r.x - clip.x;
-    int32_t y = r.y - clip.y;
-    stlxgfx_fill_rect(view, x, y,
-                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), STLXTHEME_ACCENT);
-    stlxgfx_fill_rect(view, x, y + r.h - OUTLINE_T,
-                      static_cast<uint32_t>(r.w), static_cast<uint32_t>(OUTLINE_T), STLXTHEME_ACCENT);
-    stlxgfx_fill_rect(view, x, y,
-                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), STLXTHEME_ACCENT);
-    stlxgfx_fill_rect(view, x + r.w - OUTLINE_T, y,
-                      static_cast<uint32_t>(OUTLINE_T), static_cast<uint32_t>(r.h), STLXTHEME_ACCENT);
+    damage_list::rect edges[OUTLINE_EDGES];
+    outline_edges(r, edges);
+    for (const damage_list::rect& edge : edges) {
+        stlxgfx_fill_rect(view, edge.x - clip.x, edge.y - clip.y, static_cast<uint32_t>(edge.w),
+                          static_cast<uint32_t>(edge.h), STLXTHEME_ACCENT);
+    }
 
     stlxgfx_destroy_surface(view);
 }
