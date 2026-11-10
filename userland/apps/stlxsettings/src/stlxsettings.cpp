@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -55,7 +56,8 @@ constexpr int MARKER_RADIUS = 1;
 constexpr int SIDEBAR_FOOT_H = 48;
 constexpr int SIDEBAR_FOOT_PADDING_X = 18;
 constexpr int SIDEBAR_FOOT_GAP = 8;
-constexpr int LOGO_SIZE = 12;
+constexpr int MARK_SIZE = 16;
+constexpr const char* MARK_PATH = "/etc/res/icons/stellux-mark-16.png";
 constexpr int SEARCH_INSET_X = 4;
 constexpr int SEARCH_MARGIN_TOP = 12;
 constexpr int SEARCH_MARGIN_BOTTOM = 4;
@@ -203,7 +205,7 @@ private:
 
 class sidebar : public QWidget {
 public:
-    sidebar(const QString& release, const QString& machine) : m_release(release), m_machine(machine) {}
+    sidebar(const QString& release, const QString& machine) : m_release(release), m_machine(machine), m_mark(QString::fromLatin1(MARK_PATH)) {}
 
 protected:
     void paintEvent(QPaintEvent*) override {
@@ -212,13 +214,13 @@ protected:
         painter.fillRect(QRect(width() - 1, 0, 1, height()), theme_color(STLXTHEME_LINE_SUBTLE));
 
         int foot_top = height() - SIDEBAR_FOOT_H;
-        QRectF logo_box(SIDEBAR_FOOT_PADDING_X, foot_top + (SIDEBAR_FOOT_H - LOGO_SIZE) / 2.0, LOGO_SIZE, LOGO_SIZE);
-        paint_glyph(painter, glyph::LOGO, logo_box, theme_color(STLXTHEME_TEXT_DIM));
+        QRectF mark_box(SIDEBAR_FOOT_PADDING_X, foot_top + (SIDEBAR_FOOT_H - MARK_SIZE) / 2, MARK_SIZE, MARK_SIZE);
+        painter.drawImage(mark_box.topLeft(), m_mark);
 
         QFont release_font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::Medium);
         QFontMetricsF release_metrics(release_font);
         qreal baseline = foot_top + (SIDEBAR_FOOT_H - release_metrics.height()) / 2 + release_metrics.ascent();
-        qreal release_left = logo_box.right() + SIDEBAR_FOOT_GAP;
+        qreal release_left = mark_box.right() + SIDEBAR_FOOT_GAP;
 
         painter.setFont(release_font);
         painter.setPen(theme_color(STLXTHEME_TEXT_SECONDARY));
@@ -233,6 +235,7 @@ protected:
 private:
     QString m_release;
     QString m_machine;
+    QImage m_mark;
 };
 
 class page_head : public QWidget {

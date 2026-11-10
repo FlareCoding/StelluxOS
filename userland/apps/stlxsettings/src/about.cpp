@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QTimer>
@@ -22,13 +23,14 @@ constexpr const char* MEMORY_STATS_PATH = "/dev/sysinfo/mem";
 constexpr const char* UPTIME_PATH = "/dev/sysinfo/uptime";
 constexpr const char* FONT_DIR = "/etc/res/fonts";
 constexpr const char* LICENSE_PREFIX = "LICENSE-";
+constexpr const char* EMBLEM_PATH = "/etc/res/icons/stellux-emblem-128.png";
 
 constexpr int IDENTITY_GAP_ABOVE = 16;
 constexpr int IDENTITY_PADDING_Y = 16;
 constexpr int IDENTITY_PADDING_LEFT = 20;
 constexpr int IDENTITY_PADDING_RIGHT = 16;
 constexpr int IDENTITY_GAP = 18;
-constexpr int IDENTITY_LOGO_SIZE = 44;
+constexpr int IDENTITY_EMBLEM_SIZE = 128;
 constexpr float NAME_SIZE = 22.0f;
 constexpr int NAME_LINE_HEIGHT = 28;
 constexpr qreal NAME_TRACKING_EM = -0.01;
@@ -70,11 +72,12 @@ struct license {
     QString id;
 };
 
-/* The system's logo, its name and release, and the kernel build under them, with an action at the right */
+/* The system's emblem, its name and release, and the kernel build under them, with an action at the right */
 class identity_view : public QWidget {
 public:
-    identity_view(const QString& name, const QString& build, QWidget* action) : m_name(name), m_build(build) {
-        setFixedHeight(2 * IDENTITY_PADDING_Y + IDENTITY_LOGO_SIZE);
+    identity_view(const QString& name, const QString& build, QWidget* action)
+        : m_name(name), m_build(build), m_emblem(QString::fromLatin1(EMBLEM_PATH)) {
+        setFixedHeight(2 * IDENTITY_PADDING_Y + IDENTITY_EMBLEM_SIZE);
         auto* layout = new QHBoxLayout(this);
         layout->setContentsMargins(0, 0, IDENTITY_PADDING_RIGHT, 0);
         layout->addStretch(1);
@@ -84,10 +87,10 @@ public:
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
-        QRectF logo(IDENTITY_PADDING_LEFT, IDENTITY_PADDING_Y, IDENTITY_LOGO_SIZE, IDENTITY_LOGO_SIZE);
-        paint_glyph(painter, glyph::LOGO, logo, theme_color(STLXTHEME_TEXT));
+        QRectF emblem_box(IDENTITY_PADDING_LEFT, IDENTITY_PADDING_Y, IDENTITY_EMBLEM_SIZE, IDENTITY_EMBLEM_SIZE);
+        painter.drawImage(emblem_box.topLeft(), m_emblem);
 
-        qreal text_left = logo.right() + IDENTITY_GAP;
+        qreal text_left = emblem_box.right() + IDENTITY_GAP;
         qreal text_width = width() - text_left;
         qreal name_top = (height() - NAME_LINE_HEIGHT - CAPTION_LINE_HEIGHT) / 2.0;
         QFont name_font = ui_font(NAME_SIZE, QFont::DemiBold);
@@ -106,6 +109,7 @@ protected:
 private:
     QString m_name;
     QString m_build;
+    QImage m_emblem;
 };
 
 /* Facts one under another, the key in a fixed column, a hairline between neighbors */

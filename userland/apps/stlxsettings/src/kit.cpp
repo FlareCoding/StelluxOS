@@ -201,14 +201,6 @@ static QPainterPath stroked(const QPainterPath& line) {
     return stroker.createStroke(line);
 }
 
-/* A quarter disc whose corner sits at the center, swept from `start_degrees` */
-static QPainterPath quarter_disc(qreal center_x, qreal center_y, qreal radius, qreal start_degrees) {
-    QPainterPath path(QPointF(center_x, center_y));
-    path.arcTo(QRectF(center_x - radius, center_y - radius, 2 * radius, 2 * radius), start_degrees, 90);
-    path.closeSubpath();
-    return path;
-}
-
 static QPainterPath top_half_disc(qreal center_x, qreal center_y, qreal radius) {
     QPainterPath top = rect_path(center_x - radius, center_y - radius, 2 * radius, radius);
     return circle_path(center_x, center_y, radius).intersected(top);
@@ -318,8 +310,6 @@ static QPainterPath build_glyph_path(glyph shape) {
         QPainterPath back = rounded_rect(4, 1, 10, 10.5, 1.5).subtracted(rect_path(6, 3, 6, 6.5));
         return back.subtracted(rect_path(4, 4, 7, 7.5)).united(rounded_rect(1, 5, 9.5, 10, 1.5));
     }
-    case glyph::LOGO:
-        return quarter_disc(7, 7, 7, 90).united(quarter_disc(9, 9, 7, 270));
     }
 
     return QPainterPath();
