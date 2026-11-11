@@ -98,6 +98,7 @@ private:
     void check_disk(document* doc);
     void select_tab(int index);
     void show_empty_state();
+    void set_zoom(int zoom);
     void step_recent_tab(int step);
     void finish_tab_switch(bool opens_lit_tab);
     void show_tab_list();
@@ -139,6 +140,7 @@ private:
     QList<closed_tab> m_closed_tabs;
     QStringList m_recent_files;
     QStringList m_recent_encodings;
+    int m_zoom = 0;
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;
     sheet* m_open_sheet = nullptr;

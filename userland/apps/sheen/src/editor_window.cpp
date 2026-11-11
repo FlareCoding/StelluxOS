@@ -61,6 +61,8 @@ static constexpr int STATUS_NOTE_MS = 4000;
 
 static constexpr int SWITCHER_GAP = 8;
 static constexpr int GOTO_MARKER = 1;
+static constexpr int MIN_ZOOM = -10;
+static constexpr int MAX_ZOOM = 20;
 static constexpr char BRACKETS[] = "()[]{}";
 static constexpr char OPENING_BRACKETS[] = "([{";
 static constexpr char CLOSING_BRACKETS[] = ")]}";
@@ -916,13 +918,13 @@ void editor_window::run(command id) {
             view->send(SCI_FOLDALL, SC_FOLDACTION_EXPAND);
             break;
         case command::ZOOM_IN:
-            view->send(SCI_ZOOMIN);
+            set_zoom(m_zoom + 1);
             break;
         case command::ZOOM_OUT:
-            view->send(SCI_ZOOMOUT);
+            set_zoom(m_zoom - 1);
             break;
         case command::ZOOM_RESET:
-            view->send(SCI_SETZOOM, 0);
+            set_zoom(0);
             break;
         case command::MATCHING_BRACKET:
             go_to_matching_bracket(view);
@@ -1151,7 +1153,13 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
         doc->refresh_function_names();
     });
 
-    connect(view, &ScintillaEditBase::zoom, this, [view] { fit_line_numbers(view); });
+    // Ctrl and the wheel zoom one view, which the window then passes to every tab
+    connect(view, &ScintillaEditBase::zoom, this, [this, view](int zoom) {
+        fit_line_numbers(view);
+        set_zoom(zoom);
+    });
+
+    view->send(SCI_SETZOOM, m_zoom);
     connect(view, &ScintillaEditBase::charAdded, this, [doc](int character) {
         continue_line(doc->view(), character, doc->mode() == edit_mode::CODE);
     });
@@ -1827,6 +1835,16 @@ void editor_window::show_empty_state() {
     m_empty_state->set_entries(actions, m_recent_files);
     m_stack->setCurrentWidget(m_empty_state);
     m_empty_state->setFocus();
+}
+
+// The zoom belongs to the window, so every tab shows its text at one size, and it is never saved
+void editor_window::set_zoom(int zoom) {
+    m_zoom = qBound(MIN_ZOOM, zoom, MAX_ZOOM);
+    for (const std::unique_ptr<document>& open : m_documents) {
+        if (open->view()->send(SCI_GETZOOM) != m_zoom) {
+            open->view()->send(SCI_SETZOOM, m_zoom);
+        }
+    }
 }
 
 void editor_window::select_tab(int index) {
