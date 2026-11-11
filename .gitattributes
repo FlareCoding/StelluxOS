@@ -15,4 +15,5 @@ userland/apps/vim/src/auto/** -linguist-vendored
 userland/apps/vim/src/stellux_stubs.c -linguist-vendored
 userland/lib/libbearssl/bearssl/** linguist-vendored
 userland/lib/libsqlite3/sqlite/** linguist-vendored
+userland/lib/libzstd/zstd/** linguist-vendored
 userland/lib/libstlxgfx/include/stlxgfx/internal/stb_*.h linguist-vendored
