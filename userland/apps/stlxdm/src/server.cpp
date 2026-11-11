@@ -698,7 +698,8 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         const stlxconf_shortcut_t& sc = m_conf->shortcuts[i];
         stlxconf_action_kind_t kind = stlxconf_action_kind(sc.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && sc.path[0];
-        if (!runs_program && kind != STLXCONF_ACTION_POWER) {
+        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_QUICK_ACTIONS;
+        if (!runs_program && !runs_own_action) {
             continue;
         }
 
@@ -1734,10 +1735,20 @@ void server::drop_client(dm_client& c) {
     c.fd = -1;
 }
 
+/* A program started while a popover holds the keyboard closes the popover, so typing reaches the program's window */
 void server::run_shortcut(const dm_hotkey& hotkey) {
     if (hotkey.kind == STLXCONF_ACTION_POWER) {
         open_power();
         return;
+    }
+
+    if (hotkey.kind == STLXCONF_ACTION_QUICK_ACTIONS) {
+        m_panels->toggle_quick_actions();
+        return;
+    }
+
+    if (m_panels->popover_takes_keys()) {
+        m_panels->close_popover();
     }
 
     spawn_app(hotkey.path, hotkey.args);

@@ -24,6 +24,10 @@ stlxgfx_surface_t* make_mark_picture(int32_t size);
  * twice `radius`. Null when memory ran out. */
 stlxgfx_surface_t* make_ring_picture(int32_t w, int32_t h, int32_t radius, uint32_t color);
 
+/* A magnifier glass, a ring with a handle toward the bottom right, `size` pixels square in `color` on transparent
+ * pixels. Null when memory ran out. */
+stlxgfx_surface_t* make_search_glyph(int32_t size, uint32_t color);
+
 /* How much of the pixel at (`x`, `y`) a rect with corners of `radius` covers, 0 to 255 */
 uint32_t rounded_rect_coverage(int32_t x, int32_t y, const ui::rect& box, int32_t radius);
 

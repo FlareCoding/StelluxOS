@@ -54,16 +54,18 @@ static const char* const GLASS_TINT_NAMES[] = {
 static const char* const SWITCH_NAMES[] = { "off", "on" };
 
 static const char* const ACTION_NAMES[] = {
-    [STLXCONF_ACTION_UNKNOWN] = "",
-    [STLXCONF_ACTION_EXEC]    = "exec",
-    [STLXCONF_ACTION_POWER]   = "power",
+    [STLXCONF_ACTION_UNKNOWN]       = "",
+    [STLXCONF_ACTION_EXEC]          = "exec",
+    [STLXCONF_ACTION_POWER]         = "power",
+    [STLXCONF_ACTION_QUICK_ACTIONS] = "quick_actions",
 };
 
 /* What people read for stlxdm's own actions, where exec is named by its program instead */
 static const char* const ACTION_LABELS[] = {
-    [STLXCONF_ACTION_UNKNOWN] = NULL,
-    [STLXCONF_ACTION_EXEC]    = NULL,
-    [STLXCONF_ACTION_POWER]   = "Power",
+    [STLXCONF_ACTION_UNKNOWN]       = NULL,
+    [STLXCONF_ACTION_EXEC]          = NULL,
+    [STLXCONF_ACTION_POWER]         = "Power",
+    [STLXCONF_ACTION_QUICK_ACTIONS] = "Quick Actions",
 };
 
 #define NAME_COUNT(names) ((int)(sizeof(names) / sizeof((names)[0])))

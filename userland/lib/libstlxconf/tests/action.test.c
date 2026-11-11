@@ -100,10 +100,14 @@ static bool is_power(const stlxconf_action_t* action) {
 static void check_kinds(void) {
     check(stlxconf_action_kind("exec") == STLXCONF_ACTION_EXEC, "exec names a program to run");
     check(stlxconf_action_kind("power") == STLXCONF_ACTION_POWER, "power names stlxdm's power overlay");
+    check(stlxconf_action_kind("quick_actions") == STLXCONF_ACTION_QUICK_ACTIONS, "quick_actions names the palette");
     check(stlxconf_action_kind("Power") == STLXCONF_ACTION_UNKNOWN, "action values compare with case");
     check(stlxconf_action_kind("") == STLXCONF_ACTION_UNKNOWN, "an empty action names nothing");
+
     check(stlxconf_action_label(STLXCONF_ACTION_EXEC) == NULL, "exec is named by its program, not a label");
     check(strcmp(stlxconf_action_label(STLXCONF_ACTION_POWER), "Power") == 0, "stlxdm's own action has a label");
+    check(strcmp(stlxconf_action_label(STLXCONF_ACTION_QUICK_ACTIONS), "Quick Actions") == 0,
+          "the palette's action has a label");
 }
 
 static void check_read(void) {
