@@ -66,6 +66,7 @@ private:
     void open_file(const std::string& path, const char* mime_type);
     void open_with(const stlxconf_file_handler_t& handler, const std::string& path);
     std::string file_verb(const char* mime_type) const;
+    std::string file_note(const found_file& file) const;
     std::vector<row_action> launcher_actions(uint32_t index, const std::string& pick);
     std::vector<row_action> action_actions(uint32_t index, const std::string& pick);
     std::vector<row_action> program_actions(const std::string& path, const std::string& args, const std::string& pick);
