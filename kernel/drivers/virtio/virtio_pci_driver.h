@@ -56,6 +56,10 @@ protected:
     // Does nothing until start_transport() maps the device, so a failed attach can still detach
     void reset_device();
 
+    // Whether the device needs a reset after an error. A device gone from the bus reads as needing one, its status
+    // reading all ones
+    bool device_needs_reset();
+
     // Reading the ISR status acknowledges a legacy or MSI interrupt
     uint8_t ack_interrupt();
 

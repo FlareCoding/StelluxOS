@@ -68,6 +68,7 @@ constexpr uint8_t VIRTIO_STATUS_ACKNOWLEDGE = 1;
 constexpr uint8_t VIRTIO_STATUS_DRIVER      = 2;
 constexpr uint8_t VIRTIO_STATUS_DRIVER_OK   = 4;
 constexpr uint8_t VIRTIO_STATUS_FEATURES_OK = 8;
+constexpr uint8_t VIRTIO_STATUS_NEEDS_RESET = 64;
 constexpr uint8_t VIRTIO_STATUS_FAILED      = 128;
 
 // Feature bits common to every device type
