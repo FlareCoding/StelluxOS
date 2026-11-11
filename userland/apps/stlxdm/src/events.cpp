@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 constexpr uint8_t HID_SHIFT =
     STLX_INPUT_MOD_LSHIFT | STLX_INPUT_MOD_RSHIFT;
@@ -32,6 +33,12 @@ constexpr uint8_t EDGE_L = 1u << 0;
 constexpr uint8_t EDGE_R = 1u << 1;
 constexpr uint8_t EDGE_T = 1u << 2;
 constexpr uint8_t EDGE_B = 1u << 3;
+
+static uint64_t now_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
 
 /* Wire modifier bits from the raw HID modifier byte */
 static uint8_t cook_modifiers(uint8_t hid) {
@@ -254,6 +261,10 @@ void server::forget_window(dm_window* w) {
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
+    if (down && !repeat) {
+        m_last_press_ns = now_ns();
+    }
+
     bool is_escape_press = down && !repeat && usage == HID_USAGE_ESCAPE;
 
     /* An active overlay swallows the keyboard, escape backs out */
@@ -584,6 +595,10 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
     bool is_last_release = changed != 0 && all_released;
+
+    if (press) {
+        m_last_press_ns = now_ns();
+    }
 
     /* An active overlay owns the pointer entirely. Hover and hold
      * transitions repaint the orb boxes. */

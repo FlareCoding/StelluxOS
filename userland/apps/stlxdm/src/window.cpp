@@ -30,6 +30,10 @@ constexpr size_t OCCLUDE_PIECE_CAP = 64;
 constexpr uint64_t ACQUIRE_EVERY_TICK_NS = 1000000000ull;
 constexpr uint64_t ACQUIRE_QUERY_INTERVAL_NS = 100000000ull;
 
+/* A window comes forward on its own request only this soon after the
+ * user's last press, so no app takes the focus while the user is away */
+constexpr uint64_t ACTIVATE_AFTER_PRESS_NS = 1000000000ull;
+
 /* How importing and mapping an attached GPU buffer went */
 enum class gpu_mapping {
     MAPPED,     /* the whole buffer is mapped */
@@ -983,6 +987,28 @@ void server::handle_commit_gpu(dm_client& c, const uint8_t* payload) {
     uint64_t now = now_ns();
     w->pending_since_ns = now;
     w->next_query_ns = now + ACQUIRE_EVERY_TICK_NS;
+}
+
+/* Raises and focuses a shown toplevel as a click does, unless the request comes too long after the user's last
+ * press or an overlay or a grabbing popup holds the input */
+void server::handle_activate_window(dm_client& c, const uint8_t* payload) {
+    swp_activate_window m;
+    memcpy(&m, payload, sizeof(m));
+
+    dm_window* w = find_window(c, m.win_id);
+    bool is_shown_toplevel = w && w->parent_id == 0 && w->mapped;
+    bool follows_press = now_ns() - m_last_press_ns <= ACTIVATE_AFTER_PRESS_NS;
+    if (!is_shown_toplevel || !follows_press || m_power->active() || m_grab_popup) {
+        return;
+    }
+
+    if (w->placement.minimized_ns != 0) {
+        unminimize_window(w);
+        return;
+    }
+
+    set_focus(w);
+    scene_raise(w);
 }
 
 /* Only the latest commit counts, a superseded one is released without

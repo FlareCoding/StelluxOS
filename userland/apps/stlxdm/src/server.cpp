@@ -1690,6 +1690,13 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         m_layout_requests.push_back(queued);
         return;
     }
+    case SWP_MSG_ACTIVATE_WINDOW:
+        if (hdr.length != sizeof(swp_activate_window)) {
+            break;
+        }
+
+        handle_activate_window(c, payload);
+        return;
     default:
         break;
     }
