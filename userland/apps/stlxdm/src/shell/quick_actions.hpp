@@ -73,6 +73,9 @@ private:
     std::vector<row_action> file_actions(const found_file& file, const std::string& pick);
     row_action show_in_files(const std::string& path);
     row_action copy(const std::string& label, const std::string& text);
+    bool is_startable(const char* verb, const std::string& label, const char* path, const char* owner,
+                      const char* source_path);
+    bool is_still_there(const found_file& file);
 
     const stlxconf_t&                      m_conf;
     const std::vector<stlxgfx_surface_t*>& m_launcher_icons;
@@ -85,9 +88,12 @@ private:
     std::vector<std::string> m_picks;
     std::vector<found_file>  m_picked_files;
 
-    /* The files the palette searches, and the open palette's taker of their answers, unset while it is closed */
-    file_index                                                          m_files;
+    /* The files the palette searches, and the open palette's takers of their answers and of a failure to start a
+     * row, unset while it is closed */
+    file_index                                                             m_files;
     std::function<void(const file_answer* answer, const walk_state& walk)> m_show_files;
+    std::function<void(const std::string& message, const std::string& source_path, const std::string& gone_path)>
+        m_show_failure;
 
     /* Each chip's glyph at rest, then each chip's when chosen */
     std::vector<stlxgfx_surface_t*> m_chip_glyphs;
