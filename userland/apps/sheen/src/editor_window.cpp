@@ -1865,6 +1865,18 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
         return false;
     }
 
+    // Saving over a file another tab holds closes that tab, asking first when it has unsaved changes
+    document* other = find_open(request.path);
+    other = other == doc ? nullptr : other;
+    if (other && other->is_modified()) {
+        QString title = QStringLiteral("%1 is open in another tab with unsaved changes").arg(other->display_name());
+        prompt_sheet question(this, title, QStringLiteral("Saving over it closes that tab, and its changes are lost."),
+                              QStringLiteral("Save Anyway"), QString(), true);
+        if (static_cast<prompt_answer>(run_sheet(question)) != prompt_answer::PRIMARY) {
+            return false;
+        }
+    }
+
     m_last_sheet_folder = QFileInfo(request.path).absolutePath();
     file_record previous = doc->file();
     doc->set_encoding(request.encoding);
@@ -1875,6 +1887,10 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
     if (!write_document(doc, request.path)) {
         doc->set_encoding(previous.encoding);
         return false;
+    }
+
+    if (other) {
+        remove_document(index_of(other), false);
     }
 
     remember_recent_file(request.path);
