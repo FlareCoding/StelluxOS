@@ -62,6 +62,9 @@
 #define STLXTHEME_RECESS    0x80080502 /* the recessed parts of controls, such as fields and unchecked check boxes */
 #define STLXTHEME_INK       0xFF060402 /* the shadow color */
 
+/* An opaque fill for content drawn without alpha, such as a text editor's text area: a dark pocket over glass */
+#define STLXTHEME_OPAQUE_POCKET 0xFF15110F
+
 /* Window controls, the round minimize, maximize and close buttons of a title bar */
 #define STLXTHEME_WINDOW_CONTROL           0x14FFF0D7 /* the face */
 #define STLXTHEME_WINDOW_CONTROL_HOVER     0x33FFF0D7
