@@ -32,6 +32,7 @@ class tab_row;
 class tab_strip;
 class tab_switcher;
 struct load_result;
+struct recent_file;
 
 /* A closed tab, enough to open it again where it was */
 struct closed_tab {
@@ -90,6 +91,7 @@ private:
     bool is_untitled_number_taken(int number) const;
     int lowest_free_untitled_number() const;
     void remember_recent_file(const QString& path);
+    QList<recent_file> recent_files() const;
 
     void new_document();
     void choose_files_to_open(const QString& folder);
@@ -164,6 +166,7 @@ private:
     QList<document*> m_recent_tabs;
     QList<closed_tab> m_closed_tabs;
     QStringList m_recent_files;
+    QHash<QString, QDateTime> m_recent_opened;
     QStringList m_recent_encodings;
     int m_zoom = 0;
     QList<command> m_recent_commands;

@@ -997,6 +997,7 @@ void editor_window::fill_submenu(command id, QMenu* submenu) {
                 submenu->addSeparator();
                 submenu->addAction(QStringLiteral("Clear"), [this] {
                     m_recent_files.clear();
+                    m_recent_opened.clear();
                     if (m_documents.empty()) {
                         show_empty_state();
                     }
@@ -1604,11 +1605,21 @@ int editor_window::lowest_free_untitled_number() const {
 }
 
 void editor_window::remember_recent_file(const QString& path) {
+    m_recent_opened.insert(path, QDateTime::currentDateTime());
     m_recent_files.removeAll(path);
     m_recent_files.prepend(path);
     while (m_recent_files.size() > RECENT_FILE_LIMIT) {
         m_recent_files.removeLast();
     }
+}
+
+QList<recent_file> editor_window::recent_files() const {
+    QList<recent_file> files;
+    for (const QString& path : m_recent_files) {
+        files.append({ path, m_recent_opened.value(path) });
+    }
+
+    return files;
 }
 
 void editor_window::new_document() {
@@ -1619,7 +1630,7 @@ void editor_window::choose_files_to_open(const QString& folder) {
     document* current = current_document();
     QString current_path = current ? current->file().path : QString();
 
-    file_sheet chooser(this, file_sheet_mode::OPEN, folder, m_recent_files);
+    file_sheet chooser(this, file_sheet_mode::OPEN, folder, recent_files());
     open_request request;
     set_open_sheet(&chooser);
     bool is_chosen = chooser.choose_to_open(&request, current_path);
@@ -1848,7 +1859,7 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
     }
 
     QString folder = doc->is_untitled() ? sheet_folder() : QFileInfo(doc->file().path).absolutePath();
-    file_sheet chooser(this, file_sheet_mode::SAVE_AS, folder, m_recent_files);
+    file_sheet chooser(this, file_sheet_mode::SAVE_AS, folder, recent_files());
     if (!title.isEmpty()) {
         chooser.set_title(title);
     }

@@ -1,11 +1,12 @@
 #ifndef SHEEN_FILE_SHEET_H
 #define SHEEN_FILE_SHEET_H
 
-/* The Open and Save As sheets: places, the folder's entries in File Manager's rows and a path field, keyboard
- * first. Typing narrows the folder, Enter opens a file or enters a folder, and Ctrl L or a leading / types a path. */
+/* The Open and Save As sheets: places, the folder's crumb and entries in File Manager's rows, keyboard first. Typing
+ * narrows the folder, Enter opens a file or enters a folder, and Ctrl L or a leading / turns the crumb into a path. */
 #include "encoding.h"
 #include "sheet.h"
 
+#include <QDateTime>
 #include <QStringList>
 
 class QComboBox;
@@ -15,10 +16,17 @@ class QListWidget;
 class QPushButton;
 class QToolButton;
 class QTreeView;
+class crumb_bar;
 class folder_model;
 class name_match_delegate;
 
 enum class file_sheet_mode { OPEN, SAVE_AS };
+
+/* A file opened this session and when, as Recent lists it */
+struct recent_file {
+    QString path;
+    QDateTime opened;
+};
 
 struct open_request {
     QStringList paths;
@@ -34,7 +42,7 @@ struct save_request {
 class file_sheet : public sheet {
 public:
     /* `recent` lists the files opened this session, newest first */
-    file_sheet(QWidget* window, file_sheet_mode mode, const QString& folder, const QStringList& recent);
+    file_sheet(QWidget* window, file_sheet_mode mode, const QString& folder, const QList<recent_file>& recent);
 
     /* Starts on `current_path` when the folder shown holds it, on the first row otherwise */
     bool choose_to_open(open_request* request, const QString& current_path);
@@ -59,6 +67,8 @@ private:
     void step_history(int direction);
     void activate_current();
     void accept_path_field();
+    void edit_path(const QString& text);
+    void show_crumb();
     bool complete_path();
     void fit_columns();
     void accept();
@@ -71,9 +81,10 @@ private:
     file_sheet_mode m_mode;
     folder_model* m_model;
     name_match_delegate* m_matches;
-    QTreeView* m_list;
+    QTreeView* m_list = nullptr;
     QListWidget* m_places;
-    QLineEdit* m_path;
+    crumb_bar* m_crumb = nullptr;
+    QLineEdit* m_path = nullptr;
     QLineEdit* m_name = nullptr;
     QLabel* m_title;
     QLabel* m_note;
@@ -86,7 +97,7 @@ private:
     QToolButton* m_forward;
     QStringList m_history;
     int m_history_index = -1;
-    QStringList m_recent;
+    QList<recent_file> m_recent;
     QString m_replace_path;
     QString m_current_path;
     open_request m_open;
