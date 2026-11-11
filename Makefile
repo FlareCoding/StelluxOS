@@ -193,6 +193,7 @@ host-test:
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxconf/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxdm/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxpkg/tests
+	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxterm/tests
 	$(Q)SGDISK=$(SGDISK) scripts/create-disk-image-test.sh
 
 # ============================================================================
