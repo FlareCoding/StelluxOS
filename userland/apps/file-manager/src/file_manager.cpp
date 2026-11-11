@@ -81,6 +81,17 @@ public:
         return m_entries.at(index.row());
     }
 
+    /* The row of the entry named `name`, invalid when the listing has none */
+    QModelIndex find(const QString& name) const {
+        for (qsizetype row = 0; row < m_entries.size(); row++) {
+            if (m_entries.at(row).fileName() == name) {
+                return index(static_cast<int>(row), NAME_COLUMN);
+            }
+        }
+
+        return QModelIndex();
+    }
+
     int rowCount(const QModelIndex& parent) const override {
         return parent.isValid() ? 0 : static_cast<int>(m_entries.size());
     }
@@ -150,6 +161,28 @@ static void navigate(const QString& path) {
 
     int count = g_st.model->rowCount(QModelIndex());
     set_status(count == 1 ? QStringLiteral("1 item") : QStringLiteral("%1 items").arg(count));
+}
+
+/* `file-manager <path>` starts in a folder, or in a file's folder with the file selected and scrolled into view */
+static void open_start_path(const QString& path) {
+    QFileInfo target(path);
+    if (!target.exists()) {
+        navigate(QDir::rootPath());
+        set_status(QStringLiteral("cannot open %1").arg(path));
+        return;
+    }
+
+    if (target.isDir()) {
+        navigate(target.absoluteFilePath());
+        return;
+    }
+
+    navigate(target.absolutePath());
+    QModelIndex row = g_st.model->find(target.fileName());
+    if (row.isValid()) {
+        g_st.view->setCurrentIndex(row);
+        g_st.view->scrollTo(row);
+    }
 }
 
 static void navigate_up() {
@@ -298,7 +331,8 @@ int main(int argc, char** argv) {
     layout->addWidget(make_listing(), 1);
     layout->addWidget(make_footer());
 
-    navigate(QDir::rootPath());
+    QStringList arguments = app.arguments();
+    open_start_path(arguments.size() > 1 ? arguments.at(1) : QDir::rootPath());
     window.show();
 
     return app.exec();
