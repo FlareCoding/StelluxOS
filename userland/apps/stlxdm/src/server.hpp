@@ -457,6 +457,10 @@ public:
         }
     }
 
+    /* Readable while Quick Actions' file index has news, which `pump_quick_files()` hands to the palette */
+    int quick_files_fd() const { return m_panels->quick_files_fd(); }
+    void pump_quick_files() { m_panels->pump_quick_files(); }
+
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
      * handled. */

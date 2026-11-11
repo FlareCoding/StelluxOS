@@ -279,6 +279,12 @@ int main() {
         size_t event_slot = fds.size();
         fds.push_back({ disp.fd(), POLLIN, 0 });
 
+        size_t files_slot = fds.size();
+        int files_fd = srv.quick_files_fd();
+        if (files_fd >= 0) {
+            fds.push_back({ files_fd, POLLIN, 0 });
+        }
+
         /* Key repeat, the clock, a trial, a GPU commit's query, a retired compositor's next timeline read and each
          * output's compose and cursor move deadlines cap the wait */
         uint64_t now = now_ns();
@@ -341,6 +347,10 @@ int main() {
         }
         inp.pump_repeat(srv, now);
         srv.clock_tick();
+
+        if (files_fd >= 0 && (fds[files_slot].revents & POLLIN)) {
+            srv.pump_quick_files();
+        }
 
         srv.pump(fds);
         inp.set_pointer(srv.apply_layout_requests(inp.pointer(), inp.buttons()));

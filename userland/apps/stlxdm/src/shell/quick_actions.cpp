@@ -11,8 +11,10 @@
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
@@ -59,6 +61,7 @@ constexpr size_t RECENT_MAX = 3;
 constexpr uint32_t UNPICKED = UINT32_MAX;
 constexpr int32_t PAGE_ROWS = 8;
 constexpr int32_t NO_MATCH_PADDING_X = 40;
+constexpr int32_t NO_MATCH_GAP = 4;
 
 constexpr int32_t FOOTER_HEIGHT = 36;
 constexpr int32_t FOOTER_PADDING_LEFT = 14;
@@ -80,11 +83,23 @@ constexpr uint16_t HID_USAGE_UP = 0x52;
 
 constexpr uint8_t COMMAND_MODS = CHORD_MOD_CTRL | CHORD_MOD_ALT | CHORD_MOD_SUPER;
 
-constexpr std::string_view PLACEHOLDER = "Search apps, actions and programs";
+constexpr std::string_view PLACEHOLDER = "Search apps, files and actions";
 constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
 
 constexpr const char* PROGRAM_DIRS[] = { "/bin", "/usr/bin" };
 constexpr const char* PROGRAM_ICON_PATH = "/etc/res/icons/doc-exec-32.png";
+constexpr const char* FOLDER_ICON_PATH = "/etc/res/icons/folder-32.png";
+constexpr const char* TEXT_ICON_PATH = "/etc/res/icons/doc-text-32.png";
+constexpr const char* IMAGE_ICON_PATH = "/etc/res/icons/doc-image-32.png";
+
+/* The type the describer gives folders, which File Manager opens */
+constexpr const char* FOLDER_TYPE = "inode/directory";
+
+/* The most files one answer brings, which keeps a search's copy small */
+constexpr size_t FILE_RESULTS_MAX = 50;
+
+/* A handler's own arguments before the file's path */
+constexpr int HANDLER_ARGS_MAX = 16;
 
 /* Power... asks before restarting or shutting down, so the programs that do it at once, and init, stay unlisted */
 constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
@@ -92,31 +107,40 @@ constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
 namespace {
 
 /* The kinds rank in this order where matches are equally good, and a calculation heads the list before any */
-enum class row_kind : uint8_t { app, action, program, calculator };
+enum class row_kind : uint8_t { app, action, program, file, calculator };
 
-constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "CALCULATOR" };
-constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "Calculation" };
-constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Copy" };
+constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "CALCULATOR" };
+constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation" };
+constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy" };
 
 /* One thing the palette starts, as its row shows it */
 struct palette_entry {
     row_kind                 kind = row_kind::app;
     uint32_t                 index = 0; /* into the configuration's launchers or actions */
-    std::string              program;   /* with `args`, what a program's row runs in Terminal */
+    std::string              path;      /* the program a program's row runs in Terminal with `args`, or a file */
     std::string              args;
+    const char*              mime_type = nullptr; /* a file's, which picks its handler */
     std::string              copied;    /* what a calculation's row copies */
     std::string              label;
     std::string              subtitle;
     bool                     is_subtitle_path = false; /* drawn in Plex Mono */
+    std::string              right;     /* at the right of a row without keycaps, such as a file's size */
+    std::string              verb;      /* Enter's action in the footer, when not its kind's */
     std::string              keywords;
     const stlxgfx_surface_t* icon = nullptr; /* null draws `tile` on a tile, else the label's first letter */
     std::string              tile;
     std::vector<std::string> keys;           /* of a shortcut that runs the same */
     bool                     running = false;
     uint32_t                 recent = UNPICKED; /* its place among this session's picks, newest first */
+    found_file               file;              /* what a file's row was made from, kept for this session's picks */
 };
 
-/* What a pick is remembered by across openings: the launcher or action it is, or the program it runs */
+/* What tells two rows apart across a rebuild of the list */
+std::string row_key(const palette_entry& entry) {
+    return std::to_string(static_cast<int>(entry.kind)) + " " + entry.label + " " + entry.path;
+}
+
+/* What a pick is remembered by across openings: the launcher or action it is, or the program or file it opens */
 std::string pick_key(const palette_entry& entry) {
     switch (entry.kind) {
     case row_kind::app:
@@ -124,7 +148,9 @@ std::string pick_key(const palette_entry& entry) {
     case row_kind::action:
         return "action " + std::to_string(entry.index);
     case row_kind::program:
-        return "program " + entry.program;
+        return "program " + entry.path;
+    case row_kind::file:
+        return "file " + entry.path;
     case row_kind::calculator:
         break;
     }
@@ -227,25 +253,36 @@ void query_field::paint(ui::painter& p) {
     p.pop_clip();
 }
 
+/* A section's title in caps, and at the right a count or a state in sentence case */
 class section_head : public ui::widget {
 public:
     explicit section_head(const char* title)
-        : m_title(title, STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
+        : m_title(title, STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
+          m_end("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
+
+    void set_end(const std::string& text) {
+        if (m_end.set_text(text)) {
+            invalidate();
+        }
+    }
 
     ui::size measure(ui::size avail) override {
         return { avail.w, HEAD_HEIGHT };
     }
 
     void paint(ui::painter& p) override {
-        m_title.draw(p, HEAD_PADDING_X, HEAD_HEIGHT - HEAD_PADDING_BOTTOM - SUBTITLE_LINE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+        int32_t top = HEAD_HEIGHT - HEAD_PADDING_BOTTOM - SUBTITLE_LINE_HEIGHT;
+        m_title.draw(p, HEAD_PADDING_X, top, SUBTITLE_LINE_HEIGHT);
+        m_end.draw(p, m_frame.w - HEAD_PADDING_X - m_end.width(), top, SUBTITLE_LINE_HEIGHT);
     }
 
 private:
     text_picture m_title;
+    text_picture m_end;
 };
 
 /* One row: the icon, the label with what the query matched marked, the subtitle under it, and at the right the
- * keycaps of a shortcut that runs the same, else the row's kind when the palette names it */
+ * keycaps of a shortcut that runs the same, else what the entry shows there or the kind the palette names */
 class result_row : public ui::widget {
 public:
     result_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name);
@@ -305,8 +342,9 @@ result_row::result_row(const palette_entry& entry, std::vector<match_run> runs, 
         right_w += m_keycaps.back()->width() + (right_w > 0 ? KEYCAP_GAP : 0);
     }
 
-    if (m_keycaps.empty() && kind_name) {
-        m_kind.set_text(kind_name);
+    const char* right_text = entry.right.empty() ? kind_name : entry.right.c_str();
+    if (m_keycaps.empty() && right_text) {
+        m_kind.set_text(right_text);
         right_w = m_kind.width();
     }
 
@@ -399,13 +437,16 @@ void result_row::paint_right(ui::painter& p) const {
     }
 }
 
+/* What matched nothing, and under it where files were searched, so a missing file is explained */
 class no_match : public ui::widget {
 public:
-    explicit no_match(const std::string& query)
-        : m_text("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT) {
-        std::string text = "No apps, actions or programs match " + query;
-        m_text.set_text(fitted(text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
-                               ROW_WIDTH - 2 * NO_MATCH_PADDING_X));
+    no_match(const std::string& query, const std::string& note)
+        : m_text("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
+          m_note("", STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_DIM) {
+        int32_t max_w = ROW_WIDTH - 2 * NO_MATCH_PADDING_X;
+        std::string text = "No apps, actions or files match " + query;
+        m_text.set_text(fitted(text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, max_w));
+        m_note.set_text(fitted(note, STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, max_w));
     }
 
     ui::size measure(ui::size avail) override {
@@ -413,11 +454,15 @@ public:
     }
 
     void paint(ui::painter& p) override {
-        m_text.draw(p, (m_frame.w - m_text.width()) / 2, 0, m_frame.h);
+        int32_t lines_h = LABEL_LINE_HEIGHT + NO_MATCH_GAP + LABEL_LINE_HEIGHT;
+        int32_t top = (m_frame.h - lines_h) / 2;
+        m_text.draw(p, (m_frame.w - m_text.width()) / 2, top, LABEL_LINE_HEIGHT);
+        m_note.draw(p, (m_frame.w - m_note.width()) / 2, top + LABEL_LINE_HEIGHT + NO_MATCH_GAP, LABEL_LINE_HEIGHT);
     }
 
 private:
     text_picture m_text;
+    text_picture m_note;
 };
 
 /* What Enter does to the selected row at the left, and how the palette closes at the right */
@@ -487,9 +532,18 @@ private:
  * query, Up and Down choose a row, Enter starts it */
 class palette_view : public ui::box {
 public:
-    palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph);
+    /* `no_match_note` says where files are searched, under the words of a query that matched nothing */
+    palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph, std::string no_match_note);
 
     std::function<void(const palette_entry& entry)> on_choose;
+
+    /* Asks the file index for the files a query matches and returns the request's number, and makes the row of a
+     * file an answer holds. Both must be set before the first key. */
+    std::function<uint64_t(const std::string& query)> search_files;
+    std::function<palette_entry(const found_file& file)> make_file_entry;
+
+    /* Shows an answer to the newest file request, dropping an older one, and the walk's count in the files' head */
+    void show_files(const file_answer* answer, const walk_state& walk);
 
     bool focusable() const override { return true; }
     bool on_key_down(const ui::key_event& e) override;
@@ -502,21 +556,31 @@ private:
     void show_matches(std::string_view query);
     bool find_calculation(std::string_view query);
     bool find_command(std::string_view query);
-    void add_head(const char* title);
+    section_head* add_head(const char* title);
     void add_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name);
     void select(size_t index);
     void move_selection(int32_t rows);
     void choose(size_t index);
     void erase_word();
+    std::string walk_text() const;
 
     std::vector<palette_entry> m_entries;
     std::string                m_query;
     size_t                     m_caret = 0;
+    std::string                m_no_match_note;
 
     /* The rows of the query's value and of a program the query names with words after it, while
      * `find_calculation` and `find_command` found them */
     palette_entry m_calculation;
     palette_entry m_command;
+
+    /* The newest file request and the rows of the last answer, which the query filters until the newest is
+     * answered, and the walk the files' head counts */
+    uint64_t                   m_file_request = 0;
+    bool                       m_is_file_answer_newest = false;
+    std::vector<palette_entry> m_file_entries;
+    walk_state                 m_walk;
+    section_head*              m_files_head = nullptr;
 
     query_field*    m_field;
     result_list*    m_list;
@@ -532,8 +596,9 @@ private:
     size_t                             m_selected = 0;
 };
 
-palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph)
-    : ui::box(ui::axis::column), m_entries(std::move(entries)) {
+palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
+                           std::string no_match_note)
+    : ui::box(ui::axis::column), m_entries(std::move(entries)), m_no_match_note(std::move(no_match_note)) {
     ui::box* body = add<ui::box>(ui::axis::column);
     body->s().padding = ui::edge_insets::all(PALETTE_PADDING);
     body->s().gap = LIST_GAP;
@@ -612,7 +677,56 @@ void palette_view::edit(std::string query, size_t cursor) {
     m_query = std::move(query);
     m_caret = cursor;
     m_field->show(m_query, m_caret);
+
+    std::string_view searched = trimmed(m_query);
+    m_is_file_answer_newest = false;
+    m_file_request = searched.empty() ? 0 : search_files(std::string(searched));
     show_rows();
+}
+
+/* An answer to an older request is dropped, and a finished walk asks again so the fresh index answers. The
+ * selected row stays selected across an answer when it is still shown. */
+void palette_view::show_files(const file_answer* answer, const walk_state& walk) {
+    bool has_walk_finished = m_walk.walking && !walk.walking;
+    m_walk = walk;
+    if (m_files_head) {
+        m_files_head->set_end(walk_text());
+    }
+
+    std::string_view searched = trimmed(m_query);
+    if (has_walk_finished && !searched.empty()) {
+        m_file_request = search_files(std::string(searched));
+    }
+
+    if (!answer || answer->request != m_file_request) {
+        return;
+    }
+
+    std::string selected_key = m_rows.empty() ? std::string() : row_key(*m_row_entries[m_selected]);
+    m_file_entries.clear();
+    for (const found_file& file : answer->files) {
+        bool is_listed = std::any_of(m_entries.begin(), m_entries.end(), [&file](const palette_entry& entry) {
+            return entry.kind == row_kind::file && entry.path == file.path;
+        });
+
+        if (!is_listed) {
+            m_file_entries.push_back(make_file_entry(file));
+        }
+    }
+
+    m_is_file_answer_newest = true;
+    show_rows();
+    for (size_t i = 0; i < m_rows.size(); i++) {
+        if (row_key(*m_row_entries[i]) == selected_key) {
+            select(i);
+            move_selection(0);
+            break;
+        }
+    }
+}
+
+std::string palette_view::walk_text() const {
+    return m_walk.walking ? "indexing, " + shown_number(static_cast<double>(m_walk.found)) + " so far" : "";
 }
 
 void palette_view::move_caret(size_t cursor) {
@@ -641,6 +755,8 @@ void palette_view::show_rows() {
     m_rows.clear();
     m_row_entries.clear();
     m_row_reveal_tops.clear();
+
+    m_files_head = nullptr;
     m_content_h = 0;
     m_selected = 0;
 
@@ -697,17 +813,23 @@ void palette_view::show_matches(std::string_view query) {
     };
 
     std::vector<found_entry> found;
-    for (const palette_entry& entry : m_entries) {
-        query_match match = match_query(query, entry.label, entry.keywords);
-        if (match.quality != match_quality::none) {
-            found.push_back({ &entry, std::move(match) });
+    for (const std::vector<palette_entry>* entries : { &m_entries, &m_file_entries }) {
+        for (const palette_entry& entry : *entries) {
+            query_match match = match_query(query, entry.label, entry.keywords);
+            if (match.quality != match_quality::none) {
+                found.push_back({ &entry, std::move(match) });
+            }
         }
     }
 
+    /* Nothing matching says so only once the files for this very query are in */
     bool has_calculation = find_calculation(query);
     bool has_command = find_command(query);
     if (found.empty() && !has_calculation && !has_command) {
-        m_list->content()->add<no_match>(std::string(query));
+        if (m_is_file_answer_newest) {
+            m_list->content()->add<no_match>(std::string(query), m_no_match_note);
+        }
+
         return;
     }
 
@@ -741,7 +863,7 @@ void palette_view::show_matches(std::string_view query) {
         first_rest = 1;
     }
 
-    for (row_kind kind : { row_kind::app, row_kind::action, row_kind::program }) {
+    for (row_kind kind : { row_kind::app, row_kind::action, row_kind::program, row_kind::file }) {
         size_t shown = 0;
         for (size_t i = first_rest; i < found.size() && shown < KIND_ROWS_MAX; i++) {
             if (found[i].entry->kind != kind) {
@@ -749,12 +871,17 @@ void palette_view::show_matches(std::string_view query) {
             }
 
             if (shown == 0) {
-                add_head(KIND_HEADS[static_cast<size_t>(kind)]);
+                section_head* head = add_head(KIND_HEADS[static_cast<size_t>(kind)]);
+                m_files_head = kind == row_kind::file ? head : m_files_head;
             }
 
             add_row(*found[i].entry, found[i].match.runs, nullptr);
             shown++;
         }
+    }
+
+    if (m_files_head) {
+        m_files_head->set_end(walk_text());
     }
 }
 
@@ -791,7 +918,7 @@ bool palette_view::find_command(std::string_view query) {
 
         m_command = entry;
         m_command.label = "Run " + std::string(query);
-        m_command.subtitle = entry.program + " in Terminal";
+        m_command.subtitle = entry.path + " in Terminal";
         m_command.is_subtitle_path = false;
         m_command.args = std::string(trimmed(query.substr(space + 1)));
         m_command.keys.clear();
@@ -802,10 +929,12 @@ bool palette_view::find_command(std::string_view query) {
     return false;
 }
 
-void palette_view::add_head(const char* title) {
-    m_list->content()->add<section_head>(title);
+section_head* palette_view::add_head(const char* title) {
+    section_head* head = m_list->content()->add<section_head>(title);
     m_content_h += HEAD_HEIGHT;
     m_follows_head = true;
+
+    return head;
 }
 
 void palette_view::add_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name) {
@@ -835,7 +964,9 @@ void palette_view::select(size_t index) {
     m_rows[m_selected]->set_selected(false);
     m_selected = std::min(index, m_rows.size() - 1);
     m_rows[m_selected]->set_selected(true);
-    m_footer->show_verb(KIND_VERBS[static_cast<size_t>(m_row_entries[m_selected]->kind)]);
+
+    const palette_entry& entry = *m_row_entries[m_selected];
+    m_footer->show_verb(entry.verb.empty() ? KIND_VERBS[static_cast<size_t>(entry.kind)] : entry.verb.c_str());
 }
 
 /* Moves the selection without wrapping, scrolling the least that shows the newly selected row */
@@ -950,7 +1081,7 @@ std::vector<palette_entry> program_entries(const stlxconf_t& conf, const stlxgfx
             palette_entry program;
             program.kind = row_kind::program;
             program.label = file->d_name;
-            program.program = path;
+            program.path = path;
             program.icon = icon;
 
             program.subtitle = path;
@@ -967,6 +1098,103 @@ std::vector<palette_entry> program_entries(const stlxconf_t& conf, const stlxgfx
     });
 
     return programs;
+}
+
+/* The label of the first launcher that runs `path`, else the program's file name */
+std::string program_label(const stlxconf_t& conf, const char* path) {
+    for (uint32_t i = 0; i < conf.pin_count; i++) {
+        if (strcmp(conf.pins[i].path, path) == 0 && conf.pins[i].label[0]) {
+            return conf.pins[i].label;
+        }
+    }
+
+    return file_name(path);
+}
+
+/* Bytes as people read them, to one decimal past a thousand */
+std::string size_text(uint64_t bytes) {
+    static const char* const UNITS[] = { "KB", "MB", "GB", "TB" };
+    if (bytes < 1024) {
+        return std::to_string(bytes) + " B";
+    }
+
+    double size = static_cast<double>(bytes) / 1024;
+    size_t unit = 0;
+    while (size >= 1024 && unit + 1 < std::size(UNITS)) {
+        size /= 1024;
+        unit++;
+    }
+
+    char text[32];
+    snprintf(text, sizeof(text), "%.1f %s", size, UNITS[unit]);
+
+    return text;
+}
+
+std::string items_text(uint64_t count) {
+    return count == 1 ? "1 item" : shown_number(static_cast<double>(count)) + " items";
+}
+
+/* Where files are searched, from the skip list, said under a query that matched nothing */
+std::string skip_note(const char* skip) {
+    std::vector<std::string> folders;
+    for (const char* at = skip; *at;) {
+        const char* end = strchr(at, ' ');
+        end = end ? end : at + strlen(at);
+        if (end > at) {
+            folders.emplace_back(at, end);
+        }
+
+        at = *end ? end + 1 : end;
+    }
+
+    std::string note = "Files are searched in /";
+    for (size_t i = 0; i < folders.size(); i++) {
+        note += i == 0 ? " except " : i + 1 == folders.size() ? " and " : ", ";
+        note += folders[i];
+    }
+
+    return folders.empty() ? note : note + ", the [quick_actions] skip list";
+}
+
+/* The icons file rows show, by what the describer said each file is */
+struct file_icons {
+    const stlxgfx_surface_t* folder;
+    const stlxgfx_surface_t* text;
+    const stlxgfx_surface_t* image;
+    const stlxgfx_surface_t* program;
+};
+
+const stlxgfx_surface_t* icon_of_type(const file_icons& icons, const char* mime_type) {
+    if (strcmp(mime_type, FOLDER_TYPE) == 0) {
+        return icons.folder;
+    }
+
+    if (strncmp(mime_type, "image/", 6) == 0) {
+        return icons.image;
+    }
+
+    bool is_program = strcmp(mime_type, "application/x-executable") == 0 ||
+                      strcmp(mime_type, "application/x-shellscript") == 0;
+    return is_program ? icons.program : icons.text;
+}
+
+/* A file's row shows the folder it is in, which tells apart two files of one name, and its size at the right */
+palette_entry file_entry(const found_file& file, const file_icons& icons, std::string verb) {
+    palette_entry entry;
+    entry.kind = row_kind::file;
+    entry.label = std::string(file.name());
+    entry.path = file.path;
+    entry.mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
+    entry.file = file;
+
+    entry.subtitle = file.name_start > 1 ? file.path.substr(0, file.name_start - 1) : "/";
+    entry.is_subtitle_path = true;
+    entry.right = file.is_folder ? items_text(file.size) : size_text(file.size);
+    entry.verb = std::move(verb);
+    entry.icon = icon_of_type(icons, entry.mime_type);
+
+    return entry;
 }
 
 /* An action's row shows its subtitle, else the command it runs */
@@ -993,13 +1221,31 @@ palette_entry action_entry(const stlxconf_t& conf, uint32_t index, const stlxgfx
 
 } // namespace
 
+/* The index names each answered file's type on its searcher, so a row never reads a file on this thread */
 quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_surface_t*>& launcher_icons)
     : m_conf(conf), m_launcher_icons(launcher_icons),
       m_search_glyph(make_search_glyph(FIELD_GLYPH_SIZE, STLXTHEME_TEXT_DIM)),
-      m_program_icon(load_icon(PROGRAM_ICON_PATH)) {
+      m_program_icon(load_icon(PROGRAM_ICON_PATH)), m_folder_icon(load_icon(FOLDER_ICON_PATH)),
+      m_text_icon(load_icon(TEXT_ICON_PATH)), m_image_icon(load_icon(IMAGE_ICON_PATH)) {
     for (uint32_t i = 0; i < conf.action_count; i++) {
         const char* path = conf.actions[i].icon_path;
         m_action_icons.push_back(path[0] ? load_icon(path) : nullptr);
+    }
+
+    bool is_started = m_files.start("/", conf.quick_actions_skip, [](found_file& file) {
+        if (file.is_folder) {
+            file.mime_type = FOLDER_TYPE;
+            file.description = "Folder";
+            return;
+        }
+
+        stlxconf_file_type_t type = stlxconf_file_type(file.path.c_str());
+        file.mime_type = type.mime_type;
+        file.description = type.description;
+    });
+
+    if (!is_started) {
+        printf("stlxdm: Quick Actions finds no files, since its file index could not start\r\n");
     }
 }
 
@@ -1008,8 +1254,9 @@ quick_actions::~quick_actions() {
         stlxgfx_destroy_surface(icon);
     }
 
-    stlxgfx_destroy_surface(m_search_glyph);
-    stlxgfx_destroy_surface(m_program_icon);
+    for (stlxgfx_surface_t* icon : { m_search_glyph, m_program_icon, m_folder_icon, m_text_icon, m_image_icon }) {
+        stlxgfx_destroy_surface(icon);
+    }
 }
 
 int32_t quick_actions::width() const {
@@ -1035,6 +1282,65 @@ void quick_actions::remember_pick(const std::string& key) {
     if (m_picks.size() > RECENT_MAX) {
         m_picks.pop_back();
     }
+}
+
+/* A picked file is kept as found, since no answer may hold it at the next opening */
+void quick_actions::remember_file(const found_file& file) {
+    auto same_path = [&file](const found_file& kept) {
+        return kept.path == file.path;
+    };
+
+    m_picked_files.erase(std::remove_if(m_picked_files.begin(), m_picked_files.end(), same_path), m_picked_files.end());
+    m_picked_files.insert(m_picked_files.begin(), file);
+    if (m_picked_files.size() > RECENT_MAX) {
+        m_picked_files.pop_back();
+    }
+}
+
+void quick_actions::closed() {
+    m_show_files = nullptr;
+}
+
+void quick_actions::pump_files() {
+    file_answer answer;
+    walk_state walk;
+    bool has_answer = m_files.take(&answer, &walk);
+    if (m_show_files) {
+        m_show_files(has_answer ? &answer : nullptr, walk);
+    }
+}
+
+/* A folder opens in File Manager, and a file in the handler of its type or the nearest it derives from, else File
+ * Manager shows it selected in its folder */
+void quick_actions::open_file(const std::string& path, const char* mime_type) {
+    bool is_folder = strcmp(mime_type, FOLDER_TYPE) == 0;
+    const stlxconf_file_handler_t* handler = nullptr;
+    if (!is_folder) {
+        handler = stlxconf_find_file_opener(&m_conf, mime_type, nullptr);
+    }
+
+    if (!handler) {
+        on_exec(FILE_MANAGER_PATH, { path });
+        return;
+    }
+
+    char args[sizeof(handler->args)];
+    memcpy(args, handler->args, sizeof(args));
+    const char* argv[HANDLER_ARGS_MAX];
+    int argc = stlxconf_split_args(args, argv, HANDLER_ARGS_MAX);
+
+    std::vector<std::string> handler_args(argv, argv + argc);
+    handler_args.push_back(path);
+    on_exec(handler->path, handler_args);
+}
+
+std::string quick_actions::file_verb(const char* mime_type) const {
+    if (strcmp(mime_type, FOLDER_TYPE) == 0) {
+        return "Open in File Manager";
+    }
+
+    const stlxconf_file_handler_t* handler = stlxconf_find_file_opener(&m_conf, mime_type, nullptr);
+    return handler ? "Open in " + program_label(m_conf, handler->path) : "Show in File Manager";
 }
 
 /* Launchers without a program and actions that name no action of their own, or open the palette itself, show no
@@ -1071,12 +1377,32 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         entries.push_back(std::move(program));
     }
 
+    file_icons icons = { m_folder_icon, m_text_icon, m_image_icon, m_program_icon };
+    for (const found_file& file : m_picked_files) {
+        entries.push_back(file_entry(file, icons, file_verb(file.mime_type)));
+    }
+
     for (palette_entry& entry : entries) {
         auto pick = std::find(m_picks.begin(), m_picks.end(), pick_key(entry));
         entry.recent = pick == m_picks.end() ? UNPICKED : static_cast<uint32_t>(pick - m_picks.begin());
     }
 
-    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph);
+    m_files.rewalk();
+    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph,
+                                               skip_note(m_conf.quick_actions_skip));
+    view->search_files = [this](const std::string& query) {
+        return m_files.search(query, FILE_RESULTS_MAX);
+    };
+
+    view->make_file_entry = [this, icons](const found_file& file) {
+        return file_entry(file, icons, file_verb(file.mime_type));
+    };
+
+    palette_view* shown = view.get();
+    m_show_files = [shown](const file_answer* answer, const walk_state& walk) {
+        shown->show_files(answer, walk);
+    };
+
     view->on_choose = [this](const palette_entry& entry) {
         remember_pick(pick_key(entry));
         switch (entry.kind) {
@@ -1087,7 +1413,11 @@ std::unique_ptr<ui::widget> quick_actions::build() {
             on_run(m_conf.actions[entry.index]);
             break;
         case row_kind::program:
-            on_run_program(entry.program.c_str(), entry.args.c_str());
+            on_run_program(entry.path.c_str(), entry.args.c_str());
+            break;
+        case row_kind::file:
+            remember_file(entry.file);
+            open_file(entry.path, entry.mime_type);
             break;
         case row_kind::calculator:
             on_copy(entry.copied);
