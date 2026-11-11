@@ -98,7 +98,10 @@ private:
     void refresh_banner();
     void show_banner(document* doc, const banner_message& message);
     void show_status_note(const QString& note);
-    void show_fact_menu(file_fact fact, const QPoint& anchor);
+    void show_status_menu(status_kind kind, const QPoint& anchor);
+    void fill_indentation_menu(document* doc, QMenu* menu);
+    void fill_encoding_menu(document* doc, QMenu* menu);
+    void fill_line_ending_menu(document* doc, QMenu* menu);
     void show_text_menu(const QPoint& anchor);
     void show_tab_menu(int index, const QPoint& anchor);
     void reopen_with_encoding(const QByteArray& name);

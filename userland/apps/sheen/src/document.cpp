@@ -10,12 +10,6 @@
 #include <cerrno>
 #include <sys/stat.h>
 
-struct eol_counts {
-    qsizetype crlf = 0;
-    qsizetype cr = 0;
-    qsizetype lf = 0;
-};
-
 struct key_binding {
     int key;
     int modifiers;
@@ -26,6 +20,9 @@ struct key_binding {
 static constexpr qsizetype FIRST_LINE_PROBE_BYTES = 256;
 static constexpr int MAX_NAME_CHARS = 32;
 static constexpr qsizetype MAX_UTF8_BYTES = 4;
+static constexpr int INDENT_PROBE_LINES = 1000;
+static constexpr int MIN_INDENT_STEP = 2;
+static constexpr int MAX_INDENT_STEP = 8;
 static constexpr int KEY_MODIFIER_SHIFT = 16;
 static constexpr mode_t PERMISSION_BITS = 07777;
 static constexpr QChar ELLIPSIS(0x2026);
@@ -200,6 +197,7 @@ bool document::reload_from_disk(QString* error) {
     m_file.encoding = text.encoding;
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
 
     m_is_deleted = false;
     remember_disk_state();
@@ -295,6 +293,66 @@ void document::recount_eols() {
     eol_counts counts = count_eols(text());
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
+}
+
+std::optional<indentation> document::detect_indentation() const {
+    int tab_lines = 0;
+    int space_lines = 0;
+    int steps[MAX_INDENT_STEP + 1] = {};
+    sptr_t previous = 0;
+    sptr_t line_count = m_view->send(SCI_GETLINECOUNT);
+    for (sptr_t line = 0; line < line_count && tab_lines + space_lines < INDENT_PROBE_LINES; line++) {
+        sptr_t start = m_view->send(SCI_POSITIONFROMLINE, line);
+        sptr_t text_start = m_view->send(SCI_GETLINEINDENTPOSITION, line);
+        if (text_start == m_view->send(SCI_GETLINEENDPOSITION, line)) {
+            continue;
+        }
+
+        sptr_t indent = m_view->send(SCI_GETLINEINDENTATION, line);
+        char first = static_cast<char>(m_view->send(SCI_GETCHARAT, start));
+        tab_lines += text_start > start && first == '\t';
+        space_lines += text_start > start && first == ' ';
+        sptr_t step = qAbs(indent - previous);
+        if (first == ' ' && step >= MIN_INDENT_STEP && step <= MAX_INDENT_STEP) {
+            steps[step]++;
+        }
+
+        previous = indent;
+    }
+
+    if (tab_lines + space_lines == 0) {
+        return std::nullopt;
+    }
+
+    int width = MIN_INDENT_STEP;
+    for (int step = MIN_INDENT_STEP; step <= MAX_INDENT_STEP; step++) {
+        width = steps[step] > steps[width] ? step : width;
+    }
+
+    bool uses_tabs = tab_lines > space_lines;
+    int tab_width = static_cast<int>(m_view->send(SCI_GETTABWIDTH));
+    return indentation { uses_tabs, uses_tabs || steps[width] == 0 ? tab_width : width };
+}
+
+void document::set_indentation(const indentation& indent) {
+    m_view->send(SCI_SETUSETABS, indent.uses_tabs);
+    m_view->send(SCI_SETTABWIDTH, indent.width);
+    m_view->send(SCI_SETINDENT, indent.width);
+}
+
+void document::convert_indentation(bool to_tabs) {
+    m_view->send(SCI_SETUSETABS, to_tabs);
+    m_view->send(SCI_BEGINUNDOACTION);
+    sptr_t line_count = m_view->send(SCI_GETLINECOUNT);
+    for (sptr_t line = 0; line < line_count; line++) {
+        sptr_t indent = m_view->send(SCI_GETLINEINDENTATION, line);
+        if (indent > 0) {
+            m_view->send(SCI_SETLINEINDENTATION, line, indent);
+        }
+    }
+
+    m_view->send(SCI_ENDUNDOACTION);
 }
 
 void document::set_new_path(const QString& path) {
@@ -415,6 +473,11 @@ void document::replace_text(const QByteArray& utf8) {
     eol_counts counts = count_eols(utf8);
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
+    if (std::optional<indentation> indent = detect_indentation()) {
+        set_indentation(*indent);
+    }
+
     m_is_deleted = false;
     remember_disk_state();
     fit_line_numbers(m_view);

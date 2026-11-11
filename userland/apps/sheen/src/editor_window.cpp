@@ -43,6 +43,7 @@ static constexpr int CASCADE_WIDTH = 272;
 static constexpr int STATUS_NOTE_MS = 4000;
 
 static constexpr int SWITCHER_GAP = 8;
+static constexpr int INDENT_WIDTHS[] = { 2, 4, 8 };
 static constexpr QChar BULLET(0x2022);
 
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
@@ -207,7 +208,7 @@ editor_window::editor_window()
     tabs()->on_context_menu = [this](int index, const QPoint& anchor) { show_tab_menu(index, anchor); };
     m_tab_row->on_empty_double_click = [this] { new_document(); };
     connect(m_tab_row->tab_list(), &QAbstractButton::clicked, this, [this] { show_tab_list(); });
-    m_status->on_fact_clicked = [this](file_fact fact, const QPoint& anchor) { show_fact_menu(fact, anchor); };
+    m_status->on_item_clicked = [this](status_kind kind, const QPoint& anchor) { show_status_menu(kind, anchor); };
     m_banner->on_dismissed = [this] {
         if (document* doc = current_document()) {
             doc->accept_disk_state();
@@ -1475,10 +1476,9 @@ void editor_window::refresh_tab(document* doc) {
 
 void editor_window::refresh_status() {
     document* doc = current_document();
+    m_status->set_message(m_status_note);
     if (!doc) {
-        m_status->set_caret_parts({});
-        m_status->set_facts({});
-        m_status->set_message(QString());
+        m_status->set_items({}, {});
         return;
     }
 
@@ -1486,25 +1486,27 @@ void editor_window::refresh_status() {
     sptr_t caret = view->send(SCI_GETCURRENTPOS);
     sptr_t line = view->send(SCI_LINEFROMPOSITION, caret) + 1;
     sptr_t column = view->send(SCI_GETCOLUMN, caret) + 1;
-    QStringList parts = { QStringLiteral("Ln %1, Col %2").arg(line).arg(column) };
+    QString position = QStringLiteral("Ln %1, Col %2").arg(line).arg(column);
+    QList<status_item> left = { { status_kind::POSITION, position, {}, false } };
 
     sptr_t selections = view->send(SCI_GETSELECTIONS);
     sptr_t start = view->send(SCI_GETSELECTIONSTART);
     sptr_t end = view->send(SCI_GETSELECTIONEND);
     if (selections > 1) {
-        parts.append(QStringLiteral("%1 carets").arg(selections));
+        left.append({ status_kind::SELECTION, QStringLiteral("%1 carets").arg(selections), {}, false });
     } else if (end > start) {
-        parts.append(QStringLiteral("%1 selected").arg(view->send(SCI_COUNTCHARACTERS, start, end)));
+        sptr_t count = view->send(SCI_COUNTCHARACTERS, start, end);
+        left.append({ status_kind::SELECTION, QStringLiteral("%1 selected").arg(count), {}, false });
     }
 
     bool uses_tabs = view->send(SCI_GETUSETABS) != 0;
-    parts.append(uses_tabs ? QStringLiteral("Tabs: %1").arg(view->send(SCI_GETTABWIDTH))
-                           : QStringLiteral("Spaces: %1").arg(view->send(SCI_GETINDENT)));
+    QString indent = uses_tabs ? QStringLiteral("Tabs: %1").arg(view->send(SCI_GETTABWIDTH))
+                               : QStringLiteral("Spaces: %1").arg(view->send(SCI_GETINDENT));
+    left.append({ status_kind::INDENTATION, indent, {}, true });
     if (view->send(SCI_GETOVERTYPE)) {
-        parts.append(QStringLiteral("OVR"));
+        QString tooltip = QStringLiteral("Typing replaces text (Insert)");
+        left.append({ status_kind::OVERTYPE, QStringLiteral("OVR"), tooltip, false });
     }
-
-    m_status->set_caret_parts(parts);
 
     const file_record& file = doc->file();
     QString eol = eol_label(file.eol_mode);
@@ -1512,8 +1514,15 @@ void editor_window::refresh_status() {
         eol = QStringLiteral("%1, mixed").arg(eol);
     }
 
-    m_status->set_message(m_status_note);
-    m_status->set_facts({ language_name(doc->lang()), encoding_label(file.encoding), eol });
+    QString encoding_note = file.encoding.name.startsWith("UTF-") ? QString()
+                          : QStringLiteral("Not valid UTF-8, opened as %1").arg(encoding_label(file.encoding));
+    QList<status_item> right = {
+        { status_kind::LANGUAGE, language_name(doc->lang()), {}, true },
+        { status_kind::ENCODING, encoding_label(file.encoding), encoding_note, true },
+        { status_kind::LINE_ENDING, eol, {}, true },
+    };
+
+    m_status->set_items(left, right);
 }
 
 void editor_window::refresh_banner() {
@@ -1545,7 +1554,8 @@ void editor_window::show_status_note(const QString& note) {
     });
 }
 
-void editor_window::show_fact_menu(file_fact fact, const QPoint& anchor) {
+// Each status button's menu opens upward from it, and the button shows as open meanwhile
+void editor_window::show_status_menu(status_kind kind, const QPoint& anchor) {
     document* doc = current_document();
     if (!doc || m_open_sheet) {
         return;
@@ -1553,37 +1563,136 @@ void editor_window::show_fact_menu(file_fact fact, const QPoint& anchor) {
 
     QMenu menu(this);
     menu.setStyle(m_menu_style);
-    switch (fact) {
-        case file_fact::LANGUAGE:
+    switch (kind) {
+        case status_kind::INDENTATION:
+            fill_indentation_menu(doc, &menu);
+            break;
+        case status_kind::LANGUAGE:
             fill_submenu(command::LANGUAGE, &menu);
             break;
-        case file_fact::ENCODING: {
-            QMenu* reopen = menu.addMenu(QStringLiteral("Reopen with Encoding"));
-            reopen->setStyle(m_menu_style);
-            reopen->setEnabled(!doc->is_untitled() && QFileInfo(doc->file().path).isFile());
-            fill_submenu(command::REOPEN_WITH_ENCODING, reopen);
-
-            QMenu* save = menu.addMenu(QStringLiteral("Save with Encoding"));
-            save->setStyle(m_menu_style);
-            fill_submenu(command::SAVE_WITH_ENCODING, save);
+        case status_kind::ENCODING:
+            fill_encoding_menu(doc, &menu);
             break;
-        }
-        case file_fact::LINE_ENDING:
-            for (const eol_choice& choice : EOL_CHOICES) {
-                QAction* action = menu.addAction(QString::fromLatin1(choice.label), [this, doc, choice] {
-                    doc->convert_eols(choice.mode);
-                    refresh_status();
-                });
-                action->setCheckable(true);
-                action->setChecked(choice.mode == doc->file().eol_mode && !doc->file().has_mixed_eols);
-            }
-
+        case status_kind::LINE_ENDING:
+            fill_line_ending_menu(doc, &menu);
             break;
-        case file_fact::COUNT:
+        default:
             return;
     }
 
-    menu.exec(anchor - QPoint(0, menu.sizeHint().height()));
+    // A menu that would cross the window's right edge slides left to stay over it
+    QSize size = menu.sizeHint();
+    int window_right = mapToGlobal(QPoint(width(), 0)).x();
+    m_status->set_open_item(&kind);
+    menu.exec(QPoint(qMin(anchor.x(), window_right - size.width()), anchor.y() - size.height()));
+    m_status->set_open_item(nullptr);
+}
+
+void editor_window::fill_indentation_menu(document* doc, QMenu* menu) {
+    ScintillaEditBase* view = doc->view();
+    bool uses_tabs = view->send(SCI_GETUSETABS) != 0;
+    int width = static_cast<int>(view->send(SCI_GETINDENT));
+    QAction* spaces = menu->addAction(QStringLiteral("Indent Using Spaces"), [this, doc, width] {
+        doc->set_indentation({ false, width });
+        refresh_status();
+    });
+    spaces->setCheckable(true);
+    spaces->setChecked(!uses_tabs);
+
+    QAction* tabs_row = menu->addAction(QStringLiteral("Indent Using Tabs"), [this, doc, width] {
+        doc->set_indentation({ true, width });
+        refresh_status();
+    });
+    tabs_row->setCheckable(true);
+    tabs_row->setChecked(uses_tabs);
+
+    menu->addSeparator();
+    for (int option : INDENT_WIDTHS) {
+        QAction* row = menu->addAction(QStringLiteral("Width %1").arg(option), [this, doc, uses_tabs, option] {
+            doc->set_indentation({ uses_tabs, option });
+            refresh_status();
+        });
+        row->setCheckable(true);
+        row->setChecked(option == width);
+    }
+
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("Detect from Content"), [this, doc] {
+        if (std::optional<indentation> indent = doc->detect_indentation()) {
+            doc->set_indentation(*indent);
+        }
+
+        refresh_status();
+    });
+
+    menu->addAction(QStringLiteral("Convert Indentation to Spaces"), [this, doc] {
+        doc->convert_indentation(false);
+        refresh_status();
+    });
+
+    menu->addAction(QStringLiteral("Convert Indentation to Tabs"), [this, doc] {
+        doc->convert_indentation(true);
+        refresh_status();
+    });
+}
+
+// Headed by the encoding the file was opened as, with how that was decided underneath
+void editor_window::fill_encoding_menu(document* doc, QMenu* menu) {
+    const file_encoding& encoding = doc->file().encoding;
+    QString heading = doc->is_untitled() ? QStringLiteral("Saves as %1") : QStringLiteral("Opened as %1");
+    menu->addAction(heading.arg(encoding_label(encoding)))->setEnabled(false);
+    menu->addSeparator();
+
+    QMenu* reopen = menu->addMenu(QStringLiteral("Reopen with Encoding"));
+    reopen->setStyle(m_menu_style);
+    reopen->setEnabled(!doc->is_untitled() && QFileInfo(doc->file().path).isFile());
+    fill_submenu(command::REOPEN_WITH_ENCODING, reopen);
+
+    QMenu* save = menu->addMenu(QStringLiteral("Save with Encoding"));
+    save->setStyle(m_menu_style);
+    fill_submenu(command::SAVE_WITH_ENCODING, save);
+    if (doc->is_untitled()) {
+        return;
+    }
+
+    QString reason = encoding.has_bom                 ? QStringLiteral("Read from its byte order mark")
+                   : encoding.name.startsWith("UTF-") ? QStringLiteral("The file is valid UTF-8")
+                                                      : QStringLiteral("Not valid UTF-8, so read byte for byte");
+    menu->addSeparator();
+    menu->addAction(reason)->setEnabled(false);
+}
+
+void editor_window::fill_line_ending_menu(document* doc, QMenu* menu) {
+    const file_record& file = doc->file();
+    if (file.has_mixed_eols) {
+        QStringList counts;
+        for (const auto& [count, label] : { std::pair { file.eols.lf, "LF" }, std::pair { file.eols.crlf, "CRLF" },
+                                            std::pair { file.eols.cr, "CR" } }) {
+            if (count > 0) {
+                counts.append(QStringLiteral("%1 %2").arg(count).arg(QString::fromLatin1(label)));
+            }
+        }
+
+        menu->addAction(QStringLiteral("Mixed: %1").arg(counts.join(QStringLiteral(", "))))->setEnabled(false);
+        menu->addSeparator();
+    }
+
+    for (const eol_choice& choice : EOL_CHOICES) {
+        QAction* action = menu->addAction(QString::fromLatin1(choice.label), [this, doc, choice] {
+            doc->convert_eols(choice.mode);
+            refresh_status();
+        });
+        action->setCheckable(true);
+        action->setChecked(choice.mode == file.eol_mode && !file.has_mixed_eols);
+    }
+
+    menu->addSeparator();
+    ScintillaEditBase* view = doc->view();
+    QAction* shown = menu->addAction(QStringLiteral("Show Line Endings"), [view](bool is_shown) {
+        view->send(SCI_SETVIEWEOL, is_shown);
+    });
+    shown->setCheckable(true);
+    shown->setChecked(view->send(SCI_GETVIEWEOL) != 0);
 }
 
 // The text's own menu for the pointer's place or the caret's: undo, the clipboard and the selection
