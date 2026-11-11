@@ -42,11 +42,16 @@ public:
     std::unique_ptr<ui::widget> build() override;
 
 private:
+    void remember_pick(const std::string& key);
+
     const stlxconf_t&                      m_conf;
     const std::vector<stlxgfx_surface_t*>& m_launcher_icons;
 
     /* The icons the actions' files name, one per action and null where it names none or none loaded */
     std::vector<stlxgfx_surface_t*> m_action_icons;
+
+    /* This session's last picks, newest first, each as the launcher, action or program it started */
+    std::vector<std::string> m_picks;
 
     stlxgfx_surface_t* m_search_glyph = nullptr;
     stlxgfx_surface_t* m_program_icon = nullptr;

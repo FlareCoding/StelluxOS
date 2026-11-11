@@ -55,6 +55,8 @@ constexpr int32_t TICK_RADIUS = 1;
 constexpr int32_t LIST_GAP = 4;
 constexpr int32_t LIST_HEIGHT = 2 * HEAD_HEIGHT + 8 * ROW_HEIGHT;
 constexpr size_t KIND_ROWS_MAX = 6;
+constexpr size_t RECENT_MAX = 3;
+constexpr uint32_t UNPICKED = UINT32_MAX;
 constexpr int32_t PAGE_ROWS = 8;
 constexpr int32_t NO_MATCH_PADDING_X = 40;
 
@@ -111,7 +113,24 @@ struct palette_entry {
     std::string              tile;
     std::vector<std::string> keys;           /* of a shortcut that runs the same */
     bool                     running = false;
+    uint32_t                 recent = UNPICKED; /* its place among this session's picks, newest first */
 };
+
+/* What a pick is remembered by across openings: the launcher or action it is, or the program it runs */
+std::string pick_key(const palette_entry& entry) {
+    switch (entry.kind) {
+    case row_kind::app:
+        return "app " + std::to_string(entry.index);
+    case row_kind::action:
+        return "action " + std::to_string(entry.index);
+    case row_kind::program:
+        return "program " + entry.program;
+    case row_kind::calculator:
+        break;
+    }
+
+    return {};
+}
 
 /* The bytes of `text` that fit `max_w` pixels in the face, cut at a character boundary with room left for an
  * ellipsis when the whole does not fit */
@@ -479,6 +498,7 @@ private:
     void edit(std::string query, size_t cursor);
     void move_caret(size_t cursor);
     void show_rows();
+    void show_start();
     void show_matches(std::string_view query);
     bool find_calculation(std::string_view query);
     bool find_command(std::string_view query);
@@ -614,8 +634,8 @@ void palette_view::erase_word() {
     edit(m_query.substr(0, start) + m_query.substr(m_caret), start);
 }
 
-/* With nothing typed the dock's launchers show in dock order. Typing ranks every row by how well it matches, then
- * by kind, and the best heads the list as the top hit. */
+/* Typing ranks every row by how well it matches, then by kind, then by this session's picks, and the best heads the
+ * list as the top hit */
 void palette_view::show_rows() {
     m_list->clear();
     m_rows.clear();
@@ -628,15 +648,46 @@ void palette_view::show_rows() {
     if (!query.empty()) {
         show_matches(query);
     } else {
-        add_head(KIND_HEADS[static_cast<size_t>(row_kind::app)]);
-        for (const palette_entry& entry : m_entries) {
-            if (entry.kind == row_kind::app) {
-                add_row(entry, {}, nullptr);
-            }
-        }
+        show_start();
     }
 
     select(0);
+}
+
+/* With nothing typed this session's picks show newest first, then the dock's other launchers in dock order */
+void palette_view::show_start() {
+    std::vector<const palette_entry*> recent;
+    for (const palette_entry& entry : m_entries) {
+        if (entry.recent != UNPICKED) {
+            recent.push_back(&entry);
+        }
+    }
+
+    std::sort(recent.begin(), recent.end(), [](const palette_entry* a, const palette_entry* b) {
+        return a->recent < b->recent;
+    });
+
+    if (!recent.empty()) {
+        add_head("RECENT");
+    }
+
+    for (const palette_entry* entry : recent) {
+        add_row(*entry, {}, nullptr);
+    }
+
+    bool has_apps_head = false;
+    for (const palette_entry& entry : m_entries) {
+        if (entry.kind != row_kind::app || entry.recent != UNPICKED) {
+            continue;
+        }
+
+        if (!has_apps_head) {
+            add_head(KIND_HEADS[static_cast<size_t>(row_kind::app)]);
+            has_apps_head = true;
+        }
+
+        add_row(entry, {}, nullptr);
+    }
 }
 
 void palette_view::show_matches(std::string_view query) {
@@ -665,7 +716,11 @@ void palette_view::show_matches(std::string_view query) {
             return a.match.quality < b.match.quality;
         }
 
-        return a.entry->kind < b.entry->kind;
+        if (a.entry->kind != b.entry->kind) {
+            return a.entry->kind < b.entry->kind;
+        }
+
+        return a.entry->recent < b.entry->recent;
     });
 
     if (has_calculation) {
@@ -969,6 +1024,19 @@ int32_t quick_actions::top() const {
     return PALETTE_TOP;
 }
 
+/* A calculation is no pick, and a pick made again moves to the front */
+void quick_actions::remember_pick(const std::string& key) {
+    if (key.empty()) {
+        return;
+    }
+
+    m_picks.erase(std::remove(m_picks.begin(), m_picks.end(), key), m_picks.end());
+    m_picks.insert(m_picks.begin(), key);
+    if (m_picks.size() > RECENT_MAX) {
+        m_picks.pop_back();
+    }
+}
+
 /* Launchers without a program and actions that name no action of their own, or open the palette itself, show no
  * row */
 std::unique_ptr<ui::widget> quick_actions::build() {
@@ -1003,8 +1071,14 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         entries.push_back(std::move(program));
     }
 
+    for (palette_entry& entry : entries) {
+        auto pick = std::find(m_picks.begin(), m_picks.end(), pick_key(entry));
+        entry.recent = pick == m_picks.end() ? UNPICKED : static_cast<uint32_t>(pick - m_picks.begin());
+    }
+
     auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph);
     view->on_choose = [this](const palette_entry& entry) {
+        remember_pick(pick_key(entry));
         switch (entry.kind) {
         case row_kind::app:
             on_launch(m_conf.pins[entry.index]);
