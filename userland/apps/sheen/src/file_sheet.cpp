@@ -18,6 +18,7 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMimeDatabase>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
@@ -67,6 +68,13 @@ static constexpr qreal STEP_CHEVRON_DEPTH = 2;
 static constexpr qreal STEP_ARROW_HALF = 4.5;
 static constexpr qreal GLYPH_STROKE = 1.5;
 static constexpr qreal HALF_PIXEL = 0.5;
+static constexpr int CRUMB_HEIGHT = 28;
+static constexpr int CRUMB_PADDING_X = 10;
+static constexpr int CRUMB_GAP = 6;
+static constexpr int FOLDER_GAP = 12;
+static constexpr qint64 SECONDS_PER_MINUTE = 60;
+static constexpr qint64 SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
+static constexpr qint64 SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 
 static const char* const MODIFIED_FORMAT = "yyyy-MM-dd HH:mm";
 static const char* const SIZE_UNITS[] = { "KB", "MB", "GB" };
@@ -94,8 +102,28 @@ static const eol_entry EOL_ENTRIES[] = {
 };
 
 static const int BOM_ROLE = Qt::UserRole + 1;
+static const int FOLDER_ROLE = Qt::UserRole + 2;
 
-/* One folder's entries, or this session's recent files, narrowed by a filter typed over the list */
+// How long ago a file was opened, in its largest whole unit, and past a day the date
+static QString age_label(const QDateTime& opened) {
+    qint64 seconds = opened.secsTo(QDateTime::currentDateTime());
+    if (seconds < SECONDS_PER_MINUTE) {
+        return QStringLiteral("just now");
+    }
+
+    if (seconds < SECONDS_PER_HOUR) {
+        return QStringLiteral("%1 min ago").arg(seconds / SECONDS_PER_MINUTE);
+    }
+
+    if (seconds < SECONDS_PER_DAY) {
+        return QStringLiteral("%1 h ago").arg(seconds / SECONDS_PER_HOUR);
+    }
+
+    return opened.toString(QString::fromLatin1(MODIFIED_FORMAT));
+}
+
+/* One folder's entries, or this session's recent files with when each was opened, narrowed by a filter typed over the
+ * list */
 class folder_model : public QAbstractTableModel {
 public:
     enum column { NAME, SIZE, KIND, MODIFIED, COLUMN_COUNT };
@@ -103,12 +131,16 @@ public:
     using QAbstractTableModel::QAbstractTableModel;
 
     void show_entries(const QFileInfoList& entries) {
-        beginResetModel();
-        m_entries = entries;
-        m_counts.clear();
-        m_filter.clear();
-        apply_filter();
-        endResetModel();
+        show(entries, {}, false);
+    }
+
+    // The Modified column says when each file was opened instead, and each name trails its folder
+    void show_recent(const QFileInfoList& entries, const QHash<QString, QDateTime>& opened) {
+        show(entries, opened, true);
+    }
+
+    bool is_recent() const {
+        return m_is_recent;
     }
 
     void set_filter(const QString& filter) {
@@ -136,7 +168,7 @@ public:
             return QVariant();
         }
 
-        return QString::fromLatin1(TITLES[section]);
+        return section == MODIFIED && m_is_recent ? QStringLiteral("Opened") : QString::fromLatin1(TITLES[section]);
     }
 
     QVariant data(const QModelIndex& index, int role) const override {
@@ -147,6 +179,10 @@ public:
 
         if (index.column() == NAME && role == Qt::DecorationRole) {
             return m_icons.icon(entry);
+        }
+
+        if (index.column() == NAME && role == FOLDER_ROLE) {
+            return m_is_recent ? entry.absolutePath() : QString();
         }
 
         if (index.column() == SIZE && role == Qt::TextAlignmentRole) {
@@ -165,13 +201,26 @@ public:
             case KIND:
                 return entry.isDir() ? QStringLiteral("Folder") : kind_of(entry);
             case MODIFIED:
-                return entry.lastModified().toString(QString::fromLatin1(MODIFIED_FORMAT));
+                return m_is_recent ? age_label(m_opened.value(entry.absoluteFilePath()))
+                                   : entry.lastModified().toString(QString::fromLatin1(MODIFIED_FORMAT));
             default:
                 return QVariant();
         }
     }
 
 private:
+    void show(const QFileInfoList& entries, const QHash<QString, QDateTime>& opened, bool is_recent) {
+        beginResetModel();
+        m_entries = entries;
+        m_opened = opened;
+        m_is_recent = is_recent;
+        m_counts.clear();
+        m_filter.clear();
+
+        apply_filter();
+        endResetModel();
+    }
+
     // The database names some types only by their MIME name, which reads poorly as a kind
     QString kind_of(const QFileInfo& entry) const {
         QMimeType type = m_mimes.mimeTypeForFile(entry, QMimeDatabase::MatchExtension);
@@ -223,13 +272,15 @@ private:
 
     QFileInfoList m_entries;
     QFileInfoList m_shown;
+    QHash<QString, QDateTime> m_opened;
+    bool m_is_recent = false;
     QString m_filter;
     QFileIconProvider m_icons;
     QMimeDatabase m_mimes;
     mutable QHash<QString, QString> m_counts;
 };
 
-/* Marks where each name holds the filter typed over the list */
+/* Marks where each name holds the filter typed over the list, and in Recent trails each name with its folder */
 class name_match_delegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -240,39 +291,180 @@ public:
 
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         QStyledItemDelegate::paint(painter, option, index);
-        if (m_filter.isEmpty()) {
+        QString folder = index.data(FOLDER_ROLE).toString();
+        if (m_filter.isEmpty() && folder.isEmpty()) {
             return;
         }
 
         QStyleOptionViewItem item = option;
         initStyleOption(&item, index);
-        qsizetype at = item.text.indexOf(m_filter, 0, Qt::CaseInsensitive);
-        if (at < 0) {
-            return;
-        }
 
         // The style insets an item's text by its focus frame margin and one pixel more
         QStyle* style = item.widget->style();
         QRect text = style->subElementRect(QStyle::SE_ItemViewItemText, &item, item.widget);
-        QFontMetricsF metrics(item.font);
-        qreal left = text.left() + style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, item.widget) + 1
-                   + metrics.horizontalAdvance(item.text.left(at));
-        qreal width = metrics.horizontalAdvance(item.text.mid(at, m_filter.size()));
-        QRectF mark(left, text.center().y() - metrics.height() / 2, width, metrics.height());
-
-        QColor tint = token(STLXTHEME_TEXT);
-        tint.setAlphaF(MATCH_ALPHA);
+        qreal left = text.left() + style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, item.widget) + 1;
 
         painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(tint);
-        painter->drawRoundedRect(mark, MATCH_RADIUS, MATCH_RADIUS);
+        paint_folder(painter, folder, left + QFontMetricsF(item.font).horizontalAdvance(item.text) + FOLDER_GAP, text);
+        paint_match(painter, item, left, text);
         painter->restore();
     }
 
 private:
+    static void paint_folder(QPainter* painter, const QString& folder, qreal left, const QRect& text) {
+        if (folder.isEmpty() || left >= text.right()) {
+            return;
+        }
+
+        QFont font = mono_font(STLXTHEME_CAPTION_SIZE);
+        QRectF room(left, text.top(), text.right() - left, text.height());
+        painter->setFont(font);
+        painter->setPen(token(STLXTHEME_TEXT_DIM));
+        painter->drawText(room, Qt::AlignLeft | Qt::AlignVCenter,
+                          QFontMetrics(font).elidedText(folder, Qt::ElideMiddle, static_cast<int>(room.width())));
+    }
+
+    void paint_match(QPainter* painter, const QStyleOptionViewItem& item, qreal left, const QRect& text) const {
+        qsizetype at = m_filter.isEmpty() ? -1 : item.text.indexOf(m_filter, 0, Qt::CaseInsensitive);
+        if (at < 0) {
+            return;
+        }
+
+        QFontMetricsF metrics(item.font);
+        qreal start = left + metrics.horizontalAdvance(item.text.left(at));
+        qreal width = metrics.horizontalAdvance(item.text.mid(at, m_filter.size()));
+        QRectF mark(start, text.center().y() - metrics.height() / 2, width, metrics.height());
+
+        QColor tint = token(STLXTHEME_TEXT);
+        tint.setAlphaF(MATCH_ALPHA);
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(tint);
+        painter->drawRoundedRect(mark, MATCH_RADIUS, MATCH_RADIUS);
+    }
+
     QString m_filter;
+};
+
+/* The folder as File Manager's crumb, each segment a click away and the current one bright. A click past the last
+ * segment turns it into the path field */
+class crumb_bar : public QWidget {
+public:
+    explicit crumb_bar(QWidget* parent) : QWidget(parent) {
+        setFixedHeight(CRUMB_HEIGHT);
+        setMouseTracking(true);
+    }
+
+    // An empty path names this session's Recent, which has no folder to climb
+    void set_folder(const QString& path) {
+        m_segments.clear();
+        if (path.isEmpty()) {
+            m_segments.append({ QStringLiteral("Recent"), QString() });
+        } else {
+            m_segments.append({ QStringLiteral("/"), QStringLiteral("/") });
+        }
+
+        QString walked;
+        for (const QString& name : path.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+            walked += QLatin1Char('/') + name;
+            m_segments.append({ name, walked });
+        }
+
+        m_hovered = -1;
+        update();
+    }
+
+    std::function<void(const QString& path)> on_chosen;
+    std::function<void()> on_blank_clicked;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QRectF edge = QRectF(rect()).adjusted(HALF_PIXEL, HALF_PIXEL, -HALF_PIXEL, -HALF_PIXEL);
+        painter.setPen(QPen(token(STLXTHEME_LINE), 1));
+        painter.setBrush(token(STLXTHEME_RECESS));
+        painter.drawRoundedRect(edge, STLXTHEME_CONTROL_RADIUS - HALF_PIXEL, STLXTHEME_CONTROL_RADIUS - HALF_PIXEL);
+
+        QFont font = mono_font(STLXTHEME_CAPTION_SIZE);
+        painter.setFont(font);
+        QList<QRect> boxes = segment_boxes();
+        for (qsizetype index = 0; index < m_segments.size(); index++) {
+            bool is_current = index + 1 == m_segments.size();
+            if (index > 0 && boxes.at(index - 1).isValid() && m_segments.at(index - 1).second != QLatin1String("/")) {
+                QRect slash(boxes.at(index - 1).right() + 1, 0, 2 * CRUMB_GAP + slash_width(), height());
+                painter.setPen(token(STLXTHEME_TEXT_DIM));
+                painter.drawText(slash, Qt::AlignCenter, QStringLiteral("/"));
+            }
+
+            QFont face = font;
+            face.setUnderline(index == m_hovered && !is_current);
+            painter.setFont(face);
+            painter.setPen(token(is_current || index == m_hovered ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY));
+            painter.drawText(boxes.at(index), Qt::AlignLeft | Qt::AlignVCenter, m_segments.at(index).first);
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        int hovered = segment_at(event->position().toPoint());
+        if (hovered != m_hovered) {
+            m_hovered = hovered;
+            update();
+        }
+    }
+
+    void leaveEvent(QEvent*) override {
+        m_hovered = -1;
+        update();
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        int index = segment_at(event->position().toPoint());
+        bool is_folder = index >= 0 && index + 1 < m_segments.size() && !m_segments.at(index).second.isEmpty();
+        if (is_folder && on_chosen) {
+            on_chosen(m_segments.at(index).second);
+        } else if (index < 0 && on_blank_clicked) {
+            on_blank_clicked();
+        }
+    }
+
+private:
+    int slash_width() const {
+        return QFontMetrics(mono_font(STLXTHEME_CAPTION_SIZE)).horizontalAdvance(QLatin1Char('/'));
+    }
+
+    // Each segment's box from the left, a slash and a gap on either side between two names, but none after the root
+    QList<QRect> segment_boxes() const {
+        QFontMetrics metrics(mono_font(STLXTHEME_CAPTION_SIZE));
+        QList<QRect> boxes;
+        int x = CRUMB_PADDING_X;
+        for (qsizetype index = 0; index < m_segments.size(); index++) {
+            if (index > 0) {
+                bool is_after_root = m_segments.at(index - 1).second == QLatin1String("/");
+                x += is_after_root ? CRUMB_GAP : 2 * CRUMB_GAP + slash_width();
+            }
+
+            int width = metrics.horizontalAdvance(m_segments.at(index).first);
+            boxes.append(QRect(x, 0, width, height()));
+            x += width;
+        }
+
+        return boxes;
+    }
+
+    int segment_at(const QPoint& point) const {
+        QList<QRect> boxes = segment_boxes();
+        for (qsizetype index = 0; index < boxes.size(); index++) {
+            if (boxes.at(index).contains(point)) {
+                return static_cast<int>(index);
+            }
+        }
+
+        return -1;
+    }
+
+    QList<std::pair<QString, QString>> m_segments; // each name and the folder it leads to
+    int m_hovered = -1;
 };
 
 /* Each place's folder trails its name, dim, so the place says where it leads */
@@ -479,7 +671,7 @@ static QIcon place_icon(place_glyph glyph) {
     return icon;
 }
 
-file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& folder, const QStringList& recent)
+file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& folder, const QList<recent_file>& recent)
     : sheet(window, SHEET_WIDTH), m_mode(mode), m_model(new folder_model(this)), m_recent(recent) {
     bool is_open = mode == file_sheet_mode::OPEN;
     auto* layout = new QVBoxLayout(panel());
@@ -529,9 +721,13 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
     steps->add(parent_button);
     toolbar->addWidget(steps);
 
+    m_crumb = new crumb_bar(panel());
+    toolbar->addWidget(m_crumb, 1);
+
     m_path = new QLineEdit(panel());
     m_path->setFont(mono_font(STLXTHEME_CAPTION_SIZE));
     m_path->installEventFilter(this);
+    m_path->hide();
     toolbar->addWidget(m_path, 1);
     layout->addLayout(toolbar);
 
@@ -544,6 +740,11 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
         }
     });
     connect(m_path, &QLineEdit::returnPressed, this, [this] { accept_path_field(); });
+    m_crumb->on_blank_clicked = [this] { edit_path(current_folder()); };
+    m_crumb->on_chosen = [this](const QString& path) {
+        show_folder(path, true);
+        m_list->setFocus();
+    };
 
     auto* body = new QHBoxLayout;
     m_places = new QListWidget(panel());
@@ -695,8 +896,13 @@ bool file_sheet::eventFilter(QObject* watched, QEvent* event) {
         return true;
     }
 
-    if (watched == m_list->viewport() && event->type() == QEvent::Resize) {
+    // The path field's events start while the sheet is built, before the list exists
+    if (m_list && watched == m_list->viewport() && event->type() == QEvent::Resize) {
         fit_columns();
+    }
+
+    if (watched == m_path && event->type() == QEvent::FocusOut && !m_path->isHidden()) {
+        show_crumb();
     }
 
     if (watched != m_list || !is_key) {
@@ -727,7 +933,7 @@ bool file_sheet::eventFilter(QObject* watched, QEvent* event) {
     }
 
     if (key->key() == Qt::Key_L && key->modifiers() == Qt::ControlModifier) {
-        m_path->setFocus();
+        edit_path(m_path->text());
         m_path->selectAll();
         return true;
     }
@@ -738,8 +944,7 @@ bool file_sheet::eventFilter(QObject* watched, QEvent* event) {
     }
 
     if (text == QLatin1String("/") && filter.isEmpty()) {
-        m_path->setFocus();
-        m_path->setText(text);
+        edit_path(text);
         return true;
     }
 
@@ -747,12 +952,18 @@ bool file_sheet::eventFilter(QObject* watched, QEvent* event) {
     return true;
 }
 
-// Esc steps back one stage at a time: the Replace question, then the filter, then the sheet itself
+// Esc steps back one stage at a time: the Replace question, then the path being typed, the filter, then the sheet
 void file_sheet::cancel() {
     if (!m_replace_path.isEmpty()) {
         m_replace_path.clear();
         refresh_primary();
         m_name->setFocus();
+        return;
+    }
+
+    if (!m_path->isHidden()) {
+        m_list->setFocus();
+        show_crumb();
         return;
     }
 
@@ -773,6 +984,7 @@ void file_sheet::show_folder(const QString& path, bool is_new_step) {
     m_model->show_entries(dir.entryInfoList(ENTRY_FILTER, ENTRY_ORDER));
     m_path->setText(dir.absolutePath());
     m_path->setProperty("folder", dir.absolutePath());
+    m_crumb->set_folder(dir.absolutePath());
     set_filter(QString());
     if (is_new_step) {
         m_history = m_history.mid(0, m_history_index + 1);
@@ -783,27 +995,43 @@ void file_sheet::show_folder(const QString& path, bool is_new_step) {
     m_back->setEnabled(m_history_index > 0);
     m_forward->setEnabled(m_history_index + 1 < m_history.size());
     point_at_start();
-    for (int column = folder_model::SIZE; column < folder_model::COLUMN_COUNT; column++) {
-        m_list->resizeColumnToContents(column);
-    }
-
+    fit_columns();
     refresh_primary();
 }
 
 void file_sheet::show_recent() {
     QFileInfoList entries;
-    for (const QString& path : m_recent) {
-        if (QFileInfo::exists(path)) {
-            entries.append(QFileInfo(path));
+    QHash<QString, QDateTime> opened;
+    for (const recent_file& file : m_recent) {
+        QFileInfo info(file.path);
+        if (info.exists()) {
+            entries.append(info);
+            opened.insert(info.absoluteFilePath(), file.opened);
         }
     }
 
-    m_model->show_entries(entries);
+    m_model->show_recent(entries, opened);
     m_path->setText(QString());
     m_path->setProperty("folder", QString());
+    m_crumb->set_folder(QString());
     set_filter(QString());
+
     point_at_start();
+    fit_columns();
     refresh_primary();
+}
+
+// Ctrl L, a leading / or a click past the crumb's last segment turns the crumb into the path field
+void file_sheet::edit_path(const QString& text) {
+    m_crumb->hide();
+    m_path->show();
+    m_path->setText(text);
+    m_path->setFocus();
+}
+
+void file_sheet::show_crumb() {
+    m_path->hide();
+    m_crumb->show();
 }
 
 void file_sheet::set_filter(const QString& filter) {
@@ -914,6 +1142,12 @@ void file_sheet::fit_columns() {
     int taken = 0;
     bool fits = true;
     for (int column : { folder_model::SIZE, folder_model::MODIFIED, folder_model::KIND }) {
+        // Recent shows only when each file was opened
+        if (m_model->is_recent() && column != folder_model::MODIFIED) {
+            m_list->setColumnHidden(column, true);
+            continue;
+        }
+
         m_list->setColumnHidden(column, false);
         m_list->resizeColumnToContents(column);
         taken += m_list->columnWidth(column);
