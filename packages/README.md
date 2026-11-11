@@ -44,6 +44,20 @@ unpacked into the SDK directory before any library or app is built. The
 SDK survives `make clean` like the cache, and a build package whose pin
 changes is unpacked again.
 
+## Installing on a running Stellux
+
+`stlxpkg` installs packages after boot from the newest release, which must
+be a package release, `packages-*`, so any other release is created with
+`gh release create --latest=false`. `stlxpkg list` shows what that release
+offers the machine's architecture and which of it is installed.
+`stlxpkg install <name>...` downloads each archive over HTTPS, checks it
+against the release's `SHA256SUMS` while unpacking it into a staging tree,
+and moves its paths into place only once all of it checked out. Build
+packages unpack under `/usr/sdk/`, so programs can compile against them on
+Stellux. Each install leaves a record of its paths in
+`/var/lib/stlxpkg/records`. The root filesystem lives in RAM, so installed
+packages last until the next boot.
+
 ## Package format
 
 `<name>-<version>-<release>-<arch>.tar.zst`, for example
