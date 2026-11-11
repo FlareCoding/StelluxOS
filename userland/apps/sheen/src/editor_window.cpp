@@ -853,8 +853,8 @@ void editor_window::run(command id) {
         return;
     }
 
-    if (id == command::SETTINGS) {
-        open_settings(QString());
+    if (id == command::SETTINGS || id == command::KEYBOARD_SHORTCUTS) {
+        open_settings(id == command::SETTINGS ? QString() : QStringLiteral("Shortcuts"));
         return;
     }
 
@@ -2564,7 +2564,7 @@ document* editor_window::settings_document() const {
     return nullptr;
 }
 
-// Ctrl Comma opens the Settings tab or focuses the one already open, turned to `section` when one is named
+// Ctrl Comma opens the Settings tab or focuses the one already open, turned to `section` such as Shortcuts if named
 void editor_window::open_settings(const QString& section) {
     document* doc = settings_document();
     if (!doc) {

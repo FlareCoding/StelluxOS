@@ -16,6 +16,7 @@ class QLineEdit;
 class QTimer;
 class QToolButton;
 class ScintillaEditBase;
+class field_frame;
 
 class find_bar : public QWidget {
 public:
@@ -63,7 +64,7 @@ private:
     void recall_query(int direction);
 
     QPointer<ScintillaEditBase> m_view;
-    QWidget* m_query_field;
+    field_frame* m_query_field;
     QLineEdit* m_query;
     QToolButton* m_case;
     QToolButton* m_word;
@@ -72,7 +73,7 @@ private:
     QLabel* m_count;
     QToolButton* m_twisty;
     QWidget* m_replace_row;
-    QWidget* m_replace_field;
+    field_frame* m_replace_field;
     QLineEdit* m_replacement;
     QToolButton* m_preserve_case;
     QTimer* m_replaced_note;

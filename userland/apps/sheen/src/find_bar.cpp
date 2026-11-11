@@ -1,5 +1,6 @@
 #include "find_bar.h"
 #include "chrome.h"
+#include "field_frame.h"
 #include "keycaps.h"
 #include "kiln.h"
 
@@ -9,7 +10,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -26,11 +26,6 @@ static constexpr int BAR_PADDING_LEFT = 4;
 static constexpr int BAR_PADDING_RIGHT = 8;
 static constexpr int ROW_GAP = 4;
 static constexpr int FIELD_WIDTH = 316;
-static constexpr int FIELD_HEIGHT = 28;
-static constexpr int FIELD_PADDING_LEFT = 9;
-static constexpr int FIELD_PADDING_RIGHT = 3;
-static constexpr int OPTION_GAP = 2;
-static constexpr int UNDERLINE_HEIGHT = 2;
 static constexpr int CHIP_HEIGHT = 20;
 static constexpr int CHIP_PADDING_X = 5;
 static constexpr int ICON_BUTTON_SIZE = 28;
@@ -40,19 +35,12 @@ static constexpr int COUNT_PADDING_X = 8;
 static constexpr int CLOSE_GAP = 8;
 static constexpr int BUTTON_GAP = 8;
 static constexpr int HINT_GAP = 12;
-static constexpr int MAGNIFIER_SIZE = 14;
-static constexpr int MAGNIFIER_GAP = 8;
-static constexpr qreal LENS_CENTER = 6;
-static constexpr qreal LENS_RADIUS = 4.25;
-static constexpr qreal HANDLE_START = 9.2;
-static constexpr qreal HANDLE_END = 12.5;
 static constexpr int HOVER_INSET = 2;
 static constexpr qreal GLYPH_STROKE = 1.5;
 static constexpr qreal CHEVRON_HALF = 4;
 static constexpr qreal CHEVRON_DEPTH = 2;
 static constexpr qreal CROSS_HALF = 3.5;
 static constexpr qreal HALF_PIXEL = 0.5;
-static constexpr qreal SELECTED_TEXT_ALPHA = 0.17;
 static constexpr int MAX_COUNTED_MATCHES = 9999;
 static constexpr int REPLACED_NOTE_MS = 3000;
 static constexpr int HISTORY_LIMIT = 50;
@@ -177,94 +165,6 @@ private:
     chip_face m_face;
 };
 
-/* A recessed field holding its toggles, underlined in amber while focused and in the danger color while its pattern
- * cannot be read */
-class field_frame : public QWidget {
-public:
-    field_frame(QLineEdit* edit, QWidget* parent) : QWidget(parent), m_edit(edit), m_layout(new QHBoxLayout(this)) {
-        setFixedSize(FIELD_WIDTH, FIELD_HEIGHT);
-        m_layout->setContentsMargins(FIELD_PADDING_LEFT, 0, FIELD_PADDING_RIGHT, 0);
-        m_layout->setSpacing(OPTION_GAP);
-
-        QColor selected = token(STLXTHEME_TEXT);
-        selected.setAlphaF(SELECTED_TEXT_ALPHA);
-
-        edit->setParent(this);
-        edit->setFrame(false);
-        edit->setFont(mono_font(STLXTHEME_BODY_SIZE));
-        edit->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; color: %1; "
-                                           "selection-background-color: rgba(%2, %3, %4, %5); }")
-                                .arg(token(STLXTHEME_TEXT).name())
-                                .arg(selected.red())
-                                .arg(selected.green())
-                                .arg(selected.blue())
-                                .arg(selected.alpha()));
-
-        m_layout->addWidget(edit, 1);
-        edit->installEventFilter(this);
-    }
-
-    void add_option(QToolButton* option) {
-        m_layout->addWidget(option);
-    }
-
-    void show_magnifier() {
-        m_has_magnifier = true;
-        m_layout->setContentsMargins(FIELD_PADDING_LEFT + MAGNIFIER_SIZE + MAGNIFIER_GAP, 0, FIELD_PADDING_RIGHT, 0);
-    }
-
-    void set_bad(bool is_bad) {
-        if (m_is_bad != is_bad) {
-            m_is_bad = is_bad;
-            update();
-        }
-    }
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        if (watched == m_edit && (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)) {
-            update();
-        }
-
-        return QWidget::eventFilter(watched, event);
-    }
-
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-
-        bool is_marked = m_edit->hasFocus() || m_is_bad;
-        QRectF edge = QRectF(rect()).adjusted(HALF_PIXEL, HALF_PIXEL, -HALF_PIXEL, -HALF_PIXEL);
-        painter.setPen(QPen(token(is_marked ? STLXTHEME_LINE_STRONG : STLXTHEME_LINE), 1));
-        painter.setBrush(token(STLXTHEME_RECESS));
-        painter.drawRoundedRect(edge, STLXTHEME_CONTROL_RADIUS - HALF_PIXEL, STLXTHEME_CONTROL_RADIUS - HALF_PIXEL);
-
-        if (m_has_magnifier) {
-            QPointF corner(FIELD_PADDING_LEFT, (height() - MAGNIFIER_SIZE) / 2.0);
-            painter.setPen(QPen(token(STLXTHEME_TEXT_DIM), GLYPH_STROKE, Qt::SolidLine, Qt::RoundCap));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(corner + QPointF(LENS_CENTER, LENS_CENTER), LENS_RADIUS, LENS_RADIUS);
-            painter.drawLine(corner + QPointF(HANDLE_START, HANDLE_START), corner + QPointF(HANDLE_END, HANDLE_END));
-        }
-
-        if (!is_marked) {
-            return;
-        }
-
-        QPainterPath shape;
-        shape.addRoundedRect(QRectF(rect()), STLXTHEME_CONTROL_RADIUS, STLXTHEME_CONTROL_RADIUS);
-        painter.setClipPath(shape);
-        painter.fillRect(QRectF(0, height() - UNDERLINE_HEIGHT, width(), UNDERLINE_HEIGHT),
-                         token(m_is_bad ? STLXTHEME_DANGER : STLXTHEME_ACCENT));
-    }
-
-private:
-    QLineEdit* m_edit;
-    QHBoxLayout* m_layout;
-    bool m_is_bad = false;
-    bool m_has_magnifier = false;
-};
-
 } // namespace
 
 static QString text_in(ScintillaEditBase* view, sptr_t start, sptr_t end) {
@@ -318,6 +218,7 @@ find_bar::find_bar(QWidget* parent)
     find_row->setFixedHeight(FIND_ROW_HEIGHT);
     auto* query_field = new field_frame(m_query, find_row);
     m_query_field = query_field;
+    query_field->setFixedWidth(FIELD_WIDTH);
     query_field->show_magnifier();
 
     m_case = new option_chip(QStringLiteral("Aa"), QStringLiteral("Match Case (Alt C)"), chip_face::LABEL, query_field);
@@ -374,6 +275,7 @@ find_bar::find_bar(QWidget* parent)
     m_replace_row->setFixedHeight(REPLACE_ROW_HEIGHT);
     auto* replace_field = new field_frame(m_replacement, m_replace_row);
     m_replace_field = replace_field;
+    replace_field->setFixedWidth(FIELD_WIDTH);
 
     m_preserve_case = new option_chip(QStringLiteral("AB"), QStringLiteral("Preserve Case (Alt P)"), chip_face::LABEL,
                                       replace_field);
@@ -691,7 +593,7 @@ void find_bar::search_from_anchor() {
     }
 
     QString problem = pattern_problem();
-    static_cast<field_frame*>(m_query_field)->set_bad(!problem.isEmpty());
+    m_query_field->set_bad(!problem.isEmpty());
     sptr_t start = 0;
     sptr_t end = 0;
     if (!m_query->text().isEmpty() && problem.isEmpty() && find_wrapping(true, m_anchor, &start, &end)) {
