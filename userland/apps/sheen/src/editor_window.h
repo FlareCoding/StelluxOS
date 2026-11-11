@@ -43,6 +43,15 @@ struct closed_tab {
     sptr_t scintilla_document; // kept with its undo for unsaved or never-saved text, 0 to read the file again
 };
 
+/* Where the caret stood in a tab before a jump, which Back and Forward return to */
+struct caret_place {
+    document* doc;
+    sptr_t line;
+    sptr_t column;
+
+    bool operator==(const caret_place&) const = default;
+};
+
 class editor_window : public QMainWindow {
 public:
     /* `problems` are what reading the settings found, shown in the status bar */
@@ -116,6 +125,8 @@ private:
     void show_status_note(const QString& note);
     void show_status_menu(status_kind kind, const QPoint& anchor);
     void go_to_line(bool is_from_palette);
+    void record_jump(document* doc);
+    void step_jump(bool is_back);
     void open_palette(const QString& query);
     document* settings_document() const;
     void open_settings(const QString& section);
@@ -156,6 +167,9 @@ private:
     QStringList m_recent_encodings;
     int m_zoom = 0;
     QList<command> m_recent_commands;
+    QList<caret_place> m_back_places;
+    QList<caret_place> m_forward_places;
+    bool m_is_stepping_jumps = false;
     QStringList m_settings_problems;
     QList<std::function<void()>> m_palette_targets;
     QString m_last_sheet_folder;
