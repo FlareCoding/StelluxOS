@@ -18,6 +18,7 @@
 #include <QGuiApplication>
 #include <QLabel>
 #include <QMenu>
+#include <QMenuBar>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStackedWidget>
@@ -183,8 +184,8 @@ static void go_to_matching_bracket(ScintillaEditBase* view) {
     }
 }
 
-editor_window::editor_window()
-    : m_tab_row(new tab_row(this)), m_banner(new banner(this)), m_stack(new QStackedWidget(this)),
+editor_window::editor_window(const sheen_settings& settings, const QStringList& problems)
+    : m_settings(settings), m_tab_row(new tab_row(this)), m_banner(new banner(this)), m_stack(new QStackedWidget(this)),
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
       m_main_menu(new QMenu(this)), m_switcher(new tab_switcher(this)) {
     auto* central = new QWidget(this);
@@ -216,6 +217,26 @@ editor_window::editor_window()
             refresh_banner();
         }
     };
+
+    // The menu bar has no row of its own for Settings, so File holds it above Quit
+    if (m_settings.has_menu_bar) {
+        QMenu* file = m_menus.at(static_cast<int>(menu::FILE));
+        QAction* quit = m_actions.value(command::QUIT);
+        file->insertAction(quit, m_actions.value(command::SETTINGS));
+        file->insertSeparator(quit);
+        for (QMenu* submenu : m_menus) {
+            if (!submenu->isEmpty()) {
+                menuBar()->addMenu(submenu);
+            }
+        }
+
+        m_tab_row->menu()->hide();
+    }
+
+    if (!problems.isEmpty()) {
+        QString more = QStringLiteral("%1 and %2 more").arg(problems.first()).arg(problems.size() - 1);
+        m_status_note = problems.size() == 1 ? problems.first() : more;
+    }
 
     resize(QSize(WINDOW_W, WINDOW_H).boundedTo(screen()->availableGeometry().size()));
     setMinimumSize(WINDOW_MIN_W, WINDOW_MIN_H);
@@ -345,6 +366,9 @@ void editor_window::create_commands() {
         }
     }
 
+    m_main_menu->addSeparator();
+    m_main_menu->addAction(m_actions.value(command::SETTINGS));
+
     connect(m_menus.at(static_cast<int>(menu::GO)), &QMenu::aboutToShow, this, [this] {
         QMenu* go = m_menus.at(static_cast<int>(menu::GO));
         for (QAction* action : go->actions()) {
@@ -471,6 +495,11 @@ void editor_window::run(command id) {
 
     if (id == command::QUIT) {
         close();
+        return;
+    }
+
+    if (id == command::SETTINGS) {
+        open_path(QString::fromLatin1(SETTINGS_PATH), QByteArray(), insertion_index());
         return;
     }
 
@@ -681,6 +710,12 @@ void editor_window::show_menu(QMenu* menu, bool is_from_keyboard) {
         return;
     }
 
+    if (m_settings.has_menu_bar) {
+        QMenu* shown = menu == m_main_menu ? m_menus.first() : menu;
+        menuBar()->setActiveAction(shown->menuAction());
+        return;
+    }
+
     if (is_from_keyboard) {
         QTimer::singleShot(0, menu, [menu] {
             QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
@@ -847,7 +882,7 @@ void editor_window::remember_recent_file(const QString& path) {
 }
 
 void editor_window::new_document() {
-    add_document(std::make_unique<document>(m_stack, lowest_free_untitled_number()), insertion_index());
+    add_document(std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings), insertion_index());
 }
 
 void editor_window::choose_files_to_open(const QString& folder) {
@@ -918,7 +953,7 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     }
 
     document* pristine = current && current->is_pristine() ? current : nullptr;
-    auto doc = std::make_unique<document>(m_stack, lowest_free_untitled_number());
+    auto doc = std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings);
     if (!info.exists()) {
         doc->set_new_path(absolute);
     } else if (!doc->load(absolute, bytes, encoding)) {
@@ -1268,7 +1303,7 @@ void editor_window::reopen_closed_tab() {
         return;
     }
 
-    auto doc = std::make_unique<document>(m_stack, closed.untitled_number);
+    auto doc = std::make_unique<document>(m_stack, closed.untitled_number, m_settings);
     doc->adopt(closed.scintilla_document, closed.file, closed.lang);
     doc->restore_view_state(closed.view);
     add_document(std::move(doc), closed.index);

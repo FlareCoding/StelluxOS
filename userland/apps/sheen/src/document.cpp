@@ -122,8 +122,10 @@ static bool has_mixed_eols(const eol_counts& counts) {
     return (counts.crlf > 0) + (counts.cr > 0) + (counts.lf > 0) > 1;
 }
 
-document::document(QWidget* parent, int untitled_number)
-    : m_view(new ScintillaEditBase(parent)), m_untitled_number(untitled_number) {
+document::document(QWidget* parent, int untitled_number, const sheen_settings& settings)
+    : m_view(new ScintillaEditBase(parent)), m_untitled_number(untitled_number), m_settings(settings) {
+    m_file.encoding = { settings.encoding, false };
+    m_file.eol_mode = settings.line_ending;
     configure_view();
 }
 
@@ -452,7 +454,10 @@ void document::configure_view() {
     m_view->send(SCI_SETMULTIPLESELECTION, 1);
     m_view->send(SCI_SETADDITIONALSELECTIONTYPING, 1);
     m_view->send(SCI_SETMULTIPASTE, SC_MULTIPASTE_EACH);
+
     apply_text_area_look(m_view);
+    set_indentation({ !m_settings.insert_spaces, m_settings.tab_width });
+    m_view->send(SCI_SETCARETPERIOD, m_settings.caret_blink_ms);
     m_view->send(SCI_SETCHANGEHISTORY, CHANGE_HISTORY_SHOWN);
 }
 
@@ -474,9 +479,8 @@ void document::replace_text(const QByteArray& utf8) {
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
     m_file.eols = counts;
-    if (std::optional<indentation> indent = detect_indentation()) {
-        set_indentation(*indent);
-    }
+    std::optional<indentation> indent = m_settings.detect_indentation ? detect_indentation() : std::nullopt;
+    set_indentation(indent ? *indent : indentation { !m_settings.insert_spaces, m_settings.tab_width });
 
     m_is_deleted = false;
     remember_disk_state();
