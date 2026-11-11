@@ -20,8 +20,11 @@
 #include <poll.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 
+#include "config.h"
 #include "keymap.h"
+#include "overlay.h"
 #include "paste.h"
 #include "select.h"
 #include "term.h"
@@ -45,11 +48,22 @@
 /* The echo of one write must fit the pty's output buffer, which the loop drains between writes */
 #define INPUT_WRITE_MAX   2048
 
+/* How long the copied pill stays, and the widths of the paste questions */
+#define COPIED_PILL_MS    1500
+#define LINES_QUESTION_W  520
+#define SIZE_QUESTION_W   440
+
 #define HID_USAGE_A       0x04
 #define HID_USAGE_C       0x06
 #define HID_USAGE_V       0x19
 #define HID_USAGE_Z       0x1D
+#define HID_USAGE_ENTER   0x28
+#define HID_USAGE_ESCAPE  0x29
+#define HID_USAGE_TAB     0x2B
 #define HID_USAGE_INSERT  0x49
+#define HID_USAGE_RIGHT   0x4F
+#define HID_USAGE_LEFT    0x50
+#define HID_USAGE_KP_ENTER 0x58
 #define CTRL_C_BYTE       0x03
 
 static const uint32_t FG_PALETTE[17] = {
@@ -98,6 +112,12 @@ static int32_t g_ascent = 0;
 static uint32_t g_cell_w = 8;
 static uint32_t g_cell_h = 16;
 
+typedef enum {
+    SELECTION_UNCHANGED,
+    SELECTION_CHANGED,
+    SELECTION_FINISHED, // a release left text selected
+} selection_change_t;
+
 /* The selection, the press dragging it and the clicks it counts. Button
  * events carry no modifiers, so a click reads the last key event's. */
 static select_t g_select;
@@ -121,6 +141,20 @@ static size_t g_input_cap = 0;
 static uint64_t g_input_taken = 0;
 static uint64_t g_paste_text_from = 0;
 static uint64_t g_paste_text_to = 0;
+
+/* The settings file as last read, and the program a paste question names */
+static term_config_t g_config;
+static struct stat g_config_stat;
+static const char* g_program_name = "shell";
+
+/* A paste a question holds back, the copied pill and when it leaves, 0
+ * while none shows, and whether the last frame drew either of them */
+static char* g_held_paste = NULL;
+static size_t g_held_paste_len = 0;
+static overlay_question_t g_question;
+static char g_copied_figure[OVERLAY_TEXT_MAX];
+static uint64_t g_copied_until_ms = 0;
+static int g_overlay_drawn = 0;
 
 /* The grid as it was last painted, diffed against the live grid to
  * find damage. Each buffer of the pair also keeps the spans painted
@@ -247,7 +281,8 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     }
 
     int resized = buf->width != g_last_buf_w || buf->height != g_last_buf_h;
-    int full = !g_prev_valid || resized || grounded_index(buf->pixels) < 0;
+    int has_overlay = g_held_paste || g_copied_until_ms;
+    int full = !g_prev_valid || resized || grounded_index(buf->pixels) < 0 || has_overlay || g_overlay_drawn;
 
     /* A size change replaces the slots, nothing stays grounded */
     if (resized) {
@@ -347,6 +382,14 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         for (int r = 0; r < g_term.rows; r++) {
             render_span(s, r, 0, g_term.cols - 1, drawn_cursor);
         }
+
+        if (g_copied_until_ms) {
+            overlay_draw_copied(s, g_copied_figure);
+        }
+
+        if (g_held_paste) {
+            overlay_draw_question(s, &g_question);
+        }
     } else {
         /* Runs on consecutive rows with identical extents merge into
          * one taller rect, and overflow falls back to a full commit */
@@ -415,6 +458,7 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     }
 
     g_prev_sel_focused = g_focused;
+    g_overlay_drawn = has_overlay;
     g_prev_valid = 1;
     ground_buffer(buf->pixels);
 
@@ -545,31 +589,65 @@ static int handle_key(int master_fd, uint32_t ch, uint16_t usage,
     return 1;
 }
 
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* A count with its thousands set apart by commas, such as 61,204 */
+static void format_count(size_t count, char* out, size_t cap) {
+    char digits[32];
+    int len = snprintf(digits, sizeof(digits), "%zu", count);
+    size_t n = 0;
+    for (int i = 0; i < len && n + 2 < cap; i++) {
+        if (i > 0 && (len - i) % 3 == 0) {
+            out[n++] = ',';
+        }
+
+        out[n++] = digits[i];
+    }
+
+    out[n] = '\0';
+}
+
+/* The selection goes to the clipboard, and the copied pill says how
+ * much: lines when it holds a line break, otherwise characters */
 static void copy_selection(stlxwin_conn* conn) {
     size_t len = 0;
     char* text = select_copy(&g_select, &g_term, &len);
-    if (text && len > 0 && stlxwin_clipboard_set(conn, text, len) < 0) {
-        printf("stlxterm: cannot copy %zu bytes to the clipboard\r\n", len);
+    if (!text || len == 0) {
+        free(text);
+        return;
     }
 
+    if (stlxwin_clipboard_set(conn, text, len) < 0) {
+        printf("stlxterm: cannot copy %zu bytes to the clipboard\r\n", len);
+        free(text);
+        return;
+    }
+
+    int has_line_break = memchr(text, '\n', len) != NULL;
+    size_t count = has_line_break ? paste_line_count(text, len) : len;
+    const char* unit = has_line_break ? (count == 1 ? "line" : "lines") : (count == 1 ? "character" : "characters");
     free(text);
+
+    char figure[32];
+    format_count(count, figure, sizeof(figure));
+    snprintf(g_copied_figure, sizeof(g_copied_figure), "%s %s", figure, unit);
+    g_copied_until_ms = now_ms() + COPIED_PILL_MS;
 }
 
-/* The clipboard goes to the program as if typed, bracketed when it
- * asked. Returns 1 when there was text to send. */
-static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
-    char* text = NULL;
-    long len = stlxwin_clipboard_get(conn, &text);
-    char* room = len > 0 ? input_reserve((size_t)len + 2 * PASTE_MARKER_LEN) : NULL;
+/* Queues pasted text for the program as if typed, bracketed when it asked */
+static void queue_paste(int master_fd, const char* text, size_t len) {
+    char* room = input_reserve(len + 2 * PASTE_MARKER_LEN);
     if (!room) {
-        free(text);
-        return 0;
+        return;
     }
 
     uint64_t queued_end = g_input_taken + (g_input_end - g_input_start);
-    size_t encoded = paste_encode(text, (size_t)len, g_term.bracketed_paste, room);
+    size_t encoded = paste_encode(text, len, g_term.bracketed_paste, room);
     g_input_end += encoded;
-    free(text);
 
     /* A paste queued behind one still being sent joins its range, so Ctrl C stops both */
     size_t marker_len = g_term.bracketed_paste ? PASTE_MARKER_LEN : 0;
@@ -578,9 +656,163 @@ static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
     }
 
     g_paste_text_to = queued_end + encoded - marker_len;
-
     flush_input(master_fd);
+}
+
+/* A paste question's first lines, control characters dropped and tabs
+ * shown as spaces, and how many lines it leaves out */
+static void fill_preview(overlay_question_t* q, const char* text, size_t len, size_t lines) {
+    const char* p = text;
+    const char* end = text + len;
+    while (p < end && q->preview_count < OVERLAY_PREVIEW_LINES) {
+        char* out = q->preview[q->preview_count++];
+        size_t n = 0;
+        for (; p < end && *p != '\n' && *p != '\r'; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c == '\t' && n + 4 < OVERLAY_TEXT_MAX) {
+                memcpy(out + n, "    ", 4);
+                n += 4;
+            } else if (c >= 0x20 && c != 0x7F && n + 1 < OVERLAY_TEXT_MAX) {
+                out[n++] = (char)c;
+            }
+        }
+
+        out[n] = '\0';
+        if (p < end) {
+            p += p + 1 < end && p[0] == '\r' && p[1] == '\n' ? 2 : 1;
+        }
+    }
+
+    if (lines > OVERLAY_PREVIEW_LINES) {
+        char count[32];
+        format_count(lines - OVERLAY_PREVIEW_LINES, count, sizeof(count));
+        snprintf(q->preview_more, sizeof(q->preview_more), "and %s more %s", count,
+                 lines - OVERLAY_PREVIEW_LINES == 1 ? "line" : "lines");
+    }
+}
+
+/* Holds a paste behind its question, which takes ownership of text */
+static void ask_before_paste(paste_check_t check, char* text, size_t len) {
+    overlay_question_t* q = &g_question;
+    memset(q, 0, sizeof(*q));
+
+    size_t lines = paste_line_count(text, len);
+    char count[32];
+    format_count(lines, count, sizeof(count));
+    const char* noun = lines == 1 ? "line" : "lines";
+    if (check == PASTE_ASK_SIZE) {
+        q->width = SIZE_QUESTION_W;
+        snprintf(q->title, sizeof(q->title), "Paste %.1f MB?", (double)len / 1e6);
+        snprintf(q->body, sizeof(q->body),
+                 "It holds %s %s and takes a while to send. The window stays live, and Ctrl C stops it.", count, noun);
+        snprintf(q->accept, sizeof(q->accept), "Paste");
+    } else {
+        q->width = LINES_QUESTION_W;
+        snprintf(q->title, sizeof(q->title), "Paste %s %s into %s?", count, noun, g_program_name);
+        snprintf(q->body, sizeof(q->body), "%s hasn't turned on bracketed paste, so each line runs the moment it arrives.",
+                 g_program_name);
+        fill_preview(q, text, len, lines);
+        snprintf(q->note, sizeof(q->note), "Control characters are removed either way");
+        snprintf(q->accept, sizeof(q->accept), "Paste %s %s", count, lines == 1 ? "Line" : "Lines");
+    }
+
+    snprintf(q->cancel, sizeof(q->cancel), "Cancel");
+    q->is_accept_focused = 1;
+    g_held_paste = text;
+    g_held_paste_len = len;
+
+    /* The question takes the pointer, so a drag under way stops where it is */
+    g_selecting = 0;
+}
+
+/* Sends or drops the held paste, as its question was answered. Returns 1 when it sent input. */
+static int answer_question(int master_fd, int accepts) {
+    if (accepts) {
+        queue_paste(master_fd, g_held_paste, g_held_paste_len);
+    }
+
+    free(g_held_paste);
+    g_held_paste = NULL;
+    g_held_paste_len = 0;
+    return accepts;
+}
+
+/* Enter takes the focused button, Escape cancels, Tab moves the focus
+ * and the arrows put it on their side. Returns 1 when it sent input. */
+static int handle_question_key(int master_fd, const stlxwin_event* ev) {
+    if (ev->type != STLXWIN_EVT_KEY_DOWN) {
+        return 0;
+    }
+
+    switch (ev->key.usage) {
+    case HID_USAGE_ENTER:
+    case HID_USAGE_KP_ENTER:
+        return answer_question(master_fd, g_question.is_accept_focused);
+    case HID_USAGE_ESCAPE:
+        return answer_question(master_fd, 0);
+    case HID_USAGE_TAB:
+        g_question.is_accept_focused = !g_question.is_accept_focused;
+        return 0;
+    case HID_USAGE_LEFT:
+    case HID_USAGE_RIGHT:
+        g_question.is_accept_focused = ev->key.usage == HID_USAGE_RIGHT;
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+/* A left press on a question's button answers it. Returns 1 when it did. */
+static int handle_question_pointer(int master_fd, const stlxwin_event* ev) {
+    if (ev->type != STLXWIN_EVT_BUTTON_DOWN || ev->button.button != STLXWIN_BTN_LEFT) {
+        return 0;
+    }
+
+    overlay_hit_t hit = overlay_question_hit(ev->button.x, ev->button.y);
+    if (hit == OVERLAY_HIT_NONE) {
+        return 0;
+    }
+
+    answer_question(master_fd, hit == OVERLAY_HIT_ACCEPT);
     return 1;
+}
+
+/* The clipboard goes to the program, or waits behind a question about
+ * its lines or its size. Returns 1 when it went straight to the program. */
+static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
+    char* text = NULL;
+    long len = stlxwin_clipboard_get(conn, &text);
+    if (len <= 0) {
+        free(text);
+        return 0;
+    }
+
+    paste_check_t check = paste_check(text, (size_t)len, g_term.bracketed_paste, g_config.paste_protection);
+    if (check != PASTE_SEND) {
+        ask_before_paste(check, text, (size_t)len);
+        return 0;
+    }
+
+    queue_paste(master_fd, text, (size_t)len);
+    free(text);
+    return 1;
+}
+
+/* The settings file is read again when a window gains focus after it changed */
+static void reload_config(void) {
+    struct stat now;
+    if (stat(CONFIG_PATH, &now) != 0) {
+        memset(&now, 0, sizeof(now));
+    }
+
+    int is_unchanged = now.st_mtim.tv_sec == g_config_stat.st_mtim.tv_sec &&
+                       now.st_mtim.tv_nsec == g_config_stat.st_mtim.tv_nsec && now.st_size == g_config_stat.st_size;
+    if (is_unchanged) {
+        return;
+    }
+
+    config_load(&g_config, CONFIG_PATH);
+    g_config_stat = now;
 }
 
 /* The terminal's own keys: copy and paste, each once per press, and the
@@ -608,12 +840,6 @@ static int handle_terminal_key(stlxwin_conn* conn, int master_fd, const stlxwin_
     }
 
     return is_paste && paste_clipboard(conn, master_fd);
-}
-
-static uint64_t now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
 /* The grid under a window position, held to the grid: above it is the
@@ -673,32 +899,34 @@ static void press_select(int32_t x, int32_t y) {
 }
 
 /* The left button selects: a press starts or extends a selection,
- * motion drags it and the release ends it. Returns 1 when it changed. */
-static int handle_selection_pointer(const stlxwin_event* ev) {
+ * motion drags it and the release ends it */
+static selection_change_t handle_selection_pointer(const stlxwin_event* ev) {
     if (ev->type == STLXWIN_EVT_POINTER_MOTION) {
-        return g_selecting && select_drag(&g_select, &g_term, grid_point(ev->motion.x, ev->motion.y));
+        int moved = g_selecting && select_drag(&g_select, &g_term, grid_point(ev->motion.x, ev->motion.y));
+        return moved ? SELECTION_CHANGED : SELECTION_UNCHANGED;
     }
 
     if (ev->button.button != STLXWIN_BTN_LEFT) {
-        return 0;
+        return SELECTION_UNCHANGED;
     }
 
     if (ev->type == STLXWIN_EVT_BUTTON_DOWN) {
         press_select(ev->button.x, ev->button.y);
-        return 1;
+        return SELECTION_CHANGED;
     }
 
     if (!g_selecting) {
-        return 0;
+        return SELECTION_UNCHANGED;
     }
 
     select_drag(&g_select, &g_term, grid_point(ev->button.x, ev->button.y));
     g_selecting = 0;
     if (!select_has_text(&g_select)) {
         select_clear(&g_select);
+        return SELECTION_CHANGED;
     }
 
-    return 1;
+    return SELECTION_FINISHED;
 }
 
 /* Runs `program` with `args` on a fresh pty, whose master end goes to
@@ -790,6 +1018,11 @@ int main(int argc, char* argv[]) {
 
     const char* program = argc > 1 ? argv[1] : SHELL_PATH;
     const char** args = argc > 2 ? (const char**)&argv[2] : NULL;
+    const char* program_slash = strrchr(program, '/');
+    g_program_name = program_slash ? program_slash + 1 : program;
+    config_load(&g_config, CONFIG_PATH);
+    stat(CONFIG_PATH, &g_config_stat);
+
     int master_fd = -1;
     if (spawn_program(program, args, &master_fd) < 0) {
         stlxwin_window_destroy(win);
@@ -804,6 +1037,11 @@ int main(int argc, char* argv[]) {
     int dirty = 1;
 
     while (running) {
+        if (g_copied_until_ms && now_ms() >= g_copied_until_ms) {
+            g_copied_until_ms = 0;
+            dirty = 1;
+        }
+
         if (dirty) {
             if (render_frame(win, cursor_on) < 0) {
                 break;
@@ -817,7 +1055,14 @@ int main(int argc, char* argv[]) {
             { master_fd, pty_events, 0 },
         };
 
-        int timeout = g_focused && g_term.cursor_visible ? BLINK_MS : -1;
+        /* The cursor blinks, and the copied pill leaves on time, without input */
+        int timeout = g_focused && g_term.cursor_visible && !g_held_paste ? BLINK_MS : -1;
+        if (g_copied_until_ms) {
+            uint64_t now = now_ms();
+            int pill_left = g_copied_until_ms > now ? (int)(g_copied_until_ms - now) : 0;
+            timeout = timeout < 0 || pill_left < timeout ? pill_left : timeout;
+        }
+
         int rc = poll(fds, 2, timeout);
         if (rc < 0) {
             if (errno == EINTR) {
@@ -827,7 +1072,10 @@ int main(int argc, char* argv[]) {
         }
 
         if (rc == 0) {
-            cursor_on = !cursor_on;
+            if (!g_copied_until_ms || now_ms() < g_copied_until_ms) {
+                cursor_on = !cursor_on;
+            }
+
             dirty = 1;
             continue;
         }
@@ -895,6 +1143,7 @@ int main(int argc, char* argv[]) {
             case STLXWIN_EVT_FOCUS_IN:
                 g_focused = 1;
                 cursor_on = 1;
+                reload_config();
                 dirty = 1;
                 break;
             case STLXWIN_EVT_FOCUS_OUT:
@@ -906,10 +1155,18 @@ int main(int argc, char* argv[]) {
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT: {
                 g_modifiers = ev.key.modifiers;
-                int is_terminal_key = 0;
-                int sent_input = handle_terminal_key(conn, master_fd, &ev, &is_terminal_key);
-                if (!is_terminal_key) {
-                    sent_input = handle_key(master_fd, ev.key.ch, ev.key.usage, ev.key.modifiers);
+                int sent_input = 0;
+                if (g_held_paste) {
+                    sent_input = handle_question_key(master_fd, &ev);
+                    dirty = 1;
+                } else {
+                    int is_terminal_key = 0;
+                    sent_input = handle_terminal_key(conn, master_fd, &ev, &is_terminal_key);
+                    if (is_terminal_key) {
+                        dirty = 1;
+                    } else {
+                        sent_input = handle_key(master_fd, ev.key.ch, ev.key.usage, ev.key.modifiers);
+                    }
                 }
 
                 /* A key that sends input ends the selection */
@@ -928,9 +1185,20 @@ int main(int argc, char* argv[]) {
                 break;
             case STLXWIN_EVT_BUTTON_DOWN:
             case STLXWIN_EVT_BUTTON_UP:
-            case STLXWIN_EVT_POINTER_MOTION:
-                dirty |= handle_selection_pointer(&ev);
+            case STLXWIN_EVT_POINTER_MOTION: {
+                if (g_held_paste) {
+                    dirty |= handle_question_pointer(master_fd, &ev);
+                    break;
+                }
+
+                selection_change_t change = handle_selection_pointer(&ev);
+                if (change == SELECTION_FINISHED && g_config.copy_on_select) {
+                    copy_selection(conn);
+                }
+
+                dirty |= change != SELECTION_UNCHANGED;
                 break;
+            }
             default:
                 break;
             }

@@ -8,8 +8,8 @@ HOST_CC ?= clang
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(addprefix $(SRC_DIR)/,term.c select.c paste.c)
-HEADERS   := $(addprefix $(SRC_DIR)/,term.h select.h paste.h)
+SOURCES   := $(addprefix $(SRC_DIR)/,term.c select.c paste.c config.c)
+HEADERS   := $(addprefix $(SRC_DIR)/,term.h select.h paste.h config.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 
 CFLAGS := -std=c11 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)

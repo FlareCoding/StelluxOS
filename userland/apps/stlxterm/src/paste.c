@@ -34,3 +34,28 @@ size_t paste_encode(const char *text, size_t len, int bracketed, char *out) {
 
     return n;
 }
+
+paste_check_t paste_check(const char *text, size_t len, int bracketed, int protects_lines) {
+    if (len > PASTE_ASK_BYTES) {
+        return PASTE_ASK_SIZE;
+    }
+
+    int has_line_break = memchr(text, '\n', len) || memchr(text, '\r', len);
+    return !bracketed && protects_lines && has_line_break ? PASTE_ASK_LINES : PASTE_SEND;
+}
+
+size_t paste_line_count(const char *text, size_t len) {
+    size_t lines = 0;
+    for (size_t i = 0; i < len; i++) {
+        int is_crlf_start = text[i] == '\r' && i + 1 < len && text[i + 1] == '\n';
+        if ((text[i] == '\n' || text[i] == '\r') && !is_crlf_start) {
+            lines++;
+        }
+    }
+
+    if (len > 0 && text[len - 1] != '\n' && text[len - 1] != '\r') {
+        lines++;
+    }
+
+    return lines;
+}
