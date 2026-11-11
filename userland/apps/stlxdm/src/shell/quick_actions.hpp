@@ -14,6 +14,14 @@
 #include <string>
 #include <vector>
 
+/* One thing a row can do, as Ctrl K lists it: a row's first runs on Enter, and `keys`, space separated, name the
+ * chord that runs another, none for one only the list runs */
+struct row_action {
+    std::string           label;
+    std::string           keys;
+    std::function<void()> run;
+};
+
 /* The palette Super Space opens over the windows: a field that ranks launchers, actions, programs no launcher names
  * and the files the index found by what is typed, and works out arithmetic, where Enter starts a row */
 class quick_actions : public popover_panel {
@@ -56,7 +64,14 @@ private:
     void remember_pick(const std::string& key);
     void remember_file(const found_file& file);
     void open_file(const std::string& path, const char* mime_type);
+    void open_with(const stlxconf_file_handler_t& handler, const std::string& path);
     std::string file_verb(const char* mime_type) const;
+    std::vector<row_action> launcher_actions(uint32_t index, const std::string& pick);
+    std::vector<row_action> action_actions(uint32_t index, const std::string& pick);
+    std::vector<row_action> program_actions(const std::string& path, const std::string& args, const std::string& pick);
+    std::vector<row_action> file_actions(const found_file& file, const std::string& pick);
+    row_action show_in_files(const std::string& path);
+    row_action copy(const std::string& label, const std::string& text);
 
     const stlxconf_t&                      m_conf;
     const std::vector<stlxgfx_surface_t*>& m_launcher_icons;

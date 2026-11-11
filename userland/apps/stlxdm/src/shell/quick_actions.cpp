@@ -79,6 +79,7 @@ constexpr int32_t FOOTER_PADDING_RIGHT = 10;
 constexpr int32_t FOOTER_KEY_GAP = 6;
 constexpr int32_t FOOTER_ITEM_GAP = 18;
 
+constexpr uint16_t HID_USAGE_C = 0x06;
 constexpr uint16_t HID_USAGE_1 = 0x1E;
 constexpr uint16_t HID_USAGE_ENTER = 0x28;
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
@@ -775,13 +776,17 @@ public:
     palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
                  const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note);
 
-    std::function<void(const palette_entry& entry)> on_choose;
+    /* What a row can do, its first on Enter. Must be set before `show_rows()`, since the footer names them. */
+    std::function<std::vector<row_action>(const palette_entry& entry)> actions_of;
 
     /* Ask the file index for the files a query matches or the entries of a folder, returning the request's number,
      * and make a file's row, found or listed. All must be set before the first key. */
     std::function<uint64_t(const std::string& query)> search_files;
     std::function<uint64_t(const std::string& folder, const std::string& prefix)> list_files;
     std::function<palette_entry(const found_file& file, bool is_listed)> make_file_entry;
+
+    /* Shows the rows the query matches, first once the callbacks are set, then after each change */
+    void show_rows();
 
     /* Shows an answer to the newest file request, dropping an older one, and the walk's count in the files' head */
     void show_files(const file_answer* answer, const walk_state& walk);
@@ -794,7 +799,6 @@ private:
     void move_caret(size_t cursor);
     void narrow(narrow_mode mode);
     bool is_shown_kind(row_kind kind) const;
-    void show_rows();
     void show_start();
     void show_kind(narrow_mode mode);
     void show_matches(std::string_view query);
@@ -811,6 +815,7 @@ private:
     void select(size_t index);
     void move_selection(int32_t rows);
     void choose(size_t index);
+    void run_keyed(const char* keys);
     void erase_word();
     std::string walk_text() const;
 
@@ -869,8 +874,6 @@ palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_sur
     m_list = body->add<result_list>();
     m_list->s().main = ui::length::fixed(LIST_HEIGHT);
     m_footer = add<palette_footer>();
-
-    show_rows();
 }
 
 /* Esc backs out of a narrowed list before the palette closes, as Backspace in an empty field does */
@@ -885,6 +888,12 @@ bool palette_view::on_key_down(const ui::key_event& e) {
     bool backs_out = e.usage == HID_USAGE_ESCAPE || (e.usage == HID_USAGE_BACKSPACE && m_query.empty());
     if (backs_out && m_mode != narrow_mode::all) {
         narrow(narrow_mode::all);
+        return true;
+    }
+
+    bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
+    if (is_ctrl && (e.usage == HID_USAGE_C || e.usage == HID_USAGE_ENTER)) {
+        run_keyed(e.usage == HID_USAGE_C ? "Ctrl C" : "Ctrl Enter");
         return true;
     }
 
@@ -1316,16 +1325,20 @@ void palette_view::show_listing(const typed_path& path) {
     }
 }
 
-/* Tab puts the selected entry's name after the folder as typed, and a slash after a folder's, which lists it */
+/* Tab completes the query to the selected row's name, or to a file's path, which browses its folder. A typed path
+ * keeps its folder as typed, and a folder's slash lists the folder. */
 void palette_view::complete() {
-    typed_path path = parse_path(trimmed(m_query));
-    if (!path.is_path || m_rows.empty()) {
+    if (m_rows.empty() || m_row_entries[m_selected]->kind == row_kind::more_files) {
         return;
     }
 
     const palette_entry& entry = *m_row_entries[m_selected];
     bool is_folder = entry.mime_type && strcmp(entry.mime_type, FOLDER_TYPE) == 0;
-    std::string completed = path.typed_folder + entry.label + (is_folder ? "/" : "");
+    typed_path path = parse_path(trimmed(m_query));
+
+    std::string completed = entry.kind == row_kind::file ? entry.path : entry.label;
+    completed = path.is_path ? path.typed_folder + entry.label : completed;
+    completed += is_folder ? "/" : "";
     edit(completed, completed.size());
 }
 
@@ -1349,12 +1362,22 @@ bool palette_view::go_up() {
  * the chips' keys, or Esc while they narrow the rows. */
 void palette_view::update_footer() {
     std::vector<footer_item> items;
+    bool is_path = parse_path(trimmed(m_query)).is_path;
     if (!m_rows.empty()) {
         const palette_entry& entry = *m_row_entries[m_selected];
-        items.push_back({ entry.verb.empty() ? KIND_VERBS[static_cast<size_t>(entry.kind)] : entry.verb, "Enter" });
+        std::vector<row_action> actions = actions_of(entry);
+        for (const row_action& action : actions) {
+            bool is_named = action.keys == "Enter" || (action.keys == "Ctrl Enter" && !is_path);
+            if (is_named) {
+                items.push_back({ action.label, action.keys });
+            }
+        }
+
+        if (actions.empty()) {
+            items.push_back({ KIND_VERBS[static_cast<size_t>(entry.kind)], "Enter" });
+        }
     }
 
-    bool is_path = parse_path(trimmed(m_query)).is_path;
     if (is_path) {
         items.push_back({ "Complete", "Tab" });
         items.push_back({ "Up a folder", "Backspace" });
@@ -1476,7 +1499,7 @@ void palette_view::move_selection(int32_t rows) {
 
 /* The row of the files past those shown narrows to files instead of starting anything */
 void palette_view::choose(size_t index) {
-    if (index >= m_rows.size() || !on_choose) {
+    if (index >= m_rows.size()) {
         return;
     }
 
@@ -1486,7 +1509,31 @@ void palette_view::choose(size_t index) {
         return;
     }
 
-    on_choose(*m_row_entries[index]);
+    std::vector<row_action> actions = actions_of(*m_row_entries[index]);
+    if (!actions.empty()) {
+        actions.front().run();
+    }
+}
+
+/* Runs the selected row's action `keys` name, where a calculation copies on Ctrl C as on Enter */
+void palette_view::run_keyed(const char* keys) {
+    if (m_rows.empty()) {
+        return;
+    }
+
+    const palette_entry& entry = *m_row_entries[m_selected];
+    std::vector<row_action> actions = actions_of(entry);
+    for (row_action& action : actions) {
+        if (action.keys == keys) {
+            action.run();
+            return;
+        }
+    }
+
+    bool copies_first = entry.kind == row_kind::calculator && strcmp(keys, "Ctrl C") == 0;
+    if (copies_first && !actions.empty()) {
+        actions.front().run();
+    }
 }
 
 /* The icon of the first launcher that runs `path` and has one, null when none does */
@@ -1828,14 +1875,105 @@ void quick_actions::open_file(const std::string& path, const char* mime_type) {
         return;
     }
 
-    char args[sizeof(handler->args)];
-    memcpy(args, handler->args, sizeof(args));
+    open_with(*handler, path);
+}
+
+void quick_actions::open_with(const stlxconf_file_handler_t& handler, const std::string& path) {
+    char args[sizeof(handler.args)];
+    memcpy(args, handler.args, sizeof(args));
     const char* argv[HANDLER_ARGS_MAX];
     int argc = stlxconf_split_args(args, argv, HANDLER_ARGS_MAX);
 
     std::vector<std::string> handler_args(argv, argv + argc);
     handler_args.push_back(path);
-    on_exec(handler->path, handler_args);
+    on_exec(handler.path, handler_args);
+}
+
+row_action quick_actions::show_in_files(const std::string& path) {
+    return { "Show in File Manager", "Ctrl Enter", [this, path]() {
+        on_exec(FILE_MANAGER_PATH, { path });
+    } };
+}
+
+row_action quick_actions::copy(const std::string& label, const std::string& text) {
+    return { label, "Ctrl C", [this, text]() {
+        on_copy(text);
+    } };
+}
+
+/* A launcher starts as the dock starts it, and its program shows in File Manager or copies as a path */
+std::vector<row_action> quick_actions::launcher_actions(uint32_t index, const std::string& pick) {
+    const stlxconf_pin_t& pin = m_conf.pins[index];
+    row_action open = { "Open", "Enter", [this, &pin, pick]() {
+        remember_pick(pick);
+        on_launch(pin);
+    } };
+
+    return { open, show_in_files(pin.path), copy("Copy Path", pin.path) };
+}
+
+std::vector<row_action> quick_actions::action_actions(uint32_t index, const std::string& pick) {
+    const stlxconf_action_t& action = m_conf.actions[index];
+    std::vector<row_action> actions = { { "Run", "Enter", [this, &action, pick]() {
+        remember_pick(pick);
+        on_run(action);
+    } } };
+
+    if (stlxconf_action_kind(action.action) == STLXCONF_ACTION_EXEC) {
+        std::string command = action.args[0] ? std::string(action.path) + " " + action.args : action.path;
+        actions.push_back(copy("Copy Command", command));
+    }
+
+    return actions;
+}
+
+std::vector<row_action> quick_actions::program_actions(const std::string& path, const std::string& args,
+                                                       const std::string& pick) {
+    row_action run = { "Run in Terminal", "Enter", [this, path, args, pick]() {
+        remember_pick(pick);
+        on_run_program(path.c_str(), args.c_str());
+    } };
+
+    return { run, show_in_files(path), copy("Copy Path", path) };
+}
+
+/* A file opens as Enter says, then in the handler of each type further up its chain, which is Open With */
+std::vector<row_action> quick_actions::file_actions(const found_file& file, const std::string& pick) {
+    const char* mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
+    row_action open = { file_verb(mime_type), "Enter", [this, file, mime_type, pick]() {
+        remember_pick(pick);
+        remember_file(file);
+        open_file(file.path, mime_type);
+    } };
+
+    const char* handled = nullptr;
+    const stlxconf_file_handler_t* first = nullptr;
+    bool is_folder = strcmp(mime_type, FOLDER_TYPE) == 0;
+    if (!is_folder) {
+        first = stlxconf_find_file_opener(&m_conf, mime_type, &handled);
+    }
+
+    /* A file no program opens already shows in File Manager on Enter */
+    std::vector<row_action> actions = { open };
+    if (first || is_folder) {
+        actions.push_back(show_in_files(file.path));
+    }
+
+    std::vector<std::string> offered = { first ? first->path : "" };
+    for (const char* type = first ? stlxconf_parent_type(handled) : nullptr; type; type = stlxconf_parent_type(type)) {
+        const stlxconf_file_handler_t* other = stlxconf_find_file_handler(&m_conf, type);
+        if (!other || std::find(offered.begin(), offered.end(), other->path) != offered.end()) {
+            continue;
+        }
+
+        offered.push_back(other->path);
+        actions.push_back({ "Open in " + program_label(m_conf, other->path), "", [this, other, path = file.path]() {
+            open_with(*other, path);
+        } });
+    }
+
+    actions.push_back(copy("Copy Path", file.path));
+    return actions;
 }
 
 std::string quick_actions::file_verb(const char* mime_type) const {
@@ -1911,29 +2049,28 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         shown->show_files(answer, walk);
     };
 
-    view->on_choose = [this](const palette_entry& entry) {
-        remember_pick(pick_key(entry));
+    view->actions_of = [this](const palette_entry& entry) -> std::vector<row_action> {
+        std::string pick = pick_key(entry);
         switch (entry.kind) {
         case row_kind::app:
-            on_launch(m_conf.pins[entry.index]);
-            break;
+            return launcher_actions(entry.index, pick);
         case row_kind::action:
-            on_run(m_conf.actions[entry.index]);
-            break;
+            return action_actions(entry.index, pick);
         case row_kind::program:
-            on_run_program(entry.path.c_str(), entry.args.c_str());
-            break;
+            return program_actions(entry.path, entry.args, pick);
         case row_kind::file:
-            remember_file(entry.file);
-            open_file(entry.path, entry.mime_type);
-            break;
+            return file_actions(entry.file, pick);
         case row_kind::calculator:
-            on_copy(entry.copied);
-            break;
+            return { { "Copy", "Enter", [this, value = entry.copied]() {
+                on_copy(value);
+            } } };
         case row_kind::more_files:
             break;
         }
+
+        return {};
     };
 
+    view->show_rows();
     return view;
 }
