@@ -2233,6 +2233,8 @@ void editor_window::set_zoom(int zoom) {
             open->view()->send(SCI_SETZOOM, m_zoom);
         }
     }
+
+    refresh_status();
 }
 
 void editor_window::select_tab(int index) {
@@ -2469,6 +2471,12 @@ void editor_window::refresh_status() {
         { status_kind::LINE_ENDING, eol, {}, true },
     };
 
+    // Away from 100 percent the zoom shows, and a click puts it back
+    if (m_zoom != 0) {
+        QString zoom = QStringLiteral("%1%").arg(zoom_percent(m_zoom));
+        right.prepend({ status_kind::ZOOM, zoom, QStringLiteral("A click resets the zoom (Ctrl 0)"), true });
+    }
+
     m_status->set_items(left, right);
 }
 
@@ -2596,6 +2604,11 @@ void editor_window::show_status_menu(status_kind kind, const QPoint& anchor) {
 
     if (kind == status_kind::POSITION) {
         go_to_line(false);
+        return;
+    }
+
+    if (kind == status_kind::ZOOM) {
+        set_zoom(0);
         return;
     }
 
