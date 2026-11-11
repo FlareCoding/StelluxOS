@@ -66,6 +66,8 @@ static constexpr uint32_t CREAM = 0xFFFFF0D7;
 static constexpr double CARET_LINE_ALPHA = 0.045;
 static constexpr double INDENT_GUIDE_ALPHA = 0.10;
 static constexpr double EDGE_ALPHA = 0.07;
+static constexpr double WHITESPACE_ALPHA = 0.35;
+static constexpr int WHITESPACE_DOT_SIZE = 2;
 
 static float s_text_size = STLXTHEME_TERMINAL_SIZE;
 
@@ -567,6 +569,10 @@ void apply_text_area_look(ScintillaEditBase* view) {
 
     view->send(SCI_BRACEHIGHLIGHTINDICATOR, true, BRACKET_INDICATOR);
     view->send(SCI_BRACEBADLIGHTINDICATOR, true, LONE_BRACKET_INDICATOR);
+
+    // Shown whitespace stays faint beside the text, in the guides' brass: dots for spaces and arrows for tabs
+    view->send(SCI_SETELEMENTCOLOUR, SC_ELEMENT_WHITE_SPACE, scintilla_rgba(blend_over_pocket(BRASS, WHITESPACE_ALPHA)));
+    view->send(SCI_SETWHITESPACESIZE, WHITESPACE_DOT_SIZE);
 
     view->send(SCI_SETINDENTATIONGUIDES, SC_IV_LOOKBOTH);
     view->send(SCI_SETEDGEMODE, EDGE_LINE);
