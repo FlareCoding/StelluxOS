@@ -8,7 +8,7 @@ HOST_CC ?= clang
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(SRC_DIR)/conf.c
+SOURCES   := $(SRC_DIR)/conf.c $(SRC_DIR)/file_type.c
 HEADERS   := $(wildcard ../include/stlxconf/*.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 
