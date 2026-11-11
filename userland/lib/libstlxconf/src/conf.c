@@ -24,6 +24,7 @@ typedef enum {
     SEC_SHORTCUT,
     SEC_AUTOSTART,
     SEC_URL_HANDLER,
+    SEC_FILE_HANDLER,
 } conf_section_t;
 
 static const char* const COMPOSITOR_NAMES[] = {
@@ -154,6 +155,15 @@ static void enter_section(stlxconf_t* conf, char* name,
                          sizeof(conf->url_handlers[*item_idx].scheme));
             conf->url_handlers[*item_idx].from_drop_in = from_drop_in;
         }
+    } else if (strncmp(name, "file_handler:", 13) == 0) {
+        *sec = SEC_FILE_HANDLER;
+        *item_idx = conf->file_handler_count < STLXCONF_MAX_FILE_HANDLERS
+                  ? (int32_t)conf->file_handler_count++ : -1;
+        if (*item_idx >= 0) {
+            copy_bounded(conf->file_handlers[*item_idx].mime_type, name + 13,
+                         sizeof(conf->file_handlers[*item_idx].mime_type));
+            conf->file_handlers[*item_idx].from_drop_in = from_drop_in;
+        }
     } else {
         *sec = SEC_NONE;
     }
@@ -269,6 +279,20 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
         } else if (strcmp(key, "args") == 0) {
             copy_bounded(uh->args, val, sizeof(uh->args));
         }
+        return;
+    }
+    case SEC_FILE_HANDLER: {
+        if (item_idx < 0) {
+            return;
+        }
+
+        stlxconf_file_handler_t* fh = &conf->file_handlers[item_idx];
+        if (strcmp(key, "path") == 0) {
+            copy_bounded(fh->path, val, sizeof(fh->path));
+        } else if (strcmp(key, "args") == 0) {
+            copy_bounded(fh->args, val, sizeof(fh->args));
+        }
+
         return;
     }
     case SEC_NONE:
@@ -479,6 +503,19 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
         }
     }
 
+    for (uint32_t i = 0; i < conf->file_handler_count; i++) {
+        const stlxconf_file_handler_t* fh = &conf->file_handlers[i];
+        if (fh->from_drop_in) {
+            continue;
+        }
+
+        fprintf(f, "\n[file_handler:%s]\n", fh->mime_type);
+        fprintf(f, "path=%s\n", fh->path);
+        if (fh->args[0]) {
+            fprintf(f, "args=%s\n", fh->args);
+        }
+    }
+
     fclose(f);
     return 0;
 }
@@ -496,6 +533,17 @@ const stlxconf_url_handler_t* stlxconf_find_url_handler(const stlxconf_t* conf,
     for (uint32_t i = 0; i < conf->url_handler_count; i++) {
         if (strcasecmp(conf->url_handlers[i].scheme, scheme) == 0) {
             return &conf->url_handlers[i];
+        }
+    }
+
+    return NULL;
+}
+
+const stlxconf_file_handler_t* stlxconf_find_file_handler(const stlxconf_t* conf,
+                                                          const char* mime_type) {
+    for (uint32_t i = 0; i < conf->file_handler_count; i++) {
+        if (strcasecmp(conf->file_handlers[i].mime_type, mime_type) == 0) {
+            return &conf->file_handlers[i];
         }
     }
 
