@@ -8,7 +8,8 @@ struct ring_buffer;
 
 namespace terminal {
 
-constexpr size_t LD_LINE_BUF_MAX = 1023;
+// The longest cooked line, the 4,095 bytes Linux keeps, with room left for the line's end
+constexpr size_t LD_LINE_BUF_MAX = 4095;
 constexpr uint32_t LD_MODE_RAW = 1;
 
 struct echo_target {
