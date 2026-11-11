@@ -3,6 +3,8 @@
 
 /* The look of Sheen's text area and the languages it colors. Kiln is the syntax palette, and each Lexilla style
  * takes its color from the tags the lexer publishes for it, or from the language's own table. */
+#include "settings.h"
+
 #include <QByteArrayView>
 #include <QList>
 #include <QString>
@@ -30,6 +32,16 @@ QString language_name(const language* lang);
 /* Shows or hides the gutter's line numbers. The unsaved bars stay either way */
 void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown);
 bool are_line_numbers_shown(ScintillaEditBase* view);
+
+/* Sets the numbers, guides, edge, wrap and reading width a mode starts a tab with */
+void apply_mode_defaults(ScintillaEditBase* view, const mode_defaults& defaults);
+void fit_reading_width(ScintillaEditBase* view, int wrap_column);
+
+void mark_function_names(ScintillaEditBase* view, const language* lang);
+void clear_function_names(ScintillaEditBase* view);
+
+/* Whether a language's files open in Code mode, every lexed language but Markdown */
+bool is_code_language(const language* lang);
 
 /* Every language Sheen colors, in the order a menu lists them */
 QList<const language*> all_languages();

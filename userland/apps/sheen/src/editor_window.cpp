@@ -9,6 +9,7 @@
 #include "tab_switcher.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -68,8 +69,8 @@ static const command DOCUMENT_COMMANDS[] = {
     command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN,
     command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
     command::LOWER_CASE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
-    command::SELECT_ALL_MATCHES, command::LANGUAGE, command::WORD_WRAP, command::LINE_NUMBERS,
-    command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
+    command::SELECT_ALL_MATCHES, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
+    command::LINE_NUMBERS, command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
 };
 
 static QString eol_label(int mode) {
@@ -359,6 +360,10 @@ void editor_window::create_commands() {
         target->addAction(action);
     }
 
+    auto* modes = new QActionGroup(this);
+    modes->addAction(m_actions.value(command::CODE_MODE));
+    modes->addAction(m_actions.value(command::TEXT_MODE));
+
     m_main_menu->setStyle(m_menu_style);
     m_main_menu->setMinimumWidth(CASCADE_WIDTH);
     for (QMenu* submenu : m_menus) {
@@ -454,6 +459,7 @@ void editor_window::fill_submenu(command id, QMenu* submenu) {
         case command::LANGUAGE: {
             QAction* plain = submenu->addAction(language_name(nullptr), [this] {
                 current_document()->set_language(nullptr);
+                refresh_commands();
                 refresh_status();
             });
             plain->setCheckable(true);
@@ -461,6 +467,7 @@ void editor_window::fill_submenu(command id, QMenu* submenu) {
             for (const language* lang : all_languages()) {
                 QAction* action = submenu->addAction(language_name(lang), [this, lang] {
                     current_document()->set_language(lang);
+                    refresh_commands();
                     refresh_status();
                 });
                 action->setCheckable(true);
@@ -612,11 +619,18 @@ void editor_window::run(command id) {
             view->send(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE);
             view->send(SCI_MULTIPLESELECTADDEACH);
             break;
+        case command::CODE_MODE:
+        case command::TEXT_MODE:
+            doc->set_mode(id == command::CODE_MODE ? edit_mode::CODE : edit_mode::TEXT, true);
+            refresh_commands();
+            refresh_status();
+            break;
         case command::WORD_WRAP:
             view->send(SCI_SETWRAPMODE, is_checked ? SC_WRAP_WORD : SC_WRAP_NONE);
             break;
         case command::LINE_NUMBERS:
             set_line_numbers_shown(view, is_checked);
+            doc->fit_text_width();
             break;
         case command::INDENT_GUIDES:
             view->send(SCI_SETINDENTATIONGUIDES, is_checked ? SC_IV_LOOKBOTH : SC_IV_NONE);
@@ -698,6 +712,9 @@ void editor_window::refresh_commands() {
     if (!doc) {
         return;
     }
+
+    m_actions.value(command::CODE_MODE)->setChecked(doc->mode() == edit_mode::CODE);
+    m_actions.value(command::TEXT_MODE)->setChecked(doc->mode() == edit_mode::TEXT);
 
     ScintillaEditBase* view = doc->view();
     m_actions.value(command::WORD_WRAP)->setChecked(view->send(SCI_GETWRAPMODE) != SC_WRAP_NONE);
@@ -803,10 +820,23 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
         }
     });
 
-    connect(view, &ScintillaEditBase::updateUi, this, [this, doc] {
+    connect(view, &ScintillaEditBase::marginClicked, view, [view](Scintilla::Position position) {
+        view->send(SCI_GOTOPOS, position);
+    });
+
+    connect(view, &ScintillaEditBase::updateUi, this, [this, doc](Scintilla::Update updated) {
+        if (static_cast<int>(updated) & (SC_UPDATE_CONTENT | SC_UPDATE_V_SCROLL)) {
+            doc->refresh_function_names();
+        }
+
         if (doc == current_document()) {
             refresh_status();
         }
+    });
+
+    connect(view, &ScintillaEditBase::resized, this, [doc] {
+        doc->fit_text_width();
+        doc->refresh_function_names();
     });
 
     connect(view, &ScintillaEditBase::zoom, this, [view] { fit_line_numbers(view); });
@@ -1499,6 +1529,7 @@ void editor_window::show_current_document() {
     m_recent_tabs.prepend(doc);
     QWidget* shown = doc->placeholder() ? doc->placeholder() : doc->view();
     m_stack->setCurrentWidget(shown);
+    doc->refresh_function_names();
     if (!m_open_sheet) {
         shown->setFocus();
         check_disk(doc);
@@ -1569,7 +1600,9 @@ void editor_window::refresh_status() {
 
     QString encoding_note = file.encoding.name.startsWith("UTF-") ? QString()
                           : QStringLiteral("Not valid UTF-8, opened as %1").arg(encoding_label(file.encoding));
+    QString mode = doc->mode() == edit_mode::CODE ? QStringLiteral("Code") : QStringLiteral("Text");
     QList<status_item> right = {
+        { status_kind::MODE, mode, {}, true },
         { status_kind::LANGUAGE, language_name(doc->lang()), {}, true },
         { status_kind::ENCODING, encoding_label(file.encoding), encoding_note, true },
         { status_kind::LINE_ENDING, eol, {}, true },
@@ -1617,6 +1650,10 @@ void editor_window::show_status_menu(status_kind kind, const QPoint& anchor) {
     QMenu menu(this);
     menu.setStyle(m_menu_style);
     switch (kind) {
+        case status_kind::MODE:
+            menu.addAction(m_actions.value(command::CODE_MODE));
+            menu.addAction(m_actions.value(command::TEXT_MODE));
+            break;
         case status_kind::INDENTATION:
             fill_indentation_menu(doc, &menu);
             break;

@@ -1,6 +1,7 @@
 #include "kiln.h"
 
 #include <QFileInfo>
+#include <QHash>
 #include <QList>
 #include <QRegularExpression>
 
@@ -12,9 +13,10 @@
 
 #include <stlxtheme/theme.h>
 
+#include <cctype>
 #include <cstdint>
 
-enum class syntax_role { IDENTIFIER, KEYWORD, TYPE, STRING, NUMBER, PREPROCESSOR, COMMENT, OPERATOR };
+enum class syntax_role { IDENTIFIER, KEYWORD, TYPE, STRING, NUMBER, PREPROCESSOR, COMMENT, OPERATOR, EMPHASIS, LINK };
 
 struct style_role {
     int style;
@@ -148,6 +150,34 @@ static const QList<style_role> JSON_ROLES = {
     { SCE_JSON_LDKEYWORD, syntax_role::KEYWORD },
 };
 
+// Text mode's light Markdown: every part at the body size, emphasis and headings in cream with no slanted face,
+// since Plex Mono ships upright only
+static const QList<style_role> MARKDOWN_ROLES = {
+    { SCE_MARKDOWN_STRONG1, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_STRONG2, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_EM1, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_EM2, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER1, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER2, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER3, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER4, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER5, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_HEADER6, syntax_role::EMPHASIS },
+    { SCE_MARKDOWN_PRECHAR, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_ULIST_ITEM, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_OLIST_ITEM, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_BLOCKQUOTE, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_STRIKEOUT, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_HRULE, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_LINK, syntax_role::LINK },
+    { SCE_MARKDOWN_CODE, syntax_role::STRING },
+    { SCE_MARKDOWN_CODE2, syntax_role::STRING },
+    { SCE_MARKDOWN_CODEBK, syntax_role::STRING },
+    { SCE_MARKDOWN_FRONT_MARK, syntax_role::OPERATOR },
+    { SCE_MARKDOWN_FRONT, syntax_role::COMMENT },
+    { SCE_MARKDOWN_FRONT_KEY, syntax_role::OPERATOR },
+};
+
 static const QList<style_role> YAML_ROLES = {
     { SCE_YAML_COMMENT, syntax_role::COMMENT },
     { SCE_YAML_IDENTIFIER, syntax_role::KEYWORD },
@@ -178,6 +208,12 @@ static const QList<style_role> DIFF_ROLES = {
 };
 
 // Preprocessor tracking would dim inactive branches, which reads as commented out code
+static constexpr int FUNCTION_INDICATOR = INDICATOR_CONTAINER + 1;
+static constexpr int NARROW_BAR_GAP = 2;
+
+// The styles each lexer gives plain identifiers, where a following ( marks a function name
+static QHash<const language*, QList<int>> s_identifier_styles;
+
 static const QList<language_property> C_PROPERTIES = {
     { "lexer.cpp.track.preprocessor", "0" },
     { "styling.within.preprocessor", "1" },
@@ -195,7 +231,7 @@ static const language LANGUAGES[] = {
     { "Makefile", "makefile", "Makefile makefile GNUmakefile *.mk *.mak", "make", { "", "", "", "" }, {}, {} },
     { "Rust", "rust", "*.rs", "", { RUST_KEYWORDS, RUST_TYPES, "", "" }, RUST_ROLES, {} },
     { "Lua", "lua", "*.lua", "lua", { LUA_KEYWORDS, "", "", "" }, {}, {} },
-    { "Markdown", "markdown", "*.md *.markdown", "", { "", "", "", "" }, {}, {} },
+    { "Markdown", "markdown", "*.md *.markdown", "", { "", "", "", "" }, MARKDOWN_ROLES, {} },
     { "JSON", "json", "*.json", "", { "true false null", "", "", "" }, JSON_ROLES, {} },
     { "YAML", "yaml", "*.yml *.yaml", "", { "true false null yes no on off", "", "", "" }, YAML_ROLES, {} },
     { "INI", "props", "*.ini *.conf *.cfg *.properties", "", { "", "", "", "" }, INI_ROLES, {} },
@@ -246,6 +282,10 @@ static uint32_t role_color(syntax_role role) {
             return KILN_ASH;
         case syntax_role::OPERATOR:
             return STLXTHEME_TEXT_DIM;
+        case syntax_role::EMPHASIS:
+            return STLXTHEME_TEXT;
+        case syntax_role::LINK:
+            return STLXTHEME_TEXT_SECONDARY;
         case syntax_role::IDENTIFIER:
             break;
     }
@@ -401,6 +441,9 @@ void apply_text_area_look(ScintillaEditBase* view) {
     view->send(SCI_SETCARETLINELAYER, SC_LAYER_UNDER_TEXT);
     view->send(SCI_SETCARETLINEVISIBLEALWAYS, 1);
 
+    view->send(SCI_INDICSETSTYLE, FUNCTION_INDICATOR, INDIC_TEXTFORE);
+    view->send(SCI_INDICSETFORE, FUNCTION_INDICATOR, scintilla_rgb(STLXTHEME_TEXT));
+
     view->send(SCI_SETINDENTATIONGUIDES, SC_IV_LOOKBOTH);
     view->send(SCI_SETEDGEMODE, EDGE_LINE);
     view->send(SCI_SETEDGECOLUMN, EDGE_COLUMN);
@@ -463,16 +506,26 @@ void apply_language(ScintillaEditBase* view, const language* lang) {
         set_property(view, property.key, property.value);
     }
 
+    QList<int> identifiers;
     int named_styles = static_cast<int>(view->send(SCI_GETNAMEDSTYLES));
     for (int style = 0; style < named_styles; style++) {
-        if (style < STYLE_DEFAULT || style > STYLE_LASTPREDEFINED) {
-            view->send(SCI_STYLESETFORE, style, scintilla_rgb(role_color(role_of_tags(tags_of_style(view, style)))));
+        if (style >= STYLE_DEFAULT && style <= STYLE_LASTPREDEFINED) {
+            continue;
+        }
+
+        QByteArray tags = tags_of_style(view, style);
+        view->send(SCI_STYLESETFORE, style, scintilla_rgb(role_color(role_of_tags(tags))));
+        if (tags.split(' ').contains("identifier")) {
+            identifiers.append(style);
         }
     }
 
     for (const style_role& entry : lang->roles) {
         view->send(SCI_STYLESETFORE, entry.style, scintilla_rgb(role_color(entry.role)));
+        identifiers.removeAll(entry.style);
     }
+
+    s_identifier_styles.insert(lang, identifiers);
 
     view->send(SCI_COLOURISE, 0, -1);
 }
@@ -481,15 +534,110 @@ QString language_name(const language* lang) {
     return lang ? QString::fromLatin1(lang->name) : QStringLiteral("Plain Text");
 }
 
+// Without numbers the unsaved bar keeps a narrow margin of its own
 void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown) {
     int bar_left = GUTTER_WIDTH - GUTTER_BAR_GAP - STLXTHEME_MARKER_WIDTH;
     view->send(SCI_SETMARGINWIDTHN, NUMBER_MARGIN, is_shown ? bar_left - GUTTER_NUMBER_GAP : 0);
     view->send(SCI_SETMARGINWIDTHN, NUMBER_GAP_MARGIN, is_shown ? GUTTER_NUMBER_GAP : 0);
+    view->send(SCI_SETMARGINWIDTHN, BAR_GAP_MARGIN, is_shown ? GUTTER_BAR_GAP : NARROW_BAR_GAP);
     fit_line_numbers(view);
+}
+
+void apply_mode_defaults(ScintillaEditBase* view, const mode_defaults& defaults) {
+    set_line_numbers_shown(view, defaults.line_numbers);
+    view->send(SCI_SETINDENTATIONGUIDES, defaults.indent_guides ? SC_IV_LOOKBOTH : SC_IV_NONE);
+    view->send(SCI_SETEDGEMODE, defaults.edge_column > 0 ? EDGE_LINE : EDGE_NONE);
+    view->send(SCI_SETEDGECOLUMN, defaults.edge_column);
+    view->send(SCI_SETWRAPMODE, defaults.word_wrap ? SC_WRAP_WORD : SC_WRAP_NONE);
+    fit_reading_width(view, defaults.wrap_column);
+}
+
+// Equal text margins center a column `wrap_column` characters wide, the reading width of Text mode. Without line
+// numbers the room left of the column sits before the unsaved bar, so the bar stays against the lines it marks
+void fit_reading_width(ScintillaEditBase* view, int wrap_column) {
+    bool is_room_before_bar = view->send(SCI_GETMARGINWIDTHN, NUMBER_MARGIN) == 0;
+    int side = TEXT_INSET;
+    if (wrap_column > 0) {
+        int gutter = 0;
+        for (int margin = 0; margin < GUTTER_MARGIN_COUNT; margin++) {
+            if (margin != NUMBER_GAP_MARGIN || !is_room_before_bar) {
+                gutter += static_cast<int>(view->send(SCI_GETMARGINWIDTHN, margin));
+            }
+        }
+
+        int character = static_cast<int>(view->send(SCI_TEXTWIDTH, STYLE_DEFAULT, reinterpret_cast<sptr_t>("0")));
+        int text = wrap_column * character;
+        side = qMax(TEXT_INSET, (view->viewport()->width() - gutter - text) / 2);
+    }
+
+    // A click in the room lands at the start of its line, as one left of the text does, instead of selecting it
+    view->send(SCI_SETMARGINWIDTHN, NUMBER_GAP_MARGIN, is_room_before_bar ? side - TEXT_INSET : GUTTER_NUMBER_GAP);
+    view->send(SCI_SETMARGINSENSITIVEN, NUMBER_GAP_MARGIN, is_room_before_bar);
+    view->send(SCI_SETMARGINLEFT, 0, is_room_before_bar ? TEXT_INSET : side);
+    view->send(SCI_SETMARGINRIGHT, 0, wrap_column > 0 ? side : 0);
+}
+
+void clear_function_names(ScintillaEditBase* view) {
+    view->send(SCI_SETINDICATORCURRENT, FUNCTION_INDICATOR);
+    view->send(SCI_INDICATORCLEARRANGE, 0, view->send(SCI_GETLENGTH));
+}
+
+// Colors each identifier followed by ( on the visible lines in cream, since lexers style calls and names alike
+void mark_function_names(ScintillaEditBase* view, const language* lang) {
+    sptr_t first_line = view->send(SCI_DOCLINEFROMVISIBLE, view->send(SCI_GETFIRSTVISIBLELINE));
+    sptr_t last_line = first_line + view->send(SCI_LINESONSCREEN) + 1;
+    sptr_t start = view->send(SCI_POSITIONFROMLINE, first_line);
+    sptr_t end = view->send(SCI_GETLINEENDPOSITION, qMin(last_line, view->send(SCI_GETLINECOUNT) - 1));
+    view->send(SCI_SETINDICATORCURRENT, FUNCTION_INDICATOR);
+    view->send(SCI_INDICATORCLEARRANGE, start, end - start);
+
+    QList<int> identifiers = s_identifier_styles.value(lang);
+    if (!lang || identifiers.isEmpty() || end <= start) {
+        return;
+    }
+
+    view->send(SCI_COLOURISE, start, end);
+
+    Sci_TextRangeFull range { { start, end }, nullptr };
+    QByteArray text(end - start + 1, '\0');
+    range.lpstrText = text.data();
+    view->send(SCI_GETTEXTRANGEFULL, 0, reinterpret_cast<sptr_t>(&range));
+
+    auto is_name_char = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+    qsizetype length = end - start;
+    for (qsizetype i = 0; i < length;) {
+        bool is_name_start = (std::isalpha(static_cast<unsigned char>(text[i])) || text[i] == '_')
+                          && (i == 0 || !is_name_char(text[i - 1]));
+        if (!is_name_start) {
+            i++;
+            continue;
+        }
+
+        qsizetype name_end = i;
+        while (name_end < length && is_name_char(text[name_end])) {
+            name_end++;
+        }
+
+        qsizetype next = name_end;
+        while (next < length && (text[next] == ' ' || text[next] == '\t')) {
+            next++;
+        }
+
+        int style = static_cast<int>(view->send(SCI_GETSTYLEAT, start + i));
+        if (next < length && text[next] == '(' && identifiers.contains(style)) {
+            view->send(SCI_INDICATORFILLRANGE, start + i, name_end - i);
+        }
+
+        i = name_end;
+    }
 }
 
 bool are_line_numbers_shown(ScintillaEditBase* view) {
     return view->send(SCI_GETMARGINWIDTHN, NUMBER_MARGIN) > 0;
+}
+
+bool is_code_language(const language* lang) {
+    return lang && QLatin1String(lang->lexer) != QLatin1String("markdown");
 }
 
 QList<const language*> all_languages() {
