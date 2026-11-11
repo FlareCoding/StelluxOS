@@ -78,27 +78,47 @@ static ssize_t pty_master_read(
     return result;
 }
 
+// Input the slave has no room for stays with the writer: a short count, AGAIN when nonblock finds no
+// room at all, or a wait for room otherwise
+__PRIVILEGED_CODE static ssize_t pty_master_write_input(pty_channel* chan, const char* src, size_t count,
+                                                        bool nonblock) {
+    while (true) {
+        if (chan->m_input_rb->reader_closed) {
+            return resource::ERR_PIPE;
+        }
+
+        size_t taken = terminal::ld_input_buf(&chan->m_ld, chan->m_input_rb, &chan->m_echo, &chan->m_sig,
+                                              src, count);
+        if (taken > 0 || count == 0) {
+            return static_cast<ssize_t>(taken);
+        }
+
+        if (nonblock) {
+            return resource::ERR_AGAIN;
+        }
+
+        ssize_t room = ring_buffer_wait_writable(chan->m_input_rb, terminal::ld_room_needed(&chan->m_ld),
+                                                 false, false);
+        if (room < 0) {
+            return room;
+        }
+    }
+}
+
 static ssize_t pty_master_write(
     resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags
 ) {
-    (void)flags;
     if (!obj || !obj->impl || !ksrc) {
         return resource::ERR_INVAL;
     }
 
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     auto* chan = ep->channel.ptr();
+    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
 
     ssize_t result;
     RUN_ELEVATED({
-        if (chan->m_input_rb->reader_closed) {
-            result = resource::ERR_PIPE;
-        } else {
-            terminal::ld_input_buf(&chan->m_ld, chan->m_input_rb, &chan->m_echo,
-                                   &chan->m_sig,
-                                   static_cast<const char*>(ksrc), count);
-            result = static_cast<ssize_t>(count);
-        }
+        result = pty_master_write_input(chan, static_cast<const char*>(ksrc), count, nonblock);
     });
 
     return result;
@@ -341,10 +361,17 @@ static uint32_t pty_master_poll(
     if (!obj || !obj->impl) return sync::POLL_NVAL;
 
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
+    auto* chan = ep->channel.ptr();
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(ep->channel->m_output_rb, pt)
-             | ring_buffer_poll_write(ep->channel->m_input_rb, pt);
+        // Writable means the line discipline can take a byte, which in cooked mode needs room for its pending line
+        uint32_t writable = ring_buffer_poll_write(chan->m_input_rb, pt);
+        size_t needed = terminal::ld_room_needed(&chan->m_ld);
+        if (needed > 1 && ring_buffer_wait_writable(chan->m_input_rb, needed, false, true) < 0) {
+            writable &= ~sync::POLL_OUT;
+        }
+
+        mask = ring_buffer_poll_read(chan->m_output_rb, pt) | writable;
     });
 
     return mask;

@@ -10,6 +10,7 @@
 #include "signals/signal_types.h"
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
+#include "sync/poll.h"
 
 TEST_SUITE(pty_test);
 
@@ -350,6 +351,128 @@ TEST(pty_test, isig_reenabled_in_raw_mode) {
     ASSERT_EQ(resource::read(task, hs, buf, 4), static_cast<ssize_t>(2));
     EXPECT_EQ(buf[0], 'x');
     EXPECT_EQ(buf[1], 'y');
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, raw_master_write_stops_where_the_slave_fills) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    terminal::ld_set_mode(&ep->channel->m_ld, terminal::STLX_TCSETS_RAW);
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    static char sent[3 * pty::PTY_RING_CAPACITY];
+    for (size_t i = 0; i < sizeof(sent); i++) {
+        sent[i] = static_cast<char>('a' + i % 26);
+    }
+
+    // The slave takes what its buffer holds, the rest stays with the writer
+    const ssize_t room = static_cast<ssize_t>(ep->channel->m_input_rb->capacity - 1);
+    const size_t rest = sizeof(sent) - static_cast<size_t>(room);
+    EXPECT_EQ(resource::write(task, hm, sent, sizeof(sent)), room);
+    EXPECT_EQ(resource::write(task, hm, sent + room, rest), static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(master->ops->poll(master, nullptr) & sync::POLL_OUT, 0U);
+
+    static char received[sizeof(sent)];
+    EXPECT_EQ(resource::read(task, hs, received, 1000), static_cast<ssize_t>(1000));
+    EXPECT_EQ(master->ops->poll(master, nullptr) & sync::POLL_OUT, sync::POLL_OUT);
+    EXPECT_EQ(resource::write(task, hm, sent + room, rest), static_cast<ssize_t>(1000));
+
+    ssize_t got = 1000;
+    ssize_t expected = room + 1000;
+    while (got < expected) {
+        ssize_t n = resource::read(task, hs, received + got, sizeof(received) - static_cast<size_t>(got));
+        if (n <= 0) {
+            break;
+        }
+
+        got += n;
+    }
+
+    bool is_intact = got == expected;
+    for (ssize_t i = 0; is_intact && i < expected; i++) {
+        is_intact = received[i] == sent[i];
+    }
+
+    EXPECT_TRUE(is_intact);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, cooked_line_end_waits_for_room_for_its_line) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // Lines of 100 bytes and a newline until fewer than 101 bytes of room are left
+    static char line[101];
+    for (size_t i = 0; i < 100; i++) {
+        line[i] = 'x';
+    }
+
+    line[100] = '\r';
+    const size_t lines = (ep->channel->m_input_rb->capacity - 1) / sizeof(line);
+    for (size_t i = 0; i < lines; i++) {
+        EXPECT_EQ(resource::write(task, hm, line, sizeof(line)), static_cast<ssize_t>(sizeof(line)));
+    }
+
+    // The letters wait in the line, its end until the whole line fits
+    for (size_t i = 0; i < 100; i++) {
+        line[i] = 'y';
+    }
+
+    EXPECT_EQ(resource::write(task, hm, line, sizeof(line)), static_cast<ssize_t>(100));
+    EXPECT_EQ(resource::write(task, hm, "\r", 1), static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(master->ops->poll(master, nullptr) & sync::POLL_OUT, 0U);
+
+    static char received[101];
+    EXPECT_EQ(resource::read(task, hs, received, sizeof(received)), static_cast<ssize_t>(sizeof(received)));
+    EXPECT_EQ(master->ops->poll(master, nullptr) & sync::POLL_OUT, sync::POLL_OUT);
+    EXPECT_EQ(resource::write(task, hm, "\r", 1), static_cast<ssize_t>(1));
+
+    for (size_t i = 1; i < lines; i++) {
+        EXPECT_EQ(resource::read(task, hs, received, sizeof(received)), static_cast<ssize_t>(sizeof(received)));
+        EXPECT_EQ(received[0], 'x');
+    }
+
+    EXPECT_EQ(resource::read(task, hs, received, sizeof(received)), static_cast<ssize_t>(sizeof(received)));
+    EXPECT_EQ(received[0], 'y');
+    EXPECT_EQ(received[99], 'y');
+    EXPECT_EQ(received[100], '\n');
 
     EXPECT_EQ(resource::close(task, hm), resource::OK);
     EXPECT_EQ(resource::close(task, hs), resource::OK);
