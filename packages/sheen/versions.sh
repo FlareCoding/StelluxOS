@@ -2,7 +2,7 @@
 # container.sh inside, and by the dispatcher for package_version.
 
 # Sheen, built from userland/apps/sheen, raised whenever a change there should reach the package
-SHEEN_VER="1.0"
+SHEEN_VER="1.1"
 
 # Scintilla, the editing component, and Lexilla, its lexers, compiled unmodified from their release tarballs
 SCINTILLA_VER="5.6.9"
