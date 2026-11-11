@@ -11,6 +11,7 @@ constexpr char LD_CH_INTR = 0x03; // ^C
 constexpr char LD_CH_QUIT = 0x1C; // ^backslash
 constexpr char LD_CH_SUSP = 0x1A; // ^Z
 
+constexpr char LD_CH_EOF = 0x04; // ^D, termios VEOF
 constexpr uint8_t LD_CH_BELL = 0x07;
 constexpr size_t LD_TAB_WIDTH = 8;
 constexpr size_t LD_UTF8_CONTINUATION_MAX = 3;
@@ -20,6 +21,10 @@ void ld_init(line_discipline* ld) {
     ld->isig = 1;
     ld->line_len = 0;
     ld->prev_char = 0;
+    for (ring_buffer_mark& mark : ld->eof_marks) {
+        mark = {};
+    }
+
     ld->lock = sync::SPINLOCK_INIT;
 }
 
@@ -97,6 +102,24 @@ static size_t erase_last_char(line_discipline* ld, uint8_t* echo_seq) {
     return echo_len;
 }
 
+// Ctrl D hands the reader the pending line without an end, or on an empty line queues an end of file:
+// a placeholder byte under a free mark, which ld_read turns into a read of 0
+__PRIVILEGED_CODE static void send_eof(line_discipline* ld, ring_buffer* sink) {
+    if (ld->line_len > 0) {
+        (void)ring_buffer_write(sink, reinterpret_cast<const uint8_t*>(ld->line_buf), ld->line_len, true);
+        ld->line_len = 0;
+        return;
+    }
+
+    for (ring_buffer_mark& mark : ld->eof_marks) {
+        if (!mark.link.is_linked()) {
+            static const uint8_t placeholder = 0;
+            (void)ring_buffer_write_all_marked(sink, &placeholder, 1, &mark, true);
+            return;
+        }
+    }
+}
+
 static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
                              const echo_target* echo, const signal_target* sig,
                              char c, bool hold_lock, sync::irq_state& irq) {
@@ -156,6 +179,9 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
         if (erase_len > 0 && echo && echo->write) {
             echo->write(echo->ctx, erase_seq, erase_len);
         }
+    } else if (c == LD_CH_EOF) {
+        send_eof(ld, sink);
+        if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
     } else if (is_line_byte(c)) {
         // A full line drops the byte and rings the bell in place of its echo
         bool fits = ld->line_len < LD_LINE_BUF_MAX;
@@ -181,7 +207,8 @@ __PRIVILEGED_CODE void ld_input(line_discipline* ld, ring_buffer* sink,
     ld_process_byte(ld, sink, echo, sig, c, false, irq);
 }
 
-// The sink room taking c needs: a byte in raw mode, the whole pending line when c ends one in cooked mode
+// The sink room taking c needs: a byte in raw mode, and in cooked mode the whole pending line when c
+// ends one, or the pending line or an end of file's placeholder byte when c is Ctrl D
 static size_t room_for_byte(const line_discipline* ld, char c) {
     if (ld->isig && signal_for_char(c)) {
         return 0;
@@ -189,6 +216,10 @@ static size_t room_for_byte(const line_discipline* ld, char c) {
 
     if (ld->mode == LD_MODE_RAW) {
         return 1;
+    }
+
+    if (c == LD_CH_EOF) {
+        return ld->line_len > 0 ? ld->line_len : 1;
     }
 
     bool is_line_end = (c == '\r' || c == '\n') && !(ld->prev_char == '\r' && c == '\n');
@@ -228,6 +259,48 @@ __PRIVILEGED_CODE size_t ld_room_needed(line_discipline* ld) {
     size_t room = ld->mode == LD_MODE_RAW ? 1 : ld->line_len + 1;
     sync::spin_unlock_irqrestore(ld->lock, irq);
     return room;
+}
+
+__PRIVILEGED_CODE static void note_eof(ring_buffer_mark*, void* reached) {
+    *static_cast<bool*>(reached) = true;
+}
+
+__PRIVILEGED_CODE ssize_t ld_read(line_discipline* ld, ring_buffer* sink,
+                                  uint8_t* buf, size_t len, bool nonblock) {
+    if (!buf || len == 0) {
+        return RB_ERR_INVAL;
+    }
+
+    while (true) {
+        sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
+        bool reaches_eof = false;
+        ssize_t got = ring_buffer_peek_marked(sink, nullptr, len, note_eof, &reaches_eof);
+
+        // The input before an end of file goes first, and its placeholder, the peek's last byte, to a
+        // read of its own, so the end of file keeps the sink readable until then
+        ring_buffer_mark* eof = nullptr;
+        if (got > 0) {
+            size_t take = static_cast<size_t>(got) - (reaches_eof && got > 1 ? 1 : 0);
+            got = ring_buffer_read_marked(sink, buf, take, &eof);
+        }
+
+        bool is_raw = ld->mode == LD_MODE_RAW;
+        sync::spin_unlock_irqrestore(ld->lock, irq);
+
+        if (eof && !is_raw) {
+            return 0;
+        }
+
+        // A raw read skips an end of file left from cooked mode and reads on
+        if (got == RB_ERR_AGAIN) {
+            ssize_t ready = ring_buffer_wait_readable(sink, nonblock);
+            if (ready <= 0) {
+                return ready;
+            }
+        } else if (!eof) {
+            return got;
+        }
+    }
 }
 
 int32_t ld_set_mode(line_discipline* ld, uint32_t cmd) {

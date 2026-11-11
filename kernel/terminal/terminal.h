@@ -44,6 +44,14 @@ __PRIVILEGED_CODE void input_char(char c);
 __PRIVILEGED_CODE ring_buffer* console_input_rb();
 
 /**
+ * @brief Read the console's input through its line discipline, so an end
+ * of file typed in cooked mode reads as 0.
+ * @return As ld_read.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t console_read(uint8_t* buf, size_t len, bool nonblock);
+
+/**
  * @brief Switch the console terminal between raw and cooked mode.
  * Elevates internally for the spinlock critical section.
  * @param cmd STLX_TCSETS_RAW or STLX_TCSETS_COOKED.
