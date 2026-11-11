@@ -13,6 +13,7 @@
 #include <QList>
 #include <QMainWindow>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -24,6 +25,7 @@ class banner;
 class empty_state;
 class find_bar;
 class picker;
+struct picker_row;
 class menu_style;
 class sheet;
 class tab_row;
@@ -112,7 +114,11 @@ private:
     void show_banner(document* doc, const banner_message& message);
     void show_status_note(const QString& note);
     void show_status_menu(status_kind kind, const QPoint& anchor);
-    void go_to_line();
+    void go_to_line(bool is_from_palette);
+    void open_palette(const QString& query);
+    void fill_palette(const QString& query);
+    void list_palette_actions(QList<picker_row>* rows, QList<std::function<void()>>* targets);
+    void list_palette_files(QList<picker_row>* rows, QList<std::function<void()>>* targets);
     void fill_indentation_menu(document* doc, QMenu* menu);
     void fill_encoding_menu(document* doc, QMenu* menu);
     void fill_line_ending_menu(document* doc, QMenu* menu);
@@ -141,6 +147,8 @@ private:
     QStringList m_recent_files;
     QStringList m_recent_encodings;
     int m_zoom = 0;
+    QList<command> m_recent_commands;
+    QList<std::function<void()>> m_palette_targets;
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;
     sheet* m_open_sheet = nullptr;
