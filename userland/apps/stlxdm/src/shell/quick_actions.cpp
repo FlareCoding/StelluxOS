@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <iterator>
@@ -67,6 +68,7 @@ constexpr int32_t FOOTER_HEIGHT = 36;
 constexpr int32_t FOOTER_PADDING_LEFT = 14;
 constexpr int32_t FOOTER_PADDING_RIGHT = 10;
 constexpr int32_t FOOTER_KEY_GAP = 6;
+constexpr int32_t FOOTER_ITEM_GAP = 18;
 
 constexpr uint16_t HID_USAGE_ENTER = 0x28;
 constexpr uint16_t HID_USAGE_BACKSPACE = 0x2A;
@@ -205,6 +207,43 @@ const char* file_name(const char* path) {
 
 const char* subtitle_face(const palette_entry& entry) {
     return entry.is_subtitle_path ? STLXTHEME_MONO_FONT_PATH : STLXTHEME_UI_FONT_PATH;
+}
+
+/* A query starting with / or ~/ names a folder up to its last slash and the start of an entry's name after it */
+struct typed_path {
+    bool        is_path = false;
+    std::string folder;       /* with its trailing slash, ~ standing for the home folder */
+    std::string prefix;
+    std::string typed_folder; /* the folder as typed, which completion keeps */
+};
+
+typed_path parse_path(std::string_view query) {
+    typed_path path;
+    bool is_home = query == "~" || query.substr(0, 2) == "~/";
+    if (query.empty() || (query[0] != '/' && !is_home)) {
+        return path;
+    }
+
+    std::string expanded(query);
+    if (is_home) {
+        const char* home = getenv("HOME");
+        std::string home_folder = home && home[0] && strcmp(home, "/") != 0 ? home : "";
+        expanded = home_folder + (query.size() > 1 ? std::string(query.substr(1)) : "/");
+    }
+
+    size_t slash = expanded.rfind('/');
+    size_t typed_slash = query.rfind('/');
+    path.is_path = true;
+    path.folder = expanded.substr(0, slash + 1);
+    path.prefix = expanded.substr(slash + 1);
+    path.typed_folder = typed_slash == std::string_view::npos ? "~/" : std::string(query.substr(0, typed_slash + 1));
+
+    return path;
+}
+
+/* A folder as a head names it, without the trailing slash but for the root */
+std::string shown_folder(const std::string& folder) {
+    return folder.size() > 1 ? folder.substr(0, folder.size() - 1) : folder;
 }
 
 /* The search field, always focused while the palette is open, so it always shows the amber rule and the caret */
@@ -437,14 +476,13 @@ void result_row::paint_right(ui::painter& p) const {
     }
 }
 
-/* What matched nothing, and under it where files were searched, so a missing file is explained */
+/* What matched nothing, and under it a note, such as where files were searched, so a missing file is explained */
 class no_match : public ui::widget {
 public:
-    no_match(const std::string& query, const std::string& note)
+    no_match(const std::string& text, const std::string& note)
         : m_text("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
           m_note("", STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_DIM) {
         int32_t max_w = ROW_WIDTH - 2 * NO_MATCH_PADDING_X;
-        std::string text = "No apps, actions or files match " + query;
         m_text.set_text(fitted(text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, max_w));
         m_note.set_text(fitted(note, STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, max_w));
     }
@@ -454,7 +492,8 @@ public:
     }
 
     void paint(ui::painter& p) override {
-        int32_t lines_h = LABEL_LINE_HEIGHT + NO_MATCH_GAP + LABEL_LINE_HEIGHT;
+        bool has_note = m_note.width() > 0;
+        int32_t lines_h = has_note ? LABEL_LINE_HEIGHT + NO_MATCH_GAP + LABEL_LINE_HEIGHT : LABEL_LINE_HEIGHT;
         int32_t top = (m_frame.h - lines_h) / 2;
         m_text.draw(p, (m_frame.w - m_text.width()) / 2, top, LABEL_LINE_HEIGHT);
         m_note.draw(p, (m_frame.w - m_note.width()) / 2, top + LABEL_LINE_HEIGHT + NO_MATCH_GAP, LABEL_LINE_HEIGHT);
@@ -465,39 +504,76 @@ private:
     text_picture m_note;
 };
 
-/* What Enter does to the selected row at the left, and how the palette closes at the right */
+/* One action the footer names, and the keys that run it, space separated */
+struct footer_item {
+    std::string label;
+    std::string keys;
+
+    bool operator==(const footer_item& other) const = default;
+};
+
+/* The actions of the selected row and the mode at the left, each with its keys, and how the palette closes at the
+ * right */
 class palette_footer : public ui::widget {
 public:
     palette_footer()
-        : m_verb("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY),
-          m_enter("Enter"), m_close("Esc closes", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
+        : m_close("Esc closes", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
 
-    /* Names Enter's action, none while no row shows */
-    void show_verb(const char* verb) {
-        if (m_verb.set_text(verb ? verb : "")) {
-            invalidate();
-        }
-    }
+    void show(const std::vector<footer_item>& items);
 
     ui::size measure(ui::size avail) override {
         return { avail.w, FOOTER_HEIGHT };
     }
 
-    void paint(ui::painter& p) override {
-        p.fill({ 0, 0, m_frame.w, 1 }, STLXTHEME_LINE_SUBTLE);
-        if (m_verb.width() > 0) {
-            m_verb.draw(p, FOOTER_PADDING_LEFT, 0, m_frame.h);
-            m_enter.paint(p, FOOTER_PADDING_LEFT + m_verb.width() + FOOTER_KEY_GAP, (m_frame.h - KEYCAP_HEIGHT) / 2);
-        }
-
-        m_close.draw(p, m_frame.w - FOOTER_PADDING_RIGHT - m_close.width(), 0, m_frame.h);
-    }
+    void paint(ui::painter& p) override;
 
 private:
-    text_picture m_verb;
-    keycap       m_enter;
-    text_picture m_close;
+    std::vector<footer_item>                          m_shown;
+    std::vector<std::unique_ptr<text_picture>>        m_labels;
+    std::vector<std::vector<std::unique_ptr<keycap>>> m_keycaps;
+    text_picture                                      m_close;
 };
+
+void palette_footer::show(const std::vector<footer_item>& items) {
+    if (items == m_shown) {
+        return;
+    }
+
+    m_shown = items;
+    m_labels.clear();
+    m_keycaps.clear();
+    for (const footer_item& item : items) {
+        m_labels.push_back(std::make_unique<text_picture>(item.label, STLXTHEME_UI_FONT_MEDIUM_PATH,
+                                                          STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY));
+        m_keycaps.emplace_back();
+        for (size_t at = 0; at < item.keys.size();) {
+            size_t end = std::min(item.keys.find(' ', at), item.keys.size());
+            m_keycaps.back().push_back(std::make_unique<keycap>(item.keys.substr(at, end - at)));
+            at = end + 1;
+        }
+    }
+
+    invalidate();
+}
+
+void palette_footer::paint(ui::painter& p) {
+    p.fill({ 0, 0, m_frame.w, 1 }, STLXTHEME_LINE_SUBTLE);
+
+    int32_t x = FOOTER_PADDING_LEFT;
+    int32_t key_top = (m_frame.h - KEYCAP_HEIGHT) / 2;
+    for (size_t i = 0; i < m_labels.size(); i++) {
+        m_labels[i]->draw(p, x, 0, m_frame.h);
+        x += m_labels[i]->width() + FOOTER_KEY_GAP;
+        for (const std::unique_ptr<keycap>& key : m_keycaps[i]) {
+            key->paint(p, x, key_top);
+            x += key->width() + KEYCAP_GAP;
+        }
+
+        x += FOOTER_ITEM_GAP - KEYCAP_GAP;
+    }
+
+    m_close.draw(p, m_frame.w - FOOTER_PADDING_RIGHT - m_close.width(), 0, m_frame.h);
+}
 
 /* The rows under the field, scrolled by the wheel and to keep the selected row in view */
 class result_list : public ui::scroll_view {
@@ -537,10 +613,11 @@ public:
 
     std::function<void(const palette_entry& entry)> on_choose;
 
-    /* Asks the file index for the files a query matches and returns the request's number, and makes the row of a
-     * file an answer holds. Both must be set before the first key. */
+    /* Ask the file index for the files a query matches or the entries of a folder, returning the request's number,
+     * and make a file's row, found or listed. All must be set before the first key. */
     std::function<uint64_t(const std::string& query)> search_files;
-    std::function<palette_entry(const found_file& file)> make_file_entry;
+    std::function<uint64_t(const std::string& folder, const std::string& prefix)> list_files;
+    std::function<palette_entry(const found_file& file, bool is_listed)> make_file_entry;
 
     /* Shows an answer to the newest file request, dropping an older one, and the walk's count in the files' head */
     void show_files(const file_answer* answer, const walk_state& walk);
@@ -554,6 +631,10 @@ private:
     void show_rows();
     void show_start();
     void show_matches(std::string_view query);
+    void show_listing(const typed_path& path);
+    void complete();
+    bool go_up();
+    void update_footer();
     bool find_calculation(std::string_view query);
     bool find_command(std::string_view query);
     section_head* add_head(const char* title);
@@ -574,11 +655,13 @@ private:
     palette_entry m_calculation;
     palette_entry m_command;
 
-    /* The newest file request and the rows of the last answer, which the query filters until the newest is
-     * answered, and the walk the files' head counts */
+    /* The newest file request, a search or a listing, the last answer's rows, which the query filters until the
+     * newest is answered, the folder a listing's rows are in, and the walk the files' head counts */
     uint64_t                   m_file_request = 0;
+    bool                       m_is_listing = false;
     bool                       m_is_file_answer_newest = false;
     std::vector<palette_entry> m_file_entries;
+    std::string                m_listed_folder;
     walk_state                 m_walk;
     section_head*              m_files_head = nullptr;
 
@@ -642,6 +725,7 @@ bool palette_view::on_key_down(const ui::key_event& e) {
         choose(m_selected);
         return true;
     case HID_USAGE_TAB:
+        complete();
         return true;
     case HID_USAGE_DELETE:
         if (m_caret < m_query.size()) {
@@ -652,7 +736,7 @@ bool palette_view::on_key_down(const ui::key_event& e) {
     case HID_USAGE_BACKSPACE:
         if (e.modifiers & CHORD_MOD_CTRL) {
             erase_word();
-        } else if (m_caret > 0) {
+        } else if (!go_up() && m_caret > 0) {
             edit(m_query.substr(0, m_caret - 1) + m_query.substr(m_caret), m_caret - 1);
         }
 
@@ -679,8 +763,15 @@ void palette_view::edit(std::string query, size_t cursor) {
     m_field->show(m_query, m_caret);
 
     std::string_view searched = trimmed(m_query);
+    typed_path path = parse_path(searched);
+    m_is_listing = path.is_path;
     m_is_file_answer_newest = false;
-    m_file_request = searched.empty() ? 0 : search_files(std::string(searched));
+    if (path.is_path) {
+        m_file_request = list_files(path.folder, path.prefix);
+    } else {
+        m_file_request = searched.empty() ? 0 : search_files(std::string(searched));
+    }
+
     show_rows();
 }
 
@@ -694,7 +785,7 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     }
 
     std::string_view searched = trimmed(m_query);
-    if (has_walk_finished && !searched.empty()) {
+    if (has_walk_finished && !searched.empty() && !m_is_listing) {
         m_file_request = search_files(std::string(searched));
     }
 
@@ -705,15 +796,16 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     std::string selected_key = m_rows.empty() ? std::string() : row_key(*m_row_entries[m_selected]);
     m_file_entries.clear();
     for (const found_file& file : answer->files) {
-        bool is_listed = std::any_of(m_entries.begin(), m_entries.end(), [&file](const palette_entry& entry) {
+        bool is_kept = std::any_of(m_entries.begin(), m_entries.end(), [&file](const palette_entry& entry) {
             return entry.kind == row_kind::file && entry.path == file.path;
         });
 
-        if (!is_listed) {
-            m_file_entries.push_back(make_file_entry(file));
+        if (m_is_listing || !is_kept) {
+            m_file_entries.push_back(make_file_entry(file, m_is_listing));
         }
     }
 
+    m_listed_folder = m_is_listing ? parse_path(searched).folder : std::string();
     m_is_file_answer_newest = true;
     show_rows();
     for (size_t i = 0; i < m_rows.size(); i++) {
@@ -761,7 +853,10 @@ void palette_view::show_rows() {
     m_selected = 0;
 
     std::string_view query = trimmed(m_query);
-    if (!query.empty()) {
+    typed_path path = parse_path(query);
+    if (path.is_path) {
+        show_listing(path);
+    } else if (!query.empty()) {
         show_matches(query);
     } else {
         show_start();
@@ -812,13 +907,22 @@ void palette_view::show_matches(std::string_view query) {
         query_match          match;
     };
 
+    std::vector<const palette_entry*> candidates;
+    for (const palette_entry& entry : m_entries) {
+        candidates.push_back(&entry);
+    }
+
+    for (const palette_entry& entry : m_file_entries) {
+        if (m_listed_folder.empty()) {
+            candidates.push_back(&entry);
+        }
+    }
+
     std::vector<found_entry> found;
-    for (const std::vector<palette_entry>* entries : { &m_entries, &m_file_entries }) {
-        for (const palette_entry& entry : *entries) {
-            query_match match = match_query(query, entry.label, entry.keywords);
-            if (match.quality != match_quality::none) {
-                found.push_back({ &entry, std::move(match) });
-            }
+    for (const palette_entry* entry : candidates) {
+        query_match match = match_query(query, entry->label, entry->keywords);
+        if (match.quality != match_quality::none) {
+            found.push_back({ entry, std::move(match) });
         }
     }
 
@@ -827,7 +931,8 @@ void palette_view::show_matches(std::string_view query) {
     bool has_command = find_command(query);
     if (found.empty() && !has_calculation && !has_command) {
         if (m_is_file_answer_newest) {
-            m_list->content()->add<no_match>(std::string(query), m_no_match_note);
+            std::string text = "No apps, actions or files match " + std::string(query);
+            m_list->content()->add<no_match>(text, m_no_match_note);
         }
 
         return;
@@ -883,6 +988,80 @@ void palette_view::show_matches(std::string_view query) {
     if (m_files_head) {
         m_files_head->set_end(walk_text());
     }
+}
+
+/* A typed path lists its folder's entries, folders first, whose names start with what follows its last slash */
+void palette_view::show_listing(const typed_path& path) {
+    std::vector<std::pair<const palette_entry*, query_match>> shown;
+    if (m_listed_folder == path.folder) {
+        for (const palette_entry& entry : m_file_entries) {
+            query_match match = match_query(path.prefix, entry.label, "");
+            if (path.prefix.empty() || match.quality == match_quality::prefix) {
+                shown.emplace_back(&entry, std::move(match));
+            }
+        }
+    }
+
+    std::string folder = shown_folder(path.folder);
+    if (shown.empty()) {
+        if (m_is_file_answer_newest) {
+            std::string text = path.prefix.empty() ? "Nothing to show in " + folder
+                                                   : "Nothing in " + folder + " starts with " + path.prefix;
+            m_list->content()->add<no_match>(text, "");
+        }
+
+        return;
+    }
+
+    add_head(("IN " + folder).c_str());
+    for (auto& [entry, match] : shown) {
+        add_row(*entry, std::move(match.runs), nullptr);
+    }
+}
+
+/* Tab puts the selected entry's name after the folder as typed, and a slash after a folder's, which lists it */
+void palette_view::complete() {
+    typed_path path = parse_path(trimmed(m_query));
+    if (!path.is_path || m_rows.empty()) {
+        return;
+    }
+
+    const palette_entry& entry = *m_row_entries[m_selected];
+    bool is_folder = entry.mime_type && strcmp(entry.mime_type, FOLDER_TYPE) == 0;
+    std::string completed = path.typed_folder + entry.label + (is_folder ? "/" : "");
+    edit(completed, completed.size());
+}
+
+/* Backspace right after a typed folder's slash goes up to its parent */
+bool palette_view::go_up() {
+    bool is_after_slash = m_caret == m_query.size() && m_query.size() > 1 && m_query.back() == '/';
+    if (!is_after_slash || !parse_path(trimmed(m_query)).is_path) {
+        return false;
+    }
+
+    size_t parent_end = m_query.rfind('/', m_query.size() - 2);
+    if (parent_end == std::string::npos) {
+        return false;
+    }
+
+    edit(m_query.substr(0, parent_end + 1), parent_end + 1);
+    return true;
+}
+
+/* Enter's action for the selected row, and for a typed path how to complete a name and go up */
+void palette_view::update_footer() {
+    std::vector<footer_item> items;
+    if (!m_rows.empty()) {
+        const palette_entry& entry = *m_row_entries[m_selected];
+        items.push_back({ entry.verb.empty() ? KIND_VERBS[static_cast<size_t>(entry.kind)] : entry.verb, "Enter" });
+    }
+
+    if (parse_path(trimmed(m_query)).is_path) {
+        items.push_back({ "Complete", "Tab" });
+        items.push_back({ "Up a folder", "Backspace" });
+    }
+
+    m_footer->show(items);
 }
 
 /* An arithmetic query shows its value with commas between the thousands, and Enter copies it without them */
@@ -957,16 +1136,14 @@ void palette_view::add_row(const palette_entry& entry, std::vector<match_run> ru
 
 void palette_view::select(size_t index) {
     if (m_rows.empty()) {
-        m_footer->show_verb(nullptr);
+        update_footer();
         return;
     }
 
     m_rows[m_selected]->set_selected(false);
     m_selected = std::min(index, m_rows.size() - 1);
     m_rows[m_selected]->set_selected(true);
-
-    const palette_entry& entry = *m_row_entries[m_selected];
-    m_footer->show_verb(entry.verb.empty() ? KIND_VERBS[static_cast<size_t>(entry.kind)] : entry.verb.c_str());
+    update_footer();
 }
 
 /* Moves the selection without wrapping, scrolling the least that shows the newly selected row */
@@ -1179,8 +1356,9 @@ const stlxgfx_surface_t* icon_of_type(const file_icons& icons, const char* mime_
     return is_program ? icons.program : icons.text;
 }
 
-/* A file's row shows the folder it is in, which tells apart two files of one name, and its size at the right */
-palette_entry file_entry(const found_file& file, const file_icons& icons, std::string verb) {
+/* A found file's row shows the folder it is in, which tells apart two files of one name, and a listed one, whose
+ * folder every row shares, its first entries or its type. Its size shows at the right. */
+palette_entry file_entry(const found_file& file, const file_icons& icons, std::string verb, bool is_listed) {
     palette_entry entry;
     entry.kind = row_kind::file;
     entry.label = std::string(file.name());
@@ -1188,9 +1366,12 @@ palette_entry file_entry(const found_file& file, const file_icons& icons, std::s
     entry.mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
     entry.file = file;
 
-    entry.subtitle = file.name_start > 1 ? file.path.substr(0, file.name_start - 1) : "/";
-    entry.is_subtitle_path = true;
+    std::string folder = file.name_start > 1 ? file.path.substr(0, file.name_start - 1) : "/";
+    std::string listed = file.is_folder ? file.preview : file.description ? file.description : "";
+    entry.subtitle = is_listed ? listed : folder;
+    entry.is_subtitle_path = !is_listed || file.is_folder;
     entry.right = file.is_folder ? items_text(file.size) : size_text(file.size);
+
     entry.verb = std::move(verb);
     entry.icon = icon_of_type(icons, entry.mime_type);
 
@@ -1379,7 +1560,7 @@ std::unique_ptr<ui::widget> quick_actions::build() {
 
     file_icons icons = { m_folder_icon, m_text_icon, m_image_icon, m_program_icon };
     for (const found_file& file : m_picked_files) {
-        entries.push_back(file_entry(file, icons, file_verb(file.mime_type)));
+        entries.push_back(file_entry(file, icons, file_verb(file.mime_type), false));
     }
 
     for (palette_entry& entry : entries) {
@@ -1394,8 +1575,12 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         return m_files.search(query, FILE_RESULTS_MAX);
     };
 
-    view->make_file_entry = [this, icons](const found_file& file) {
-        return file_entry(file, icons, file_verb(file.mime_type));
+    view->list_files = [this](const std::string& folder, const std::string& prefix) {
+        return m_files.list(folder, prefix);
+    };
+
+    view->make_file_entry = [this, icons](const found_file& file, bool is_listed) {
+        return file_entry(file, icons, file_verb(file.mime_type), is_listed);
     };
 
     palette_view* shown = view.get();
