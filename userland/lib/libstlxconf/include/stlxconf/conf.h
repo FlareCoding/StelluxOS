@@ -12,7 +12,7 @@ extern "C" {
 #define STLXCONF_DROP_IN_DIR   "/etc/stlxdm/conf.d"
 #define STLXCONF_DEFAULT_ICON  "/etc/res/icons/icon_unknown_32x32.bmp"
 #define STLXCONF_MAX_TASKBAR   16
-#define STLXCONF_MAX_SHORTCUTS 8
+#define STLXCONF_MAX_SHORTCUTS 32
 #define STLXCONF_MAX_AUTOSTART 8
 #define STLXCONF_MAX_URL_HANDLERS 8
 #define STLXCONF_MAX_FILE_HANDLERS 32
