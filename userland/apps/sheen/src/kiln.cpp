@@ -38,6 +38,11 @@ struct language {
     QList<language_property> properties;
 };
 
+struct bidi_control {
+    const char* utf8;
+    const char* name;
+};
+
 // Kiln, the syntax palette
 static constexpr uint32_t KILN_CLAY = 0xFFE8917C;
 static constexpr uint32_t KILN_ORCHID = 0xFFD3A5CC;
@@ -241,6 +246,13 @@ static const language LANGUAGES[] = {
 };
 
 static constexpr int KEYWORD_SET_COUNT = sizeof(language::keywords) / sizeof(language::keywords[0]);
+
+// Marks that reorder text without showing, such as a comment that hides live code, each drawn as its short name
+static constexpr bidi_control BIDI_CONTROLS[] = {
+    { "\u061C", "ALM" }, { "\u200E", "LRM" }, { "\u200F", "RLM" }, { "\u202A", "LRE" }, { "\u202B", "RLE" },
+    { "\u202C", "PDF" }, { "\u202D", "LRO" }, { "\u202E", "RLO" }, { "\u2066", "LRI" }, { "\u2067", "RLI" },
+    { "\u2068", "FSI" }, { "\u2069", "PDI" },
+};
 
 static sptr_t scintilla_rgb(uint32_t argb) {
     return static_cast<sptr_t>(((argb & 0xFF) << 16) | (argb & 0xFF00) | ((argb >> 16) & 0xFF));
@@ -454,6 +466,11 @@ void apply_text_area_look(ScintillaEditBase* view) {
     view->send(SCI_SETUSETABS, 0);
     view->send(SCI_SETSCROLLWIDTHTRACKING, 1);
     view->send(SCI_SETSCROLLWIDTH, 1);
+
+    for (const bidi_control& control : BIDI_CONTROLS) {
+        auto character = reinterpret_cast<uptr_t>(control.utf8);
+        view->send(SCI_SETREPRESENTATION, character, reinterpret_cast<sptr_t>(control.name));
+    }
 }
 
 // Past the gutter's design width once the last line's number needs more room, as from line 100,000 or zoomed in
