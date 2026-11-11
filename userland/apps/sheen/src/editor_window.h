@@ -116,6 +116,13 @@ private:
     void show_status_menu(status_kind kind, const QPoint& anchor);
     void go_to_line(bool is_from_palette);
     void open_palette(const QString& query);
+    document* settings_document() const;
+    void open_settings(const QString& section);
+    bool save_settings();
+    void take_settings_from_text();
+    void reread_settings();
+    void apply_settings(const sheen_settings& settings);
+    void show_settings_problems(document* doc);
     void fill_palette(const QString& query);
     void list_palette_actions(QList<picker_row>* rows, QList<std::function<void()>>* targets);
     void list_palette_files(QList<picker_row>* rows, QList<std::function<void()>>* targets);
@@ -148,6 +155,7 @@ private:
     QStringList m_recent_encodings;
     int m_zoom = 0;
     QList<command> m_recent_commands;
+    QStringList m_settings_problems;
     QList<std::function<void()>> m_palette_targets;
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;

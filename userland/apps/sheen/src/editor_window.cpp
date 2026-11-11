@@ -11,6 +11,7 @@
 #include "palette.h"
 #include "picker.h"
 #include "placeholder.h"
+#include "settings_page.h"
 #include "tab_strip.h"
 #include "tab_switcher.h"
 
@@ -157,6 +158,15 @@ static QPoint below_caret(ScintillaEditBase* view) {
     QPoint point(static_cast<int>(view->send(SCI_POINTXFROMPOSITION, 0, caret)),
                  static_cast<int>(view->send(SCI_POINTYFROMPOSITION, 0, caret) + line_height));
     return view->viewport()->mapToGlobal(point);
+}
+
+// The status bar names sheen.conf's first problem and how many more it has
+static QString problems_note(const QStringList& problems) {
+    if (problems.size() <= 1) {
+        return problems.value(0);
+    }
+
+    return QStringLiteral("%1 and %2 more").arg(problems.first()).arg(problems.size() - 1);
 }
 
 static QString lines_phrase(int count) {
@@ -570,10 +580,8 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
         m_tab_row->menu()->hide();
     }
 
-    if (!problems.isEmpty()) {
-        QString more = QStringLiteral("%1 and %2 more").arg(problems.first()).arg(problems.size() - 1);
-        m_status_note = problems.size() == 1 ? problems.first() : more;
-    }
+    m_settings_problems = problems;
+    m_status_note = problems_note(problems);
 
     resize(QSize(WINDOW_W, WINDOW_H).boundedTo(screen()->availableGeometry().size()));
     setMinimumSize(WINDOW_MIN_W, WINDOW_MIN_H);
@@ -846,7 +854,7 @@ void editor_window::run(command id) {
     }
 
     if (id == command::SETTINGS) {
-        open_path(QString::fromLatin1(SETTINGS_PATH), QByteArray(), insertion_index());
+        open_settings(QString());
         return;
     }
 
@@ -1112,6 +1120,10 @@ void editor_window::refresh_commands() {
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
     m_actions.value(command::REVERT)->setEnabled(is_free && doc && !doc->is_untitled() && doc->is_modified());
+    if (doc && doc->is_page()) {
+        m_actions.value(command::SAVE)->setEnabled(is_free);
+    }
+
     m_actions.value(command::REOPEN_WITH_ENCODING)->setEnabled(is_free && has_text && !doc->is_untitled());
     m_tab_row->menu()->setEnabled(is_free);
     if (!doc) {
@@ -1172,7 +1184,7 @@ void editor_window::set_open_sheet(sheet* open_sheet) {
 
 void editor_window::focus_current_document() {
     document* doc = current_document();
-    doc ? doc->view()->setFocus() : m_empty_state->setFocus();
+    doc ? doc->shown_widget()->setFocus() : m_empty_state->setFocus();
 }
 
 document* editor_window::add_document(std::unique_ptr<document> owned, int index) {
@@ -1542,6 +1554,10 @@ void editor_window::hold_binary(document* doc, const QString& path, const QByteA
 // A clean tab whose file is on disk has nothing to write, and a file changed elsewhere asks before it is replaced
 // A never-saved or read-only file saves through Save As, in its own folder
 bool editor_window::save_document(document* doc) {
+    if (doc->is_page()) {
+        return save_settings();
+    }
+
     if (doc->is_untitled() || doc->is_read_only()) {
         return save_document_as(doc);
     }
@@ -1633,6 +1649,10 @@ bool editor_window::write_document(document* doc, const QString& path) {
         refresh_tab(doc);
         refresh_banner();
         refresh_status();
+        if (QFileInfo(path).absoluteFilePath() == QLatin1String(SETTINGS_PATH)) {
+            take_settings_from_text();
+        }
+
         return true;
     }
 
@@ -1746,7 +1766,8 @@ bool editor_window::close_documents(const QList<document*>& docs, const QString&
     } else if (unsaved.size() > 1) {
         QList<unsaved_entry> entries;
         for (document* doc : unsaved) {
-            QString place = doc->is_untitled() ? QStringLiteral("never saved, Save asks where")
+            QString place = doc->is_page()     ? QFileInfo(QString::fromLatin1(SETTINGS_PATH)).absolutePath()
+                          : doc->is_untitled() ? QStringLiteral("never saved, Save asks where")
                                                : QFileInfo(doc->file().path).absolutePath();
             entries.append({ doc->display_name(), place });
         }
@@ -1794,7 +1815,8 @@ prompt_answer editor_window::ask_about_unsaved(document* doc, const QString& pur
     QString name = doc->display_name();
     QString title = doc->is_untitled() ? QStringLiteral("Save \"%1\" before %2?").arg(name, purpose)
                                        : QStringLiteral("Save changes to %1 before %2?").arg(name, purpose);
-    QString body = doc->is_untitled() ? QStringLiteral("It has never been saved.")
+    QString body = doc->is_page()     ? QStringLiteral("Your unsaved settings are lost if you don't save them.")
+                 : doc->is_untitled() ? QStringLiteral("It has never been saved.")
                  : doc->is_deleted()  ? QStringLiteral("It was deleted on disk, so its text exists only here.")
                                       : QStringLiteral("Your changes to %1 will be lost if you don't save them.")
                                            .arg(lines_phrase(qMax(1, doc->changed_line_count())));
@@ -1810,7 +1832,7 @@ void editor_window::remove_document(int index, bool keeps_text) {
     has_only_copy = has_only_copy && !doc->is_large();
     closed_tab closed = { doc->file(), doc->lang(), doc->current_view_state(), index, doc->untitled_number(),
                           has_only_copy ? doc->keep_scintilla_document() : 0 };
-    if (!doc->is_untitled() || closed.scintilla_document) {
+    if (!doc->is_page() && (!doc->is_untitled() || closed.scintilla_document)) {
         m_closed_tabs.prepend(closed);
     }
 
@@ -2077,7 +2099,7 @@ void editor_window::show_current_document() {
     m_recent_tabs.removeAll(doc);
     m_recent_tabs.prepend(doc);
 
-    QWidget* shown = doc->placeholder() ? doc->placeholder() : doc->view();
+    QWidget* shown = doc->shown_widget();
     m_stack->setCurrentWidget(shown);
     m_find_bar->set_view(doc->placeholder() ? nullptr : doc->view());
     doc->refresh_function_names();
@@ -2099,9 +2121,10 @@ void editor_window::refresh_tab(document* doc) {
     }
 
     refresh_tab_names();
-    tabs()->setTabToolTip(index, doc->is_untitled() ? QStringLiteral("Never saved")
-                                 : doc->is_deleted() ? QStringLiteral("Deleted on disk")
-                                                     : doc->file().path);
+    tabs()->setTabToolTip(index, doc->is_page()     ? QString::fromLatin1(SETTINGS_PATH)
+                                 : doc->is_untitled() ? QStringLiteral("Never saved")
+                                 : doc->is_deleted()  ? QStringLiteral("Deleted on disk")
+                                                      : doc->file().path);
     tabs()->set_tab_modified(index, doc->is_modified());
     tabs()->updateGeometry();
     if (doc == current_document()) {
@@ -2529,6 +2552,129 @@ void editor_window::show_tab_menu(int index, const QPoint& anchor) {
                                      [this] { reopen_closed_tab(); });
     reopen->setEnabled(!m_closed_tabs.isEmpty());
     menu.exec(anchor);
+}
+
+document* editor_window::settings_document() const {
+    for (const std::unique_ptr<document>& open : m_documents) {
+        if (open->is_page()) {
+            return open.get();
+        }
+    }
+
+    return nullptr;
+}
+
+// Ctrl Comma opens the Settings tab or focuses the one already open, turned to `section` when one is named
+void editor_window::open_settings(const QString& section) {
+    document* doc = settings_document();
+    if (!doc) {
+        auto owned = std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings);
+        auto* page = new settings_page(m_settings, m_stack);
+        m_stack->addWidget(page);
+        owned->show_page(page, QStringLiteral("Settings"));
+        doc = add_document(std::move(owned), insertion_index());
+
+        page->on_changed = [this, doc, page] {
+            doc->set_page_modified(!page->changes().isEmpty());
+            refresh_tab(doc);
+            refresh_commands();
+        };
+
+        page->on_save = [this] { save_settings(); };
+        page->on_open_as_text = [this] { open_path(QString::fromLatin1(SETTINGS_PATH), QByteArray(), insertion_index()); };
+        show_settings_problems(doc);
+    }
+
+    select_tab(index_of(doc));
+    if (!section.isEmpty()) {
+        static_cast<settings_page*>(doc->placeholder())->show_section(section);
+    }
+}
+
+// Only the changed keys' lines are rewritten, then the file is read again so every tab takes what it now says
+bool editor_window::save_settings() {
+    document* doc = settings_document();
+    auto* page = static_cast<settings_page*>(doc->placeholder());
+    if (page->changes().isEmpty()) {
+        return true;
+    }
+
+    QString error;
+    if (!write_settings(QString::fromLatin1(SETTINGS_PATH), page->changes(), &error)) {
+        show_banner(doc, { banner_kind::FAILURE, QStringLiteral("Couldn't save sheen.conf"),
+                           QStringLiteral(": %1. The file on disk is unchanged.").arg(error.toLower()), {} });
+        return false;
+    }
+
+    reread_settings();
+    return true;
+}
+
+// sheen.conf saved from its text applies at once, unless the Settings tab holds changes of its own and asks first
+void editor_window::take_settings_from_text() {
+    document* doc = settings_document();
+    auto* page = doc ? static_cast<settings_page*>(doc->placeholder()) : nullptr;
+    if (!page || page->changes().isEmpty()) {
+        reread_settings();
+        return;
+    }
+
+    show_banner(doc, { banner_kind::CHANGE, QStringLiteral("sheen.conf"),
+                       QStringLiteral(" changed on disk. Your unsaved settings are kept."),
+                       { { QStringLiteral("Reload"), [this] { reread_settings(); } },
+                         { QStringLiteral("Keep Mine"), [this, doc] {
+                              doc->set_banner(std::nullopt);
+                              refresh_banner();
+                          } } } });
+}
+
+// Every tab, the status bar and the Settings tab take what sheen.conf now says, dropping the page's changes
+void editor_window::reread_settings() {
+    sheen_settings saved;
+    m_settings_problems = read_settings(QString::fromLatin1(SETTINGS_PATH), &saved);
+    m_status_note = problems_note(m_settings_problems);
+    apply_settings(saved);
+
+    document* doc = settings_document();
+    if (!doc) {
+        return;
+    }
+
+    static_cast<settings_page*>(doc->placeholder())->reset(m_settings);
+    doc->set_banner(std::nullopt);
+    show_settings_problems(doc);
+    refresh_banner();
+}
+
+void editor_window::apply_settings(const sheen_settings& settings) {
+    m_settings = settings;
+    set_text_size(m_settings.font_size);
+    for (const std::unique_ptr<document>& open : m_documents) {
+        if (!open->is_page()) {
+            open->apply_settings();
+        }
+    }
+
+    refresh_status();
+}
+
+// The first problem sheen.conf has, such as an unknown key, with Open as Text going to its line
+void editor_window::show_settings_problems(document* doc) {
+    if (m_settings_problems.isEmpty()) {
+        return;
+    }
+
+    QString problem = m_settings_problems.first();
+    QString place = problem.section(QLatin1Char(' '), 0, 0);
+    int line = place.section(QLatin1Char(':'), 1, 1).toInt();
+    QString rest = QStringLiteral(" %1, the default is used.").arg(problem.section(QLatin1Char(' '), 1));
+    show_banner(doc, { banner_kind::FAILURE, place, rest, { { QStringLiteral("Open as Text"), [this, line] {
+                                                               QString path = QString::fromLatin1(SETTINGS_PATH);
+                                                               open_path(path, QByteArray(), insertion_index());
+                                                               if (document* text = current_document()) {
+                                                                   text->view()->send(SCI_GOTOLINE, line - 1);
+                                                               }
+                                                           } } } });
 }
 
 // Rereading from disk drops unsaved edits, so they get the usual question first

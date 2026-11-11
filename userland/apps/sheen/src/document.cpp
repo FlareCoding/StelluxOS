@@ -140,6 +140,23 @@ document::~document() {
     delete m_view;
 }
 
+void document::show_page(QWidget* page, const QString& name) {
+    m_placeholder = page;
+    m_page_name = name;
+}
+
+QWidget* document::shown_widget() const {
+    return m_placeholder ? m_placeholder : static_cast<QWidget*>(m_view);
+}
+
+void document::apply_settings() {
+    apply_text_size(m_view);
+    m_view->send(SCI_SETCARETPERIOD, m_settings.caret_blink_ms);
+    std::optional<indentation> indent = m_settings.detect_indentation ? detect_indentation() : std::nullopt;
+    set_indentation(indent ? *indent : indentation { !m_settings.insert_spaces, m_settings.tab_width });
+    set_mode(m_mode, false);
+}
+
 // No encoding yet, so the tab reopened after a close looks at the bytes again
 void document::hold(const QString& path, const QByteArray& bytes, QWidget* placeholder) {
     m_file.path = path;
@@ -518,12 +535,12 @@ void document::restore_view_state(const view_state& state) {
 
 // A file deleted on disk counts as unsaved, since its text now lives only here
 bool document::is_modified() const {
-    return m_is_deleted || m_view->send(SCI_GETMODIFY) != 0;
+    return m_is_deleted || m_is_page_modified || m_view->send(SCI_GETMODIFY) != 0;
 }
 
 // An untouched untitled document, which a file opened next takes the place of
 bool document::is_pristine() const {
-    return m_file.path.isEmpty() && !is_modified() && m_view->send(SCI_GETLENGTH) == 0;
+    return m_file.path.isEmpty() && !is_page() && !is_modified() && m_view->send(SCI_GETLENGTH) == 0;
 }
 
 int document::changed_line_count() const {
@@ -537,6 +554,10 @@ int document::changed_line_count() const {
 }
 
 QString document::display_name() const {
+    if (is_page()) {
+        return m_page_name;
+    }
+
     if (!m_file.path.isEmpty()) {
         return QFileInfo(m_file.path).fileName();
     }

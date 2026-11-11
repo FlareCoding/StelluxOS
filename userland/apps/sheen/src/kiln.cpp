@@ -515,6 +515,16 @@ void set_text_size(float em_px) {
     s_text_size = em_px;
 }
 
+void apply_text_size(ScintillaEditBase* view) {
+    int size = static_cast<int>(points_from_pixels(s_text_size) * SC_FONT_SIZE_MULTIPLIER + 0.5);
+    for (int style = 0; style <= STYLE_MAX; style++) {
+        view->send(SCI_STYLESETSIZEFRACTIONAL, style, size);
+    }
+
+    apply_line_height(view);
+    fit_line_numbers(view);
+}
+
 void apply_text_area_look(ScintillaEditBase* view) {
     reset_styles(view);
     apply_gutter(view);
