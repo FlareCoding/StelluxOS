@@ -3,6 +3,7 @@
 #include "encoding.h"
 
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QPainter>
 #include <QPushButton>
@@ -16,6 +17,10 @@ static constexpr int SECTION_GAP = 12;
 static constexpr int BUTTON_GAP = 8;
 static constexpr float TITLE_SIZE = 15.5f;
 static constexpr qreal GLYPH_STROKE = 1.5;
+static constexpr int BAR_WIDTH = 320;
+static constexpr int BAR_HEIGHT = 4;
+static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
+static constexpr qint64 WHOLE_MEGABYTES_FROM = 10 * BYTES_PER_MB;
 static constexpr QByteArrayView LATIN_1 = "ISO-8859-1";
 
 namespace {
@@ -102,4 +107,65 @@ binary_placeholder::binary_placeholder(QWidget* parent, const QString& name, con
 void binary_placeholder::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.fillRect(rect(), token(STLXTHEME_OPAQUE_POCKET));
+}
+
+// The bar is an empty widget the layout places, painted here over the pocket
+loading_placeholder::loading_placeholder(QWidget* parent, const QString& name, qint64 size)
+    : QWidget(parent), m_bar(new QWidget(this)), m_size(size) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setSpacing(SECTION_GAP);
+    layout->addStretch(1);
+    layout->addWidget(make_label(QStringLiteral("Opening %1").arg(name), ui_font(TITLE_SIZE, QFont::DemiBold),
+                                 STLXTHEME_TEXT, this), 0, Qt::AlignHCenter);
+
+    m_bar->setFixedSize(BAR_WIDTH, BAR_HEIGHT);
+    layout->addWidget(m_bar, 0, Qt::AlignHCenter);
+    QFont amount_font = mono_font(STLXTHEME_CAPTION_SIZE);
+    m_amount = make_label(QStringLiteral("0 of 0 MB"), amount_font, STLXTHEME_TEXT_SECONDARY, this);
+    layout->addWidget(m_amount, 0, Qt::AlignHCenter);
+    set_progress(0, 1);
+
+    auto* cancel = new QPushButton(QStringLiteral("Cancel"), this);
+    connect(cancel, &QPushButton::clicked, this, [this] { on_cancel(); });
+    layout->addWidget(cancel, 0, Qt::AlignHCenter);
+    layout->addStretch(2);
+    setFocusProxy(cancel);
+}
+
+void loading_placeholder::set_progress(qint64 done, qint64 total) {
+    m_share = total > 0 ? static_cast<double>(done) / static_cast<double>(total) : 0;
+    qint64 arrived = static_cast<qint64>(m_share * static_cast<double>(m_size));
+    int decimals = m_size >= WHOLE_MEGABYTES_FROM ? 0 : 1;
+    auto megabytes = [decimals](qint64 bytes) {
+        return QString::number(static_cast<double>(bytes) / BYTES_PER_MB, 'f', decimals);
+    };
+
+    m_amount->setText(QStringLiteral("%1 of %2 MB").arg(megabytes(arrived), megabytes(m_size)));
+    update();
+}
+
+// The notice tone like the tab's progress line, on a recessed track with a hairline inside its edge
+void loading_placeholder::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.fillRect(rect(), token(STLXTHEME_OPAQUE_POCKET));
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    QRectF track = m_bar->geometry();
+    painter.setPen(QPen(token(STLXTHEME_LINE), 1));
+    painter.setBrush(token(STLXTHEME_RECESS));
+    painter.drawRoundedRect(track.adjusted(0.5, 0.5, -0.5, -0.5), BAR_HEIGHT / 2.0, BAR_HEIGHT / 2.0);
+
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(token(NOTICE_TONE));
+    painter.drawRoundedRect(QRectF(track.topLeft(), QSizeF(track.width() * m_share, track.height())),
+                            BAR_HEIGHT / 2.0, BAR_HEIGHT / 2.0);
+}
+
+void loading_placeholder::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape) {
+        on_cancel();
+        return;
+    }
+
+    QWidget::keyPressEvent(event);
 }

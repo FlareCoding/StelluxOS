@@ -27,6 +27,7 @@ class sheet;
 class tab_row;
 class tab_strip;
 class tab_switcher;
+struct load_result;
 
 /* A closed tab, enough to open it again where it was */
 struct closed_tab {
@@ -79,6 +80,8 @@ private:
     void new_document();
     void choose_files_to_open(const QString& folder);
     bool open_path(const QString& path, const QByteArray& encoding, int index);
+    bool load_in_background(const QString& path, qint64 size, const QByteArray& encoding, int index);
+    void finish_loading(document* doc, const load_result& result);
     void hold_binary(document* doc, const QString& path, const QByteArray& bytes);
     bool save_document(document* doc);
     bool save_document_as(document* doc, const QString& title = QString());

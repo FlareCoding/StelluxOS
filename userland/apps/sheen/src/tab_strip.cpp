@@ -1,4 +1,5 @@
 #include "tab_strip.h"
+#include "chrome.h"
 #include "menu_style.h"
 
 #include <QContextMenuEvent>
@@ -30,6 +31,10 @@ static constexpr qreal LOCK_STROKE = 1.3;
 static constexpr int TAB_MODIFIED = 1;
 static constexpr int TAB_LOCKED = 2;
 static constexpr int TAB_STRUCK = 4;
+static constexpr int TAB_FLAG_BITS = 8;
+static constexpr int TAB_FLAGS = (1 << TAB_FLAG_BITS) - 1;
+static constexpr int PERMILLE = 1000;
+static constexpr int PROGRESS_LINE = 2;
 static constexpr qreal CLOSE_GLYPH_HALF = 3;
 static constexpr qreal CLOSE_GLYPH_STROKE = 1.4;
 static constexpr qreal HALF_PIXEL = 0.5;
@@ -51,6 +56,7 @@ static const QColor TEXT_SECONDARY = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
 static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
 static const QColor TEXT_DISABLED = QColor::fromRgba(STLXTHEME_TEXT_DISABLED);
 static const QColor ACCENT = QColor::fromRgba(STLXTHEME_ACCENT);
+static const QColor NOTICE = QColor::fromRgba(NOTICE_TONE);
 static const QColor SURFACE_HOVER = QColor::fromRgba(STLXTHEME_SURFACE_HOVER);
 
 // Rounded at the top corners and open at the bottom, where the tab joins the text
@@ -160,6 +166,16 @@ void tab_strip::set_tab_struck(int index, bool is_struck) {
     set_tab_flag(index, TAB_STRUCK, is_struck);
 }
 
+// Above the flags in the tab's data, offset by one so that zero means no progress
+void tab_strip::set_tab_progress(int index, int permille) {
+    int data = tabData(index).toInt();
+    int changed = (data & TAB_FLAGS) | ((permille + 1) << TAB_FLAG_BITS);
+    if (changed != data) {
+        setTabData(index, changed);
+        update(tabRect(index));
+    }
+}
+
 // The label's width is rounded up, so a name that fits is never cut by a fraction of a pixel
 QSize tab_strip::tabSizeHint(int index) const {
     int label = qCeil(QFontMetricsF(m_font).horizontalAdvance(tabText(index)));
@@ -224,6 +240,13 @@ void tab_strip::paintEvent(QPaintEvent*) {
             paint_unsaved_dot(painter, slot);
         } else if (is_current || is_hovered) {
             paint_close_glyph(painter, slot, is_slot_hovered);
+        }
+
+        // The notice tone, since a file still arriving holds no change of the user's yet
+        int progress = tab_progress(index);
+        if (progress >= 0) {
+            int arrived = rect.width() * progress / PERMILLE;
+            painter.fillRect(QRect(rect.left(), rect.bottom() + 1 - PROGRESS_LINE, arrived, PROGRESS_LINE), NOTICE);
         }
     }
 
@@ -303,6 +326,10 @@ bool tab_strip::is_tab_locked(int index) const {
 
 bool tab_strip::is_tab_struck(int index) const {
     return tabData(index).toInt() & TAB_STRUCK;
+}
+
+int tab_strip::tab_progress(int index) const {
+    return (tabData(index).toInt() >> TAB_FLAG_BITS) - 1;
 }
 
 void tab_strip::set_tab_flag(int index, int flag, bool is_set) {

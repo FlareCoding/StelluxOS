@@ -1,4 +1,5 @@
 #include "document.h"
+#include "file_loader.h"
 #include "kiln.h"
 
 #include <QFile>
@@ -28,6 +29,11 @@ static constexpr mode_t PERMISSION_BITS = 07777;
 static constexpr QChar ELLIPSIS(0x2026);
 
 static constexpr int CHANGE_HISTORY_SHOWN = SC_CHANGE_HISTORY_ENABLED | SC_CHANGE_HISTORY_MARKERS;
+static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
+static constexpr qint64 LARGE_TEXT_BYTES = qint64(1) << 31;
+
+// Wrapping in the background costs about a quarter second of a core per megabyte, so past this text stays unwrapped
+static constexpr qint64 WRAP_LIMIT_BYTES = 4 * BYTES_PER_MB;
 static constexpr int CHANGED_LINE_MARKERS =
     (1 << SC_MARKNUM_HISTORY_MODIFIED) | (1 << SC_MARKNUM_HISTORY_REVERTED_TO_MODIFIED);
 
@@ -93,7 +99,7 @@ static const key_binding KEPT_KEYS[] = {
     { SCK_RETURN, SHIFT, SCI_NEWLINE },
 };
 
-static eol_counts count_eols(QByteArrayView text) {
+eol_counts count_eols(QByteArrayView text) {
     eol_counts counts;
     for (qsizetype i = 0; i < text.size(); i++) {
         if (text[i] == '\n') {
@@ -129,12 +135,8 @@ document::document(QWidget* parent, int untitled_number, const sheen_settings& s
     configure_view();
 }
 
-// The placeholder may be closing its own tab from a button's signal, so it goes once that returns
 document::~document() {
-    if (m_placeholder) {
-        m_placeholder->deleteLater();
-    }
-
+    end_load();
     delete m_view;
 }
 
@@ -156,6 +158,47 @@ bool document::open_held(const QByteArray& encoding) {
     m_placeholder->deleteLater();
     m_placeholder = nullptr;
     return true;
+}
+
+// No encoding yet, so the tab reopened after a close detects it again
+file_loader* document::begin_load(const QString& path, qint64 size, const QByteArray& encoding, QWidget* placeholder) {
+    m_file.path = path;
+    m_file.encoding = {};
+    m_placeholder = placeholder;
+    m_is_large = size >= m_settings.large_file_mb * BYTES_PER_MB;
+
+    int options = m_is_large ? SC_DOCUMENTOPTION_STYLES_NONE : SC_DOCUMENTOPTION_DEFAULT;
+    options |= size >= LARGE_TEXT_BYTES ? SC_DOCUMENTOPTION_TEXT_LARGE : 0;
+    auto* loader = reinterpret_cast<Scintilla::ILoader*>(m_view->send(SCI_CREATELOADER, size, options));
+    m_loader = std::make_unique<file_loader>(path, encoding, loader);
+    return m_loader.get();
+}
+
+// A loaded document starts with undo collection off, as the loader filled it
+void document::finish_load(const load_result& result) {
+    sptr_t loaded = m_loader->take_document();
+    end_load();
+
+    m_view->send(SCI_SETDOCPOINTER, 0, loaded);
+    m_view->send(SCI_RELEASEDOCUMENT, 0, loaded);
+    m_view->send(SCI_SETUNDOCOLLECTION, 1);
+
+    m_file.encoding = result.encoding;
+    settle_text(result.eols);
+    if (m_is_large) {
+        enter_large_file_mode();
+    } else {
+        detect_language();
+    }
+}
+
+// The placeholder may be closing its own tab from a button's signal, so it goes once control returns
+void document::end_load() {
+    m_loader.reset();
+    if (m_placeholder) {
+        m_placeholder->deleteLater();
+        m_placeholder = nullptr;
+    }
 }
 
 bool document::load(const QString& path, const QByteArray& bytes, const QByteArray& encoding) {
@@ -305,11 +348,33 @@ void document::set_mode(edit_mode mode, bool is_chosen) {
     m_mode = mode;
     m_is_mode_chosen = m_is_mode_chosen || is_chosen;
     apply_mode_defaults(m_view, mode == edit_mode::CODE ? m_settings.code : m_settings.text);
+    limit_wrap();
     if (mode == edit_mode::TEXT) {
         clear_function_names(m_view);
     } else {
         refresh_function_names();
     }
+}
+
+bool document::is_wrap_over_limit() const {
+    bool is_wrapped = m_view->send(SCI_GETWRAPMODE) != SC_WRAP_NONE;
+    return is_wrapped && !m_is_large && !m_is_wrap_chosen && m_view->send(SCI_GETLENGTH) >= WRAP_LIMIT_BYTES;
+}
+
+bool document::limit_wrap() {
+    if (!is_wrap_over_limit()) {
+        return false;
+    }
+
+    m_view->send(SCI_SETWRAPMODE, SC_WRAP_NONE);
+    m_is_wrap_limited = true;
+    return true;
+}
+
+void document::choose_wrap(bool is_wrapped) {
+    m_is_wrap_chosen = true;
+    m_is_wrap_limited = false;
+    m_view->send(SCI_SETWRAPMODE, is_wrapped ? SC_WRAP_WORD : SC_WRAP_NONE);
 }
 
 void document::fit_text_width() {
@@ -519,7 +584,11 @@ void document::replace_text(const QByteArray& utf8) {
     m_view->send(SCI_CLEARALL);
     m_view->send(SCI_APPENDTEXT, utf8.size(), reinterpret_cast<sptr_t>(utf8.constData()));
     m_view->send(SCI_SETUNDOCOLLECTION, 1);
+    settle_text(count_eols(utf8));
+}
 
+// A new text starts with no undo, at the save point, with its line endings and indentation read from it
+void document::settle_text(const eol_counts& counts) {
     m_view->send(SCI_EMPTYUNDOBUFFER);
     m_view->send(SCI_SETSAVEPOINT);
 
@@ -527,7 +596,6 @@ void document::replace_text(const QByteArray& utf8) {
     m_view->send(SCI_SETCHANGEHISTORY, CHANGE_HISTORY_SHOWN);
     m_view->send(SCI_GOTOPOS, 0);
 
-    eol_counts counts = count_eols(utf8);
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
     m_file.eols = counts;
@@ -537,6 +605,13 @@ void document::replace_text(const QByteArray& utf8) {
     m_is_deleted = false;
     remember_disk_state();
     fit_line_numbers(m_view);
+}
+
+void document::enter_large_file_mode() {
+    set_mode(edit_mode::CODE, true);
+    set_language(nullptr);
+    m_view->send(SCI_SETWRAPMODE, SC_WRAP_NONE);
+    m_view->send(SCI_SETLAYOUTCACHE, SC_CACHE_PAGE);
 }
 
 void document::remember_disk_state() {
