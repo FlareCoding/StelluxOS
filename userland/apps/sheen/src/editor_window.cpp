@@ -1868,6 +1868,12 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
         chooser.set_note(QStringLiteral("never saved, the name comes from its first line"));
     }
 
+    // Saving over a file another tab holds closes that tab, and the sheet asks first when it has unsaved changes
+    chooser.is_open_with_unsaved_changes = [this, doc](const QString& path) {
+        document* holder = find_open(path);
+        return holder && holder != doc && holder->is_modified();
+    };
+
     save_request request;
     set_open_sheet(&chooser);
     bool is_chosen = chooser.choose_to_save(name, doc->file().encoding, doc->file().eol_mode, &request);
@@ -1876,17 +1882,8 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
         return false;
     }
 
-    // Saving over a file another tab holds closes that tab, asking first when it has unsaved changes
     document* other = find_open(request.path);
     other = other == doc ? nullptr : other;
-    if (other && other->is_modified()) {
-        QString title = QStringLiteral("%1 is open in another tab with unsaved changes").arg(other->display_name());
-        prompt_sheet question(this, title, QStringLiteral("Saving over it closes that tab, and its changes are lost."),
-                              QStringLiteral("Save Anyway"), QString(), true);
-        if (static_cast<prompt_answer>(run_sheet(question)) != prompt_answer::PRIMARY) {
-            return false;
-        }
-    }
 
     m_last_sheet_folder = QFileInfo(request.path).absolutePath();
     file_record previous = doc->file();

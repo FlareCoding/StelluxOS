@@ -822,6 +822,7 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
     footer->addSpacing(SECTION_GAP);
     m_footer_note = new QLabel(panel());
     m_footer_note->setFont(ui_font(STLXTHEME_BODY_SIZE));
+    m_footer_note->setWordWrap(true);
     footer->addWidget(m_footer_note, 1);
 
     auto* cancel_button = new QPushButton(QStringLiteral("Cancel"), panel());
@@ -1185,7 +1186,8 @@ void file_sheet::accept() {
         return;
     }
 
-    if (target.exists() && m_replace_path != target.absoluteFilePath()) {
+    bool is_held_unsaved = is_open_with_unsaved_changes && is_open_with_unsaved_changes(target.absoluteFilePath());
+    if ((target.exists() || is_held_unsaved) && m_replace_path != target.absoluteFilePath()) {
         ask_to_replace(target.absoluteFilePath());
         return;
     }
@@ -1208,8 +1210,11 @@ void file_sheet::refresh_primary() {
     bool is_replacing = !m_replace_path.isEmpty();
     m_primary->setText(is_replacing ? QStringLiteral("Replace") : QStringLiteral("Save"));
     m_primary->setEnabled(!m_name->text().trimmed().isEmpty());
-    QString replaced = QFileInfo(m_replace_path).fileName();
-    m_footer_note->setText(is_replacing ? QStringLiteral("%1 exists here. Replace it?").arg(replaced) : QString());
+
+    bool is_held_unsaved = is_replacing && is_open_with_unsaved_changes && is_open_with_unsaved_changes(m_replace_path);
+    QString question = is_held_unsaved ? QStringLiteral("%1 has unsaved changes in another tab. Replace it?")
+                                       : QStringLiteral("%1 exists here. Replace it?");
+    m_footer_note->setText(is_replacing ? question.arg(QFileInfo(m_replace_path).fileName()) : QString());
 }
 
 // Asking inline keeps the sheet in place, and Esc returns to the name
