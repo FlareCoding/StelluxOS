@@ -2,7 +2,7 @@
 #define SHEEN_EDITOR_WINDOW_H
 
 /* Sheen's window: the menu button, a tab per document, a banner about the current file, its text and the status
- * bar. Commands arrive through `run`, and every question is a sheet inside the window. */
+ * bar. Commands arrive through `run`, questions are sheets inside the window, and closed tabs can come back. */
 #include "actions.h"
 #include "document.h"
 #include "sheet.h"
@@ -25,6 +25,16 @@ class menu_style;
 class sheet;
 class tab_row;
 class tab_strip;
+
+/* A closed tab, enough to open it again where it was */
+struct closed_tab {
+    file_record file;
+    const language* lang;
+    view_state view;
+    int index;
+    int untitled_number;
+    sptr_t scintilla_document; // kept with its undo for unsaved or never-saved text, 0 to read the file again
+};
 
 class editor_window : public QMainWindow {
 public:
@@ -70,7 +80,8 @@ private:
     bool close_document(int index);
     bool close_documents(const QList<document*>& docs, const QString& purpose);
     prompt_answer ask_about_unsaved(document* doc, const QString& purpose);
-    void remove_document(int index);
+    void remove_document(int index, bool keeps_text);
+    void reopen_closed_tab();
     void check_disk(document* doc);
     void select_tab(int index);
     void show_empty_state();
@@ -99,6 +110,7 @@ private:
     QList<QMenu*> m_menus;
     std::vector<std::unique_ptr<document>> m_documents;
     QList<document*> m_recent_tabs;
+    QList<closed_tab> m_closed_tabs;
     QStringList m_recent_files;
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;

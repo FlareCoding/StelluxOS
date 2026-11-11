@@ -251,6 +251,19 @@ bool document::save(const QString& path, QString* error, unencodable_char* unenc
     return true;
 }
 
+void document::adopt(sptr_t scintilla_document, const file_record& file, const language* lang) {
+    m_view->send(SCI_SETDOCPOINTER, 0, scintilla_document);
+    m_view->send(SCI_RELEASEDOCUMENT, 0, scintilla_document);
+    m_file = file;
+    set_language(lang);
+}
+
+sptr_t document::keep_scintilla_document() const {
+    sptr_t scintilla_document = m_view->send(SCI_GETDOCPOINTER);
+    m_view->send(SCI_ADDREFDOCUMENT, 0, scintilla_document);
+    return scintilla_document;
+}
+
 void document::set_encoding(const file_encoding& encoding) {
     m_file.encoding = encoding;
 }
@@ -309,6 +322,21 @@ void document::accept_disk_state() {
 
 void document::set_deleted(bool is_deleted) {
     m_is_deleted = is_deleted;
+}
+
+view_state document::current_view_state() const {
+    view_state state;
+    state.caret = m_view->send(SCI_GETCURRENTPOS);
+    state.anchor = m_view->send(SCI_GETANCHOR);
+    state.first_line = m_view->send(SCI_GETFIRSTVISIBLELINE);
+    state.wrap_mode = static_cast<int>(m_view->send(SCI_GETWRAPMODE));
+    return state;
+}
+
+void document::restore_view_state(const view_state& state) {
+    m_view->send(SCI_SETWRAPMODE, state.wrap_mode);
+    m_view->send(SCI_SETSEL, state.anchor, state.caret);
+    m_view->send(SCI_SETFIRSTVISIBLELINE, state.first_line);
 }
 
 // A file deleted on disk counts as unsaved, since its text now lives only here
