@@ -5,8 +5,10 @@
 #include "file_loader.h"
 #include "file_sheet.h"
 #include "find_bar.h"
+#include "keycaps.h"
 #include "kiln.h"
 #include "menu_style.h"
+#include "palette.h"
 #include "picker.h"
 #include "placeholder.h"
 #include "tab_strip.h"
@@ -54,6 +56,7 @@ static constexpr int WINDOW_MIN_W = 720;
 static constexpr int WINDOW_MIN_H = 480;
 static constexpr int CLOSED_TAB_LIMIT = 20;
 static constexpr int RECENT_FILE_LIMIT = 20;
+static constexpr int RECENT_COMMAND_LIMIT = 5;
 
 // Wide enough that each menu's chevron stands apart from its name, with room for the keycaps under the hairline
 static constexpr int CASCADE_WIDTH = 272;
@@ -119,6 +122,20 @@ static file_encoding encoding_for_save(const QByteArray& name) {
     return { name, name != UTF_8 && name.startsWith("UTF-") };
 }
 
+// The keys of an action's first shortcut, such as Ctrl and S, each to be drawn as one keycap
+static QStringList action_keys(const QAction* action) {
+    return shortcut_keys(action->shortcut().toString(QKeySequence::NativeText));
+}
+
+// The menu an action sits in names it in the palette, and the actions reached only by their keys move between tabs
+static QString palette_category(const command_entry& entry) {
+    if (entry.place != menu::NONE) {
+        return QString::fromLatin1(MENU_TITLES[static_cast<int>(entry.place)]);
+    }
+
+    return entry.id == command::SETTINGS ? QStringLiteral("Settings") : QStringLiteral("Go");
+}
+
 // The empty state's glyph for each of its actions, as mock 09 draws them
 static row_glyph empty_glyph(command id) {
     switch (id) {
@@ -126,6 +143,8 @@ static row_glyph empty_glyph(command id) {
             return row_glyph::FOLDER;
         case command::REOPEN_CLOSED_TAB:
             return row_glyph::CLOCK;
+        case command::COMMAND_PALETTE:
+            return row_glyph::TERMINAL;
         default:
             return row_glyph::DOC;
     }
@@ -535,10 +554,11 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
         }
     };
 
-    // The menu bar has no row of its own for Settings, so File holds it above Quit
+    // The menu bar has no rows of its own for the palette and Settings, so File holds them above Quit
     if (m_settings.has_menu_bar) {
         QMenu* file = m_menus.at(static_cast<int>(menu::FILE));
         QAction* quit = m_actions.value(command::QUIT);
+        file->insertAction(quit, m_actions.value(command::COMMAND_PALETTE));
         file->insertAction(quit, m_actions.value(command::SETTINGS));
         file->insertSeparator(quit);
         for (QMenu* submenu : m_menus) {
@@ -702,6 +722,7 @@ void editor_window::create_commands() {
     }
 
     m_main_menu->addSeparator();
+    m_main_menu->addAction(m_actions.value(command::COMMAND_PALETTE));
     m_main_menu->addAction(m_actions.value(command::SETTINGS));
 
     connect(m_menus.at(static_cast<int>(menu::GO)), &QMenu::aboutToShow, this, [this] {
@@ -826,6 +847,11 @@ void editor_window::run(command id) {
 
     if (id == command::SETTINGS) {
         open_path(QString::fromLatin1(SETTINGS_PATH), QByteArray(), insertion_index());
+        return;
+    }
+
+    if (id == command::COMMAND_PALETTE || id == command::GO_TO_FILE) {
+        open_palette(id == command::COMMAND_PALETTE ? QStringLiteral("> ") : QStringLiteral("@ "));
         return;
     }
 
@@ -962,7 +988,7 @@ void editor_window::run(command id) {
             m_find_bar->find_word_at_caret();
             break;
         case command::GO_TO_LINE:
-            go_to_line();
+            go_to_line(false);
             break;
         case command::SELECT_ALL_MATCHES:
             view->send(SCI_TARGETWHOLEDOCUMENT);
@@ -1915,10 +1941,10 @@ void editor_window::show_empty_state() {
         rows.append({ command::REOPEN_CLOSED_TAB, QStringLiteral("Reopen Closed Tab") });
     }
 
+    rows.append({ command::COMMAND_PALETTE, QStringLiteral("Command Palette") });
     QList<empty_action> actions;
     for (const auto& [id, label] : rows) {
-        QString keys = m_actions.value(id)->shortcut().toString(QKeySequence::NativeText);
-        actions.append({ label, keys.split(QLatin1Char('+')), [this, id] { run(id); }, empty_glyph(id) });
+        actions.append({ label, action_keys(m_actions.value(id)), [this, id] { run(id); }, empty_glyph(id) });
     }
 
     m_empty_state->set_entries(actions, m_recent_files);
@@ -2199,7 +2225,7 @@ void editor_window::show_status_note(const QString& note) {
 
 // Each status button's menu opens upward from it, and the button shows as open meanwhile
 // Ctrl G previews each line as its digits arrive, Enter moves the caret there and Esc puts the view back
-void editor_window::go_to_line() {
+void editor_window::go_to_line(bool is_from_palette) {
     document* doc = current_document();
     if (!doc || doc->placeholder() || m_open_sheet) {
         return;
@@ -2215,10 +2241,29 @@ void editor_window::go_to_line() {
 
     define_line_tint(view, GOTO_MARKER, STLXTHEME_MATCH_MARK);
 
-    m_picker->on_changed = [this, view, lines, help](const QString& query) {
+    // Puts back the caret, selection and scroll the preview moved
+    auto restore = [view, before] {
+        if (!view) {
+            return;
+        }
+
+        view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
+        view->send(SCI_SETSEL, before.anchor, before.caret);
+        view->send(SCI_SETFIRSTVISIBLELINE, before.first_line);
+        view->send(SCI_SETXOFFSET, before.x_offset);
+    };
+
+    m_picker->on_changed = [this, view, lines, help, is_from_palette, restore](const QString& query) {
         sptr_t line = 0;
         sptr_t column = 0;
         if (!view) {
+            return;
+        }
+
+        // From the palette, > or @ in place of a line goes back to its lists
+        if (is_from_palette && (query.startsWith(QLatin1Char('>')) || query.startsWith(QLatin1Char('@')))) {
+            restore();
+            open_palette(query);
             return;
         }
 
@@ -2247,19 +2292,20 @@ void editor_window::go_to_line() {
         view->setFocus();
     };
 
-    m_picker->on_cancelled = [view, before] {
-        if (!view) {
-            return;
+    m_picker->on_cancelled = [view, restore] {
+        restore();
+        if (view) {
+            view->setFocus();
         }
-
-        view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
-        view->send(SCI_SETSEL, before.anchor, before.caret);
-        view->send(SCI_SETFIRSTVISIBLELINE, before.first_line);
-        view->send(SCI_SETXOFFSET, before.x_offset);
-        view->setFocus();
     };
 
     m_picker->open(QStringLiteral(":"), help, aside);
+    if (is_from_palette) {
+        m_picker->on_prefix_erased = [this, restore] {
+            restore();
+            open_palette(QString());
+        };
+    }
 }
 
 // Each status button's menu opens upward from it, and the button shows as open meanwhile
@@ -2270,7 +2316,7 @@ void editor_window::show_status_menu(status_kind kind, const QPoint& anchor) {
     }
 
     if (kind == status_kind::POSITION) {
-        go_to_line();
+        go_to_line(false);
         return;
     }
 
@@ -2486,6 +2532,122 @@ void editor_window::show_tab_menu(int index, const QPoint& anchor) {
 }
 
 // Rereading from disk drops unsaved edits, so they get the usual question first
+// `>` lists the actions and `@` the open tabs and this session's files, and a query starting with `:` goes to line
+void editor_window::open_palette(const QString& query) {
+    if (m_open_sheet) {
+        return;
+    }
+
+    m_picker->on_accepted = nullptr;
+    m_picker->on_changed = [this](const QString& typed) { fill_palette(typed); };
+    m_picker->on_chosen = [this](int row) {
+        if (row < m_palette_targets.size()) {
+            std::function<void()> target = m_palette_targets.at(row);
+            target();
+        }
+    };
+
+    m_picker->on_cancelled = [this] { focus_current_document(); };
+
+    QString gap = QStringLiteral("&nbsp;&nbsp;&nbsp;");
+    QString help = picker::code(QStringLiteral(">")) + QStringLiteral(" actions") + gap + picker::code(QStringLiteral(":"))
+                 + QStringLiteral(" go to line") + gap + picker::code(QStringLiteral("@")) + QStringLiteral(" open tab");
+    m_picker->open_list(QString(), {}, query, help, QStringLiteral("Enter runs, Esc closes"));
+}
+
+void editor_window::fill_palette(const QString& query) {
+    if (query.startsWith(QLatin1Char(':'))) {
+        m_picker->set_rows({});
+        go_to_line(true);
+        return;
+    }
+
+    bool is_actions = query.startsWith(QLatin1Char('>'));
+    bool has_prefix = is_actions || query.startsWith(QLatin1Char('@'));
+    QList<picker_row> rows;
+    QList<std::function<void()>> targets;
+    if (is_actions) {
+        list_palette_actions(&rows, &targets);
+    } else {
+        list_palette_files(&rows, &targets);
+    }
+
+    QList<picker_row> shown;
+    m_palette_targets.clear();
+    for (const auto& [index, row] : rank_rows(rows, (has_prefix ? query.mid(1) : query).trimmed())) {
+        shown.append(row);
+        m_palette_targets.append(targets.at(index));
+    }
+
+    m_picker->set_rows(shown);
+}
+
+// Every action that can run now, under its menu's name with its keys, the ones chosen here before first
+void editor_window::list_palette_actions(QList<picker_row>* rows, QList<std::function<void()>>* targets) {
+    QList<const command_entry*> entries;
+    for (command id : m_recent_commands) {
+        for (const command_entry& entry : COMMANDS) {
+            if (entry.id == id) {
+                entries.append(&entry);
+            }
+        }
+    }
+
+    for (const command_entry& entry : COMMANDS) {
+        if (!m_recent_commands.contains(entry.id)) {
+            entries.append(&entry);
+        }
+    }
+
+    for (const command_entry* entry : entries) {
+        QAction* action = m_actions.value(entry->id);
+        bool is_listed = entry->kind != command_kind::SUBMENU && entry->id != command::COMMAND_PALETTE;
+        if (!is_listed || !action->isEnabled()) {
+            continue;
+        }
+
+        bool is_recent = m_recent_commands.contains(entry->id);
+        QString section = m_recent_commands.isEmpty() ? QString()
+                        : is_recent                   ? QStringLiteral("Recently used")
+                                                      : QStringLiteral("All actions");
+        QString detail = palette_category(*entry) + QStringLiteral(": ");
+        rows->append({ QString::fromLatin1(entry->label), section, false, detail, action_keys(action), {}, {} });
+
+        command id = entry->id;
+        targets->append([this, id] {
+            m_recent_commands.removeAll(id);
+            m_recent_commands.prepend(id);
+            while (m_recent_commands.size() > RECENT_COMMAND_LIMIT) {
+                m_recent_commands.removeLast();
+            }
+
+            m_actions.value(id)->trigger();
+        });
+    }
+}
+
+// The open tabs in strip order, then this session's files that are no longer open, each with its folder
+void editor_window::list_palette_files(QList<picker_row>* rows, QList<std::function<void()>>* targets) {
+    QStringList open_paths_now;
+    for (const std::unique_ptr<document>& open : m_documents) {
+        document* doc = open.get();
+        QString folder = doc->is_untitled() ? QStringLiteral("never saved") : QFileInfo(doc->file().path).absolutePath();
+        rows->append({ doc->display_name(), QStringLiteral("Open tabs"), false, {}, {}, folder, {} });
+        targets->append([this, doc] { select_tab(index_of(doc)); });
+        open_paths_now.append(doc->file().path);
+    }
+
+    for (const QString& path : m_recent_files) {
+        if (open_paths_now.contains(path)) {
+            continue;
+        }
+
+        QFileInfo file(path);
+        rows->append({ file.fileName(), QStringLiteral("Closed this session"), false, {}, {}, file.absolutePath(), {} });
+        targets->append([this, path] { open_paths({ path }); });
+    }
+}
+
 // Every encoding Sheen reads and writes, those chosen this session first. Saving offers UTF-8 with a BOM as well
 void editor_window::pick_encoding(command id) {
     document* doc = current_document();
@@ -2525,7 +2687,7 @@ void editor_window::pick_encoding(command id) {
         QString section = m_recent_encodings.isEmpty() ? QString()
                         : is_recent                    ? QStringLiteral("Recently used")
                                                        : QStringLiteral("All encodings");
-        rows.append({ label, section, label == current });
+        rows.append({ label, section, label == current, {}, {}, {}, {} });
     }
 
     QPointer<ScintillaEditBase> view = doc->view();

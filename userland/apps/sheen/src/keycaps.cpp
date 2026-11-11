@@ -4,12 +4,45 @@
 #include <QFontMetrics>
 #include <QPainter>
 
+struct key_name {
+    const char* qt;
+    const char* shown;
+};
+
 static constexpr int KEYCAP_HEIGHT = 18;
 static constexpr int KEYCAP_PADDING_X = 5;
 static constexpr int KEYCAP_GAP = 3;
 static constexpr int HINT_HEIGHT = 20;
 static constexpr int HINT_TEXT_GAP = 6;
 static constexpr qreal HALF_PIXEL = 0.5;
+
+// Keys the keyboard map names differently from Qt
+static constexpr key_name KEY_NAMES[] = {
+    { "Return", "Enter" },
+    { "PgDown", "PgDn" },
+};
+
+QStringList shortcut_keys(const QString& shortcut) {
+    if (shortcut.isEmpty()) {
+        return QStringList();
+    }
+
+    QStringList keys = shortcut.split(QLatin1Char('+'));
+    if (shortcut.endsWith(QLatin1String("++"))) {
+        keys.removeLast();
+        keys.last() = QStringLiteral("+");
+    }
+
+    for (QString& key : keys) {
+        for (const key_name& name : KEY_NAMES) {
+            if (key == QLatin1String(name.qt)) {
+                key = QString::fromLatin1(name.shown);
+            }
+        }
+    }
+
+    return keys;
+}
 
 int keycaps_width(const QStringList& keys) {
     QFontMetrics metrics(mono_font(STLXTHEME_CAPTION_SIZE));

@@ -1,5 +1,6 @@
 #include "picker.h"
 #include "chrome.h"
+#include "keycaps.h"
 
 #include <QEvent>
 #include <QHBoxLayout>
@@ -36,6 +37,10 @@ static constexpr qreal HALF_PIXEL = 0.5;
 static constexpr int ROW_ROLE = Qt::UserRole;
 static constexpr int HEADING_ROLE = Qt::UserRole + 1;
 static constexpr int CURRENT_ROLE = Qt::UserRole + 2;
+static constexpr int DETAIL_ROLE = Qt::UserRole + 3;
+static constexpr int KEYS_ROLE = Qt::UserRole + 4;
+static constexpr int MARKS_ROLE = Qt::UserRole + 5;
+static constexpr int NOTE_ROLE = Qt::UserRole + 6;
 
 namespace {
 
@@ -101,22 +106,50 @@ public:
 
         QFont font = ui_font(STLXTHEME_BODY_SIZE);
         QFontMetricsF metrics(font);
-        qsizetype at = m_filter->isEmpty() ? -1 : label.indexOf(*m_filter, 0, Qt::CaseInsensitive);
-        if (at >= 0) {
-            QColor tint = token(STLXTHEME_TEXT);
-            tint.setAlphaF(MATCH_ALPHA);
-            qreal left = room.left() + metrics.horizontalAdvance(label.left(at));
-            qreal width = metrics.horizontalAdvance(label.mid(at, m_filter->size()));
+        QString detail = index.data(DETAIL_ROLE).toString();
+        qreal label_left = room.left() + metrics.horizontalAdvance(detail);
 
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(tint);
+        QList<int> marks = index.data(MARKS_ROLE).value<QList<int>>();
+        qsizetype at = m_filter->isEmpty() ? -1 : label.indexOf(*m_filter, 0, Qt::CaseInsensitive);
+        for (qsizetype letter = at; at >= 0 && letter < at + m_filter->size(); letter++) {
+            marks.append(static_cast<int>(letter));
+        }
+
+        QColor tint = token(STLXTHEME_TEXT);
+        tint.setAlphaF(MATCH_ALPHA);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(tint);
+        for (qsizetype first = 0; first < marks.size();) {
+            qsizetype last = first;
+            while (last + 1 < marks.size() && marks.at(last + 1) == marks.at(last) + 1) {
+                last++;
+            }
+
+            qreal left = label_left + metrics.horizontalAdvance(label.left(marks.at(first)));
+            qreal width = metrics.horizontalAdvance(label.mid(marks.at(first), last - first + 1));
             painter->drawRoundedRect(QRectF(left, rect.center().y() - metrics.height() / 2, width, metrics.height()),
                                      MATCH_RADIUS, MATCH_RADIUS);
+            first = last + 1;
         }
 
         painter->setFont(font);
+        painter->setPen(token(STLXTHEME_TEXT_DIM));
+        painter->drawText(room, Qt::AlignLeft | Qt::AlignVCenter, detail);
         painter->setPen(token(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY));
-        painter->drawText(room, Qt::AlignLeft | Qt::AlignVCenter, label);
+        QRectF label_room(label_left, room.top(), room.right() - label_left, room.height());
+        painter->drawText(label_room, Qt::AlignLeft | Qt::AlignVCenter, label);
+
+        QStringList keys = index.data(KEYS_ROLE).toStringList();
+        QString note = index.data(NOTE_ROLE).toString();
+        if (!keys.isEmpty()) {
+            paint_keycaps(painter, keys, room.right() + 1 - keycaps_width(keys), rect.center().y(),
+                          token(is_lit ? STLXTHEME_TEXT_SECONDARY : STLXTHEME_TEXT_DIM));
+        } else if (!note.isEmpty()) {
+            painter->setFont(mono_font(STLXTHEME_CAPTION_SIZE));
+            painter->setPen(token(STLXTHEME_TEXT_DIM));
+            painter->drawText(room, Qt::AlignRight | Qt::AlignVCenter, note);
+        }
+
         if (index.data(CURRENT_ROLE).toBool()) {
             QPointF corner(room.right() + 1 - CHECK_SIZE, rect.center().y() - CHECK_SIZE / 2.0);
             QPointF check[] = { corner + QPointF(2.4, 6.3), corner + QPointF(4.8, 8.7), corner + QPointF(9.6, 3.5) };
@@ -185,14 +218,14 @@ picker::picker(QWidget* parent)
     layout->setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, 0);
     layout->setSpacing(0);
     layout->addWidget(row);
-    layout->addWidget(m_help_row);
     layout->addWidget(m_list);
+    layout->addWidget(m_help_row);
 
     connect(m_query, &QLineEdit::textEdited, this, [this](const QString& query) {
-        if (!m_list->isHidden()) {
-            filter_rows(query);
-        } else if (on_changed) {
+        if (on_changed) {
             on_changed(query);
+        } else if (!m_list->isHidden()) {
+            filter_rows(query);
         }
     });
 
@@ -213,6 +246,7 @@ picker::picker(QWidget* parent)
 }
 
 void picker::open(const QString& prefix, const QString& help, const QString& aside) {
+    on_prefix_erased = nullptr;
     m_rows.clear();
     m_list->hide();
     m_help_row->show();
@@ -223,23 +257,43 @@ void picker::open(const QString& prefix, const QString& help, const QString& asi
     m_query->setPlaceholderText(QString());
     m_aside->setText(aside);
     set_help(help);
-    present();
+    present(QString());
 }
 
-void picker::open_list(const QString& placeholder, const QList<picker_row>& rows) {
+void picker::open_list(const QString& placeholder, const QList<picker_row>& rows, const QString& query,
+                       const QString& help, const QString& aside) {
+    on_prefix_erased = nullptr;
     m_rows = rows;
-    m_help_row->hide();
+    m_help_row->setVisible(!help.isEmpty());
     m_list->show();
-    layout()->setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, PANEL_PADDING);
+    layout()->setContentsMargins(PANEL_PADDING, PANEL_PADDING, PANEL_PADDING, help.isEmpty() ? PANEL_PADDING : 0);
 
     m_prefix->hide();
     m_query->setPlaceholderText(placeholder);
-    filter_rows(QString());
-    present();
+    m_aside->setText(aside);
+    set_help(help);
+    present(query);
+    if (on_changed) {
+        on_changed(query);
+    } else {
+        filter_rows(query);
+    }
 }
 
-void picker::present() {
-    m_query->clear();
+void picker::set_rows(const QList<picker_row>& rows) {
+    m_rows = rows;
+    m_filter.clear();
+
+    QList<int> indices;
+    for (int index = 0; index < m_rows.size(); index++) {
+        indices.append(index);
+    }
+
+    show_rows(indices, true);
+}
+
+void picker::present(const QString& query) {
+    m_query->setText(query);
     adjustSize();
 
     move((parentWidget()->width() - width()) / 2, PICKER_TOP);
@@ -263,21 +317,29 @@ QString picker::code(const QString& text) {
         .arg(token(STLXTHEME_TEXT_SECONDARY).name(), family, text.toHtmlEscaped());
 }
 
-// Typing drops the section headings, since a list of matches reads best as one run. The first row is lit, the most
-// recent choice before anything is typed and the best match after, and the current choice keeps its check
+// Typing drops the section headings, since a list of matches reads best as one run
 void picker::filter_rows(const QString& query) {
     m_filter = query;
+    QList<int> indices;
+    for (int index = 0; index < m_rows.size(); index++) {
+        if (m_rows.at(index).label.contains(query, Qt::CaseInsensitive)) {
+            indices.append(index);
+        }
+    }
+
+    show_rows(indices, query.isEmpty());
+}
+
+// The first row is lit, the most recent choice before anything is typed and the best match after, and the current
+// choice keeps its check
+void picker::show_rows(const QList<int>& indices, bool has_headings) {
     m_list->clear();
 
     QString section;
     int lit = -1;
-    for (int index = 0; index < m_rows.size(); index++) {
+    for (int index : indices) {
         const picker_row& row = m_rows.at(index);
-        if (!row.label.contains(query, Qt::CaseInsensitive)) {
-            continue;
-        }
-
-        if (query.isEmpty() && !row.section.isEmpty() && row.section != section) {
+        if (has_headings && !row.section.isEmpty() && row.section != section) {
             auto* heading = new QListWidgetItem(row.section, m_list);
             heading->setData(HEADING_ROLE, true);
             heading->setFlags(Qt::NoItemFlags);
@@ -287,6 +349,12 @@ void picker::filter_rows(const QString& query) {
         auto* item = new QListWidgetItem(row.label, m_list);
         item->setData(ROW_ROLE, index);
         item->setData(CURRENT_ROLE, row.is_current);
+
+        item->setData(DETAIL_ROLE, row.detail);
+        item->setData(KEYS_ROLE, row.keys);
+        item->setData(MARKS_ROLE, QVariant::fromValue(row.marks));
+        item->setData(NOTE_ROLE, row.note);
+
         if (lit < 0) {
             lit = m_list->count() - 1;
         }
@@ -346,6 +414,11 @@ bool picker::eventFilter(QObject* watched, QEvent* event) {
 
         if (!m_list->isHidden() && (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down)) {
             step(key->key() == Qt::Key_Up ? -1 : 1);
+            return true;
+        }
+
+        if (key->key() == Qt::Key_Backspace && m_query->text().isEmpty() && on_prefix_erased) {
+            on_prefix_erased();
             return true;
         }
     }

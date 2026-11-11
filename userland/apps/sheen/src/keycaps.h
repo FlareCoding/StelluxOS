@@ -8,6 +8,9 @@
 class QColor;
 class QPainter;
 
+/* The keys of a shortcut's text, such as Ctrl+Shift+S, each named as the keyboard map names it */
+QStringList shortcut_keys(const QString& shortcut);
+
 /* The width of `keys` drawn side by side as keycaps */
 int keycaps_width(const QStringList& keys);
 

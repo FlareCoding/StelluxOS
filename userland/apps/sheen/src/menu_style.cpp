@@ -24,43 +24,13 @@ static constexpr qreal GLYPH_HALF_WIDTH = 6;
 static constexpr int GLYPH_LINE_GAP = 4;
 static constexpr qreal GLYPH_STROKE = 1.5;
 
-struct key_name {
-    const char* qt;
-    const char* shown;
-};
-
-// Keys the keyboard map names differently from Qt
-static constexpr key_name KEY_NAMES[] = {
-    { "Return", "Enter" },
-    { "PgDown", "PgDn" },
-};
-
 static QString row_label(const QStyleOptionMenuItem& item) {
     return item.text.section(QLatin1Char('\t'), 0, 0);
 }
 
 // The keys of the row's shortcut, such as Ctrl, Shift and S, each drawn as one keycap
 static QStringList row_keys(const QStyleOptionMenuItem& item) {
-    QString shortcut = item.text.section(QLatin1Char('\t'), 1);
-    if (shortcut.isEmpty()) {
-        return QStringList();
-    }
-
-    QStringList keys = shortcut.split(QLatin1Char('+'));
-    if (shortcut.endsWith(QLatin1String("++"))) {
-        keys.removeLast();
-        keys.last() = QStringLiteral("+");
-    }
-
-    for (QString& key : keys) {
-        for (const key_name& name : KEY_NAMES) {
-            if (key == QLatin1String(name.qt)) {
-                key = QString::fromLatin1(name.shown);
-            }
-        }
-    }
-
-    return keys;
+    return shortcut_keys(item.text.section(QLatin1Char('\t'), 1));
 }
 
 static void paint_check(QPainter* painter, const QStyleOptionMenuItem& item, const QRect& column,
