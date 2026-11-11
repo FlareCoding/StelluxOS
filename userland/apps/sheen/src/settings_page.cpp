@@ -29,7 +29,6 @@ static constexpr int RAIL_WIDTH = 184;
 static constexpr int RAIL_PADDING = 8;
 static constexpr int PAGE_MARGIN_X = 32;
 static constexpr int PAGE_MARGIN_TOP = 24;
-static constexpr int PAGE_MAX_WIDTH = 760;
 static constexpr int HEADER_GAP = 20;
 static constexpr int GROUP_GAP = 18;
 static constexpr int CAPTION_GAP = 6;
@@ -241,7 +240,6 @@ private:
 
 // A page's margins and its column of titles, groups and rows
 static QVBoxLayout* make_page_layout(QWidget* content) {
-    content->setMaximumWidth(PAGE_MAX_WIDTH);
     auto* layout = new QVBoxLayout(content);
     layout->setContentsMargins(PAGE_MARGIN_X, PAGE_MARGIN_TOP, PAGE_MARGIN_X, PAGE_MARGIN_TOP);
     layout->setSpacing(0);
