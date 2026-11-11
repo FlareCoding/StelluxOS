@@ -48,6 +48,11 @@ QString program_name(const char* path, const char* args) {
 }
 
 static QString shortcut_name(const stlxconf_shortcut_t& shortcut) {
+    const char* label = stlxconf_action_label(stlxconf_action_kind(shortcut.action));
+    if (label) {
+        return QString::fromUtf8(label);
+    }
+
     if (!shortcut.path[0]) {
         return QStringLiteral("New shortcut");
     }
@@ -177,6 +182,12 @@ static QWidget* make_shortcut_editor(stlxconf_shortcut_t* entry, list_row* row, 
         sizeof(entry->key),
         refresh_row
     ));
+
+    bool runs_program = stlxconf_action_kind(entry->action) == STLXCONF_ACTION_EXEC;
+    if (!runs_program) {
+        return editor;
+    }
+
     editor->layout()->addWidget(make_field_row(
         QStringLiteral("Program"),
         QStringLiteral("path"),

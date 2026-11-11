@@ -314,7 +314,7 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         uint8_t mods = cook_modifiers(hid_modifiers);
         for (const dm_hotkey& hk : m_hotkeys) {
             if (usage == hk.usage && mods == hk.mods) {
-                spawn_shortcut(hk);
+                run_shortcut(hk);
                 return;
             }
         }
