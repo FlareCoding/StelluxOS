@@ -167,10 +167,9 @@ step_install() {
         apk info -v clang22 lld22 llvm22 rust cargo gn samurai nodejs go
     } > "$root/usr/share/doc/chromium/BUILDINFO"
 
-    # The desktop picks the launcher up from the drop-in directory
-    mkdir -p "$root/etc/stlxdm/conf.d" "$root/etc/res/icons"
+    # The desktop picks the launcher up from the drop-in directory, and its icon from the desktop's own icon set
+    mkdir -p "$root/etc/stlxdm/conf.d"
     cp "$RECIPE/browser.conf" "$root/etc/stlxdm/conf.d/browser.conf"
-    cp "$RECIPE/icon_browser_32x32.bmp" "$root/etc/res/icons/"
 
     tar -C "$root" --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
         --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \

@@ -2,7 +2,7 @@
 # host, by container.sh inside, and by the dispatcher for package_version.
 
 CHROMIUM_VER=151.0.7922.137
-CHROMIUM_PKG_REL=2 # Counts rebuilds of the same version with a changed recipe
+CHROMIUM_PKG_REL=3 # Counts rebuilds of the same version with a changed recipe
 CHROMIUM_URL="https://github.com/chromium-linux-tarballs/chromium-tarballs/releases/download/$CHROMIUM_VER/chromium-$CHROMIUM_VER-linux.tar.xz"
 CHROMIUM_SHA512=379dede0ca1ae3137e67776608a1b899ecdfa2c5c566df92841f63f1643dbe09d021df05a6a2d1fd853fb7d0fab95e2fea6a4568c18a94fdb84758e0f668f68b
 
