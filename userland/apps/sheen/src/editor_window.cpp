@@ -1,4 +1,5 @@
 #include "editor_window.h"
+#include "banner.h"
 #include "empty_state.h"
 #include "file_sheet.h"
 #include "kiln.h"
@@ -11,6 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QGuiApplication>
 #include <QLabel>
 #include <QMenu>
@@ -32,6 +34,7 @@ static constexpr int WINDOW_H = 920;
 static constexpr int WINDOW_MIN_W = 720;
 static constexpr int WINDOW_MIN_H = 480;
 static constexpr int RECENT_FILE_LIMIT = 20;
+static constexpr int STATUS_NOTE_MS = 4000;
 
 // Wide enough that each menu's chevron stands apart from its name, with room for the keycaps under the hairline
 static constexpr int CASCADE_WIDTH = 272;
@@ -51,7 +54,7 @@ static const command TAB_COMMANDS[] = {
 
 // Commands that act on the current document, which an empty window has none of
 static const command DOCUMENT_COMMANDS[] = {
-    command::SAVE, command::SAVE_AS, command::REOPEN_WITH_ENCODING, command::SAVE_WITH_ENCODING,
+    command::SAVE, command::SAVE_AS, command::REVERT, command::REOPEN_WITH_ENCODING, command::SAVE_WITH_ENCODING,
     command::CLOSE_ALL_TABS, command::UNDO, command::REDO, command::CUT, command::COPY, command::PASTE,
     command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN,
     command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
@@ -172,7 +175,7 @@ static void go_to_matching_bracket(ScintillaEditBase* view) {
 }
 
 editor_window::editor_window()
-    : m_tab_row(new tab_row(this)), m_stack(new QStackedWidget(this)),
+    : m_tab_row(new tab_row(this)), m_banner(new banner(this)), m_stack(new QStackedWidget(this)),
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
       m_main_menu(new QMenu(this)) {
     auto* central = new QWidget(this);
@@ -181,6 +184,7 @@ editor_window::editor_window()
     layout->setSpacing(0);
 
     layout->addWidget(m_tab_row);
+    layout->addWidget(m_banner);
     layout->addWidget(m_stack, 1);
     layout->addWidget(m_status);
     setCentralWidget(central);
@@ -195,6 +199,13 @@ editor_window::editor_window()
     tabs()->on_context_menu = [this](int index, const QPoint& anchor) { show_tab_menu(index, anchor); };
     m_tab_row->on_empty_double_click = [this] { new_document(); };
     m_status->on_fact_clicked = [this](file_fact fact, const QPoint& anchor) { show_fact_menu(fact, anchor); };
+    m_banner->on_dismissed = [this] {
+        if (document* doc = current_document()) {
+            doc->accept_disk_state();
+            doc->set_banner(std::nullopt);
+            refresh_banner();
+        }
+    };
 
     resize(QSize(WINDOW_W, WINDOW_H).boundedTo(screen()->availableGeometry().size()));
     setMinimumSize(WINDOW_MIN_W, WINDOW_MIN_H);
@@ -244,6 +255,31 @@ void editor_window::closeEvent(QCloseEvent* event) {
     }
 
     event->accept();
+}
+
+// Files are compared with their disk records whenever the window comes forward
+void editor_window::changeEvent(QEvent* event) {
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::ActivationChange && isActiveWindow() && !m_open_sheet) {
+        for (const std::unique_ptr<document>& doc : m_documents) {
+            check_disk(doc.get());
+        }
+    }
+}
+
+// Scintilla leaves Esc to the window, which gives back one caret, else dismisses a change banner
+void editor_window::keyPressEvent(QKeyEvent* event) {
+    document* doc = current_document();
+    if (event->key() != Qt::Key_Escape || event->modifiers() != Qt::NoModifier || !doc) {
+        QMainWindow::keyPressEvent(event);
+        return;
+    }
+
+    if (doc->view()->send(SCI_GETSELECTIONS) > 1) {
+        doc->view()->send(SCI_CANCEL);
+    } else if (doc->banner() && doc->banner()->kind == banner_kind::CHANGE) {
+        m_banner->on_dismissed();
+    }
 }
 
 // Each action is the window's too, so its keys work for commands outside the menus
@@ -455,6 +491,9 @@ void editor_window::run(command id) {
             save_documents(unsaved, QString());
             break;
         }
+        case command::REVERT:
+            revert_document(doc);
+            break;
         case command::CLOSE_TAB:
             close_document(current);
             break;
@@ -606,6 +645,7 @@ void editor_window::refresh_commands() {
         m_actions.value(id)->setEnabled(is_free && doc);
     }
 
+    m_actions.value(command::REVERT)->setEnabled(is_free && doc && !doc->is_untitled() && doc->is_modified());
     m_tab_row->menu()->setEnabled(is_free);
     if (!doc) {
         return;
@@ -828,8 +868,13 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
         return false;
     }
 
-    if (info.exists() && !info.isFile()) {
-        m_status->set_message(QStringLiteral("Couldn't open %1: it is not a regular file").arg(absolute));
+    QString refusal = info.isFile() ? QString() : refusal_by_kind(absolute);
+    if (!refusal.isEmpty()) {
+        if (current) {
+            show_banner(current, { banner_kind::FAILURE, QStringLiteral("Couldn't open %1").arg(absolute),
+                                   QStringLiteral(": %1.").arg(refusal), {} });
+        }
+
         return false;
     }
 
@@ -837,7 +882,11 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     if (info.exists()) {
         QFile file(absolute);
         if (!file.open(QIODevice::ReadOnly) || (bytes = file.readAll(), file.error() != QFileDevice::NoError)) {
-            m_status->set_message(QStringLiteral("Couldn't open %1: %2").arg(absolute, file.errorString().toLower()));
+            if (current) {
+                show_banner(current, { banner_kind::FAILURE, QStringLiteral("Couldn't open %1").arg(absolute),
+                                       QStringLiteral(": %1.").arg(file.errorString().toLower()), {} });
+            }
+
             return false;
         }
 
@@ -857,12 +906,14 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     if (!info.exists()) {
         doc->set_new_path(absolute);
     } else if (!doc->load(absolute, bytes, encoding)) {
-        m_status->set_message(QStringLiteral("%1 is not valid %2, so it was not opened")
-                                  .arg(info.fileName(), encoding_label(encoding)));
+        if (current) {
+            QString reason = QStringLiteral(" is not valid %1, so it was not opened.").arg(encoding_label(encoding));
+            show_banner(current, { banner_kind::FAILURE, info.fileName(), reason, {} });
+        }
+
         return false;
     }
 
-    m_status->set_message(QString());
     remember_recent_file(absolute);
     add_document(std::move(doc), index);
     if (pristine) {
@@ -872,7 +923,7 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     return true;
 }
 
-// A clean tab whose file is on disk has nothing to write
+// A clean tab whose file is on disk has nothing to write, and a file changed elsewhere asks before it is replaced
 bool editor_window::save_document(document* doc) {
     if (doc->is_untitled()) {
         return save_document_as(doc);
@@ -880,6 +931,22 @@ bool editor_window::save_document(document* doc) {
 
     if (!doc->is_modified() && QFileInfo(doc->file().path).isFile()) {
         return true;
+    }
+
+    if (doc->check_disk() == disk_state::CHANGED) {
+        select_tab(index_of(doc));
+        prompt_sheet conflict(this, QStringLiteral("%1 changed on disk since you opened it").arg(doc->display_name()),
+                              QStringLiteral("Saving replaces the changes made outside Sheen."),
+                              QStringLiteral("Save Anyway"), QStringLiteral("Reload Theirs"), true);
+        prompt_answer answer = static_cast<prompt_answer>(run_sheet(conflict));
+        if (answer == prompt_answer::DESTRUCTIVE) {
+            revert_document(doc);
+            return false;
+        }
+
+        if (answer != prompt_answer::PRIMARY) {
+            return false;
+        }
     }
 
     return write_document(doc, doc->file().path);
@@ -940,27 +1007,37 @@ bool editor_window::save_document_as(document* doc, const QString& title) {
     return true;
 }
 
-// A failed write leaves the file as it was, and the status bar says why
+// A failed write leaves the file as it was and says so in a banner with the ways forward
 bool editor_window::write_document(document* doc, const QString& path) {
     QString error;
     unencodable_char unencodable;
     if (doc->save(path, &error, &unencodable)) {
-        m_status->set_message(QString());
+        doc->set_banner(std::nullopt);
         refresh_tab(doc);
+        refresh_banner();
         refresh_status();
         return true;
     }
 
-    QString name = QFileInfo(path).fileName();
     if (unencodable.line > 0) {
-        m_status->set_message(QStringLiteral("%1 can't hold %2 on line %3 of %4, so nothing was saved")
-                                  .arg(encoding_label(doc->file().encoding), character_phrase(unencodable.code))
-                                  .arg(unencodable.line)
-                                  .arg(name));
+        QString encoding = encoding_label(doc->file().encoding);
+        show_banner(doc, { banner_kind::FAILURE, encoding,
+                           QStringLiteral(" can't hold %1 on line %2. Nothing was saved.")
+                               .arg(character_phrase(unencodable.code))
+                               .arg(unencodable.line),
+                           { { QStringLiteral("Go to Line"), [doc, line = unencodable.line] {
+                                  doc->view()->send(SCI_GOTOLINE, line - 1);
+                                  doc->view()->setFocus();
+                              } },
+                             { QStringLiteral("Save as UTF-8"), [this] { save_with_encoding(UTF_8); } } } });
         return false;
     }
 
-    m_status->set_message(QStringLiteral("Couldn't save %1: %2. The file on disk is unchanged").arg(name, error.toLower()));
+    QString name = QFileInfo(path).fileName();
+    show_banner(doc, { banner_kind::FAILURE, QStringLiteral("Couldn't save %1").arg(name),
+                       QStringLiteral(": %1. The file on disk is unchanged.").arg(error.toLower()),
+                       { { QStringLiteral("Retry"), [this, doc] { save_document(doc); } },
+                         { QStringLiteral("Save As"), [this, doc] { save_document_as(doc); } } } });
     return false;
 }
 
@@ -993,6 +1070,21 @@ bool editor_window::save_documents(const QList<document*>& docs, const QString& 
     }
 
     return true;
+}
+
+// The reload is one undo step, so reverting needs no question
+void editor_window::revert_document(document* doc) {
+    QString error;
+    if (!doc->reload_from_disk(&error)) {
+        show_banner(doc, { banner_kind::FAILURE, QStringLiteral("Couldn't reload %1").arg(doc->display_name()),
+                           QStringLiteral(": %1.").arg(error.toLower()), {} });
+        return;
+    }
+
+    doc->set_banner(std::nullopt);
+    refresh_tab(doc);
+    refresh_banner();
+    refresh_status();
 }
 
 bool editor_window::close_document(int index) {
@@ -1082,6 +1174,7 @@ prompt_answer editor_window::ask_about_unsaved(document* doc, const QString& pur
     QString title = doc->is_untitled() ? QStringLiteral("Save \"%1\" before %2?").arg(name, purpose)
                                        : QStringLiteral("Save changes to %1 before %2?").arg(name, purpose);
     QString body = doc->is_untitled() ? QStringLiteral("It has never been saved.")
+                 : doc->is_deleted()  ? QStringLiteral("It was deleted on disk, so its text exists only here.")
                                       : QStringLiteral("Your changes to %1 will be lost if you don't save them.")
                                            .arg(lines_phrase(qMax(1, doc->changed_line_count())));
     prompt_sheet prompt(this, title, body, QStringLiteral("Save"), QStringLiteral("Don't Save"), true);
@@ -1109,10 +1202,53 @@ void editor_window::remove_document(int index) {
     if (m_documents.empty()) {
         show_empty_state();
         setWindowTitle(QStringLiteral("Sheen"));
+        refresh_banner();
         refresh_status();
     }
 
     refresh_commands();
+}
+
+// A clean tab follows its file quietly, an unsaved one keeps the user's text and says what happened
+void editor_window::check_disk(document* doc) {
+    disk_state state = doc->check_disk();
+    if (state == disk_state::SAME) {
+        return;
+    }
+
+    QString name = doc->display_name();
+    if (state == disk_state::DELETED) {
+        if (doc->is_deleted()) {
+            return;
+        }
+
+        doc->set_deleted(true);
+        show_banner(doc, { banner_kind::CHANGE, name, QStringLiteral(" was deleted on disk. Saving writes it again."),
+                           { { QStringLiteral("Save"), [this, doc] { save_document(doc); } },
+                             { QStringLiteral("Close Tab"), [this, doc] { close_document(index_of(doc)); } } } });
+        refresh_tab(doc);
+        return;
+    }
+
+    if (!doc->is_modified()) {
+        QString error;
+        if (doc->reload_from_disk(&error)) {
+            refresh_tab(doc);
+            if (doc == current_document()) {
+                show_status_note(QStringLiteral("Reloaded, changed on disk"));
+            }
+        }
+
+        return;
+    }
+
+    show_banner(doc, { banner_kind::CHANGE, name, QStringLiteral(" changed on disk. Your unsaved edits are kept."),
+                       { { QStringLiteral("Reload"), [this, doc] { revert_document(doc); } },
+                         { QStringLiteral("Keep Mine"), [this, doc] {
+                              doc->accept_disk_state();
+                              doc->set_banner(std::nullopt);
+                              refresh_banner();
+                          } } } });
 }
 
 // The empty state's rows run the same commands as their menu rows, so their keycaps follow the shortcuts
@@ -1154,9 +1290,11 @@ void editor_window::show_current_document() {
     m_stack->setCurrentWidget(doc->view());
     if (!m_open_sheet) {
         doc->view()->setFocus();
+        check_disk(doc);
     }
 
     setWindowTitle(doc->display_name());
+    refresh_banner();
     refresh_commands();
     refresh_status();
 }
@@ -1168,7 +1306,9 @@ void editor_window::refresh_tab(document* doc) {
     }
 
     tabs()->setTabText(index, doc->display_name());
-    tabs()->setTabToolTip(index, doc->is_untitled() ? QStringLiteral("Never saved") : doc->file().path);
+    tabs()->setTabToolTip(index, doc->is_untitled() ? QStringLiteral("Never saved")
+                                 : doc->is_deleted() ? QStringLiteral("Deleted on disk")
+                                                     : doc->file().path);
     tabs()->set_tab_modified(index, doc->is_modified());
     tabs()->updateGeometry();
     if (doc == current_document()) {
@@ -1215,7 +1355,37 @@ void editor_window::refresh_status() {
         eol = QStringLiteral("%1, mixed").arg(eol);
     }
 
+    m_status->set_message(m_status_note);
     m_status->set_facts({ language_name(doc->lang()), encoding_label(file.encoding), eol });
+}
+
+void editor_window::refresh_banner() {
+    document* doc = current_document();
+    if (!doc || !doc->banner()) {
+        m_banner->hide();
+        return;
+    }
+
+    m_banner->show_message(*doc->banner());
+    m_banner->show();
+}
+
+void editor_window::show_banner(document* doc, const banner_message& message) {
+    doc->set_banner(message);
+    if (doc == current_document()) {
+        refresh_banner();
+    }
+}
+
+void editor_window::show_status_note(const QString& note) {
+    m_status_note = note;
+    refresh_status();
+    QTimer::singleShot(STATUS_NOTE_MS, this, [this, note] {
+        if (m_status_note == note) {
+            m_status_note.clear();
+            refresh_status();
+        }
+    });
 }
 
 void editor_window::show_fact_menu(file_fact fact, const QPoint& anchor) {
@@ -1346,12 +1516,14 @@ void editor_window::reopen_with_encoding(const QByteArray& name) {
 
     QString error;
     if (!doc->reload_as(name, &error)) {
-        m_status->set_message(doc->display_name() + error + QStringLiteral(", so it was kept as it was"));
+        QString reason = error + QStringLiteral(", so it was kept as it was.");
+        show_banner(doc, { banner_kind::FAILURE, doc->display_name(), reason, {} });
         return;
     }
 
-    m_status->set_message(QString());
+    doc->set_banner(std::nullopt);
     refresh_tab(doc);
+    refresh_banner();
     refresh_status();
 }
 

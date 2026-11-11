@@ -12,6 +12,10 @@
 
 inline constexpr qreal POINTS_PER_PIXEL = 72.0 / 96.0;
 
+/* The tone of a banner glyph that is no failure and of a file still arriving, cream so that amber keeps to the
+ * user's own pending changes */
+inline constexpr uint32_t NOTICE_TONE = STLXTHEME_TEXT;
+
 inline QColor token(uint32_t argb) {
     return QColor::fromRgba(argb);
 }
