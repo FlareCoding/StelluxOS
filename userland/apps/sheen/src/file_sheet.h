@@ -9,6 +9,8 @@
 #include <QDateTime>
 #include <QStringList>
 
+#include <functional>
+
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -55,6 +57,9 @@ public:
 
     /* `name` is the suggested file name, with the part before its extension selected */
     bool choose_to_save(const QString& name, const file_encoding& encoding, int eol_mode, save_request* request);
+
+    /* Whether another tab holds `path` with unsaved changes, which Save As asks about before replacing it */
+    std::function<bool(const QString& path)> is_open_with_unsaved_changes;
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
