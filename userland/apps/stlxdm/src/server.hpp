@@ -30,8 +30,8 @@ constexpr uint32_t DM_EV_BATCH_MAX = 16;
 /* Frames of damage an output keeps for targets older than one present */
 constexpr uint32_t DM_DAMAGE_HISTORY = 3;
 
-/* One parsed exec shortcut: the program and args it spawns, and the modifier bits and usage that fire it
- * while they are held */
+/* One parsed exec shortcut: the program and args it spawns, and the usage that fires it while exactly its
+ * modifier bits are held */
 struct dm_hotkey {
     uint8_t mods = 0;
     uint16_t usage = 0;
