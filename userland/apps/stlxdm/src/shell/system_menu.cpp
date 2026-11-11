@@ -1,14 +1,12 @@
 #include "system_menu.hpp"
 
 #include "bar.hpp"
-#include "chord.hpp"
 #include "draw.hpp"
+#include "keycap.hpp"
 #include "programs.hpp"
 
 #include <stlxtheme/theme.h>
 
-#include <algorithm>
-#include <cstring>
 #include <string>
 #include <sys/utsname.h>
 #include <vector>
@@ -29,11 +27,6 @@ constexpr int32_t DIVIDER_INSET = 6;
 constexpr int32_t ROW_HEIGHT = 28;
 constexpr int32_t ROW_PADDING_LEFT = 10;
 constexpr int32_t ROW_PADDING_RIGHT = 6;
-
-constexpr int32_t KEYCAP_HEIGHT = 18;
-constexpr int32_t KEYCAP_PADDING_X = 5;
-constexpr int32_t KEYCAP_GAP = 3;
-constexpr float KEYCAP_TEXT_SIZE = 11.0f;
 
 static const shell_program MENU_PROGRAMS[] = {
     { "About this computer", "/bin/stlxsettings", "--page about" },
@@ -78,36 +71,6 @@ public:
     void paint(ui::painter& p) override {
         p.fill({ DIVIDER_INSET, DIVIDER_MARGIN_Y, m_frame.w - 2 * DIVIDER_INSET, 1 }, STLXTHEME_LINE_SUBTLE);
     }
-};
-
-/* One key of a shortcut, as a chip with the key's name */
-class keycap {
-public:
-    explicit keycap(const std::string& name)
-        : m_text(name, STLXTHEME_MONO_FONT_PATH, KEYCAP_TEXT_SIZE, STLXTHEME_TEXT_DIM),
-          m_width(std::max(KEYCAP_HEIGHT, m_text.width() + 2 * KEYCAP_PADDING_X)),
-          m_ring(make_ring_picture(m_width, KEYCAP_HEIGHT, STLXTHEME_CHIP_RADIUS, STLXTHEME_LINE)),
-          m_hover_ring(make_ring_picture(m_width, KEYCAP_HEIGHT, STLXTHEME_CHIP_RADIUS, STLXTHEME_LINE_STRONG)) {}
-
-    ~keycap() {
-        stlxgfx_destroy_surface(m_ring);
-        stlxgfx_destroy_surface(m_hover_ring);
-    }
-
-    keycap(const keycap&) = delete;
-    keycap& operator=(const keycap&) = delete;
-
-    int32_t width() const { return m_width; }
-
-    void set_hover(bool hover);
-    void paint(ui::painter& p, int32_t x, int32_t top) const;
-
-private:
-    text_picture       m_text;
-    int32_t            m_width;
-    stlxgfx_surface_t* m_ring;
-    stlxgfx_surface_t* m_hover_ring;
-    bool               m_hover = false;
 };
 
 /* An item, chosen by a release over it wherever the press began, so the pointer can press the mark and
@@ -155,17 +118,6 @@ private:
 
 } // namespace
 
-void keycap::set_hover(bool hover) {
-    m_hover = hover;
-    m_text.set_color(hover ? STLXTHEME_TEXT_SECONDARY : STLXTHEME_TEXT_DIM);
-}
-
-void keycap::paint(ui::painter& p, int32_t x, int32_t top) const {
-    p.rounded_rect({ x, top, m_width, KEYCAP_HEIGHT }, STLXTHEME_CHIP_RADIUS, STLXTHEME_SURFACE);
-    p.image({ x, top }, m_hover ? m_hover_ring : m_ring);
-    m_text.draw(p, x + (m_width - m_text.width()) / 2, top, KEYCAP_HEIGHT);
-}
-
 void menu_row::paint(ui::painter& p) {
     if (m_hover) {
         p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_CONTROL_RADIUS, STLXTHEME_SURFACE_SELECTED);
@@ -211,27 +163,6 @@ static std::string uptime_text(const stats_sampler& stats) {
     }
 
     return "up " + format_uptime(stats.uptime_ns());
-}
-
-/* The keys of the first live hotkey that runs the same thing, a program with the same args or the same action of
- * stlxdm's own, none when no hotkey does. A hotkey is live when its chord parses, as the server binds them. */
-static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, stlxconf_action_kind_t kind, const char* path,
-                                              const char* args) {
-    for (uint32_t i = 0; i < conf.shortcut_count; i++) {
-        const stlxconf_shortcut_t& shortcut = conf.shortcuts[i];
-        bool same_kind = stlxconf_action_kind(shortcut.action) == kind;
-        bool same_program = strcmp(shortcut.path, path) == 0 && strcmp(shortcut.args, args) == 0;
-        if (!same_kind || (kind == STLXCONF_ACTION_EXEC && !same_program)) {
-            continue;
-        }
-
-        std::vector<std::string> keys = chord_keycaps(shortcut.key);
-        if (!keys.empty()) {
-            return keys;
-        }
-    }
-
-    return {};
 }
 
 int32_t system_menu::width() const {
