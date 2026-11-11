@@ -38,6 +38,8 @@
 
 #include <ScintillaEditBase.h>
 
+#include <algorithm>
+
 // Where the caret, selection and scroll stood before go to line, so Esc can put them back
 struct view_place {
     sptr_t anchor;
@@ -100,9 +102,10 @@ static const command TAB_COMMANDS[] = {
 static const command DOCUMENT_COMMANDS[] = {
     command::SAVE, command::SAVE_AS, command::REVERT, command::REOPEN_WITH_ENCODING, command::SAVE_WITH_ENCODING,
     command::CLOSE_ALL_TABS, command::UNDO, command::REDO, command::CUT, command::COPY, command::PASTE,
-    command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN,
-    command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
-    command::LOWER_CASE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
+    command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN, command::JOIN_LINES,
+    command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::TRANSFORM,
+    command::UPPER_CASE, command::LOWER_CASE, command::TITLE_CASE, command::SORT_LINES,
+    command::TRIM_TRAILING_WHITESPACE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
     command::SELECT_ALL_MATCHES, command::FIND, command::REPLACE, command::FIND_NEXT, command::FIND_PREVIOUS,
     command::FIND_WORD, command::GO_TO_LINE, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
     command::LINE_NUMBERS, command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
@@ -385,6 +388,127 @@ static void toggle_block_comment(ScintillaEditBase* view, const QByteArray& open
     } else {
         view->send(SCI_INSERTTEXT, end, reinterpret_cast<sptr_t>(close.constData()));
         view->send(SCI_INSERTTEXT, start, reinterpret_cast<sptr_t>(open.constData()));
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+}
+
+// The selected lines, or every line without a selection
+static std::pair<sptr_t, sptr_t> line_span(ScintillaEditBase* view) {
+    if (view->send(SCI_GETSELECTIONEMPTY)) {
+        return { 0, view->send(SCI_GETLINECOUNT) - 1 };
+    }
+
+    sptr_t first = 0;
+    sptr_t last = 0;
+    selected_lines(view, &first, &last);
+    return { first, last };
+}
+
+// Where a line's text ends, before the spaces and tabs trailing it
+static sptr_t content_end(ScintillaEditBase* view, sptr_t line) {
+    sptr_t line_start = view->send(SCI_POSITIONFROMLINE, line);
+    sptr_t end = view->send(SCI_GETLINEENDPOSITION, line);
+    while (end > line_start && QByteArrayView(" \t").contains(static_cast<char>(view->send(SCI_GETCHARAT, end - 1)))) {
+        end--;
+    }
+
+    return end;
+}
+
+static QString line_end_text(ScintillaEditBase* view) {
+    switch (view->send(SCI_GETEOLMODE)) {
+        case SC_EOL_CRLF:
+            return QStringLiteral("\r\n");
+        case SC_EOL_CR:
+            return QStringLiteral("\r");
+        default:
+            return QStringLiteral("\n");
+    }
+}
+
+// Joins the selected lines, or the caret's line and the next, each break and the indent after it becoming one space
+static void join_lines(ScintillaEditBase* view) {
+    sptr_t first = view->send(SCI_LINEFROMPOSITION, view->send(SCI_GETSELECTIONSTART));
+    sptr_t last = view->send(SCI_LINEFROMPOSITION, view->send(SCI_GETSELECTIONEND));
+    last = qMin(qMax(last, first + 1), view->send(SCI_GETLINECOUNT) - 1);
+    if (last <= first) {
+        return;
+    }
+
+    sptr_t caret = 0;
+    view->send(SCI_BEGINUNDOACTION);
+    for (sptr_t line = last; line > first; line--) {
+        sptr_t cut = content_end(view, line - 1);
+        sptr_t text = view->send(SCI_GETLINEINDENTPOSITION, line);
+        bool is_bare = cut == view->send(SCI_POSITIONFROMLINE, line - 1) || text == view->send(SCI_GETLINEENDPOSITION, line);
+        const char* joint = is_bare ? "" : " ";
+
+        view->send(SCI_SETTARGETRANGE, cut, text);
+        view->send(SCI_REPLACETARGET, static_cast<uptr_t>(qstrlen(joint)), reinterpret_cast<sptr_t>(joint));
+        caret = cut + static_cast<sptr_t>(qstrlen(joint));
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+    view->send(SCI_SETEMPTYSELECTION, caret);
+}
+
+// Each word's first letter capital and the rest small, in every selection
+static void title_case(ScintillaEditBase* view) {
+    view->send(SCI_BEGINUNDOACTION);
+    for (sptr_t index = 0; index < view->send(SCI_GETSELECTIONS); index++) {
+        sptr_t start = view->send(SCI_GETSELECTIONNSTART, index);
+        sptr_t end = view->send(SCI_GETSELECTIONNEND, index);
+        QString text = QString::fromUtf8(text_between(view, start, end)).toLower();
+        bool is_word_start = true;
+        for (QChar& letter : text) {
+            if (is_word_start && letter.isLetter()) {
+                letter = letter.toUpper();
+            }
+
+            is_word_start = !letter.isLetterOrNumber() && letter != QLatin1Char('\'');
+        }
+
+        QByteArray bytes = text.toUtf8();
+        view->send(SCI_SETTARGETRANGE, start, end);
+        view->send(SCI_REPLACETARGET, static_cast<uptr_t>(bytes.size()), reinterpret_cast<sptr_t>(bytes.constData()));
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+}
+
+// Sorts the lines ignoring case first, as one undo step, and selects them. A last empty line stays last
+static void sort_lines(ScintillaEditBase* view) {
+    auto [first, last] = line_span(view);
+    if (last > first && view->send(SCI_LINELENGTH, last) == 0) {
+        last--;
+    }
+
+    sptr_t from = view->send(SCI_POSITIONFROMLINE, first);
+    sptr_t to = view->send(SCI_GETLINEENDPOSITION, last);
+    static const QRegularExpression line_end(QStringLiteral("\r\n|\r|\n"));
+    QStringList lines = QString::fromUtf8(text_between(view, from, to)).split(line_end);
+    std::stable_sort(lines.begin(), lines.end(), [](const QString& left, const QString& right) {
+        int order = left.compare(right, Qt::CaseInsensitive);
+        return order != 0 ? order < 0 : left < right;
+    });
+
+    QByteArray sorted = lines.join(line_end_text(view)).toUtf8();
+    view->send(SCI_SETTARGETRANGE, from, to);
+    view->send(SCI_REPLACETARGET, static_cast<uptr_t>(sorted.size()), reinterpret_cast<sptr_t>(sorted.constData()));
+    view->send(SCI_SETSEL, from, from + sorted.size());
+}
+
+// Drops the spaces and tabs ending each line, as one undo step
+static void trim_trailing_whitespace(ScintillaEditBase* view) {
+    auto [first, last] = line_span(view);
+    view->send(SCI_BEGINUNDOACTION);
+    for (sptr_t line = first; line <= last; line++) {
+        sptr_t end = view->send(SCI_GETLINEENDPOSITION, line);
+        sptr_t cut = content_end(view, line);
+        if (cut < end) {
+            view->send(SCI_DELETERANGE, cut, end - cut);
+        }
     }
 
     view->send(SCI_ENDUNDOACTION);
@@ -680,6 +804,7 @@ void editor_window::create_commands() {
         m_menus.append(submenu);
     }
 
+    QMenu* last_submenu = nullptr;
     for (const command_entry& entry : COMMANDS) {
         command id = entry.id;
         auto* action = new QAction(QString::fromLatin1(entry.label), this);
@@ -699,12 +824,20 @@ void editor_window::create_commands() {
             submenu->setStyle(m_menu_style);
             connect(submenu, &QMenu::aboutToShow, this, [this, id, submenu] { fill_submenu(id, submenu); });
             action->setMenu(submenu);
+            last_submenu = submenu;
         } else {
             connect(action, &QAction::triggered, this, [this, id] { run(id); });
             addAction(action);
         }
 
         m_actions.insert(id, action);
+        if (entry.kind == command_kind::SUBMENU_ROW) {
+            // A submenu given rows by the table keeps them rather than being filled as it opens
+            disconnect(last_submenu, &QMenu::aboutToShow, this, nullptr);
+            last_submenu->addAction(action);
+            continue;
+        }
+
         if (entry.place == menu::NONE) {
             continue;
         }
@@ -966,6 +1099,18 @@ void editor_window::run(command id) {
             break;
         case command::LOWER_CASE:
             view->send(SCI_LOWERCASE);
+            break;
+        case command::TITLE_CASE:
+            title_case(view);
+            break;
+        case command::SORT_LINES:
+            sort_lines(view);
+            break;
+        case command::TRIM_TRAILING_WHITESPACE:
+            trim_trailing_whitespace(view);
+            break;
+        case command::JOIN_LINES:
+            join_lines(view);
             break;
         case command::SELECT_ALL:
             view->send(SCI_SELECTALL);

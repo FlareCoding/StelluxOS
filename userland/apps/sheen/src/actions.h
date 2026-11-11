@@ -28,14 +28,19 @@ enum class command {
     DUPLICATE,
     MOVE_LINES_UP,
     MOVE_LINES_DOWN,
+    JOIN_LINES,
     INSERT_LINE_BELOW,
     INSERT_LINE_ABOVE,
     TOGGLE_COMMENT,
     TOGGLE_BLOCK_COMMENT,
     INDENT,
     OUTDENT,
+    TRANSFORM,
     UPPER_CASE,
     LOWER_CASE,
+    TITLE_CASE,
+    SORT_LINES,
+    TRIM_TRAILING_WHITESPACE,
     SELECT_ALL,
     SELECT_LINE,
     ADD_NEXT_MATCH,
@@ -86,8 +91,9 @@ enum class menu { FILE, EDIT, SELECTION, FIND, VIEW, GO, HELP, NONE };
 
 enum class command_kind {
     ACTION,
-    TOGGLE,  // a check row whose state belongs to the current tab
-    SUBMENU, // a row whose menu the window fills each time it opens
+    TOGGLE,      // a check row whose state belongs to the current tab
+    SUBMENU,     // a row whose menu the window fills each time it opens, unless rows follow it in the table
+    SUBMENU_ROW, // an action listed in the submenu above it rather than in its menu
 };
 
 struct command_entry {
@@ -129,6 +135,7 @@ inline constexpr command_entry COMMANDS[] = {
     { command::DUPLICATE, menu::EDIT, "Duplicate", "Ctrl+Shift+D", "", command_kind::ACTION, false },
     { command::MOVE_LINES_UP, menu::EDIT, "Move Line Up", "Alt+Up", "", command_kind::ACTION, false },
     { command::MOVE_LINES_DOWN, menu::EDIT, "Move Line Down", "Alt+Down", "", command_kind::ACTION, false },
+    { command::JOIN_LINES, menu::EDIT, "Join Lines", "Ctrl+J", "", command_kind::ACTION, false },
     { command::INSERT_LINE_BELOW, menu::EDIT, "Insert Line Below", "Ctrl+Return", "", command_kind::ACTION, false },
     { command::INSERT_LINE_ABOVE, menu::EDIT, "Insert Line Above", "Ctrl+Shift+Return", "", command_kind::ACTION,
       false },
@@ -137,8 +144,12 @@ inline constexpr command_entry COMMANDS[] = {
       command_kind::ACTION, false },
     { command::INDENT, menu::EDIT, "Indent", "Ctrl+]", "", command_kind::ACTION, false },
     { command::OUTDENT, menu::EDIT, "Outdent", "Ctrl+[", "", command_kind::ACTION, false },
-    { command::UPPER_CASE, menu::EDIT, "Upper Case", "", "", command_kind::ACTION, true },
-    { command::LOWER_CASE, menu::EDIT, "Lower Case", "", "", command_kind::ACTION, false },
+    { command::TRANSFORM, menu::EDIT, "Transform", "", "", command_kind::SUBMENU, true },
+    { command::UPPER_CASE, menu::EDIT, "Upper Case", "", "", command_kind::SUBMENU_ROW, false },
+    { command::LOWER_CASE, menu::EDIT, "Lower Case", "", "", command_kind::SUBMENU_ROW, false },
+    { command::TITLE_CASE, menu::EDIT, "Title Case", "", "", command_kind::SUBMENU_ROW, false },
+    { command::SORT_LINES, menu::EDIT, "Sort Lines", "", "", command_kind::ACTION, false },
+    { command::TRIM_TRAILING_WHITESPACE, menu::EDIT, "Trim Trailing Whitespace", "", "", command_kind::ACTION, false },
     { command::SELECT_ALL, menu::SELECTION, "Select All", "Ctrl+A", "", command_kind::ACTION, false },
     { command::SELECT_LINE, menu::SELECTION, "Select Line", "Ctrl+L", "", command_kind::ACTION, false },
     { command::ADD_NEXT_MATCH, menu::SELECTION, "Add Next Match", "Ctrl+D", "", command_kind::ACTION, true },
