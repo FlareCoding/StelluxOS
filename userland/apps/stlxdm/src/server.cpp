@@ -115,9 +115,9 @@ static bool queue_received_handles(dm_client& c, const msghdr& msg) {
     return kept_all;
 }
 
-/* Whether the unhandled bytes may begin the ATTACH_GPU_BUFFER that
- * queued handles wait for. A lone byte, short of a type, may. */
-static bool may_begin_gpu_attach(const dm_client& c) {
+/* Whether the unhandled bytes may begin the message that queued
+ * handles wait for. A lone byte, short of a type, may. */
+static bool may_begin_handle_message(const dm_client& c) {
     if (c.rd_have == 0) {
         return false;
     }
@@ -129,7 +129,7 @@ static bool may_begin_gpu_attach(const dm_client& c) {
     uint16_t type;
     memcpy(&type, c.rd_buf, sizeof(type));
 
-    return type == SWP_MSG_ATTACH_GPU_BUFFER;
+    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET;
 }
 
 /* The configured wallpaper decoded, or null when there is none or it
@@ -1406,6 +1406,11 @@ void server::shutdown() {
     }
     m_clients.clear();
 
+    if (m_clipboard_object >= 0) {
+        close(m_clipboard_object);
+        m_clipboard_object = -1;
+    }
+
     /* Panels hold views into the backdrop, so they go first */
     if (m_panels) {
         m_panels->shutdown();
@@ -1441,7 +1446,7 @@ void server::collect_fds(std::vector<pollfd>& fds) const {
     fds.push_back({ m_listen_fd, POLLIN, 0 });
     for (const auto& c : m_clients) {
         short events = POLLIN;
-        if (!c->out_q.empty()) {
+        if (!c->out_q.empty() || c->clipboard_answers_owed > 0) {
             events |= POLLOUT;
         }
         fds.push_back({ c->fd, events, 0 });
@@ -1457,6 +1462,7 @@ void server::pump(const std::vector<pollfd>& fds) {
     for (size_t i = 0; i < m_clients.size() && i + 1 < fds.size(); i++) {
         if (fds[i + 1].revents & POLLOUT) {
             flush_client(*m_clients[i]);
+            send_clipboard_answers(*m_clients[i]);
         }
         if (fds[i + 1].revents & (POLLIN | POLLHUP | POLLERR)) {
             pump_client(*m_clients[i]);
@@ -1542,9 +1548,9 @@ void server::pump_client(dm_client& c) {
             c.rd_have -= off;
         }
 
-        /* Handles sent with any message but an attach, or more than an
-         * attach takes, are left over here */
-        if (c.queued_handle_count > 0 && !may_begin_gpu_attach(c)) {
+        /* Handles sent with a message that takes none, or more than a
+         * message takes, are left over here */
+        if (c.queued_handle_count > 0 && !may_begin_handle_message(c)) {
             c.dead = true;
             return;
         }
@@ -1623,34 +1629,17 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
             return;
         }
         break;
-    case SWP_MSG_CLIPBOARD_SET: {
-        if (hdr.length < sizeof(swp_clipboard_set)) {
+    case SWP_MSG_CLIPBOARD_SET:
+        if (hdr.length != sizeof(swp_clipboard_set)) {
             break;
         }
 
-        const auto* m = reinterpret_cast<const swp_clipboard_set*>(payload);
-        if (m->len > SWP_CLIPBOARD_MAX ||
-            hdr.length != sizeof(*m) + m->len) {
-            break;
-        }
-
-        const char* text = reinterpret_cast<const char*>(payload + sizeof(*m));
-        m_clipboard.assign(text, text + m->len);
+        set_clipboard(c, payload);
         return;
-    }
-    case SWP_MSG_CLIPBOARD_GET: {
-        uint8_t reply[sizeof(swp_clipboard_data) + SWP_CLIPBOARD_MAX];
-        swp_clipboard_data prefix = { static_cast<uint32_t>(m_clipboard.size()) };
-        memcpy(reply, &prefix, sizeof(prefix));
-        if (!m_clipboard.empty()) {
-            memcpy(reply + sizeof(prefix), m_clipboard.data(),
-                   m_clipboard.size());
-        }
-
-        send_to(c, SWP_MSG_CLIPBOARD_DATA, reply,
-                static_cast<uint32_t>(sizeof(prefix) + m_clipboard.size()));
+    case SWP_MSG_CLIPBOARD_GET:
+        c.clipboard_answers_owed++;
+        send_clipboard_answers(c);
         return;
-    }
     case SWP_MSG_CAPTURE:
         /* Deferred until the screenshot consumer exists, the wire needs
          * a completion message first */
@@ -1885,6 +1874,82 @@ void server::flush_client(dm_client& c) {
         } else {
             c.q_motion_off -= static_cast<size_t>(n);
         }
+    }
+}
+
+/* A copy with text takes the oldest queued handle as the clipboard, and
+ * one without that handle ends the client */
+void server::set_clipboard(dm_client& c, const uint8_t* payload) {
+    swp_clipboard_set m;
+    memcpy(&m, payload, sizeof(m));
+
+    int object = -1;
+    if (m.len > 0) {
+        if (c.queued_handle_count == 0) {
+            c.dead = true;
+            return;
+        }
+
+        object = c.queued_handles[0];
+        c.queued_handle_count--;
+        memmove(c.queued_handles, c.queued_handles + 1, c.queued_handle_count * sizeof(int));
+    }
+
+    if (m_clipboard_object >= 0) {
+        close(m_clipboard_object);
+    }
+
+    m_clipboard_len = m.len;
+    m_clipboard_object = object;
+}
+
+/* Sends one CLIPBOARD_DATA from an empty out_q, queueing what the socket
+ * leaves. Returns false when the socket takes none of it. */
+bool server::send_clipboard_answer(dm_client& c) {
+    swp_clipboard_data m = { m_clipboard_len };
+    swp_header hdr = { SWP_MSG_CLIPBOARD_DATA, 0, sizeof(m) };
+    uint8_t bytes[sizeof(hdr) + sizeof(m)];
+    memcpy(bytes, &hdr, sizeof(hdr));
+    memcpy(bytes + sizeof(hdr), &m, sizeof(m));
+
+    iovec iov = { bytes, sizeof(bytes) };
+    msghdr msg = {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    alignas(cmsghdr) uint8_t control[CMSG_SPACE(sizeof(int))] = {};
+    if (m_clipboard_object >= 0) {
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        cmsghdr* head = CMSG_FIRSTHDR(&msg);
+        head->cmsg_level = SOL_SOCKET;
+        head->cmsg_type = SCM_RIGHTS;
+        head->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(head), &m_clipboard_object, sizeof(int));
+    }
+
+    ssize_t n = sendmsg(c.fd, &msg, MSG_NOSIGNAL);
+    if (n < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            c.dead = true;
+        }
+
+        return false;
+    }
+
+    c.out_q.insert(c.out_q.end(), bytes + n, bytes + sizeof(bytes));
+
+    return true;
+}
+
+void server::send_clipboard_answers(dm_client& c) {
+    while (c.clipboard_answers_owed > 0 && c.out_q.empty() && !c.dead) {
+        if (!send_clipboard_answer(c)) {
+            return;
+        }
+
+        c.clipboard_answers_owed--;
     }
 }
 

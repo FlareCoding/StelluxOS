@@ -21,6 +21,7 @@
 #define STLXWIN_EVQ_INITIAL 64u
 #define STLXWIN_BUFS_PER_WINDOW 2u
 #define STLXWIN_UNACKED_CONFS_MAX 8u  /* as many sent CONFIGUREs as the DM remembers */
+#define STLXWIN_QUEUED_HANDLES_MAX 2u /* one read reaches into at most two CLIPBOARD_DATA messages */
 
 typedef struct stlxwin_buf_slot {
     uint32_t buf_id;
@@ -99,10 +100,14 @@ struct stlxwin_conn {
     int gpu_fd;                 /* /dev/gpuN, opened by the first GPU attach, -1 before */
     stlxwin_gpu_record gpu_records[SWP_GPU_BUFFERS_MAX];
 
-    /* Last CLIPBOARD_DATA payload, owned by the connection */
-    char*  clip_text;
-    size_t clip_len;
-    int    clip_pending;        /* a CLIPBOARD_GET answer is outstanding */
+    /* Handles received for CLIPBOARD_DATA messages not yet handled, oldest first */
+    int      queued_handles[STLXWIN_QUEUED_HANDLES_MAX];
+    uint32_t queued_handle_count;
+
+    /* The last CLIPBOARD_DATA's text length and shared memory object, -1 when it sent none */
+    uint64_t clip_len;
+    int      clip_handle;
+    int      clip_pending;      /* a CLIPBOARD_GET answer is outstanding */
 
     /* Last MODES of each output, allocated at the first watch */
     swp_modes* modes;
@@ -118,7 +123,7 @@ int stlxwin_send_locked(stlxwin_conn* conn, uint16_t type,
                         const void* payload, uint32_t length);
 int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
                                 const void* payload, uint32_t length,
-                                const int handles[SWP_GPU_HANDLES]);
+                                const int* handles, uint32_t handle_count);
 void stlxwin_mark_dead(stlxwin_conn* conn);
 void stlxwin_mark_dead_locked(stlxwin_conn* conn);
 int stlxwin_evq_push(stlxwin_conn* conn, const stlxwin_event* ev);

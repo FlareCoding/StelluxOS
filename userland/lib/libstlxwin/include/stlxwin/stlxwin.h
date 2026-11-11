@@ -464,8 +464,10 @@ int stlxwin_gpu_detach(stlxwin_window* win, uint32_t buf_id);
 int stlxwin_gpu_check(stlxwin_conn* conn);
 
 /**
- * @brief Replace the clipboard with UTF-8 text.
- * @return 0, or -1 on failure or text over the protocol limit.
+ * @brief Replace the clipboard with len bytes of UTF-8 text, of any
+ * size memory holds.
+ * @return 0, or -1 when no shared memory object can hold the text or
+ * the message cannot be sent, leaving the clipboard as it was.
  */
 int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len);
 

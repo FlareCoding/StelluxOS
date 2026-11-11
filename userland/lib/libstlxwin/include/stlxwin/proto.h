@@ -9,7 +9,9 @@
  * directions. Pictures stay outside it, in shared memory objects the
  * client creates and names in ATTACH_BUFFER, or in GPU buffers whose
  * handles ATTACH_GPU_BUFFER sends over the socket, which the DM takes
- * when the GPU_INFO after HELLO_REPLY says so. Each message is an
+ * when the GPU_INFO after HELLO_REPLY says so. The clipboard's text
+ * stays outside it too, in a shared memory object whose handle
+ * CLIPBOARD_SET and CLIPBOARD_DATA send. Each message is an
  * swp_header followed by header.length payload bytes. All structs are
  * little endian, naturally aligned, padding free, and size asserted so
  * a field edit fails the build instead of corrupting the wire.
@@ -24,7 +26,6 @@
 #define SWP_SHM_NAME_MAX     80u
 #define SWP_COMMIT_MAX_RECTS 8u
 #define SWP_EVENTS_MAX_BATCH 64u
-#define SWP_CLIPBOARD_MAX    4096u
 #define SWP_MODES_MAX        32u  /* the most modes an output lists */
 #define SWP_OUTPUTS_MAX      16u  /* the most outputs a display drives */
 #define SWP_DESKTOP_LIMIT    (1 << 20)  /* every corner of every place lies within this of the origin on both axes */
@@ -189,10 +190,12 @@ typedef struct {
 } swp_commit;
 _Static_assert(sizeof(swp_commit) == 152, "wire layout");
 
+/* Replaces the clipboard. A nonzero len must go in one sendmsg whose SCM_RIGHTS data holds exactly one handle, of a
+ * shared memory object holding the text from its start, which the DM keeps until the next CLIPBOARD_SET. */
 typedef struct {
-    uint32_t len;           /* followed by len UTF-8 bytes */
+    uint64_t len;           /* UTF-8 bytes, 0 empties the clipboard and sends no handle */
 } swp_clipboard_set;
-_Static_assert(sizeof(swp_clipboard_set) == 4, "wire layout");
+_Static_assert(sizeof(swp_clipboard_set) == 8, "wire layout");
 
 typedef struct {
     uint32_t buf_id;        /* attached buffer the screen is blitted into */
@@ -365,10 +368,12 @@ typedef struct {
 } swp_event_prefix;
 _Static_assert(sizeof(swp_event_prefix) == 8, "wire layout");
 
+/* The answer to a CLIPBOARD_GET. A nonzero len comes with one SCM_RIGHTS handle of the clipboard's shared memory
+ * object, which every client reading the clipboard shares, so none may write it. */
 typedef struct {
-    uint32_t len;           /* followed by len UTF-8 bytes */
+    uint64_t len;           /* UTF-8 bytes from the object's start, 0 while the clipboard is empty */
 } swp_clipboard_data;
-_Static_assert(sizeof(swp_clipboard_data) == 4, "wire layout");
+_Static_assert(sizeof(swp_clipboard_data) == 8, "wire layout");
 
 enum {
     SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
@@ -481,8 +486,11 @@ typedef struct {
 } swp_layout_result;
 _Static_assert(sizeof(swp_layout_result) == 8, "wire layout");
 
-/* Read buffer bound for either side of the socket */
-#define SWP_MAX_MSG_SIZE \
-    (sizeof(swp_header) + sizeof(swp_clipboard_set) + SWP_CLIPBOARD_MAX)
+/* Read buffer bound for either side of the socket, which every message fits */
+#define SWP_MAX_MSG_SIZE 4096u
+_Static_assert(sizeof(swp_header) + sizeof(swp_outputs) <= SWP_MAX_MSG_SIZE, "an OUTPUTS fits a read");
+_Static_assert(sizeof(swp_header) + sizeof(swp_event_prefix) +
+                   SWP_EVENTS_MAX_BATCH * sizeof(swp_event_rec) <= SWP_MAX_MSG_SIZE,
+               "a full EVENT fits a read");
 
 #endif /* STLXWIN_PROTO_H */

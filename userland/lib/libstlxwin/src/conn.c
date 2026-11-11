@@ -14,6 +14,10 @@
 /* The longest a message waits for room in a full socket before the connection counts as dead */
 #define SEND_WAIT_NS 100000000ll
 
+/* Room for the one handle a CLIPBOARD_DATA sends. The kernel fits `(controllen - sizeof(cmsghdr)) / 4` handles,
+ * so CMSG_SPACE's padding would fit a second. */
+#define HANDLE_CONTROL_BYTES CMSG_LEN(sizeof(int))
+
 _Static_assert(STLXWIN_MODES_MAX == SWP_MODES_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_OUTPUTS_MAX == SWP_OUTPUTS_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_OUTPUT_LIT == SWP_OUTPUT_LIT, "stlxwin.h names proto.h's flag");
@@ -150,12 +154,13 @@ int stlxwin_send(stlxwin_conn* conn, uint16_t type,
     return rc;
 }
 
-/* The handles go with the first byte that goes out, and a sendmsg
- * refused whole is retried whole, since the kernel drops its batch */
+/* The handles go with the first byte that goes out, and a sendmsg refused whole is retried whole, since the kernel
+ * drops its batch. No message carries more handles than an ATTACH_GPU_BUFFER. */
 int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
                                 const void* payload, uint32_t length,
-                                const int handles[SWP_GPU_HANDLES]) {
-    if (conn->dead || length > SWP_MAX_MSG_SIZE - sizeof(swp_header)) {
+                                const int* handles, uint32_t handle_count) {
+    if (conn->dead || length > SWP_MAX_MSG_SIZE - sizeof(swp_header) ||
+        handle_count == 0 || handle_count > SWP_GPU_HANDLES) {
         return -1;
     }
 
@@ -177,13 +182,13 @@ int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.space;
-    msg.msg_controllen = sizeof(control.space);
+    msg.msg_controllen = CMSG_SPACE(handle_count * sizeof(int));
 
     struct cmsghdr* head = CMSG_FIRSTHDR(&msg);
     head->cmsg_level = SOL_SOCKET;
     head->cmsg_type = SCM_RIGHTS;
-    head->cmsg_len = CMSG_LEN(SWP_GPU_HANDLES * sizeof(int));
-    memcpy(CMSG_DATA(head), handles, SWP_GPU_HANDLES * sizeof(int));
+    head->cmsg_len = CMSG_LEN(handle_count * sizeof(int));
+    memcpy(CMSG_DATA(head), handles, handle_count * sizeof(int));
 
     int64_t deadline_ns = 0;
     while (1) {
@@ -307,6 +312,39 @@ struct stlxwin_window* stlxwin_find_window(stlxwin_conn* conn,
     return NULL;
 }
 
+/* Queues the handles of a read's one SCM_RIGHTS message, closing any past the queue's room */
+static void queue_received_handles(stlxwin_conn* conn, const struct msghdr* msg) {
+    const struct cmsghdr* head = CMSG_FIRSTHDR(msg);
+    if (!head || head->cmsg_level != SOL_SOCKET || head->cmsg_type != SCM_RIGHTS ||
+        head->cmsg_len < CMSG_LEN(0)) {
+        return;
+    }
+
+    size_t count = (head->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+    for (size_t i = 0; i < count; i++) {
+        int handle;
+        memcpy(&handle, CMSG_DATA(head) + i * sizeof(int), sizeof(handle));
+        if (conn->queued_handle_count == STLXWIN_QUEUED_HANDLES_MAX) {
+            close(handle);
+            continue;
+        }
+
+        conn->queued_handles[conn->queued_handle_count++] = handle;
+    }
+}
+
+static int take_queued_handle(stlxwin_conn* conn) {
+    if (conn->queued_handle_count == 0) {
+        return -1;
+    }
+
+    int handle = conn->queued_handles[0];
+    conn->queued_handle_count--;
+    memmove(conn->queued_handles, conn->queued_handles + 1, conn->queued_handle_count * sizeof(int));
+
+    return handle;
+}
+
 /* Route one complete message into window state and the event queue */
 static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
                            const uint8_t* payload) {
@@ -428,17 +466,18 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         return;
     }
     case SWP_MSG_CLIPBOARD_DATA: {
-        const swp_clipboard_data* m = (const swp_clipboard_data*)payload;
-        free(conn->clip_text);
-        conn->clip_text = NULL;
-        conn->clip_len = 0;
-        if (m->len > 0 && m->len <= SWP_CLIPBOARD_MAX) {
-            conn->clip_text = malloc(m->len);
-            if (conn->clip_text) {
-                memcpy(conn->clip_text, payload + sizeof(*m), m->len);
-                conn->clip_len = m->len;
-            }
+        swp_clipboard_data m;
+        if (hdr->length != sizeof(m)) {
+            return;
         }
+
+        memcpy(&m, payload, sizeof(m));
+        if (conn->clip_handle >= 0) {
+            close(conn->clip_handle);
+        }
+
+        conn->clip_len = m.len;
+        conn->clip_handle = m.len > 0 ? take_queued_handle(conn) : -1;
         conn->clip_pending = 0;
         return;
     }
@@ -548,8 +587,20 @@ int stlxwin_dispatch(stlxwin_conn* conn) {
     uint32_t before = conn->evq_count;
 
     while (!conn->dead) {
-        ssize_t n = read(conn->fd, conn->rd_buf + conn->rd_have,
-                         sizeof(conn->rd_buf) - conn->rd_have);
+        struct iovec iov = { conn->rd_buf + conn->rd_have, sizeof(conn->rd_buf) - conn->rd_have };
+        union {
+            struct cmsghdr head;
+            uint8_t        space[HANDLE_CONTROL_BYTES];
+        } control;
+
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.space;
+        msg.msg_controllen = sizeof(control.space);
+
+        ssize_t n = recvmsg(conn->fd, &msg, 0);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
@@ -568,6 +619,7 @@ int stlxwin_dispatch(stlxwin_conn* conn) {
             break;
         }
 
+        queue_received_handles(conn, &msg);
         conn->rd_have += (uint32_t)n;
 
         /* Consume every complete message in the buffer */
@@ -829,6 +881,7 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
     fcntl(fd, F_SETFL, O_NONBLOCK);
     pthread_mutex_init(&conn->lock, NULL);
     conn->gpu_fd = -1;
+    conn->clip_handle = -1;
 
     conn->fd = fd;
     conn->evq_cap = STLXWIN_EVQ_INITIAL;
@@ -863,8 +916,15 @@ void stlxwin_disconnect(stlxwin_conn* conn) {
         close(conn->gpu_fd);
     }
 
+    for (uint32_t i = 0; i < conn->queued_handle_count; i++) {
+        close(conn->queued_handles[i]);
+    }
+
+    if (conn->clip_handle >= 0) {
+        close(conn->clip_handle);
+    }
+
     pthread_mutex_destroy(&conn->lock);
-    free(conn->clip_text);
     free(conn->modes);
     free(conn->evq);
     free(conn);
