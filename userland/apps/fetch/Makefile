@@ -1,3 +1,3 @@
 APP_NAME := fetch
-APP_LIBS := bearssl
+APP_LIBS := stlxhttp bearssl
 include ../../mk/app.mk
