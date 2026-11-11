@@ -2,7 +2,9 @@
 #define STLXQPA_WINDOW_H
 
 #include <QImage>
+#include <QList>
 #include <QPointer>
+#include <QRegion>
 #include <qpa/qplatformwindow.h>
 
 #include <stlxwin/stlxwin.h>
@@ -47,6 +49,9 @@ private:
 
     // The window a popup opened over, kept while it is shown since focus moves into the popup
     QPointer<QWindow> m_parent;
+
+    // The damage of the last frames committed, newest first, which a buffer holding an older frame still lacks
+    QList<QRegion> m_recent_damage;
 
     Qt::MouseButtons m_buttons = Qt::NoButton;
     Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;

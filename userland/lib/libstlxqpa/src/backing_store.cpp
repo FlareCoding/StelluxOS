@@ -3,6 +3,7 @@
 
 #include <QPainter>
 #include <QWindow>
+#include <cstring>
 
 QStelluxBackingStore::QStelluxBackingStore(QWindow* window)
     : QPlatformBackingStore(window) {
@@ -23,6 +24,32 @@ void QStelluxBackingStore::beginPaint(const QRegion& region) {
     for (const QRect& rect : region) {
         painter.fillRect(rect, Qt::transparent);
     }
+}
+
+// Moves the scrolled pixels inside the image, so Qt repaints only the strip that scrolled into view
+bool QStelluxBackingStore::scroll(const QRegion& area, int dx, int dy) {
+    const QRect bounds = m_image.rect();
+    const QRect from = area.boundingRect().intersected(bounds).intersected(bounds.translated(-dx, -dy));
+    if (from.isEmpty()) {
+        return !m_image.isNull();
+    }
+
+    const QRect to = from.translated(dx, dy);
+    const qsizetype stride = m_image.bytesPerLine();
+    const qsizetype pixel_bytes = m_image.depth() / 8;
+    const size_t row_bytes = static_cast<size_t>(from.width() * pixel_bytes);
+
+    uchar* bits = m_image.bits();
+    const uchar* source = bits + from.top() * stride + from.left() * pixel_bytes;
+    uchar* target = bits + to.top() * stride + to.left() * pixel_bytes;
+
+    // Rows move starting from the edge they travel toward, so each is read before another lands on it
+    for (int i = 0; i < from.height(); i++) {
+        int row = dy > 0 ? from.height() - 1 - i : i;
+        std::memmove(target + row * stride, source + row * stride, row_bytes);
+    }
+
+    return true;
 }
 
 void QStelluxBackingStore::flush(QWindow* window, const QRegion& region, const QPoint& offset) {
