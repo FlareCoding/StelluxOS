@@ -13,6 +13,9 @@
 
 static const QSize DEFAULT_WINDOW_SIZE(640, 480);
 static const int BYTES_PER_PIXEL = 4;
+
+// Frames whose damage present remembers, enough for a buffer held a few frames before it comes back
+static const qsizetype DAMAGE_HISTORY = 4;
 static const int FIRST_PRINTABLE = 0x20;
 static const int LAST_PRINTABLE = 0x7e;
 static const int OPAQUE_ALPHA = 255;
@@ -364,13 +367,30 @@ void QStelluxWindow::present(const QImage& image, const QRegion& region) {
         return;
     }
 
-    // A buffer can hold an older frame, so every commit carries the whole image
-    int width = qMin(static_cast<int>(buffer->width), image.width());
-    int height = qMin(static_cast<int>(buffer->height), image.height());
+    // The buffer still holds the frame of buffer->age commits ago, so only what changed since then is copied
+    const QRect bounds = QRect(0, 0, static_cast<int>(buffer->width), static_cast<int>(buffer->height)) & image.rect();
+    QRegion changed = region;
+    if (buffer->age == 0 || buffer->age - 1 > static_cast<uint32_t>(m_recent_damage.size())) {
+        changed = bounds;
+    } else {
+        for (uint32_t i = 0; i + 1 < buffer->age; i++) {
+            changed += m_recent_damage.at(i);
+        }
+    }
+
     auto* pixels = reinterpret_cast<uint8_t*>(buffer->pixels);
-    for (int y = 0; y < height; y++) {
-        std::memcpy(pixels + static_cast<size_t>(y) * buffer->stride, image.constScanLine(y),
-                    static_cast<size_t>(width) * BYTES_PER_PIXEL);
+    for (const QRect& rect : changed & bounds) {
+        size_t column_offset = static_cast<size_t>(rect.left()) * BYTES_PER_PIXEL;
+        size_t row_bytes = static_cast<size_t>(rect.width()) * BYTES_PER_PIXEL;
+        for (int y = rect.top(); y <= rect.bottom(); y++) {
+            uint8_t* row = pixels + static_cast<size_t>(y) * buffer->stride;
+            std::memcpy(row + column_offset, image.constScanLine(y) + column_offset, row_bytes);
+        }
+    }
+
+    m_recent_damage.prepend(region);
+    if (m_recent_damage.size() > DAMAGE_HISTORY) {
+        m_recent_damage.removeLast();
     }
 
     QVarLengthArray<stlxwin_rect, 16> damage;

@@ -12,6 +12,7 @@ public:
 
     QPaintDevice* paintDevice() override;
     void beginPaint(const QRegion& region) override;
+    bool scroll(const QRegion& area, int dx, int dy) override;
     void flush(QWindow* window, const QRegion& region, const QPoint& offset) override;
     void resize(const QSize& size, const QRegion& static_contents) override;
     QImage toImage() const override;

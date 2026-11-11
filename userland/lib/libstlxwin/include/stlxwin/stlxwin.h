@@ -47,6 +47,7 @@ typedef struct {
     uint32_t  width;
     uint32_t  height;
     uint32_t  stride;
+    uint32_t  age;    /* the pixels hold the frame committed this many commits ago, 0 when they hold none */
 } stlxwin_buffer;
 
 /* STLXWIN_WF_GLASS lays the display manager's glass material under a borderless window, as the display manager does

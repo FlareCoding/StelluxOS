@@ -29,6 +29,7 @@ typedef struct stlxwin_buf_slot {
     size_t   size;              /* mapped bytes */
     uint32_t* pixels;           /* NULL when the slot is empty */
     int      owned;             /* writable by the app right now */
+    uint64_t committed_at;      /* the window's commit count at this slot's last commit, 0 before any */
     stlxwin_buffer view;        /* handed to the app by begin_frame */
 } stlxwin_buf_slot;
 
@@ -70,6 +71,7 @@ struct stlxwin_window {
     uint32_t acked_serial;      /* the newest serial a commit of this window acked */
 
     stlxwin_buf_slot bufs[STLXWIN_BUFS_PER_WINDOW];
+    uint64_t commit_count;      /* shared memory commits so far, which date each slot's frame */
     uint32_t next_buf_id;
     int      want_frame;        /* deliver the next FRAME_DONE as an event */
     int      dead;

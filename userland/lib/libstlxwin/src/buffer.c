@@ -162,11 +162,12 @@ static stlxwin_buf_slot* usable_slot(struct stlxwin_window* win) {
     return NULL;
 }
 
-static stlxwin_buffer* slot_view(stlxwin_buf_slot* slot) {
+static stlxwin_buffer* slot_view(const struct stlxwin_window* win, stlxwin_buf_slot* slot) {
     slot->view.pixels = slot->pixels;
     slot->view.width = slot->width;
     slot->view.height = slot->height;
     slot->view.stride = slot->width * 4;
+    slot->view.age = slot->committed_at == 0 ? 0 : (uint32_t)(win->commit_count - slot->committed_at + 1);
     return &slot->view;
 }
 
@@ -178,7 +179,7 @@ stlxwin_buffer* stlxwin_try_begin_frame(stlxwin_window* win) {
     stlxwin_dispatch(win->conn);
 
     stlxwin_buf_slot* slot = usable_slot(win);
-    return slot ? slot_view(slot) : NULL;
+    return slot ? slot_view(win, slot) : NULL;
 }
 
 stlxwin_buffer* stlxwin_begin_frame(stlxwin_window* win) {
@@ -248,6 +249,8 @@ int stlxwin_commit(stlxwin_window* win, stlxwin_buffer* buf,
     msg.n_damage = stlxwin_wire_damage(msg.damage, damage, n_damage);
 
     slot->owned = 0;
+    win->commit_count++;
+    slot->committed_at = win->commit_count;
 
     pthread_mutex_lock(&win->conn->lock);
     if (flags & STLXWIN_COMMIT_WANT_FRAME) {
