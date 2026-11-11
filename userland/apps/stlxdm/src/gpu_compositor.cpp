@@ -61,8 +61,16 @@ constexpr uint32_t VULKAN_API_VERSION = VK_API_VERSION_1_2;
 
 constexpr float QUEUE_PRIORITY = 1.0f;
 
-/* The width and height of compose.comp's and copy.comp's workgroups */
-constexpr uint32_t WORKGROUP_PIXELS = 16;
+/* The width and height of compose.comp's workgroups */
+constexpr uint32_t COMPOSE_GROUP_PIXELS = 16;
+
+/* copy.comp's group shape and pixels per invocation, which its `local_size` and `PIXELS_PER_INVOCATION` must match */
+constexpr uint32_t COPY_GROUP_WIDTH = 64;
+constexpr uint32_t COPY_GROUP_ROWS = 4;
+constexpr uint32_t COPY_PIXELS_PER_INVOCATION = 4;
+
+/* The most rows one copy dispatch covers, since Vulkan guarantees 65535 workgroups along y */
+constexpr int32_t COPY_DISPATCH_ROWS_MAX = 65535 * COPY_GROUP_ROWS;
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
 
@@ -188,8 +196,8 @@ static uint64_t align_up(uint64_t value, uint64_t alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
-static uint32_t workgroups(int32_t pixels) {
-    return (static_cast<uint32_t>(pixels) + WORKGROUP_PIXELS - 1) / WORKGROUP_PIXELS;
+static uint32_t workgroups(int32_t pixels, uint32_t group_pixels) {
+    return (static_cast<uint32_t>(pixels) + group_pixels - 1) / group_pixels;
 }
 
 /* The CPU time stlxdm's thread has run, which excludes the time it was preempted */
@@ -1162,17 +1170,21 @@ void gpu_compositor::record_copy(
     uint32_t pitch,
     const damage_list::rect& r
 ) {
-    uint64_t first = static_cast<uint64_t>(r.y) * pitch + static_cast<uint64_t>(r.x) * BYTES_PER_PIXEL;
+    uint32_t group_row_pixels = COPY_GROUP_WIDTH * COPY_PIXELS_PER_INVOCATION;
+    for (int32_t top = 0; top < r.h; top += COPY_DISPATCH_ROWS_MAX) {
+        uint64_t first = static_cast<uint64_t>(r.y + top) * pitch + static_cast<uint64_t>(r.x) * BYTES_PER_PIXEL;
+        int32_t rows = std::min(r.h - top, COPY_DISPATCH_ROWS_MAX);
 
-    copy_args args = {};
-    args.source = source + first;
-    args.target = target + first;
-    args.pitch = pitch;
-    args.width = static_cast<uint32_t>(r.w);
-    args.height = static_cast<uint32_t>(r.h);
+        copy_args args = {};
+        args.source = source + first;
+        args.target = target + first;
+        args.pitch = pitch;
+        args.width = static_cast<uint32_t>(r.w);
+        args.height = static_cast<uint32_t>(rows);
 
-    m_vk.cmd_push_constants(commands, m_copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
-    m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
+        m_vk.cmd_push_constants(commands, m_copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
+        m_vk.cmd_dispatch(commands, workgroups(r.w, group_row_pixels), workgroups(rows, COPY_GROUP_ROWS), 1);
+    }
 }
 
 /* Records the copies that bring `picture`'s twin up to date and clears its marks. False when it has none */
@@ -1273,7 +1285,7 @@ bool gpu_compositor::record_compose(compose_buffers& buffers, const compose_targ
         args.material = m_material.address;
 
         m_vk.cmd_push_constants(commands, m_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args);
-        m_vk.cmd_dispatch(commands, workgroups(r.w), workgroups(r.h), 1);
+        m_vk.cmd_dispatch(commands, workgroups(r.w, COMPOSE_GROUP_PIXELS), workgroups(r.h, COMPOSE_GROUP_PIXELS), 1);
     }
 
     write_timestamp(commands, AFTER_DISPATCHES);

@@ -3,9 +3,13 @@
 
 /* Copies a rectangle of pixels from a picture into its twin. Before its
  * dispatches, a compose copies each rectangle marked changed since the last
- * compose that read the twin. gpu_compositor.cpp defines the arguments. */
+ * compose that read the twin. gpu_compositor.cpp defines the arguments and
+ * sizes the dispatch by this workgroup shape and `PIXELS_PER_INVOCATION`. */
 
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 64, local_size_y = 4) in;
+
+/* The pixels each invocation copies along its row, a workgroup's width apart */
+const uint PIXELS_PER_INVOCATION = 4u;
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer pixels {
     uint words[];
@@ -21,11 +25,27 @@ layout(push_constant, std430) uniform copy_args {
 } args;
 
 void main() {
-    uvec2 pixel = gl_GlobalInvocationID.xy;
-    if (pixel.x >= args.width || pixel.y >= args.height) {
+    uint y = gl_GlobalInvocationID.y;
+    if (y >= args.height) {
         return;
     }
 
-    uint index = pixel.y * (args.pitch >> 2) + pixel.x;
-    args.target.words[index] = args.source.words[index];
+    uint row = y * (args.pitch >> 2);
+    uint first = gl_WorkGroupID.x * gl_WorkGroupSize.x * PIXELS_PER_INVOCATION + gl_LocalInvocationID.x;
+
+    /* Every load comes before any store so the reads are in flight together */
+    uint loaded[PIXELS_PER_INVOCATION];
+    for (uint i = 0u; i < PIXELS_PER_INVOCATION; i++) {
+        uint x = first + i * gl_WorkGroupSize.x;
+        if (x < args.width) {
+            loaded[i] = args.source.words[row + x];
+        }
+    }
+
+    for (uint i = 0u; i < PIXELS_PER_INVOCATION; i++) {
+        uint x = first + i * gl_WorkGroupSize.x;
+        if (x < args.width) {
+            args.target.words[row + x] = loaded[i];
+        }
+    }
 }
