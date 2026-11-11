@@ -18,6 +18,7 @@ public:
 private:
     stlxwin_conn* m_connection;
     QMimeData m_fetched;
+    bool m_is_fetch_current = false;
 };
 
 #endif

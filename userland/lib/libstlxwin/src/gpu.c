@@ -158,7 +158,8 @@ static uint32_t attach_locked(stlxwin_conn* conn, struct stlxwin_window* win,
 
     int is_restricted = own_release >= 0 && sent[0] >= 0 && sent[1] >= 0 && sent[2] >= 0;
     int is_sent = is_restricted &&
-                  stlxwin_send_handles_locked(conn, SWP_MSG_ATTACH_GPU_BUFFER, &msg, sizeof(msg), sent) == 0;
+                  stlxwin_send_handles_locked(conn, SWP_MSG_ATTACH_GPU_BUFFER, &msg, sizeof(msg), sent,
+                                              SWP_GPU_HANDLES) == 0;
     for (uint32_t i = 0; i < SWP_GPU_HANDLES; i++) {
         if (sent[i] >= 0) {
             close(sent[i]);

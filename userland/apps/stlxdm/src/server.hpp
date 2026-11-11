@@ -255,8 +255,8 @@ struct dm_client {
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
     uint32_t rd_have = 0;
 
-    /* Handles received for ATTACH_GPU_BUFFER messages not yet handled,
-     * oldest first. One read reaches into at most two attaches. */
+    /* Handles received for ATTACH_GPU_BUFFER and CLIPBOARD_SET messages not
+     * yet handled, oldest first. One read reaches into at most two of them. */
     static constexpr uint32_t QUEUED_HANDLES_MAX = 2 * SWP_GPU_HANDLES;
     int      queued_handles[QUEUED_HANDLES_MAX] = {};
     uint32_t queued_handle_count = 0;
@@ -266,6 +266,10 @@ struct dm_client {
     std::vector<uint8_t> out_q;
     size_t   q_motion_off = SIZE_MAX;
     uint32_t q_motion_win = 0;
+
+    /* CLIPBOARD_GETs not yet answered. An answer's handle must ride its
+     * first byte, so answers go out only once out_q is empty. */
+    uint32_t clipboard_answers_owed = 0;
 
     std::vector<std::unique_ptr<dm_window>> windows;
 
@@ -595,6 +599,9 @@ private:
                  uint16_t header_flags = 0);
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
+    void set_clipboard(dm_client& c, const uint8_t* payload);
+    bool send_clipboard_answer(dm_client& c);
+    void send_clipboard_answers(dm_client& c);
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
@@ -809,8 +816,10 @@ private:
     void update_resize(int32_t px, int32_t py);
     void damage_outline();
 
-    /* One shared text clipboard, last writer wins */
-    std::vector<char> m_clipboard;
+    /* One shared text clipboard, last writer wins: its text's length and
+     * the shared memory object holding it, -1 while empty */
+    uint64_t m_clipboard_len = 0;
+    int      m_clipboard_object = -1;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */
