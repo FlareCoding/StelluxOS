@@ -33,6 +33,7 @@ static constexpr int WINDOW_W = 1520;
 static constexpr int WINDOW_H = 920;
 static constexpr int WINDOW_MIN_W = 720;
 static constexpr int WINDOW_MIN_H = 480;
+static constexpr int CLOSED_TAB_LIMIT = 20;
 static constexpr int RECENT_FILE_LIMIT = 20;
 static constexpr int STATUS_NOTE_MS = 4000;
 
@@ -83,6 +84,8 @@ static row_glyph empty_glyph(command id) {
     switch (id) {
         case command::OPEN_FILE:
             return row_glyph::FOLDER;
+        case command::REOPEN_CLOSED_TAB:
+            return row_glyph::CLOCK;
         default:
             return row_glyph::DOC;
     }
@@ -454,6 +457,11 @@ void editor_window::run(command id) {
         return;
     }
 
+    if (id == command::REOPEN_CLOSED_TAB) {
+        reopen_closed_tab();
+        return;
+    }
+
     if (id == command::QUIT) {
         close();
         return;
@@ -645,6 +653,7 @@ void editor_window::refresh_commands() {
         m_actions.value(id)->setEnabled(is_free && doc);
     }
 
+    m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
     m_actions.value(command::REVERT)->setEnabled(is_free && doc && !doc->is_untitled() && doc->is_modified());
     m_tab_row->menu()->setEnabled(is_free);
     if (!doc) {
@@ -917,7 +926,7 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     remember_recent_file(absolute);
     add_document(std::move(doc), index);
     if (pristine) {
-        remove_document(index_of(pristine));
+        remove_document(index_of(pristine), false);
     }
 
     return true;
@@ -1090,7 +1099,7 @@ void editor_window::revert_document(document* doc) {
 bool editor_window::close_document(int index) {
     document* doc = m_documents.at(index).get();
     if (!doc->is_modified() || (doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) == 0)) {
-        remove_document(index);
+        remove_document(index, false);
         return true;
     }
 
@@ -1099,7 +1108,7 @@ bool editor_window::close_document(int index) {
         return false;
     }
 
-    remove_document(index_of(doc));
+    remove_document(index_of(doc), answer == prompt_answer::DESTRUCTIVE);
     return true;
 }
 
@@ -1112,14 +1121,19 @@ bool editor_window::close_documents(const QList<document*>& docs, const QString&
         if (doc->is_modified() && !(doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) == 0)) {
             unsaved.append(doc);
         } else if (!is_quitting) {
-            remove_document(index_of(doc));
+            remove_document(index_of(doc), false);
         }
     }
 
+    QList<document*> discarded;
     if (unsaved.size() == 1) {
         prompt_answer answer = ask_about_unsaved(unsaved.first(), purpose);
         if (answer == prompt_answer::CANCEL || (answer == prompt_answer::PRIMARY && !save_document(unsaved.first()))) {
             return false;
+        }
+
+        if (answer == prompt_answer::DESTRUCTIVE) {
+            discarded.append(unsaved.first());
         }
     } else if (unsaved.size() > 1) {
         QList<unsaved_entry> entries;
@@ -1146,9 +1160,8 @@ bool editor_window::close_documents(const QList<document*>& docs, const QString&
 
         QList<document*> to_save;
         for (int index = 0; index < unsaved.size(); index++) {
-            if (answer == prompt_answer::PRIMARY && checked.at(index)) {
-                to_save.append(unsaved.at(index));
-            }
+            bool saves = answer == prompt_answer::PRIMARY && checked.at(index);
+            (saves ? to_save : discarded).append(unsaved.at(index));
         }
 
         if (!save_documents(to_save, purpose)) {
@@ -1161,7 +1174,7 @@ bool editor_window::close_documents(const QList<document*>& docs, const QString&
     }
 
     for (document* doc : unsaved) {
-        remove_document(index_of(doc));
+        remove_document(index_of(doc), discarded.contains(doc));
     }
 
     return true;
@@ -1181,8 +1194,22 @@ prompt_answer editor_window::ask_about_unsaved(document* doc, const QString& pur
     return static_cast<prompt_answer>(run_sheet(prompt));
 }
 
-void editor_window::remove_document(int index) {
+// A closed tab joins the reopen stack, keeping its Scintilla document when its text exists nowhere else
+void editor_window::remove_document(int index, bool keeps_text) {
     document* doc = m_documents.at(index).get();
+    bool has_only_copy = keeps_text || (doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) > 0);
+    closed_tab closed = { doc->file(), doc->lang(), doc->current_view_state(), index, doc->untitled_number(),
+                          has_only_copy ? doc->keep_scintilla_document() : 0 };
+    if (!doc->is_untitled() || closed.scintilla_document) {
+        m_closed_tabs.prepend(closed);
+    }
+
+    while (m_closed_tabs.size() > CLOSED_TAB_LIMIT) {
+        closed_tab dropped = m_closed_tabs.takeLast();
+        if (dropped.scintilla_document) {
+            doc->view()->send(SCI_RELEASEDOCUMENT, 0, dropped.scintilla_document);
+        }
+    }
 
     // The most recently used tab takes over, as Ctrl Tab would reach it
     m_recent_tabs.removeAll(doc);
@@ -1206,6 +1233,38 @@ void editor_window::remove_document(int index) {
         refresh_status();
     }
 
+    refresh_commands();
+}
+
+void editor_window::reopen_closed_tab() {
+    if (m_closed_tabs.isEmpty()) {
+        return;
+    }
+
+    closed_tab closed = m_closed_tabs.takeFirst();
+    if (!closed.scintilla_document) {
+        if (!QFileInfo(closed.file.path).isFile()) {
+            if (document* current = current_document()) {
+                QString subject = QStringLiteral("Couldn't reopen %1").arg(QFileInfo(closed.file.path).fileName());
+                show_banner(current, { banner_kind::FAILURE, subject, QStringLiteral(": it no longer exists."), {} });
+            }
+
+            refresh_commands();
+            return;
+        }
+
+        if (open_path(closed.file.path, closed.file.encoding.name, closed.index)) {
+            current_document()->restore_view_state(closed.view);
+        }
+
+        refresh_commands();
+        return;
+    }
+
+    auto doc = std::make_unique<document>(m_stack, closed.untitled_number);
+    doc->adopt(closed.scintilla_document, closed.file, closed.lang);
+    doc->restore_view_state(closed.view);
+    add_document(std::move(doc), closed.index);
     refresh_commands();
 }
 
@@ -1255,6 +1314,10 @@ void editor_window::check_disk(document* doc) {
 void editor_window::show_empty_state() {
     QList<std::pair<command, QString>> rows = { { command::NEW_FILE, QStringLiteral("New File") },
                                                 { command::OPEN_FILE, QStringLiteral("Open File...") } };
+    if (!m_closed_tabs.isEmpty()) {
+        rows.append({ command::REOPEN_CLOSED_TAB, QStringLiteral("Reopen Closed Tab") });
+    }
+
     QList<empty_action> actions;
     for (const auto& [id, label] : rows) {
         QString keys = m_actions.value(id)->shortcut().toString(QKeySequence::NativeText);
@@ -1501,6 +1564,11 @@ void editor_window::show_tab_menu(int index, const QPoint& anchor) {
     });
     copy_path->setEnabled(!doc->is_untitled());
     menu.addAction(QStringLiteral("Copy Name"), [doc] { QGuiApplication::clipboard()->setText(doc->display_name()); });
+
+    menu.addSeparator();
+    QAction* reopen = menu.addAction(QStringLiteral("Reopen Closed Tab\tCtrl+Shift+T"),
+                                     [this] { reopen_closed_tab(); });
+    reopen->setEnabled(!m_closed_tabs.isEmpty());
     menu.exec(anchor);
 }
 

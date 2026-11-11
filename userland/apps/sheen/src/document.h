@@ -28,6 +28,14 @@ struct file_record {
 
 enum class disk_state { SAME, CHANGED, DELETED };
 
+/* Where the caret, the selection and the scroll stood, so a reopened tab returns to them */
+struct view_state {
+    sptr_t caret = 0;
+    sptr_t anchor = 0;
+    sptr_t first_line = 0;
+    int wrap_mode = SC_WRAP_NONE;
+};
+
 /* The first character an encoding cannot hold, as a refused save names it */
 struct unencodable_char {
     sptr_t line = 0; // counted from one, zero when every character was held
@@ -57,6 +65,13 @@ public:
      * Returns false with `error` set, or with `unencodable` naming the first character the encoding cannot hold */
     bool save(const QString& path, QString* error, unencodable_char* unencodable);
 
+    /* Takes over `scintilla_document`, a Scintilla document with its text, undo and change history, and drops the
+     * reference the caller held on it */
+    void adopt(sptr_t scintilla_document, const file_record& file, const language* lang);
+
+    /* Adds a reference to the Scintilla document and returns it, so it outlives this view */
+    sptr_t keep_scintilla_document() const;
+
     void set_encoding(const file_encoding& encoding);
     void set_language(const language* lang);
     void set_eol_mode(int eol_mode);
@@ -76,6 +91,9 @@ public:
     /* Takes the file on disk as it is now as the record, so a change made elsewhere stops counting */
     void accept_disk_state();
     void set_deleted(bool is_deleted);
+
+    view_state current_view_state() const;
+    void restore_view_state(const view_state& state);
 
     bool is_modified() const;
     bool is_deleted() const { return m_is_deleted; }
