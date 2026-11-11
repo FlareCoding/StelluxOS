@@ -23,6 +23,7 @@ class QStackedWidget;
 class banner;
 class empty_state;
 class find_bar;
+class picker;
 class menu_style;
 class sheet;
 class tab_row;
@@ -110,6 +111,7 @@ private:
     void show_banner(document* doc, const banner_message& message);
     void show_status_note(const QString& note);
     void show_status_menu(status_kind kind, const QPoint& anchor);
+    void go_to_line();
     void fill_indentation_menu(document* doc, QMenu* menu);
     void fill_encoding_menu(document* doc, QMenu* menu);
     void fill_line_ending_menu(document* doc, QMenu* menu);
@@ -125,6 +127,7 @@ private:
     banner* m_banner;
     find_bar* m_find_bar = nullptr;
     QStackedWidget* m_stack;
+    picker* m_picker = nullptr;
     empty_state* m_empty_state;
     status_bar* m_status;
     menu_style* m_menu_style;

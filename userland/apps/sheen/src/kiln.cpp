@@ -262,6 +262,18 @@ sptr_t scintilla_rgba(uint32_t argb) {
     return static_cast<sptr_t>((argb & 0xFF000000u) | static_cast<uint32_t>(scintilla_rgb(argb)));
 }
 
+// Scintilla takes a tint's alpha apart from its color and draws the tint only for a marker some margin holds.
+// Margins draw nothing for a background marker, so the gap before the text holds this one
+void define_line_tint(ScintillaEditBase* view, int marker, uint32_t argb) {
+    view->send(SCI_MARKERDEFINE, marker, SC_MARK_BACKGROUND);
+    view->send(SCI_MARKERSETBACK, marker, scintilla_rgb(argb));
+    view->send(SCI_MARKERSETALPHA, marker, argb >> 24);
+    view->send(SCI_MARKERSETLAYER, marker, SC_LAYER_UNDER_TEXT);
+
+    sptr_t mask = view->send(SCI_GETMARGINMASKN, BAR_GAP_MARGIN);
+    view->send(SCI_SETMARGINMASKN, BAR_GAP_MARGIN, mask | 1 << marker);
+}
+
 static uint32_t with_alpha(uint32_t argb, double alpha) {
     return (static_cast<uint32_t>(alpha * 255 + 0.5) << 24) | (argb & 0xFFFFFF);
 }
