@@ -15,6 +15,7 @@ extern "C" {
 #define STLXCONF_MAX_SHORTCUTS 8
 #define STLXCONF_MAX_AUTOSTART 8
 #define STLXCONF_MAX_URL_HANDLERS 8
+#define STLXCONF_MAX_FILE_HANDLERS 32
 
 #define STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS    400
 #define STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS 40
@@ -89,6 +90,15 @@ typedef struct {
     bool from_drop_in;
 } stlxconf_url_handler_t;
 
+/* The program that opens files of one MIME type, the section suffix such as text/plain. args are space separated,
+ * and the file's path follows them as the last argument. */
+typedef struct {
+    char mime_type[128];
+    char path[256];
+    char args[256];
+    bool from_drop_in;
+} stlxconf_file_handler_t;
+
 /**
  * The desktop configuration, parsed from an INI-style file. Every
  * field holds its default until the file overrides it, so a missing
@@ -128,6 +138,9 @@ typedef struct {
 
     stlxconf_url_handler_t url_handlers[STLXCONF_MAX_URL_HANDLERS];
     uint32_t url_handler_count;
+
+    stlxconf_file_handler_t file_handlers[STLXCONF_MAX_FILE_HANDLERS];
+    uint32_t file_handler_count;
 } stlxconf_t;
 
 /**
@@ -143,8 +156,9 @@ void stlxconf_defaults(stlxconf_t* conf);
 int stlxconf_load(stlxconf_t* conf, const char* path);
 
 /**
- * @brief Adds the launchers, shortcuts, autostart entries and URL handlers
- * of every .conf file in `dir`, in name order, to the loaded configuration.
+ * @brief Adds the launchers, shortcuts, autostart entries, URL handlers and
+ * file handlers of every .conf file in `dir`, in name order, to the loaded
+ * configuration.
  * They stay out of stlxconf_save, since their files own them, and any other
  * section of a drop-in file is ignored.
  * @return 0 on success, also when the directory does not exist, -1 when
@@ -182,6 +196,16 @@ const char* stlxconf_glass_tint_name(stlxconf_glass_tint_t tint);
  */
 const stlxconf_url_handler_t* stlxconf_find_url_handler(const stlxconf_t* conf,
                                                         const char* scheme);
+
+/**
+ * @brief Finds the handler for files of `mime_type`, compared without case.
+ *
+ * The main file's handlers come before the drop-in files', so a handler
+ * the user configured wins over one a package installed.
+ * @return the first handler for the type, NULL when none is configured.
+ */
+const stlxconf_file_handler_t* stlxconf_find_file_handler(const stlxconf_t* conf,
+                                                          const char* mime_type);
 
 /**
  * @brief Splits a space-separated args value into arguments, in place.

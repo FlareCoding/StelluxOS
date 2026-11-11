@@ -1,10 +1,11 @@
-/* file-manager: a directory browser whose entries open on double click or
- * Enter, programs launching through the process API. */
+/* file-manager: a directory browser whose entries open on double click or Enter, programs through the process API
+ * and other files in the program the desktop configuration names for their type. */
 #include <stlx/proc.h>
 
 #include <QAbstractTableModel>
 #include <QAction>
 #include <QApplication>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileIconProvider>
 #include <QFontDatabase>
@@ -15,6 +16,7 @@
 #include <QLocale>
 #include <QPushButton>
 #include <QTreeView>
+#include <QUrl>
 #include <QVBoxLayout>
 
 constexpr int WINDOW_W = 560;
@@ -181,7 +183,12 @@ static void open_entry(const QModelIndex& index) {
         return;
     }
 
-    set_status(QStringLiteral("no handler for %1").arg(entry.fileName()));
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(entry.absoluteFilePath()))) {
+        set_status(QStringLiteral("no handler for %1").arg(entry.fileName()));
+        return;
+    }
+
+    set_status(QStringLiteral("opened %1").arg(entry.fileName()));
 }
 
 static void remove_entry(const QModelIndex& index) {
