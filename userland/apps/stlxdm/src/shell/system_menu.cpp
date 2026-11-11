@@ -213,15 +213,15 @@ static std::string uptime_text(const stats_sampler& stats) {
     return "up " + format_uptime(stats.uptime_ns());
 }
 
-/* The keys of the first live hotkey that runs the same program, none when no hotkey does. A hotkey is live
- * when it is an exec shortcut with a path and a chord that parses, as the server binds them. */
-static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, const shell_program& program) {
+/* The keys of the first live hotkey that runs the same thing, a program with the same args or the same action of
+ * stlxdm's own, none when no hotkey does. A hotkey is live when its chord parses, as the server binds them. */
+static std::vector<std::string> shortcut_keys(const stlxconf_t& conf, stlxconf_action_kind_t kind, const char* path,
+                                              const char* args) {
     for (uint32_t i = 0; i < conf.shortcut_count; i++) {
         const stlxconf_shortcut_t& shortcut = conf.shortcuts[i];
-        bool runs_program = strcmp(shortcut.action, "exec") == 0;
-        bool same_path = strcmp(shortcut.path, program.path) == 0;
-        bool same_args = strcmp(shortcut.args, program.args) == 0;
-        if (!runs_program || !same_path || !same_args) {
+        bool same_kind = stlxconf_action_kind(shortcut.action) == kind;
+        bool same_program = strcmp(shortcut.path, path) == 0 && strcmp(shortcut.args, args) == 0;
+        if (!same_kind || (kind == STLXCONF_ACTION_EXEC && !same_program)) {
             continue;
         }
 
@@ -259,14 +259,15 @@ std::unique_ptr<ui::widget> system_menu::build() {
 
     root->add<menu_divider>();
     for (const shell_program& program : MENU_PROGRAMS) {
-        menu_row* row = root->add<menu_row>(program.label, shortcut_keys(m_conf, program));
+        std::vector<std::string> keys = shortcut_keys(m_conf, STLXCONF_ACTION_EXEC, program.path, program.args);
+        menu_row* row = root->add<menu_row>(program.label, keys);
         row->on_choose = [this, &program]() {
             on_spawn(program.path, program.args);
         };
     }
 
     root->add<menu_divider>();
-    menu_row* power = root->add<menu_row>(POWER_LABEL, std::vector<std::string>());
+    menu_row* power = root->add<menu_row>(POWER_LABEL, shortcut_keys(m_conf, STLXCONF_ACTION_POWER, "", ""));
     power->on_choose = [this]() {
         on_power();
     };

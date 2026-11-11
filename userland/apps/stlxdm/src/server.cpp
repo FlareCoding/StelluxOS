@@ -688,21 +688,23 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
     };
 
     out.panels->on_power = [this]() {
-        m_power->open();
-        m_damage.add_full();
+        open_power();
     };
 
     out.panels->use_picture_maker(m_gpu_composes ? m_gpu_compositor.get() : nullptr);
 
-    /* Exec shortcuts with parseable chords become live hotkeys */
+    /* Shortcuts with parseable chords become live hotkeys, each running a program or one of stlxdm's own actions */
     for (uint32_t i = 0; i < m_conf->shortcut_count; i++) {
         const stlxconf_shortcut_t& sc = m_conf->shortcuts[i];
-        if (strcmp(sc.action, "exec") != 0 || !sc.path[0]) {
+        stlxconf_action_kind_t kind = stlxconf_action_kind(sc.action);
+        bool runs_program = kind == STLXCONF_ACTION_EXEC && sc.path[0];
+        if (!runs_program && kind != STLXCONF_ACTION_POWER) {
             continue;
         }
 
         dm_hotkey hk;
         if (parse_chord(sc.key, &hk.mods, &hk.usage)) {
+            hk.kind = kind;
             hk.path = sc.path;
             hk.args = sc.args;
             out.hotkeys.push_back(hk);
@@ -1732,8 +1734,20 @@ void server::drop_client(dm_client& c) {
     c.fd = -1;
 }
 
-void server::spawn_shortcut(const dm_hotkey& hotkey) {
+void server::run_shortcut(const dm_hotkey& hotkey) {
+    if (hotkey.kind == STLXCONF_ACTION_POWER) {
+        open_power();
+        return;
+    }
+
     spawn_app(hotkey.path, hotkey.args);
+}
+
+/* The overlay owns every input while open, so a popover beneath it closes first */
+void server::open_power() {
+    m_panels->close_popover_now();
+    m_power->open();
+    m_damage.add_full();
 }
 
 constexpr size_t OUT_Q_LIMIT = 64 * 1024;

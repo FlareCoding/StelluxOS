@@ -53,6 +53,19 @@ static const char* const GLASS_TINT_NAMES[] = {
 
 static const char* const SWITCH_NAMES[] = { "off", "on" };
 
+static const char* const ACTION_NAMES[] = {
+    [STLXCONF_ACTION_UNKNOWN] = "",
+    [STLXCONF_ACTION_EXEC]    = "exec",
+    [STLXCONF_ACTION_POWER]   = "power",
+};
+
+/* What people read for stlxdm's own actions, where exec is named by its program instead */
+static const char* const ACTION_LABELS[] = {
+    [STLXCONF_ACTION_UNKNOWN] = NULL,
+    [STLXCONF_ACTION_EXEC]    = NULL,
+    [STLXCONF_ACTION_POWER]   = "Power",
+};
+
 #define NAME_COUNT(names) ((int)(sizeof(names) / sizeof((names)[0])))
 
 void stlxconf_defaults(stlxconf_t* conf) {
@@ -612,6 +625,15 @@ const stlxconf_file_handler_t* stlxconf_find_file_handler(const stlxconf_t* conf
     }
 
     return NULL;
+}
+
+stlxconf_action_kind_t stlxconf_action_kind(const char* action) {
+    int found = find_name(ACTION_NAMES, NAME_COUNT(ACTION_NAMES), action);
+    return found > 0 ? (stlxconf_action_kind_t)found : STLXCONF_ACTION_UNKNOWN;
+}
+
+const char* stlxconf_action_label(stlxconf_action_kind_t kind) {
+    return ACTION_LABELS[kind];
 }
 
 int stlxconf_split_args(char* args, const char* argv[], int capacity) {

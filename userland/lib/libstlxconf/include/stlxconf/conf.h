@@ -51,6 +51,13 @@ typedef enum {
     STLXCONF_GLASS_TINT_NEUTRAL,
 } stlxconf_glass_tint_t;
 
+/* What a shortcut or an action runs: exec runs a program, and the others are stlxdm's own actions */
+typedef enum {
+    STLXCONF_ACTION_UNKNOWN,
+    STLXCONF_ACTION_EXEC,
+    STLXCONF_ACTION_POWER,
+} stlxconf_action_kind_t;
+
 /* One pinned launcher in the dock, order preserved from the file, args space
  * separated. The name is the section suffix, kept for faithful re-serialization. */
 typedef struct {
@@ -62,9 +69,8 @@ typedef struct {
     bool from_drop_in; /* owned by a drop-in file, never written back */
 } stlxconf_pin_t;
 
-/* One global key binding. The key string is a plus-separated chord
- * such as ctrl+alt+t, exec is the only action, and args are space
- * separated. */
+/* One global key binding. The key string is a plus-separated chord such as ctrl+alt+t, and the action exec runs
+ * the path with its space separated args, where stlxdm's own actions need neither. */
 typedef struct {
     char name[64];
     char key[64];
@@ -101,7 +107,7 @@ typedef struct {
 } stlxconf_file_handler_t;
 
 /* One entry Quick Actions lists beside the apps, the name being the section suffix. `keywords` are space separated
- * words that also find it, and `action` is exec, which runs `path` with its space separated `args`. */
+ * words that also find it, and `action` is exec with `path` and space separated `args`, or one of stlxdm's own. */
 typedef struct {
     char name[64];
     char label[64];
@@ -234,6 +240,18 @@ const stlxconf_file_handler_t* stlxconf_find_file_handler(const stlxconf_t* conf
  * @return the number of arguments stored.
  */
 int stlxconf_split_args(char* args, const char* argv[], int capacity);
+
+/**
+ * @brief Reads the `action` value of a shortcut or an action.
+ * @return the kind it names, STLXCONF_ACTION_UNKNOWN for any other value.
+ */
+stlxconf_action_kind_t stlxconf_action_kind(const char* action);
+
+/**
+ * @brief Names one of stlxdm's own actions as people read it.
+ * @return its label, such as "Power", or NULL for exec and an unknown kind.
+ */
+const char* stlxconf_action_label(stlxconf_action_kind_t kind);
 
 #ifdef __cplusplus
 }
