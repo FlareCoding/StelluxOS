@@ -309,11 +309,11 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
-    /* Config hotkeys fire on press and never reach the focus */
+    /* Config hotkeys fire on press with exactly their modifiers held, and never reach the focus */
     if (down && !repeat) {
         uint8_t mods = cook_modifiers(hid_modifiers);
         for (const dm_hotkey& hk : m_hotkeys) {
-            if (usage == hk.usage && (mods & hk.mods) == hk.mods) {
+            if (usage == hk.usage && mods == hk.mods) {
                 spawn_shortcut(hk);
                 return;
             }
