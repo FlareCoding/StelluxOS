@@ -21,6 +21,9 @@ extern "C" {
 #define STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS    400
 #define STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS 40
 
+/* The folders Quick Actions' file search leaves out: devices, processes, and the programs it lists apart */
+#define STLXCONF_DEFAULT_QUICK_ACTIONS_SKIP "/dev /proc /usr /bin"
+
 /* Which compositor composes the desktop: auto the GPU when stlxdm can make
  * its compositor, cpu the CPU */
 typedef enum {
@@ -67,7 +70,8 @@ typedef struct {
     char path[256];
     char args[256];
     char icon_path[256];
-    bool from_drop_in; /* owned by a drop-in file, never written back */
+    char source_path[256]; /* the file it came from, read but never written */
+    bool from_drop_in;     /* owned by a drop-in file, never written back */
 } stlxconf_pin_t;
 
 /* One global key binding. The key string is a plus-separated chord such as ctrl+alt+t, and the action exec runs
@@ -118,6 +122,7 @@ typedef struct {
     char action[32];
     char path[256];
     char args[256];
+    char source_path[256]; /* the file it came from, read but never written */
     bool from_drop_in;
 } stlxconf_action_t;
 
@@ -148,6 +153,9 @@ typedef struct {
     /* [input] keyboard repeat, a delay of 0 disables it */
     uint32_t key_repeat_delay_ms;
     uint32_t key_repeat_interval_ms;
+
+    /* [quick_actions] skip: the folders Quick Actions' file search leaves out, space separated */
+    char quick_actions_skip[256];
 
     stlxconf_pin_t pins[STLXCONF_MAX_TASKBAR];
     uint32_t pin_count;

@@ -20,6 +20,7 @@ typedef enum {
     SEC_DESKTOP,
     SEC_THEME,
     SEC_INPUT,
+    SEC_QUICK_ACTIONS,
     SEC_PIN,
     SEC_SHORTCUT,
     SEC_AUTOSTART,
@@ -83,6 +84,8 @@ void stlxconf_defaults(stlxconf_t* conf) {
 
     conf->key_repeat_delay_ms    = STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS;
     conf->key_repeat_interval_ms = STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS;
+
+    strcpy(conf->quick_actions_skip, STLXCONF_DEFAULT_QUICK_ACTIONS_SKIP);
 }
 
 static char* trim(char* s) {
@@ -125,7 +128,7 @@ static void copy_bounded(char* dst, const char* src, size_t cap) {
  * negative when the item table is full and values must be dropped. */
 static void enter_section(stlxconf_t* conf, char* name,
                           conf_section_t* sec, int32_t* item_idx,
-                          bool from_drop_in) {
+                          const char* source_path, bool from_drop_in) {
     /* A drop-in file may only add items, so its other sections are skipped */
     if (strchr(name, ':') == NULL && from_drop_in) {
         *sec = SEC_NONE;
@@ -135,6 +138,8 @@ static void enter_section(stlxconf_t* conf, char* name,
         *sec = SEC_THEME;
     } else if (strcmp(name, "input") == 0) {
         *sec = SEC_INPUT;
+    } else if (strcmp(name, "quick_actions") == 0) {
+        *sec = SEC_QUICK_ACTIONS;
     } else if (strncmp(name, "taskbar:", 8) == 0) {
         *sec = SEC_PIN;
         *item_idx = conf->pin_count < STLXCONF_MAX_TASKBAR
@@ -142,6 +147,8 @@ static void enter_section(stlxconf_t* conf, char* name,
         if (*item_idx >= 0) {
             copy_bounded(conf->pins[*item_idx].name, name + 8,
                          sizeof(conf->pins[*item_idx].name));
+            copy_bounded(conf->pins[*item_idx].source_path, source_path,
+                         sizeof(conf->pins[*item_idx].source_path));
             conf->pins[*item_idx].from_drop_in = from_drop_in;
         }
     } else if (strncmp(name, "shortcut:", 9) == 0) {
@@ -187,6 +194,8 @@ static void enter_section(stlxconf_t* conf, char* name,
         if (*item_idx >= 0) {
             copy_bounded(conf->actions[*item_idx].name, name + 7,
                          sizeof(conf->actions[*item_idx].name));
+            copy_bounded(conf->actions[*item_idx].source_path, source_path,
+                         sizeof(conf->actions[*item_idx].source_path));
             conf->actions[*item_idx].from_drop_in = from_drop_in;
         }
     } else {
@@ -344,6 +353,12 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
 
         return;
     }
+    case SEC_QUICK_ACTIONS:
+        if (strcmp(key, "skip") == 0) {
+            copy_bounded(conf->quick_actions_skip, val, sizeof(conf->quick_actions_skip));
+        }
+
+        return;
     case SEC_NONE:
         return;
     }
@@ -351,7 +366,7 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
 
 static void parse_line(stlxconf_t* conf, const char* line,
                        conf_section_t* sec, int32_t* item_idx,
-                       bool from_drop_in) {
+                       const char* source_path, bool from_drop_in) {
     char buf[512];
     copy_bounded(buf, line, sizeof(buf));
     char* s = trim(buf);
@@ -367,7 +382,7 @@ static void parse_line(stlxconf_t* conf, const char* line,
         }
 
         *end = '\0';
-        enter_section(conf, s + 1, sec, item_idx, from_drop_in);
+        enter_section(conf, s + 1, sec, item_idx, source_path, from_drop_in);
         return;
     }
 
@@ -424,10 +439,10 @@ static int parse_file(stlxconf_t* conf, const char* path, bool from_drop_in) {
         char* eol = strchr(cursor, '\n');
         if (eol) {
             *eol = '\0';
-            parse_line(conf, cursor, &sec, &item_idx, from_drop_in);
+            parse_line(conf, cursor, &sec, &item_idx, path, from_drop_in);
             cursor = eol + 1;
         } else {
-            parse_line(conf, cursor, &sec, &item_idx, from_drop_in);
+            parse_line(conf, cursor, &sec, &item_idx, path, from_drop_in);
             break;
         }
     }
@@ -494,6 +509,9 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     fprintf(f, "\n[input]\n");
     fprintf(f, "key_repeat_delay_ms=%u\n", conf->key_repeat_delay_ms);
     fprintf(f, "key_repeat_interval_ms=%u\n", conf->key_repeat_interval_ms);
+
+    fprintf(f, "\n[quick_actions]\n");
+    fprintf(f, "skip=%s\n", conf->quick_actions_skip);
 
     for (uint32_t i = 0; i < conf->shortcut_count; i++) {
         const stlxconf_shortcut_t* sc = &conf->shortcuts[i];
