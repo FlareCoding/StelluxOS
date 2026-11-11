@@ -950,7 +950,7 @@ help:
 	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
-	@echo "  make image PACKAGES=\"-python\"  Select the prebuilt developer packages in the image: the default tier"
+	@echo "  make image PACKAGES=\"python\"  Select the prebuilt developer packages in the image: the default tier"
 	@echo "                               plus the names given, minus -names, or none/all (see packages/README.md)"
 	@echo "  make packages-list ARCH=<arch> PACKAGES=\"...\" Show the packages and archives PACKAGES selects"
 	@echo "  make packages-build [PACKAGES=...] [ARCHES=x86_64] Build the selected packages the lock does not pin (slow)"

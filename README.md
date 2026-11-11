@@ -110,7 +110,8 @@ are a prebuilt package every build fetches.
 
 Heavy programs that run on Stellux, such as the GCC toolchain, binutils,
 and CPython, are prebuilt packages rather than part of this setup:
-`make image PACKAGES="gcc binutils python"` fetches them into the image, see
+`make image PACKAGES="gcc binutils python"` fetches them into the image,
+and `stlxpkg install gcc` installs one on a running Stellux, see
 `packages/README.md`.
 
 Run `make toolchain-check` to verify everything is in place.

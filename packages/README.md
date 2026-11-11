@@ -23,7 +23,7 @@ default tier, a name adds a package, `-name` removes one, and `none` or
 `all` replaces the default tier as the starting point.
 
     make image                          the default tier
-    make image PACKAGES="-python"       the default tier without python
+    make image PACKAGES="gcc python"    the default tier with gcc and python
     make image PACKAGES="none gcc"      gcc alone
     make image PACKAGES=none            no packages at all
     make packages-list PACKAGES="all"   what every package resolves to
