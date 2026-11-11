@@ -76,6 +76,15 @@ public:
     bool open_held(const QByteArray& encoding);
     QWidget* placeholder() const { return m_placeholder; }
 
+    /* Shows `page` in place of any text, the document then owning it: the Settings tab, named `name`, whose unsaved
+     * changes set_page_modified reports */
+    void show_page(QWidget* page, const QString& name);
+    bool is_page() const { return !m_page_name.isEmpty(); }
+    void set_page_modified(bool is_modified) { m_is_page_modified = is_modified; }
+
+    /* Applies the settings again once Settings saves them: the text size, the caret, indentation and mode defaults */
+    void apply_settings();
+
     /* Starts reading the file at `path` on a worker thread behind `placeholder`, which the document then owns. A file
      * of the settings' large size or more opens in large file mode. The caller wires the loader and starts it */
     file_loader* begin_load(const QString& path, qint64 size, const QByteArray& encoding, QWidget* placeholder);
@@ -175,7 +184,7 @@ public:
 
     /* True once, at the first edit of a read-only file, so its banner shows a single time */
     bool claim_read_only_note();
-    bool is_untitled() const { return m_file.path.isEmpty(); }
+    bool is_untitled() const { return m_file.path.isEmpty() && !is_page(); }
     bool is_pristine() const;
     int untitled_number() const { return m_untitled_number; }
     int changed_line_count() const;
@@ -186,6 +195,9 @@ public:
     void set_banner(const std::optional<banner_message>& message) { m_banner = message; }
 
     ScintillaEditBase* view() const { return m_view; }
+
+    /* The widget the tab shows, which takes the keys: the placeholder, or else the text */
+    QWidget* shown_widget() const;
     const file_record& file() const { return m_file; }
     const language* lang() const { return m_language; }
 
@@ -213,6 +225,8 @@ private:
     std::optional<banner_message> m_banner;
     QByteArray m_held_bytes;
     QWidget* m_placeholder = nullptr;
+    QString m_page_name;
+    bool m_is_page_modified = false;
     std::unique_ptr<file_loader> m_loader;
     bool m_is_large = false;
     bool m_is_wrap_limited = false;
