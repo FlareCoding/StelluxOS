@@ -9,6 +9,10 @@
 #include <QList>
 #include <QString>
 
+#include <Scintilla.h>
+
+#include <cstdint>
+
 class ScintillaEditBase;
 
 struct language;
@@ -28,6 +32,9 @@ const language* find_language(const QString& file_name, QByteArrayView first_lin
 void apply_language(ScintillaEditBase* view, const language* lang);
 
 QString language_name(const language* lang);
+
+/* A theme color as Scintilla takes it, 0xAABBGGRR */
+sptr_t scintilla_rgba(uint32_t argb);
 
 /* Shows or hides the gutter's line numbers. The unsaved bars stay either way */
 void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown);

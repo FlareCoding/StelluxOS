@@ -3,6 +3,7 @@
 #include "empty_state.h"
 #include "file_loader.h"
 #include "file_sheet.h"
+#include "find_bar.h"
 #include "kiln.h"
 #include "menu_style.h"
 #include "placeholder.h"
@@ -77,7 +78,8 @@ static const command DOCUMENT_COMMANDS[] = {
     command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN,
     command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
     command::LOWER_CASE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
-    command::SELECT_ALL_MATCHES, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
+    command::SELECT_ALL_MATCHES, command::FIND, command::REPLACE, command::FIND_NEXT, command::FIND_PREVIOUS,
+    command::FIND_WORD, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
     command::LINE_NUMBERS, command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
 };
 
@@ -247,6 +249,7 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
     : m_settings(settings), m_tab_row(new tab_row(this)), m_banner(new banner(this)), m_stack(new QStackedWidget(this)),
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
       m_main_menu(new QMenu(this)), m_switcher(new tab_switcher(this)) {
+    m_find_bar = new find_bar(this);
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -254,6 +257,7 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
 
     layout->addWidget(m_tab_row);
     layout->addWidget(m_banner);
+    layout->addWidget(m_find_bar);
     layout->addWidget(m_stack, 1);
     layout->addWidget(m_status);
     setCentralWidget(central);
@@ -368,7 +372,8 @@ void editor_window::changeEvent(QEvent* event) {
     }
 }
 
-// Scintilla leaves Esc to the window, which gives back one caret, else dismisses a change banner
+// Scintilla leaves Esc to the window, which gives back one caret, else closes the find bar, else dismisses a change
+// banner
 void editor_window::keyPressEvent(QKeyEvent* event) {
     document* doc = current_document();
     if (event->key() != Qt::Key_Escape || event->modifiers() != Qt::NoModifier || !doc) {
@@ -378,6 +383,8 @@ void editor_window::keyPressEvent(QKeyEvent* event) {
 
     if (doc->view()->send(SCI_GETSELECTIONS) > 1) {
         doc->view()->send(SCI_CANCEL);
+    } else if (m_find_bar->isVisible()) {
+        m_find_bar->close_bar();
     } else if (doc->banner() && doc->banner()->kind == banner_kind::CHANGE) {
         m_banner->on_dismissed();
     }
@@ -681,6 +688,23 @@ void editor_window::run(command id) {
             view->send(SCI_TARGETWHOLEDOCUMENT);
             view->send(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE);
             view->send(SCI_MULTIPLESELECTADDNEXT);
+            break;
+        case command::FIND:
+        case command::REPLACE:
+            m_find_bar->set_view(view);
+            m_find_bar->open(id == command::REPLACE);
+            break;
+        case command::FIND_NEXT:
+        case command::FIND_PREVIOUS:
+            m_find_bar->set_view(view);
+            if (!m_find_bar->step(id == command::FIND_NEXT)) {
+                m_find_bar->open(false);
+            }
+
+            break;
+        case command::FIND_WORD:
+            m_find_bar->set_view(view);
+            m_find_bar->find_word_at_caret();
             break;
         case command::SELECT_ALL_MATCHES:
             view->send(SCI_TARGETWHOLEDOCUMENT);
@@ -1494,6 +1518,8 @@ void editor_window::remove_document(int index, bool keeps_text) {
 
     refresh_tab_names();
     if (m_documents.empty()) {
+        m_find_bar->set_view(nullptr);
+        m_find_bar->hide();
         show_empty_state();
         setWindowTitle(QStringLiteral("Sheen"));
         refresh_banner();
@@ -1715,8 +1741,10 @@ void editor_window::show_current_document() {
 
     m_recent_tabs.removeAll(doc);
     m_recent_tabs.prepend(doc);
+
     QWidget* shown = doc->placeholder() ? doc->placeholder() : doc->view();
     m_stack->setCurrentWidget(shown);
+    m_find_bar->set_view(doc->placeholder() ? nullptr : doc->view());
     doc->refresh_function_names();
     if (!m_open_sheet) {
         shown->setFocus();
@@ -2027,6 +2055,10 @@ void editor_window::show_text_menu(const QPoint& anchor) {
     erase->setEnabled(!view->send(SCI_GETSELECTIONEMPTY));
     menu.addSeparator();
     menu.addAction(m_actions.value(command::SELECT_ALL));
+
+    QString find_keys = m_actions.value(command::FIND)->shortcut().toString(QKeySequence::NativeText);
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Find Selection\t") + find_keys, [this] { run(command::FIND); });
     menu.exec(anchor);
 }
 

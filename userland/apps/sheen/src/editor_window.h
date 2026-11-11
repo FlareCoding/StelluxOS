@@ -22,6 +22,7 @@ class QMenu;
 class QStackedWidget;
 class banner;
 class empty_state;
+class find_bar;
 class menu_style;
 class sheet;
 class tab_row;
@@ -122,6 +123,7 @@ private:
     sheen_settings m_settings;
     tab_row* m_tab_row;
     banner* m_banner;
+    find_bar* m_find_bar = nullptr;
     QStackedWidget* m_stack;
     empty_state* m_empty_state;
     status_bar* m_status;
