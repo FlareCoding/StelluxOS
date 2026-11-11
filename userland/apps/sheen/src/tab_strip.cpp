@@ -24,6 +24,12 @@ static constexpr int MIN_TAB_WIDTH = 80;
 static constexpr int MAX_TAB_WIDTH = 240;
 static constexpr int SLOT_SIZE = 16;
 static constexpr int DOT_SIZE = 8;
+static constexpr int LOCK_SIZE = 12;
+static constexpr int LOCK_LABEL_GAP = 6;
+static constexpr qreal LOCK_STROKE = 1.3;
+static constexpr int TAB_MODIFIED = 1;
+static constexpr int TAB_LOCKED = 2;
+static constexpr int TAB_STRUCK = 4;
 static constexpr qreal CLOSE_GLYPH_HALF = 3;
 static constexpr qreal CLOSE_GLYPH_STROKE = 1.4;
 static constexpr qreal HALF_PIXEL = 0.5;
@@ -43,6 +49,7 @@ static const QColor SHADE = QColor::fromRgba(STLXTHEME_SHADE);
 static const QColor TEXT = QColor::fromRgba(STLXTHEME_TEXT);
 static const QColor TEXT_SECONDARY = QColor::fromRgba(STLXTHEME_TEXT_SECONDARY);
 static const QColor TEXT_DIM = QColor::fromRgba(STLXTHEME_TEXT_DIM);
+static const QColor TEXT_DISABLED = QColor::fromRgba(STLXTHEME_TEXT_DISABLED);
 static const QColor ACCENT = QColor::fromRgba(STLXTHEME_ACCENT);
 static const QColor SURFACE_HOVER = QColor::fromRgba(STLXTHEME_SURFACE_HOVER);
 
@@ -96,6 +103,24 @@ static void paint_close_glyph(QPainter& painter, const QRect& slot, bool is_hove
                      center + QPointF(-CLOSE_GLYPH_HALF, CLOSE_GLYPH_HALF));
 }
 
+// A padlock drawn in a square: a filled body under an open stroked shackle
+static void paint_lock(QPainter& painter, const QRectF& box) {
+    QRectF body(box.left() + 2, box.top() + box.height() * 0.45, box.width() - 4, box.height() * 0.5);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(TEXT_DIM);
+    painter.drawRoundedRect(body, 1.5, 1.5);
+
+    QRectF shackle(box.left() + 3.5, box.top() + 1, box.width() - 7, box.height() * 0.6);
+    QPainterPath arch;
+    arch.moveTo(shackle.left(), body.top());
+    arch.arcTo(shackle, 180, -180);
+    arch.lineTo(shackle.right(), body.top());
+
+    painter.setPen(QPen(TEXT_DIM, LOCK_STROKE));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(arch);
+}
+
 static void paint_unsaved_dot(QPainter& painter, const QRect& slot) {
     painter.setPen(Qt::NoPen);
     painter.setBrush(ACCENT);
@@ -124,17 +149,23 @@ void tab_strip::set_visible_span(int offset, int width) {
 }
 
 void tab_strip::set_tab_modified(int index, bool is_modified) {
-    if (is_tab_modified(index) != is_modified) {
-        setTabData(index, is_modified);
-        update(tabRect(index));
-    }
+    set_tab_flag(index, TAB_MODIFIED, is_modified);
+}
+
+void tab_strip::set_tab_locked(int index, bool is_locked) {
+    set_tab_flag(index, TAB_LOCKED, is_locked);
+}
+
+void tab_strip::set_tab_struck(int index, bool is_struck) {
+    set_tab_flag(index, TAB_STRUCK, is_struck);
 }
 
 // The label's width is rounded up, so a name that fits is never cut by a fraction of a pixel
 QSize tab_strip::tabSizeHint(int index) const {
     int label = qCeil(QFontMetricsF(m_font).horizontalAdvance(tabText(index)));
+    int lock = is_tab_locked(index) ? LOCK_SIZE + LOCK_LABEL_GAP : 0;
 
-    int natural = TAB_PADDING_LEFT + label + LABEL_SLOT_GAP + SLOT_SIZE + TAB_PADDING_RIGHT;
+    int natural = TAB_PADDING_LEFT + lock + label + LABEL_SLOT_GAP + SLOT_SIZE + TAB_PADDING_RIGHT;
     return QSize(qBound(MIN_TAB_WIDTH, natural, MAX_TAB_WIDTH), TAB_HEIGHT);
 }
 
@@ -168,8 +199,19 @@ void tab_strip::paintEvent(QPaintEvent*) {
 
         QRect slot = close_slot(index);
         int label_left = rect.left() + TAB_PADDING_LEFT;
+        if (is_tab_locked(index)) {
+            paint_lock(painter, QRectF(label_left, rect.center().y() - LOCK_SIZE / 2.0, LOCK_SIZE, LOCK_SIZE));
+            label_left += LOCK_SIZE + LOCK_LABEL_GAP;
+        }
+
         QRect label(label_left, rect.top(), slot.left() - LABEL_SLOT_GAP - label_left, rect.height());
-        painter.setPen(is_current ? TEXT : is_hovered ? TEXT_SECONDARY : TEXT_DIM);
+
+        QFont name_font = m_font;
+        name_font.setStrikeOut(is_tab_struck(index));
+        painter.setFont(name_font);
+        QColor tone = is_tab_struck(index) ? TEXT_DISABLED : is_current ? TEXT : is_hovered ? TEXT_SECONDARY : TEXT_DIM;
+        painter.setPen(tone);
+
         QString text = tabText(index);
         if (QFontMetricsF(m_font).horizontalAdvance(text) > label.width()) {
             text = painter.fontMetrics().elidedText(text, Qt::ElideMiddle, label.width());
@@ -252,7 +294,24 @@ QRect tab_strip::close_slot(int index) const {
 }
 
 bool tab_strip::is_tab_modified(int index) const {
-    return tabData(index).toBool();
+    return tabData(index).toInt() & TAB_MODIFIED;
+}
+
+bool tab_strip::is_tab_locked(int index) const {
+    return tabData(index).toInt() & TAB_LOCKED;
+}
+
+bool tab_strip::is_tab_struck(int index) const {
+    return tabData(index).toInt() & TAB_STRUCK;
+}
+
+void tab_strip::set_tab_flag(int index, int flag, bool is_set) {
+    int flags = tabData(index).toInt();
+    int changed = is_set ? flags | flag : flags & ~flag;
+    if (changed != flags) {
+        setTabData(index, changed);
+        update(tabRect(index));
+    }
 }
 
 void tab_strip::set_hover(int tab, bool is_slot_hovered) {

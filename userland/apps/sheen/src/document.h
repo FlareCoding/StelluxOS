@@ -139,6 +139,15 @@ public:
 
     bool is_modified() const;
     bool is_deleted() const { return m_is_deleted; }
+
+    /* A file with no write bit, which opens editable and saves to a new file */
+    bool is_read_only() const { return m_is_read_only; }
+
+    /* Reads the write bit again. True when it changed */
+    bool refresh_read_only();
+
+    /* True once, at the first edit of a read-only file, so its banner shows a single time */
+    bool claim_read_only_note();
     bool is_untitled() const { return m_file.path.isEmpty(); }
     bool is_pristine() const;
     int untitled_number() const { return m_untitled_number; }
@@ -170,6 +179,8 @@ private:
     int m_untitled_number;
     const sheen_settings& m_settings;
     bool m_is_deleted = false;
+    bool m_is_read_only = false;
+    bool m_is_read_only_noted = false;
     std::optional<banner_message> m_banner;
     QByteArray m_held_bytes;
     QWidget* m_placeholder = nullptr;

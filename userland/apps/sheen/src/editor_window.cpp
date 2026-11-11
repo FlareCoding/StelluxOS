@@ -48,6 +48,7 @@ static constexpr int STATUS_NOTE_MS = 4000;
 static constexpr int SWITCHER_GAP = 8;
 static constexpr int INDENT_WIDTHS[] = { 2, 4, 8 };
 static constexpr QChar BULLET(0x2022);
+static const QString NOTE_SEPARATOR = QStringLiteral("   ");
 
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
 
@@ -829,6 +830,17 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
                 refresh_status();
             });
         }
+
+        // Checked once the change is complete, so a reload that ends unmodified says nothing
+        if (is_text_change && doc->is_read_only()) {
+            QTimer::singleShot(0, view, [this, doc] {
+                if (doc->is_modified() && doc->claim_read_only_note()) {
+                    show_banner(doc, { banner_kind::READ_ONLY, doc->display_name(),
+                                       QStringLiteral(" is read-only. Your edits save to a new file."),
+                                       { { QStringLiteral("Save As..."), [this, doc] { save_document_as(doc); } } } });
+                }
+            });
+        }
     });
 
     connect(view, &ScintillaEditBase::marginClicked, view, [view](Scintilla::Position position) {
@@ -1035,8 +1047,9 @@ void editor_window::hold_binary(document* doc, const QString& path, const QByteA
 }
 
 // A clean tab whose file is on disk has nothing to write, and a file changed elsewhere asks before it is replaced
+// A never-saved or read-only file saves through Save As, in its own folder
 bool editor_window::save_document(document* doc) {
-    if (doc->is_untitled()) {
+    if (doc->is_untitled() || doc->is_read_only()) {
         return save_document_as(doc);
     }
 
@@ -1157,7 +1170,7 @@ bool editor_window::write_document(document* doc, const QString& path) {
 bool editor_window::save_documents(const QList<document*>& docs, const QString& purpose) {
     QList<document*> unnamed;
     for (document* doc : docs) {
-        if (doc->is_untitled()) {
+        if (doc->is_untitled() || doc->is_read_only()) {
             unnamed.append(doc);
         }
     }
@@ -1377,6 +1390,11 @@ void editor_window::check_disk(document* doc) {
         return;
     }
 
+    if (doc->refresh_read_only()) {
+        refresh_tab(doc);
+        refresh_status();
+    }
+
     disk_state state = doc->check_disk();
     if (state == disk_state::SAME) {
         return;
@@ -1565,6 +1583,9 @@ void editor_window::refresh_tab(document* doc) {
         return;
     }
 
+    tabs()->set_tab_locked(index, doc->is_read_only());
+    tabs()->set_tab_struck(index, doc->is_deleted());
+
     tabs()->setTabText(index, doc->display_name());
     tabs()->setTabToolTip(index, doc->is_untitled() ? QStringLiteral("Never saved")
                                  : doc->is_deleted() ? QStringLiteral("Deleted on disk")
@@ -1578,7 +1599,13 @@ void editor_window::refresh_tab(document* doc) {
 
 void editor_window::refresh_status() {
     document* doc = current_document();
-    m_status->set_message(m_status_note);
+    QStringList notes = { m_status_note };
+    if (doc && doc->is_read_only()) {
+        notes.prepend(QStringLiteral("Read-only"));
+    }
+
+    notes.removeAll(QString());
+    m_status->set_message(notes.join(NOTE_SEPARATOR));
     if (!doc || doc->placeholder()) {
         m_status->set_items({}, {});
         return;

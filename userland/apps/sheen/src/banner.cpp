@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QtMath>
 
@@ -102,7 +103,7 @@ void banner::show_message(const banner_message& message) {
         m_actions->addWidget(button);
     }
 
-    m_close->setVisible(message.kind == banner_kind::CHANGE);
+    m_close->setVisible(message.kind != banner_kind::FAILURE);
     update();
 }
 
@@ -126,6 +127,23 @@ void banner::paintEvent(QPaintEvent*) {
         painter.drawEllipse(ring);
         painter.drawLine(center + QPointF(0, MARK_TOP), center + QPointF(0, MARK_BOTTOM));
         painter.drawPoint(center + QPointF(0, MARK_DOT));
+        return;
+    }
+
+    // A padlock, an open stroked shackle over a filled body, for a file whose edits save elsewhere
+    if (m_kind == banner_kind::READ_ONLY) {
+        QRectF body(glyph.left() + 2, glyph.top() + glyph.height() * 0.45, glyph.width() - 4, glyph.height() * 0.5);
+        QRectF shackle(glyph.left() + 3.5, glyph.top() + 1, glyph.width() - 7, glyph.height() * 0.6);
+
+        QPainterPath arch;
+        arch.moveTo(shackle.left(), body.top());
+        arch.arcTo(shackle, 180, -180);
+        arch.lineTo(shackle.right(), body.top());
+        painter.drawPath(arch);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawRoundedRect(body, 1.5, 1.5);
         return;
     }
 
