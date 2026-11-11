@@ -35,10 +35,12 @@ static constexpr int WINDOW_MIN_W = 720;
 static constexpr int WINDOW_MIN_H = 480;
 static constexpr int CLOSED_TAB_LIMIT = 20;
 static constexpr int RECENT_FILE_LIMIT = 20;
-static constexpr int STATUS_NOTE_MS = 4000;
 
 // Wide enough that each menu's chevron stands apart from its name, with room for the keycaps under the hairline
 static constexpr int CASCADE_WIDTH = 272;
+static constexpr int STATUS_NOTE_MS = 4000;
+
+static constexpr QChar BULLET(0x2022);
 
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
 
@@ -201,6 +203,7 @@ editor_window::editor_window()
 
     tabs()->on_context_menu = [this](int index, const QPoint& anchor) { show_tab_menu(index, anchor); };
     m_tab_row->on_empty_double_click = [this] { new_document(); };
+    connect(m_tab_row->tab_list(), &QAbstractButton::clicked, this, [this] { show_tab_list(); });
     m_status->on_fact_clicked = [this](file_fact fact, const QPoint& anchor) { show_fact_menu(fact, anchor); };
     m_banner->on_dismissed = [this] {
         if (document* doc = current_document()) {
@@ -1342,6 +1345,42 @@ void editor_window::select_tab(int index) {
     tabs()->setCurrentIndex(index);
 }
 
+void editor_window::show_tab_list() {
+    QMenu menu(this);
+    menu.setStyle(m_menu_style);
+    for (int index = 0; index < tabs()->count(); index++) {
+        document* doc = m_documents[index].get();
+        QString label = doc->display_name();
+        if (doc->is_modified()) {
+            label += QStringLiteral("  ") + BULLET;
+        }
+
+        QAction* action = menu.addAction(label, [this, index] { select_tab(index); });
+        action->setCheckable(true);
+        action->setChecked(index == tabs()->currentIndex());
+    }
+
+    menu.addSeparator();
+    menu.addAction(QStringLiteral("Close Saved Tabs"), [this] { close_saved_tabs(); });
+    menu.addAction(QStringLiteral("Close All Tabs"), [this] { run(command::CLOSE_ALL_TABS); });
+
+    QWidget* button = m_tab_row->tab_list();
+    m_tab_row->tab_list()->set_open(true);
+    menu.exec(button->mapToGlobal(QPoint(button->width() - menu.sizeHint().width(), button->height())));
+    m_tab_row->tab_list()->set_open(false);
+}
+
+void editor_window::close_saved_tabs() {
+    QList<document*> saved;
+    for (const std::unique_ptr<document>& open : m_documents) {
+        if (!open->is_modified()) {
+            saved.append(open.get());
+        }
+    }
+
+    close_documents(saved, QStringLiteral("closing"));
+}
+
 void editor_window::show_current_document() {
     document* doc = current_document();
     if (!doc) {
@@ -1547,16 +1586,7 @@ void editor_window::show_tab_menu(int index, const QPoint& anchor) {
         close_documents(right, QStringLiteral("closing"));
     });
 
-    menu.addAction(QStringLiteral("Close Saved"), [this] {
-        QList<document*> saved;
-        for (const std::unique_ptr<document>& open : m_documents) {
-            if (!open->is_modified()) {
-                saved.append(open.get());
-            }
-        }
-
-        close_documents(saved, QStringLiteral("closing"));
-    });
+    menu.addAction(QStringLiteral("Close Saved"), [this] { close_saved_tabs(); });
 
     menu.addSeparator();
     QAction* copy_path = menu.addAction(QStringLiteral("Copy Path"), [doc] {
