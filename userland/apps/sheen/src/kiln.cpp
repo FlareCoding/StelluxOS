@@ -2,7 +2,9 @@
 
 #include <QFileInfo>
 #include <QHash>
+#include <QImage>
 #include <QList>
+#include <QPainter>
 #include <QRegularExpression>
 
 #include <ILexer.h>
@@ -75,6 +77,11 @@ static constexpr int TEXT_INSET = 8;
 // Scintilla's room right of a line number, and the room the design leaves left of a four digit one
 static constexpr int NUMBER_PADDING = 3;
 static constexpr int NUMBER_LEFT_ROOM = 6;
+static constexpr int CHEVRON_IMAGE_SIZE = 9;
+static constexpr qreal CHEVRON_STROKE = 1.5;
+static constexpr qreal CHEVRON_HALF = 2;
+static constexpr qreal CHEVRON_DEPTH = 2;
+static constexpr int FOLDING_ALL = SC_AUTOMATICFOLD_SHOW | SC_AUTOMATICFOLD_CLICK | SC_AUTOMATICFOLD_CHANGE;
 
 enum gutter_margin { NUMBER_MARGIN, NUMBER_GAP_MARGIN, CHANGE_BAR_MARGIN, BAR_GAP_MARGIN, GUTTER_MARGIN_COUNT };
 
@@ -371,6 +378,32 @@ static void reset_styles(ScintillaEditBase* view) {
     view->send(SCI_STYLESETFORE, STYLE_INDENTGUIDE, scintilla_rgb(blend_over_pocket(BRASS, INDENT_GUIDE_ALPHA)));
 }
 
+// A fold header's chevron in the dimmest readable tone, pointing down while its block is open
+static QImage fold_chevron(bool is_open) {
+    qreal middle = CHEVRON_IMAGE_SIZE / 2.0;
+    qreal back = middle - CHEVRON_DEPTH / 2;
+    qreal tip = middle + CHEVRON_DEPTH / 2;
+    QPointF down[] = { { middle - CHEVRON_HALF, back }, { middle, tip }, { middle + CHEVRON_HALF, back } };
+    QPointF right[] = { { back, middle - CHEVRON_HALF }, { tip, middle }, { back, middle + CHEVRON_HALF } };
+
+    QImage image(CHEVRON_IMAGE_SIZE, CHEVRON_IMAGE_SIZE, QImage::Format_RGBA8888);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor::fromRgba(STLXTHEME_TEXT_DIM), CHEVRON_STROKE, Qt::SolidLine, Qt::RoundCap,
+                        Qt::RoundJoin));
+    painter.drawPolyline(is_open ? down : right, 3);
+    painter.end();
+    return image;
+}
+
+static void define_chevron_marker(ScintillaEditBase* view, int marker, const QImage& image) {
+    view->send(SCI_RGBAIMAGESETWIDTH, image.width());
+    view->send(SCI_RGBAIMAGESETHEIGHT, image.height());
+    view->send(SCI_MARKERDEFINERGBAIMAGE, marker, reinterpret_cast<sptr_t>(image.constBits()));
+}
+
 static void apply_gutter(ScintillaEditBase* view) {
     int bar_left = GUTTER_WIDTH - GUTTER_BAR_GAP - STLXTHEME_MARKER_WIDTH;
 
@@ -402,6 +435,23 @@ static void apply_gutter(ScintillaEditBase* view) {
     view->send(SCI_MARKERSETBACK, SC_MARKNUM_HISTORY_REVERTED_TO_MODIFIED, scintilla_rgb(STLXTHEME_ACCENT));
     view->send(SCI_MARKERDEFINE, SC_MARKNUM_HISTORY_SAVED, SC_MARK_EMPTY);
     view->send(SCI_MARKERDEFINE, SC_MARKNUM_HISTORY_REVERTED_TO_ORIGIN, SC_MARK_EMPTY);
+
+    // Only a fold header carries a mark, its chevron, and the fold margin takes the pocket instead of a pattern
+    for (int marker = SC_MARKNUM_FOLDEREND; marker <= SC_MARKNUM_FOLDEROPEN; marker++) {
+        view->send(SCI_MARKERDEFINE, marker, SC_MARK_EMPTY);
+    }
+
+    for (int marker : { SC_MARKNUM_FOLDER, SC_MARKNUM_FOLDEREND }) {
+        define_chevron_marker(view, marker, fold_chevron(false));
+    }
+
+    for (int marker : { SC_MARKNUM_FOLDEROPEN, SC_MARKNUM_FOLDEROPENMID }) {
+        define_chevron_marker(view, marker, fold_chevron(true));
+    }
+
+    view->send(SCI_SETFOLDMARGINCOLOUR, true, scintilla_rgb(STLXTHEME_OPAQUE_POCKET));
+    view->send(SCI_SETFOLDMARGINHICOLOUR, true, scintilla_rgb(STLXTHEME_OPAQUE_POCKET));
+    view->send(SCI_SETAUTOMATICFOLD, FOLDING_ALL);
 }
 
 // Lines take the terminal's 22 px height, the extra split between ascent and descent
@@ -535,6 +585,10 @@ void apply_language(ScintillaEditBase* view, const language* lang) {
         set_property(view, property.key, property.value);
     }
 
+    // A block folds up to its last line, leaving the blank lines after it in view
+    set_property(view, "fold", "1");
+    set_property(view, "fold.compact", "0");
+
     QList<int> identifiers;
     int named_styles = static_cast<int>(view->send(SCI_GETNAMEDSTYLES));
     for (int style = 0; style < named_styles; style++) {
@@ -572,6 +626,15 @@ void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown) {
     fit_line_numbers(view);
 }
 
+// The gap between the numbers and the unsaved bar holds the fold chevrons, and leaving Code mode opens every block
+void set_folding_shown(ScintillaEditBase* view, bool is_shown) {
+    view->send(SCI_SETMARGINTYPEN, NUMBER_GAP_MARGIN, is_shown ? SC_MARGIN_SYMBOL : SC_MARGIN_COLOUR);
+    view->send(SCI_SETMARGINMASKN, NUMBER_GAP_MARGIN, is_shown ? SC_MASK_FOLDERS : 0);
+    if (!is_shown) {
+        view->send(SCI_FOLDALL, SC_FOLDACTION_EXPAND);
+    }
+}
+
 void apply_mode_defaults(ScintillaEditBase* view, const mode_defaults& defaults) {
     set_line_numbers_shown(view, defaults.line_numbers);
     view->send(SCI_SETINDENTATIONGUIDES, defaults.indent_guides ? SC_IV_LOOKBOTH : SC_IV_NONE);
@@ -601,7 +664,8 @@ void fit_reading_width(ScintillaEditBase* view, int wrap_column) {
 
     // A click in the room lands at the start of its line, as one left of the text does, instead of selecting it
     view->send(SCI_SETMARGINWIDTHN, NUMBER_GAP_MARGIN, is_room_before_bar ? side - TEXT_INSET : GUTTER_NUMBER_GAP);
-    view->send(SCI_SETMARGINSENSITIVEN, NUMBER_GAP_MARGIN, is_room_before_bar);
+    bool holds_folds = view->send(SCI_GETMARGINMASKN, NUMBER_GAP_MARGIN) == SC_MASK_FOLDERS;
+    view->send(SCI_SETMARGINSENSITIVEN, NUMBER_GAP_MARGIN, is_room_before_bar || holds_folds);
     view->send(SCI_SETMARGINLEFT, 0, is_room_before_bar ? TEXT_INSET : side);
     view->send(SCI_SETMARGINRIGHT, 0, wrap_column > 0 ? side : 0);
 }

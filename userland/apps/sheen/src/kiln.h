@@ -39,6 +39,9 @@ sptr_t scintilla_rgba(uint32_t argb);
 /* Defines `marker` to tint the lines it marks with `argb`, under their text */
 void define_line_tint(ScintillaEditBase* view, int marker, uint32_t argb);
 
+/* Shows or hides the fold chevrons, which Code mode has and Text mode and large files go without */
+void set_folding_shown(ScintillaEditBase* view, bool is_shown);
+
 /* Shows or hides the gutter's line numbers. The unsaved bars stay either way */
 void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown);
 bool are_line_numbers_shown(ScintillaEditBase* view);
