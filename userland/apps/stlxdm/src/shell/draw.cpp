@@ -101,6 +101,52 @@ stlxgfx_surface_t* make_search_glyph(int32_t size, uint32_t color) {
     return picture;
 }
 
+/* Whether (`x`, `y`) lies inside `contours` by the evenodd rule: a ray toward +x crosses an odd count of edges */
+static bool is_inside(float x, float y, const std::vector<std::vector<glyph_point>>& contours) {
+    bool is_in = false;
+    for (const std::vector<glyph_point>& contour : contours) {
+        for (size_t i = 0, j = contour.size() - 1; i < contour.size(); j = i++) {
+            const glyph_point& a = contour[i];
+            const glyph_point& b = contour[j];
+            bool spans = (a.y > y) != (b.y > y);
+            if (spans && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) {
+                is_in = !is_in;
+            }
+        }
+    }
+
+    return is_in;
+}
+
+stlxgfx_surface_t* make_shape_glyph(int32_t size, uint32_t color,
+                                    const std::vector<std::vector<glyph_point>>& contours) {
+    constexpr int32_t SAMPLES = 4;
+    stlxgfx_surface_t* picture = make_clear_picture(size, size);
+    if (!picture) {
+        return nullptr;
+    }
+
+    float unit = static_cast<float>(size) / 16.0f;
+    uint32_t alpha = color >> 24;
+    for (int32_t y = 0; y < size; y++) {
+        uint32_t* row = reinterpret_cast<uint32_t*>(picture->pixels + static_cast<size_t>(y) * picture->pitch);
+        for (int32_t x = 0; x < size; x++) {
+            uint32_t inside = 0;
+            for (int32_t sy = 0; sy < SAMPLES; sy++) {
+                for (int32_t sx = 0; sx < SAMPLES; sx++) {
+                    float px = (static_cast<float>(x) + (static_cast<float>(sx) + 0.5f) / SAMPLES) / unit;
+                    float py = (static_cast<float>(y) + (static_cast<float>(sy) + 0.5f) / SAMPLES) / unit;
+                    inside += is_inside(px, py, contours) ? 1 : 0;
+                }
+            }
+
+            row[x] = (alpha * inside / (SAMPLES * SAMPLES)) << 24 | (color & 0xFFFFFF);
+        }
+    }
+
+    return picture;
+}
+
 /* Signed distance from the center of pixel (`x`, `y`) to the edge of a rect
  * with corners of `radius`, negative inside */
 static float rounded_rect_distance(int32_t x, int32_t y, const ui::rect& box, int32_t radius) {

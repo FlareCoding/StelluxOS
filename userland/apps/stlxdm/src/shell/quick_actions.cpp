@@ -32,6 +32,14 @@ constexpr int32_t FIELD_TEXT_LEFT = FIELD_GLYPH_LEFT + FIELD_GLYPH_SIZE + 12;
 constexpr int32_t FIELD_PADDING_RIGHT = 12;
 constexpr float QUERY_SIZE = 17.5f;
 
+constexpr int32_t FIELD_CHIPS_RIGHT = 6;
+constexpr int32_t CHIP_HEIGHT = 32;
+constexpr int32_t CHIP_MIN_WIDTH = 34;
+constexpr int32_t CHIP_PADDING_X = 9;
+constexpr int32_t CHIP_NAME_GAP = 7;
+constexpr int32_t CHIP_GAP = 2;
+constexpr int32_t CHIP_GLYPH_SIZE = 16;
+
 constexpr int32_t HEAD_HEIGHT = 28;
 constexpr int32_t HEAD_PADDING_X = 10;
 constexpr int32_t HEAD_PADDING_BOTTOM = 5;
@@ -58,6 +66,7 @@ constexpr int32_t TICK_RADIUS = 1;
 constexpr int32_t LIST_GAP = 4;
 constexpr int32_t LIST_HEIGHT = 2 * HEAD_HEIGHT + 8 * ROW_HEIGHT;
 constexpr size_t KIND_ROWS_MAX = 6;
+constexpr size_t NARROWED_ROWS_MAX = 100;
 constexpr size_t RECENT_MAX = 3;
 constexpr uint32_t UNPICKED = UINT32_MAX;
 constexpr int32_t PAGE_ROWS = 8;
@@ -70,7 +79,9 @@ constexpr int32_t FOOTER_PADDING_RIGHT = 10;
 constexpr int32_t FOOTER_KEY_GAP = 6;
 constexpr int32_t FOOTER_ITEM_GAP = 18;
 
+constexpr uint16_t HID_USAGE_1 = 0x1E;
 constexpr uint16_t HID_USAGE_ENTER = 0x28;
+constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
 constexpr uint16_t HID_USAGE_BACKSPACE = 0x2A;
 constexpr uint16_t HID_USAGE_TAB = 0x2B;
 constexpr uint16_t HID_USAGE_HOME = 0x4A;
@@ -108,12 +119,50 @@ constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
 
 namespace {
 
-/* The kinds rank in this order where matches are equally good, and a calculation heads the list before any */
-enum class row_kind : uint8_t { app, action, program, file, calculator };
+/* The kinds rank in this order where matches are equally good, a calculation heads the list before any, and the last
+ * row of the files may offer the rest of them */
+enum class row_kind : uint8_t { app, action, program, file, calculator, more_files };
 
-constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "CALCULATOR" };
-constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation" };
-constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy" };
+constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "CALCULATOR", "" };
+constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation", "" };
+constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy", "Show Files Only" };
+
+/* What the chips narrow the rows to, each on its Ctrl digit, which again shows every kind */
+enum class narrow_mode : uint8_t { all, apps, files, actions };
+
+constexpr size_t CHIP_COUNT = 3;
+constexpr narrow_mode CHIP_MODES[CHIP_COUNT] = { narrow_mode::apps, narrow_mode::files, narrow_mode::actions };
+constexpr const char* CHIP_NAMES[CHIP_COUNT] = { "Apps", "Files", "Actions" };
+
+/* A square of the apps glyph, its corners cut */
+std::vector<glyph_point> glyph_square(float left, float top) {
+    constexpr float SIDE = 5.5f;
+    constexpr float CUT = 1.2f;
+
+    return { { left + CUT, top }, { left + SIDE - CUT, top }, { left + SIDE, top + CUT },
+             { left + SIDE, top + SIDE - CUT }, { left + SIDE - CUT, top + SIDE }, { left + CUT, top + SIDE },
+             { left, top + SIDE - CUT }, { left, top + CUT } };
+}
+
+/* The chips' glyphs on the 16 unit grid of the mocks: four squares, a page with two lines cut out, and a bolt */
+std::vector<std::vector<glyph_point>> chip_contours(narrow_mode mode) {
+    switch (mode) {
+    case narrow_mode::apps:
+        return { glyph_square(1.5f, 1.5f), glyph_square(9.0f, 1.5f), glyph_square(1.5f, 9.0f),
+                 glyph_square(9.0f, 9.0f) };
+    case narrow_mode::files:
+        return { { { 3.5f, 1 }, { 9, 1 }, { 13, 5 }, { 13, 13.5f }, { 12.6f, 14.6f }, { 11.5f, 15 }, { 3.5f, 15 },
+                   { 2.4f, 14.6f }, { 2, 13.5f }, { 2, 2.5f }, { 2.4f, 1.4f } },
+                 { { 5, 8 }, { 11, 8 }, { 11, 9.5f }, { 5, 9.5f } },
+                 { { 5, 11 }, { 9.5f, 11 }, { 9.5f, 12.5f }, { 5, 12.5f } } };
+    case narrow_mode::actions:
+        return { { { 9.6f, 1 }, { 3, 9.2f }, { 7.3f, 9.2f }, { 6.4f, 15 }, { 13, 6.8f }, { 8.7f, 6.8f } } };
+    case narrow_mode::all:
+        break;
+    }
+
+    return {};
+}
 
 /* One thing the palette starts, as its row shows it */
 struct palette_entry {
@@ -154,6 +203,7 @@ std::string pick_key(const palette_entry& entry) {
     case row_kind::file:
         return "file " + entry.path;
     case row_kind::calculator:
+    case row_kind::more_files:
         break;
     }
 
@@ -249,12 +299,23 @@ std::string shown_folder(const std::string& folder) {
 /* The search field, always focused while the palette is open, so it always shows the amber rule and the caret */
 class query_field : public ui::widget {
 public:
-    explicit query_field(const stlxgfx_surface_t* glyph) : m_glyph(glyph) {}
+    /* `chip_glyphs` holds each chip's glyph at rest, then each chip's glyph when chosen */
+    query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs);
+
+    /* Fired by a click on a chip */
+    std::function<void(narrow_mode mode)> on_chip;
 
     void show(const std::string& text, size_t cursor) {
         m_text = text;
         m_cursor = cursor;
         invalidate();
+    }
+
+    void show_mode(narrow_mode mode) {
+        if (mode != m_mode) {
+            m_mode = mode;
+            invalidate();
+        }
     }
 
     ui::size measure(ui::size avail) override {
@@ -263,11 +324,63 @@ public:
 
     void paint(ui::painter& p) override;
 
+    bool on_pointer_up(const ui::pointer_event& e) override;
+
 private:
-    const stlxgfx_surface_t* m_glyph;
-    std::string              m_text;
-    size_t                   m_cursor = 0;
+    ui::rect chip_rect(size_t chip) const;
+    void paint_chips(ui::painter& p) const;
+
+    const stlxgfx_surface_t*                   m_glyph;
+    const std::vector<stlxgfx_surface_t*>&     m_chip_glyphs;
+    std::vector<std::unique_ptr<text_picture>> m_chip_names;
+    std::string                                m_text;
+    size_t                                     m_cursor = 0;
+    narrow_mode                                m_mode = narrow_mode::all;
 };
+
+query_field::query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs)
+    : m_glyph(glyph), m_chip_glyphs(chip_glyphs) {
+    for (const char* name : CHIP_NAMES) {
+        m_chip_names.push_back(std::make_unique<text_picture>(name, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
+                                                              STLXTHEME_TEXT));
+    }
+}
+
+/* The chips sit at the field's end, a chosen one wide enough for its name after its glyph */
+ui::rect query_field::chip_rect(size_t chip) const {
+    int32_t widths[CHIP_COUNT];
+    int32_t total = 0;
+    for (size_t i = 0; i < CHIP_COUNT; i++) {
+        bool is_chosen = CHIP_MODES[i] == m_mode;
+        widths[i] = is_chosen ? 2 * CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP + m_chip_names[i]->width()
+                              : CHIP_MIN_WIDTH;
+        total += widths[i] + (i > 0 ? CHIP_GAP : 0);
+    }
+
+    int32_t x = m_frame.w - FIELD_CHIPS_RIGHT - total;
+    for (size_t i = 0; i < chip; i++) {
+        x += widths[i] + CHIP_GAP;
+    }
+
+    return { x, (m_frame.h - CHIP_HEIGHT) / 2, widths[chip], CHIP_HEIGHT };
+}
+
+void query_field::paint_chips(ui::painter& p) const {
+    for (size_t i = 0; i < CHIP_COUNT; i++) {
+        ui::rect chip = chip_rect(i);
+        bool is_chosen = CHIP_MODES[i] == m_mode;
+        if (is_chosen) {
+            p.rounded_rect(chip, STLXTHEME_INNER_RADIUS, STLXTHEME_SURFACE_ON);
+            p.rounded_stroke(chip, STLXTHEME_INNER_RADIUS, STLXTHEME_LINE_ON);
+            m_chip_names[i]->draw(p, chip.x + CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP, chip.y, chip.h);
+        }
+
+        const stlxgfx_surface_t* glyph = m_chip_glyphs[is_chosen ? CHIP_COUNT + i : i];
+        if (glyph) {
+            p.image({ chip.x + CHIP_PADDING_X, chip.y + (chip.h - CHIP_GLYPH_SIZE) / 2 }, glyph);
+        }
+    }
+}
 
 void query_field::paint(ui::painter& p) {
     p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 }, STLXTHEME_CONTROL_RADIUS - 1, STLXTHEME_RECESS);
@@ -285,11 +398,25 @@ void query_field::paint(ui::painter& p) {
     int32_t top = (m_frame.h - line.h) / 2;
     ui::size before_caret = p.measure_text(std::string_view(m_text).substr(0, m_cursor), QUERY_SIZE);
 
-    p.push_clip({ FIELD_TEXT_LEFT, 0, m_frame.w - FIELD_TEXT_LEFT - FIELD_PADDING_RIGHT, m_frame.h });
+    int32_t text_right = chip_rect(0).x - FIELD_PADDING_RIGHT;
+    p.push_clip({ FIELD_TEXT_LEFT, 0, text_right - FIELD_TEXT_LEFT, m_frame.h });
     p.text({ FIELD_TEXT_LEFT, top + p.font_ascent(QUERY_SIZE) }, shown, QUERY_SIZE,
            is_empty ? STLXTHEME_TEXT_DIM : STLXTHEME_TEXT);
     p.fill({ FIELD_TEXT_LEFT + before_caret.w, top, 1, line.h }, STLXTHEME_TEXT);
     p.pop_clip();
+
+    paint_chips(p);
+}
+
+bool query_field::on_pointer_up(const ui::pointer_event& e) {
+    for (size_t i = 0; i < CHIP_COUNT; i++) {
+        if (chip_rect(i).contains(e.pos) && on_chip) {
+            on_chip(CHIP_MODES[i]);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /* A section's title in caps, and at the right a count or a state in sentence case */
@@ -512,39 +639,35 @@ struct footer_item {
     bool operator==(const footer_item& other) const = default;
 };
 
-/* The actions of the selected row and the mode at the left, each with its keys, and how the palette closes at the
- * right */
-class palette_footer : public ui::widget {
+/* Footer items drawn as labels each followed by their keycaps */
+class footer_group {
 public:
-    palette_footer()
-        : m_close("Esc closes", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
+    footer_group(const char* face_path, uint32_t color) : m_face_path(face_path), m_color(color) {}
 
-    void show(const std::vector<footer_item>& items);
+    /* Returns whether the items changed */
+    bool show(const std::vector<footer_item>& items);
 
-    ui::size measure(ui::size avail) override {
-        return { avail.w, FOOTER_HEIGHT };
-    }
-
-    void paint(ui::painter& p) override;
+    int32_t width(int32_t item_gap) const;
+    void paint(ui::painter& p, int32_t x, int32_t box_h, int32_t item_gap) const;
 
 private:
+    const char*                                       m_face_path;
+    uint32_t                                          m_color;
     std::vector<footer_item>                          m_shown;
     std::vector<std::unique_ptr<text_picture>>        m_labels;
     std::vector<std::vector<std::unique_ptr<keycap>>> m_keycaps;
-    text_picture                                      m_close;
 };
 
-void palette_footer::show(const std::vector<footer_item>& items) {
+bool footer_group::show(const std::vector<footer_item>& items) {
     if (items == m_shown) {
-        return;
+        return false;
     }
 
     m_shown = items;
     m_labels.clear();
     m_keycaps.clear();
     for (const footer_item& item : items) {
-        m_labels.push_back(std::make_unique<text_picture>(item.label, STLXTHEME_UI_FONT_MEDIUM_PATH,
-                                                          STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY));
+        m_labels.push_back(std::make_unique<text_picture>(item.label, m_face_path, STLXTHEME_CAPTION_SIZE, m_color));
         m_keycaps.emplace_back();
         for (size_t at = 0; at < item.keys.size();) {
             size_t end = std::min(item.keys.find(' ', at), item.keys.size());
@@ -553,27 +676,66 @@ void palette_footer::show(const std::vector<footer_item>& items) {
         }
     }
 
-    invalidate();
+    return true;
 }
 
-void palette_footer::paint(ui::painter& p) {
-    p.fill({ 0, 0, m_frame.w, 1 }, STLXTHEME_LINE_SUBTLE);
-
-    int32_t x = FOOTER_PADDING_LEFT;
-    int32_t key_top = (m_frame.h - KEYCAP_HEIGHT) / 2;
+int32_t footer_group::width(int32_t item_gap) const {
+    int32_t width = 0;
     for (size_t i = 0; i < m_labels.size(); i++) {
-        m_labels[i]->draw(p, x, 0, m_frame.h);
+        width += (i > 0 ? item_gap : 0) + m_labels[i]->width() + FOOTER_KEY_GAP;
+        for (size_t k = 0; k < m_keycaps[i].size(); k++) {
+            width += (k > 0 ? KEYCAP_GAP : 0) + m_keycaps[i][k]->width();
+        }
+    }
+
+    return width;
+}
+
+void footer_group::paint(ui::painter& p, int32_t x, int32_t box_h, int32_t item_gap) const {
+    int32_t key_top = (box_h - KEYCAP_HEIGHT) / 2;
+    for (size_t i = 0; i < m_labels.size(); i++) {
+        m_labels[i]->draw(p, x, 0, box_h);
         x += m_labels[i]->width() + FOOTER_KEY_GAP;
         for (const std::unique_ptr<keycap>& key : m_keycaps[i]) {
             key->paint(p, x, key_top);
             x += key->width() + KEYCAP_GAP;
         }
 
-        x += FOOTER_ITEM_GAP - KEYCAP_GAP;
+        x += item_gap - KEYCAP_GAP;
+    }
+}
+
+/* The actions of the selected row and the mode at the left, each with its keys, and the palette's own at the right */
+class palette_footer : public ui::widget {
+public:
+    palette_footer()
+        : m_actions(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_TEXT_SECONDARY),
+          m_end(STLXTHEME_UI_FONT_PATH, STLXTHEME_TEXT_DIM) {}
+
+    void show(const std::vector<footer_item>& actions, const std::vector<footer_item>& end) {
+        bool has_changed = m_actions.show(actions);
+        has_changed = m_end.show(end) || has_changed;
+        if (has_changed) {
+            invalidate();
+        }
     }
 
-    m_close.draw(p, m_frame.w - FOOTER_PADDING_RIGHT - m_close.width(), 0, m_frame.h);
-}
+    ui::size measure(ui::size avail) override {
+        return { avail.w, FOOTER_HEIGHT };
+    }
+
+    void paint(ui::painter& p) override {
+        p.fill({ 0, 0, m_frame.w, 1 }, STLXTHEME_LINE_SUBTLE);
+        m_actions.paint(p, FOOTER_PADDING_LEFT, m_frame.h, FOOTER_ITEM_GAP);
+
+        int32_t end_w = m_end.width(FOOTER_KEY_GAP);
+        m_end.paint(p, m_frame.w - FOOTER_PADDING_RIGHT - end_w, m_frame.h, FOOTER_KEY_GAP);
+    }
+
+private:
+    footer_group m_actions;
+    footer_group m_end;
+};
 
 /* The rows under the field, scrolled by the wheel and to keep the selected row in view */
 class result_list : public ui::scroll_view {
@@ -608,8 +770,10 @@ private:
  * query, Up and Down choose a row, Enter starts it */
 class palette_view : public ui::box {
 public:
-    /* `no_match_note` says where files are searched, under the words of a query that matched nothing */
-    palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph, std::string no_match_note);
+    /* `chip_glyphs` holds each chip's glyph at rest, then chosen, and `no_match_note` says where files are searched,
+     * under the words of a query that matched nothing */
+    palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
+                 const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note);
 
     std::function<void(const palette_entry& entry)> on_choose;
 
@@ -628,10 +792,15 @@ public:
 private:
     void edit(std::string query, size_t cursor);
     void move_caret(size_t cursor);
+    void narrow(narrow_mode mode);
+    bool is_shown_kind(row_kind kind) const;
     void show_rows();
     void show_start();
+    void show_kind(narrow_mode mode);
     void show_matches(std::string_view query);
+    void show_more_files(size_t total, size_t shown);
     void show_listing(const typed_path& path);
+    std::string files_head_text() const;
     void complete();
     bool go_up();
     void update_footer();
@@ -650,10 +819,14 @@ private:
     size_t                     m_caret = 0;
     std::string                m_no_match_note;
 
-    /* The rows of the query's value and of a program the query names with words after it, while
-     * `find_calculation` and `find_command` found them */
+    /* The rows of the query's value, of a program the query names with words after it, and of the files past
+     * those shown, while `find_calculation` and `find_command` found the first two and the files ran over */
     palette_entry m_calculation;
     palette_entry m_command;
+    palette_entry m_more_files;
+
+    /* The kind the chips narrow the rows to */
+    narrow_mode m_mode = narrow_mode::all;
 
     /* The newest file request, a search or a listing, the last answer's rows, which the query filters until the
      * newest is answered, the folder a listing's rows are in, and the walk the files' head counts */
@@ -661,9 +834,11 @@ private:
     bool                       m_is_listing = false;
     bool                       m_is_file_answer_newest = false;
     std::vector<palette_entry> m_file_entries;
+    size_t                     m_file_total = 0;
     std::string                m_listed_folder;
     walk_state                 m_walk;
     section_head*              m_files_head = nullptr;
+    size_t                     m_files_shown = 0;
 
     query_field*    m_field;
     result_list*    m_list;
@@ -680,13 +855,17 @@ private:
 };
 
 palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
-                           std::string no_match_note)
+                           const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note)
     : ui::box(ui::axis::column), m_entries(std::move(entries)), m_no_match_note(std::move(no_match_note)) {
     ui::box* body = add<ui::box>(ui::axis::column);
     body->s().padding = ui::edge_insets::all(PALETTE_PADDING);
     body->s().gap = LIST_GAP;
 
-    m_field = body->add<query_field>(glyph);
+    m_field = body->add<query_field>(glyph, chip_glyphs);
+    m_field->on_chip = [this](narrow_mode mode) {
+        narrow(mode);
+    };
+
     m_list = body->add<result_list>();
     m_list->s().main = ui::length::fixed(LIST_HEIGHT);
     m_footer = add<palette_footer>();
@@ -694,8 +873,21 @@ palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_sur
     show_rows();
 }
 
+/* Esc backs out of a narrowed list before the palette closes, as Backspace in an empty field does */
 bool palette_view::on_key_down(const ui::key_event& e) {
     bool is_command = (e.modifiers & COMMAND_MODS) != 0;
+    bool is_chip_key = (e.modifiers & CHORD_MOD_CTRL) && e.usage >= HID_USAGE_1 && e.usage < HID_USAGE_1 + CHIP_COUNT;
+    if (is_chip_key) {
+        narrow(CHIP_MODES[e.usage - HID_USAGE_1]);
+        return true;
+    }
+
+    bool backs_out = e.usage == HID_USAGE_ESCAPE || (e.usage == HID_USAGE_BACKSPACE && m_query.empty());
+    if (backs_out && m_mode != narrow_mode::all) {
+        narrow(narrow_mode::all);
+        return true;
+    }
+
     switch (e.usage) {
     case HID_USAGE_UP:
         move_selection(-1);
@@ -781,7 +973,7 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     bool has_walk_finished = m_walk.walking && !walk.walking;
     m_walk = walk;
     if (m_files_head) {
-        m_files_head->set_end(walk_text());
+        m_files_head->set_end(files_head_text());
     }
 
     std::string_view searched = trimmed(m_query);
@@ -806,6 +998,7 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     }
 
     m_listed_folder = m_is_listing ? parse_path(searched).folder : std::string();
+    m_file_total = answer->total;
     m_is_file_answer_newest = true;
     show_rows();
     for (size_t i = 0; i < m_rows.size(); i++) {
@@ -849,6 +1042,7 @@ void palette_view::show_rows() {
     m_row_reveal_tops.clear();
 
     m_files_head = nullptr;
+    m_files_shown = 0;
     m_content_h = 0;
     m_selected = 0;
 
@@ -858,11 +1052,81 @@ void palette_view::show_rows() {
         show_listing(path);
     } else if (!query.empty()) {
         show_matches(query);
+    } else if (m_mode != narrow_mode::all) {
+        show_kind(m_mode);
     } else {
         show_start();
     }
 
     select(0);
+}
+
+/* A chip's key or click narrows the rows to its kind, and again, or narrowing to all, shows every kind */
+void palette_view::narrow(narrow_mode mode) {
+    m_mode = mode == m_mode ? narrow_mode::all : mode;
+    m_field->show_mode(m_mode);
+    show_rows();
+}
+
+bool palette_view::is_shown_kind(row_kind kind) const {
+    switch (m_mode) {
+    case narrow_mode::apps:
+        return kind == row_kind::app || kind == row_kind::program;
+    case narrow_mode::files:
+        return kind == row_kind::file;
+    case narrow_mode::actions:
+        return kind == row_kind::action;
+    case narrow_mode::all:
+        break;
+    }
+
+    return true;
+}
+
+/* With nothing typed a chip lists its kind whole: the launchers and then the programs, every action, or this
+ * session's picked files */
+void palette_view::show_kind(narrow_mode mode) {
+    std::vector<const palette_entry*> shown;
+    for (const palette_entry& entry : m_entries) {
+        if (is_shown_kind(entry.kind)) {
+            shown.push_back(&entry);
+        }
+    }
+
+    bool is_files = mode == narrow_mode::files;
+    if (shown.empty()) {
+        std::string text = is_files ? "Type a name to search the files" : "Nothing to list";
+        m_list->content()->add<no_match>(text, is_files ? m_no_match_note : "");
+        return;
+    }
+
+    for (size_t i = 0; i < shown.size(); i++) {
+        if (i == 0 || shown[i]->kind != shown[i - 1]->kind) {
+            section_head* head = add_head(KIND_HEADS[static_cast<size_t>(shown[i]->kind)]);
+            m_files_head = shown[i]->kind == row_kind::file ? head : m_files_head;
+        }
+
+        add_row(*shown[i], {}, nullptr);
+    }
+
+    m_files_shown = is_files ? shown.size() : 0;
+    if (m_files_head) {
+        m_files_head->set_end(files_head_text());
+    }
+}
+
+/* The files' head says how far a walk has come, and narrowed to files how many of the indexed show */
+std::string palette_view::files_head_text() const {
+    if (m_walk.walking) {
+        return walk_text();
+    }
+
+    if (m_mode != narrow_mode::files || m_walk.found == 0) {
+        return "";
+    }
+
+    return shown_number(static_cast<double>(m_files_shown)) + " of " +
+           shown_number(static_cast<double>(m_walk.found)) + " indexed";
 }
 
 /* With nothing typed this session's picks show newest first, then the dock's other launchers in dock order */
@@ -921,14 +1185,15 @@ void palette_view::show_matches(std::string_view query) {
     std::vector<found_entry> found;
     for (const palette_entry* entry : candidates) {
         query_match match = match_query(query, entry->label, entry->keywords);
-        if (match.quality != match_quality::none) {
+        if (match.quality != match_quality::none && is_shown_kind(entry->kind)) {
             found.push_back({ entry, std::move(match) });
         }
     }
 
     /* Nothing matching says so only once the files for this very query are in */
-    bool has_calculation = find_calculation(query);
-    bool has_command = find_command(query);
+    bool is_all = m_mode == narrow_mode::all;
+    bool has_calculation = is_all && find_calculation(query);
+    bool has_command = (is_all || m_mode == narrow_mode::apps) && find_command(query);
     if (found.empty() && !has_calculation && !has_command) {
         if (m_is_file_answer_newest) {
             std::string text = "No apps, actions or files match " + std::string(query);
@@ -961,17 +1226,24 @@ void palette_view::show_matches(std::string_view query) {
     }
 
     size_t first_rest = 0;
-    if (!has_calculation && !has_command) {
+    if (is_all && !has_calculation && !has_command) {
         add_head("TOP HIT");
         const found_entry& top = found.front();
         add_row(*top.entry, top.match.runs, KIND_NAMES[static_cast<size_t>(top.entry->kind)]);
         first_rest = 1;
     }
 
+    size_t rows_max = is_all ? KIND_ROWS_MAX : NARROWED_ROWS_MAX;
     for (row_kind kind : { row_kind::app, row_kind::action, row_kind::program, row_kind::file }) {
         size_t shown = 0;
-        for (size_t i = first_rest; i < found.size() && shown < KIND_ROWS_MAX; i++) {
+        size_t matched = 0;
+        for (size_t i = first_rest; i < found.size(); i++) {
             if (found[i].entry->kind != kind) {
+                continue;
+            }
+
+            matched++;
+            if (shown == rows_max) {
                 continue;
             }
 
@@ -983,11 +1255,36 @@ void palette_view::show_matches(std::string_view query) {
             add_row(*found[i].entry, found[i].match.runs, nullptr);
             shown++;
         }
+
+        /* The index's count holds the top hit too when the top hit is a file */
+        if (kind == row_kind::file) {
+            bool is_top_file = first_rest == 1 && found.front().entry->kind == row_kind::file;
+            size_t found_files = matched + (is_top_file ? 1 : 0);
+            size_t total = m_is_file_answer_newest ? std::max(m_file_total, found_files) : found_files;
+            m_files_shown = shown;
+            show_more_files(total - (is_top_file ? 1 : 0), shown);
+        }
     }
 
     if (m_files_head) {
-        m_files_head->set_end(walk_text());
+        m_files_head->set_end(files_head_text());
     }
+}
+
+/* With every kind showing, files past the six shown are offered by one last row, which narrows to files */
+void palette_view::show_more_files(size_t total, size_t shown) {
+    if (m_mode != narrow_mode::all || total <= shown || shown == 0) {
+        return;
+    }
+
+    size_t rest = total - shown;
+    m_more_files = palette_entry();
+    m_more_files.kind = row_kind::more_files;
+    m_more_files.label = "Show " + shown_number(static_cast<double>(rest)) + (rest == 1 ? " more file" : " more files");
+    m_more_files.tile = "+";
+    m_more_files.keys = { "Ctrl", "2" };
+
+    add_row(m_more_files, {}, nullptr);
 }
 
 /* A typed path lists its folder's entries, folders first, whose names start with what follows its last slash */
@@ -1048,7 +1345,8 @@ bool palette_view::go_up() {
     return true;
 }
 
-/* Enter's action for the selected row, and for a typed path how to complete a name and go up */
+/* Enter's action for the selected row, and for a typed path how to complete a name and go up. The right side names
+ * the chips' keys, or Esc while they narrow the rows. */
 void palette_view::update_footer() {
     std::vector<footer_item> items;
     if (!m_rows.empty()) {
@@ -1056,12 +1354,21 @@ void palette_view::update_footer() {
         items.push_back({ entry.verb.empty() ? KIND_VERBS[static_cast<size_t>(entry.kind)] : entry.verb, "Enter" });
     }
 
-    if (parse_path(trimmed(m_query)).is_path) {
+    bool is_path = parse_path(trimmed(m_query)).is_path;
+    if (is_path) {
         items.push_back({ "Complete", "Tab" });
         items.push_back({ "Up a folder", "Backspace" });
     }
 
-    m_footer->show(items);
+    std::vector<footer_item> end;
+    if (m_mode != narrow_mode::all) {
+        end.push_back({ "All kinds", "Esc" });
+    } else if (!is_path) {
+        end.push_back({ "Narrow", "Ctrl 1" });
+        end.push_back({ "to", "Ctrl 3" });
+    }
+
+    m_footer->show(items, end);
 }
 
 /* An arithmetic query shows its value with commas between the thousands, and Enter copies it without them */
@@ -1167,12 +1474,18 @@ void palette_view::move_selection(int32_t rows) {
     m_list->scroll_to(scroll);
 }
 
+/* The row of the files past those shown narrows to files instead of starting anything */
 void palette_view::choose(size_t index) {
     if (index >= m_rows.size() || !on_choose) {
         return;
     }
 
     select(index);
+    if (m_row_entries[index]->kind == row_kind::more_files) {
+        narrow(narrow_mode::files);
+        return;
+    }
+
     on_choose(*m_row_entries[index]);
 }
 
@@ -1413,6 +1726,12 @@ quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_s
         m_action_icons.push_back(path[0] ? load_icon(path) : nullptr);
     }
 
+    for (uint32_t color : { STLXTHEME_TEXT_DIM, STLXTHEME_TEXT }) {
+        for (narrow_mode mode : CHIP_MODES) {
+            m_chip_glyphs.push_back(make_shape_glyph(CHIP_GLYPH_SIZE, color, chip_contours(mode)));
+        }
+    }
+
     bool is_started = m_files.start("/", conf.quick_actions_skip, [](found_file& file) {
         if (file.is_folder) {
             file.mime_type = FOLDER_TYPE;
@@ -1433,6 +1752,10 @@ quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_s
 quick_actions::~quick_actions() {
     for (stlxgfx_surface_t* icon : m_action_icons) {
         stlxgfx_destroy_surface(icon);
+    }
+
+    for (stlxgfx_surface_t* glyph : m_chip_glyphs) {
+        stlxgfx_destroy_surface(glyph);
     }
 
     for (stlxgfx_surface_t* icon : { m_search_glyph, m_program_icon, m_folder_icon, m_text_icon, m_image_icon }) {
@@ -1569,7 +1892,7 @@ std::unique_ptr<ui::widget> quick_actions::build() {
     }
 
     m_files.rewalk();
-    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph,
+    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph, m_chip_glyphs,
                                                skip_note(m_conf.quick_actions_skip));
     view->search_files = [this](const std::string& query) {
         return m_files.search(query, FILE_RESULTS_MAX);
@@ -1606,6 +1929,8 @@ std::unique_ptr<ui::widget> quick_actions::build() {
             break;
         case row_kind::calculator:
             on_copy(entry.copied);
+            break;
+        case row_kind::more_files:
             break;
         }
     };

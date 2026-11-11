@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 /* One blurred layer of an ink drop shadow, with CSS box-shadow's meaning of offset and blur */
 struct shadow_layer {
@@ -27,6 +28,17 @@ stlxgfx_surface_t* make_ring_picture(int32_t w, int32_t h, int32_t radius, uint3
 /* A magnifier glass, a ring with a handle toward the bottom right, `size` pixels square in `color` on transparent
  * pixels. Null when memory ran out. */
 stlxgfx_surface_t* make_search_glyph(int32_t size, uint32_t color);
+
+/* A corner of a glyph's outline on a 16 unit grid */
+struct glyph_point {
+    float x;
+    float y;
+};
+
+/* The closed polygons `contours` filled as SVG's evenodd rule fills them, so a contour inside another cuts a hole,
+ * `size` pixels square in `color` with edges antialiased over 4 by 4 samples. Null when memory ran out. */
+stlxgfx_surface_t* make_shape_glyph(int32_t size, uint32_t color,
+                                    const std::vector<std::vector<glyph_point>>& contours);
 
 /* How much of the pixel at (`x`, `y`) a rect with corners of `radius` covers, 0 to 255 */
 uint32_t rounded_rect_coverage(int32_t x, int32_t y, const ui::rect& box, int32_t radius);

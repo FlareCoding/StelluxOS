@@ -73,6 +73,9 @@ private:
     file_index                                                          m_files;
     std::function<void(const file_answer* answer, const walk_state& walk)> m_show_files;
 
+    /* Each chip's glyph at rest, then each chip's when chosen */
+    std::vector<stlxgfx_surface_t*> m_chip_glyphs;
+
     stlxgfx_surface_t* m_search_glyph = nullptr;
     stlxgfx_surface_t* m_program_icon = nullptr;
     stlxgfx_surface_t* m_folder_icon = nullptr;
