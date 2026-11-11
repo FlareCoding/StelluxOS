@@ -50,11 +50,14 @@ void server::scene_map(dm_window* w) {
 
     m_zorder.insert(m_zorder.begin() + static_cast<long>(insert_at), w);
 
-    /* Grabbing popups take focus with a restore point, plain popups
-     * leave the parent's focus alone */
+    /* Grabbing popups take focus, the first of a chain of menus keeping the
+     * window it took it from, and plain popups leave the parent's focus alone */
     if (w->popup_flags & SWP_PF_GRAB) {
+        if (!m_grab_popup) {
+            m_focus_restore = m_focus;
+        }
+
         m_grab_popup = w;
-        m_focus_restore = m_focus;
         set_focus(w);
     }
 }

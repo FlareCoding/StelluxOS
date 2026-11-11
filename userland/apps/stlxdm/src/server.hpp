@@ -606,6 +606,7 @@ private:
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
+    dm_window* popup_parent(const dm_window& w);
     dm_window* window_at(int32_t x, int32_t y, decor::zone* out_zone);
     void send_event(dm_window* w, const swp_event_rec& rec);
     void set_focus(dm_window* w);
@@ -756,8 +757,8 @@ private:
     dm_window* m_hover = nullptr;
     dm_window* m_grab = nullptr;
 
-    /* The active grabbing popup and the window it took the focus from,
-     * refocused if the popup dies while it holds the focus */
+    /* The active grabbing popup, and the window the first menu of its chain
+     * took the focus from, refocused when the chain closes holding the focus */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
 

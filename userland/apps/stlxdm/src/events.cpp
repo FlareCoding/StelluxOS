@@ -145,6 +145,22 @@ dm_client* server::window_owner(const dm_window* w) {
     return nullptr;
 }
 
+/* The window a popup opened over, or null for a toplevel */
+dm_window* server::popup_parent(const dm_window& w) {
+    dm_client* owner = w.parent_id != 0 ? window_owner(&w) : nullptr;
+    if (!owner) {
+        return nullptr;
+    }
+
+    for (auto& win : owner->windows) {
+        if (win->win_id == w.parent_id) {
+            return win.get();
+        }
+    }
+
+    return nullptr;
+}
+
 /* Topmost window whose decorated bounds contain the point, walking the scene top-down and reporting which zone
  * was struck. None where an animating window lies above the scene. */
 dm_window* server::window_at(int32_t x, int32_t y, decor::zone* out_zone) {
@@ -218,8 +234,17 @@ void server::set_focus(dm_window* w) {
     }
 }
 
+/* A popup closing with the focus hands it to the menu it opened from, which takes back the grab when it grabs, else
+ * returns it to the window its chain of menus took it from, else to the window it opened over */
 void server::forget_window(dm_window* w) {
-    bool was_focused_grab = m_grab_popup == w && m_focus == w;
+    dm_window* parent = popup_parent(*w);
+    bool is_parent_popup = parent && parent->parent_id != 0;
+    bool hands_grab = m_grab_popup == w && is_parent_popup && (parent->popup_flags & SWP_PF_GRAB) != 0;
+
+    dm_window* focus_after = nullptr;
+    if (m_focus == w && parent) {
+        focus_after = is_parent_popup || !m_focus_restore ? parent : m_focus_restore;
+    }
 
     if (m_focus == w) m_focus = nullptr;
     if (m_hover == w) m_hover = nullptr;
@@ -254,8 +279,12 @@ void server::forget_window(dm_window* w) {
 
     forget_animation(w);
 
-    if (was_focused_grab) {
-        set_focus(m_focus_restore);
+    if (hands_grab) {
+        m_grab_popup = parent;
+    }
+
+    if (focus_after) {
+        set_focus(focus_after);
     }
 }
 
