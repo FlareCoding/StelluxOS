@@ -242,6 +242,33 @@ const stlxconf_file_handler_t* stlxconf_find_file_handler(const stlxconf_t* conf
  */
 int stlxconf_split_args(char* args, const char* argv[], int capacity);
 
+/* What a file is, by its name's extension, else by its first bytes */
+typedef struct {
+    const char* mime_type;   /* such as text/x-csrc, or application/octet-stream when nothing says */
+    const char* description; /* the type as people read it, such as C source */
+} stlxconf_file_type_t;
+
+/**
+ * @brief Names the type of the file at `path`. An empty file is plain text, as it holds nothing else.
+ * @return the type, which points at static strings.
+ */
+stlxconf_file_type_t stlxconf_file_type(const char* path);
+
+/**
+ * @brief Names the type a handler of which can open files of `mime_type`, as shared-mime-info's sub-class-of says,
+ * every text type deriving from text/plain.
+ * @return the parent, or NULL for a type at the root.
+ */
+const char* stlxconf_parent_type(const char* mime_type);
+
+/**
+ * @brief Finds the handler that opens files of `mime_type`: its own, else that of the nearest type it derives from.
+ * Writes the type the handler was found for to `handled_type` unless it is NULL.
+ * @return the handler, or NULL when no type of the chain has one.
+ */
+const stlxconf_file_handler_t* stlxconf_find_file_opener(const stlxconf_t* conf, const char* mime_type,
+                                                         const char** handled_type);
+
 /**
  * @brief Reads the `action` value of a shortcut or an action.
  * @return the kind it names, STLXCONF_ACTION_UNKNOWN for any other value.
