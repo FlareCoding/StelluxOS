@@ -59,6 +59,9 @@ public:
     std::function<void(const char* path, const char* args)> on_spawn;
     std::function<void()> on_power;
 
+    /* Fired by Quick Actions' calculator: text to put on the clipboard */
+    std::function<void(const std::string& text)> on_copy;
+
     bool dirty() const {
         return m_host.dirty() || m_dock_host.dirty() || m_popover.dirty();
     }

@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -689,6 +690,10 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
 
     out.panels->on_power = [this]() {
         open_power();
+    };
+
+    out.panels->on_copy = [this](const std::string& text) {
+        copy_text(text);
     };
 
     out.panels->use_picture_maker(m_gpu_composes ? m_gpu_compositor.get() : nullptr);
@@ -1932,6 +1937,31 @@ void server::set_clipboard(dm_client& c, const uint8_t* payload) {
     }
 
     m_clipboard_len = m.len;
+    m_clipboard_object = object;
+}
+
+/* Makes `text` the clipboard, as a client's CLIPBOARD_SET does, keeping the old clipboard when memory runs out */
+void server::copy_text(const std::string& text) {
+    int object = memfd_create("stlxdm-clipboard", MFD_CLOEXEC);
+    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(text.size())) == 0;
+    void* shared = is_sized ? mmap(nullptr, text.size(), PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
+    if (shared == MAP_FAILED) {
+        printf("stlxdm: copying %zu bytes failed, errno %d\r\n", text.size(), errno);
+        if (object >= 0) {
+            close(object);
+        }
+
+        return;
+    }
+
+    memcpy(shared, text.data(), text.size());
+    munmap(shared, text.size());
+
+    if (m_clipboard_object >= 0) {
+        close(m_clipboard_object);
+    }
+
+    m_clipboard_len = text.size();
     m_clipboard_object = object;
 }
 

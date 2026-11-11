@@ -5,6 +5,7 @@
 #include "draw.hpp"
 #include "keycap.hpp"
 #include "programs.hpp"
+#include "quick_calc.hpp"
 #include "quick_match.hpp"
 
 #include <stlxtheme/theme.h>
@@ -88,12 +89,12 @@ constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
 
 namespace {
 
-/* The kinds rank in this order where matches are equally good */
-enum class row_kind : uint8_t { app, action, program };
+/* The kinds rank in this order where matches are equally good, and a calculation heads the list before any */
+enum class row_kind : uint8_t { app, action, program, calculator };
 
-constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS" };
-constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program" };
-constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal" };
+constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "CALCULATOR" };
+constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "Calculation" };
+constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Copy" };
 
 /* One thing the palette starts, as its row shows it */
 struct palette_entry {
@@ -101,11 +102,13 @@ struct palette_entry {
     uint32_t                 index = 0; /* into the configuration's launchers or actions */
     std::string              program;   /* with `args`, what a program's row runs in Terminal */
     std::string              args;
+    std::string              copied;    /* what a calculation's row copies */
     std::string              label;
     std::string              subtitle;
     bool                     is_subtitle_path = false; /* drawn in Plex Mono */
     std::string              keywords;
-    const stlxgfx_surface_t* icon = nullptr; /* null draws the label's first letter on a tile */
+    const stlxgfx_surface_t* icon = nullptr; /* null draws `tile` on a tile, else the label's first letter */
+    std::string              tile;
     std::vector<std::string> keys;           /* of a shortcut that runs the same */
     bool                     running = false;
 };
@@ -275,8 +278,8 @@ result_row::result_row(const palette_entry& entry, std::vector<match_run> runs, 
       m_label("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
       m_subtitle("", subtitle_face(entry), STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
       m_kind("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
-      m_initial(entry.label.substr(0, 1), STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
-                STLXTHEME_TEXT_SECONDARY) {
+      m_initial(entry.tile.empty() ? entry.label.substr(0, 1) : entry.tile, STLXTHEME_UI_FONT_MEDIUM_PATH,
+                STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_SECONDARY) {
     int32_t right_w = 0;
     for (const std::string& key : entry.keys) {
         m_keycaps.push_back(std::make_unique<keycap>(key));
@@ -477,6 +480,7 @@ private:
     void move_caret(size_t cursor);
     void show_rows();
     void show_matches(std::string_view query);
+    bool find_calculation(std::string_view query);
     bool find_command(std::string_view query);
     void add_head(const char* title);
     void add_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name);
@@ -489,7 +493,9 @@ private:
     std::string                m_query;
     size_t                     m_caret = 0;
 
-    /* The row that runs a program the query names with the words after it, while `find_command` found one */
+    /* The rows of the query's value and of a program the query names with words after it, while
+     * `find_calculation` and `find_command` found them */
+    palette_entry m_calculation;
     palette_entry m_command;
 
     query_field*    m_field;
@@ -647,8 +653,9 @@ void palette_view::show_matches(std::string_view query) {
         }
     }
 
+    bool has_calculation = find_calculation(query);
     bool has_command = find_command(query);
-    if (found.empty() && !has_command) {
+    if (found.empty() && !has_calculation && !has_command) {
         m_list->content()->add<no_match>(std::string(query));
         return;
     }
@@ -661,11 +668,18 @@ void palette_view::show_matches(std::string_view query) {
         return a.entry->kind < b.entry->kind;
     });
 
-    size_t first_rest = 0;
+    if (has_calculation) {
+        add_head(KIND_HEADS[static_cast<size_t>(row_kind::calculator)]);
+        add_row(m_calculation, {}, nullptr);
+    }
+
     if (has_command) {
         add_head(KIND_HEADS[static_cast<size_t>(row_kind::program)]);
         add_row(m_command, {}, nullptr);
-    } else {
+    }
+
+    size_t first_rest = 0;
+    if (!has_calculation && !has_command) {
         add_head("TOP HIT");
         const found_entry& top = found.front();
         add_row(*top.entry, top.match.runs, KIND_NAMES[static_cast<size_t>(top.entry->kind)]);
@@ -687,6 +701,23 @@ void palette_view::show_matches(std::string_view query) {
             shown++;
         }
     }
+}
+
+/* An arithmetic query shows its value with commas between the thousands, and Enter copies it without them */
+bool palette_view::find_calculation(std::string_view query) {
+    double value = 0;
+    if (!calculate(query, &value)) {
+        return false;
+    }
+
+    m_calculation = palette_entry();
+    m_calculation.kind = row_kind::calculator;
+    m_calculation.label = shown_number(value);
+    m_calculation.copied = copied_number(value);
+    m_calculation.subtitle = std::string(query) + ", copied as " + m_calculation.copied;
+    m_calculation.tile = "=";
+
+    return true;
 }
 
 /* A query that names a program and goes on with words runs that program in Terminal with the words as its args,
@@ -983,6 +1014,9 @@ std::unique_ptr<ui::widget> quick_actions::build() {
             break;
         case row_kind::program:
             on_run_program(entry.program.c_str(), entry.args.c_str());
+            break;
+        case row_kind::calculator:
+            on_copy(entry.copied);
             break;
         }
     };
