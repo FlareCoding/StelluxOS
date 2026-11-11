@@ -304,14 +304,9 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
-    if (is_escape_press && m_panels->escape_closes_popover()) {
-        m_panels->close_popover();
-        return;
-    }
-
-    /* Config hotkeys fire on press with exactly their modifiers held, and never reach the focus */
+    /* Config hotkeys fire on press with exactly their modifiers held, and never reach a popover or the focus */
+    uint8_t mods = cook_modifiers(hid_modifiers);
     if (down && !repeat) {
-        uint8_t mods = cook_modifiers(hid_modifiers);
         for (const dm_hotkey& hk : m_hotkeys) {
             if (usage == hk.usage && mods == hk.mods) {
                 run_shortcut(hk);
@@ -320,19 +315,31 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         }
     }
 
-    if (!m_focus) {
+    /* A popover that takes the keyboard sees every other key, and an Esc it leaves closes it unless pinned */
+    uint32_t ch = down ? cook_codepoint(usage, hid_modifiers) : 0;
+    bool is_popover_keyboard = m_panels->popover_takes_keys();
+    if (is_popover_keyboard && m_panels->popover_key({ usage, mods, ch }, down)) {
+        return;
+    }
+
+    if (is_escape_press && m_panels->escape_closes_popover()) {
+        m_panels->close_popover();
+        return;
+    }
+
+    if (is_popover_keyboard || !m_focus) {
         return;
     }
 
     swp_event_rec rec;
     memset(&rec, 0, sizeof(rec));
-    rec.modifiers = cook_modifiers(hid_modifiers);
+    rec.modifiers = mods;
 
     rec.kind = repeat ? SWP_EV_KEY_REPEAT
              : down   ? SWP_EV_KEY_DOWN
              :          SWP_EV_KEY_UP;
     rec.usage = usage;
-    rec.ch = down ? cook_codepoint(usage, hid_modifiers) : 0;
+    rec.ch = ch;
 
     send_event(m_focus, rec);
 }

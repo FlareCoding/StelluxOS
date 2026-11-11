@@ -42,6 +42,10 @@ private:
 
 } // namespace
 
+int32_t popover_panel::top() const {
+    return PANEL_TOP;
+}
+
 /* A layer of the focused window's shadow, its alpha in 255ths rounded to the nearest */
 static constexpr shadow_layer focused_layer(size_t i) {
     const decor::window_shadow_layer& l = decor::FOCUSED_SHADOW[i];
@@ -124,7 +128,8 @@ void popover_host::open(popover_panel& panel, const stlxgfx_surface_t* frost) {
     int32_t width = panel.width();
     int32_t height = content->measure({ width, PANEL_HEIGHT_MAX }).h;
     int32_t left = panel.left(m_output_w);
-    if (!m_picture.make(m_maker, POPOVER_STYLE, width, height, left, PANEL_TOP, frost)) {
+    int32_t top = panel.top();
+    if (!m_picture.make(m_maker, POPOVER_STYLE, width, height, left, top, frost)) {
         printf("stlxdm: the popover's picture could not be made, memory ran out\r\n");
         content.reset();
         panel.closed();
@@ -134,9 +139,14 @@ void popover_host::open(popover_panel& panel, const stlxgfx_surface_t* frost) {
     auto frame = std::make_unique<panel_frame>(m_picture.background());
     frame->hold(std::move(content));
     m_host.set_root(std::move(frame));
+    if (panel.takes_keys()) {
+        m_host.focus_first();
+    }
 
     m_panel = &panel;
     m_left = left;
+    m_top = top;
+
     m_phase = phase::opening;
     m_phase_start_ns = monotonic_ns();
     m_opacity = 0;
@@ -229,21 +239,25 @@ bool popover_host::contains(int32_t x, int32_t y) const {
     }
 
     ui::rect box = m_picture.box();
-    ui::rect on_output = { m_left, PANEL_TOP + m_slide, box.w, box.h };
+    ui::rect on_output = { m_left, m_top + m_slide, box.w, box.h };
 
     return on_output.contains({ x, y });
 }
 
 void popover_host::pointer_move(int32_t x, int32_t y) {
     if (m_panel) {
-        m_host.pointer_move(x - m_left, y - PANEL_TOP - m_slide);
+        m_host.pointer_move(x - m_left, y - m_top - m_slide);
     }
 }
 
 void popover_host::pointer_button(int32_t x, int32_t y, uint8_t button, bool down) {
     if (m_panel) {
-        m_host.pointer_button(x - m_left, y - PANEL_TOP - m_slide, button, down);
+        m_host.pointer_button(x - m_left, y - m_top - m_slide, button, down);
     }
+}
+
+bool popover_host::key(const ui::key_event& e, bool down) {
+    return panel() && m_host.key(e, down);
 }
 
 void popover_host::refresh() {
@@ -294,5 +308,5 @@ damage_list::rect popover_host::bounds() const {
     int32_t w = static_cast<int32_t>(m_picture.surface()->width);
     int32_t h = static_cast<int32_t>(m_picture.surface()->height);
 
-    return { m_left - box.x, PANEL_TOP - box.y + m_slide, w, h };
+    return { m_left - box.x, m_top - box.y + m_slide, w, h };
 }
