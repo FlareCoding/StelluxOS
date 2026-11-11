@@ -51,6 +51,7 @@ constexpr int32_t ROW_PADDING_RIGHT = 10;
 constexpr int32_t ROW_GAP = 12;
 constexpr int32_t ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t TEXT_LEFT = ROW_PADDING_LEFT + ICON_SIZE + ROW_GAP;
+constexpr int32_t CHOICE_TEXT_LEFT = 14;
 constexpr int32_t LABEL_LINE_HEIGHT = 18;
 constexpr int32_t SUBTITLE_LINE_HEIGHT = 16;
 constexpr int32_t MARK_RADIUS = 2;
@@ -72,6 +73,7 @@ constexpr uint32_t UNPICKED = UINT32_MAX;
 constexpr int32_t PAGE_ROWS = 8;
 constexpr int32_t NO_MATCH_PADDING_X = 40;
 constexpr int32_t NO_MATCH_GAP = 4;
+constexpr int32_t NOTE_HEIGHT = 32;
 
 constexpr int32_t FOOTER_HEIGHT = 36;
 constexpr int32_t FOOTER_PADDING_LEFT = 14;
@@ -80,6 +82,7 @@ constexpr int32_t FOOTER_KEY_GAP = 6;
 constexpr int32_t FOOTER_ITEM_GAP = 18;
 
 constexpr uint16_t HID_USAGE_C = 0x06;
+constexpr uint16_t HID_USAGE_K = 0x0E;
 constexpr uint16_t HID_USAGE_1 = 0x1E;
 constexpr uint16_t HID_USAGE_ENTER = 0x28;
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
@@ -120,13 +123,13 @@ constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
 
 namespace {
 
-/* The kinds rank in this order where matches are equally good, a calculation heads the list before any, and the last
- * row of the files may offer the rest of them */
-enum class row_kind : uint8_t { app, action, program, file, calculator, more_files };
+/* The kinds rank in this order where matches are equally good, a calculation heads the list before any, the last
+ * row of the files may offer the rest of them, and Ctrl K lists a row's actions as choices */
+enum class row_kind : uint8_t { app, action, program, file, calculator, more_files, choice };
 
-constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "CALCULATOR", "" };
-constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation", "" };
-constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy", "Show Files Only" };
+constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "CALCULATOR", "", "" };
+constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation", "", "" };
+constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy", "Show Files Only", "Choose" };
 
 /* What the chips narrow the rows to, each on its Ctrl digit, which again shows every kind */
 enum class narrow_mode : uint8_t { all, apps, files, actions };
@@ -171,6 +174,7 @@ struct palette_entry {
     uint32_t                 index = 0; /* into the configuration's launchers or actions */
     std::string              path;      /* the program a program's row runs in Terminal with `args`, or a file */
     std::string              args;
+    size_t                   choice = 0; /* a choice's place among the actions Ctrl K lists */
     const char*              mime_type = nullptr; /* a file's, which picks its handler */
     std::string              copied;    /* what a calculation's row copies */
     std::string              label;
@@ -205,6 +209,7 @@ std::string pick_key(const palette_entry& entry) {
         return "file " + entry.path;
     case row_kind::calculator:
     case row_kind::more_files:
+    case row_kind::choice:
         break;
     }
 
@@ -258,6 +263,11 @@ const char* file_name(const char* path) {
 
 const char* subtitle_face(const palette_entry& entry) {
     return entry.is_subtitle_path ? STLXTHEME_MONO_FONT_PATH : STLXTHEME_UI_FONT_PATH;
+}
+
+/* A choice of Ctrl K's list has no icon, so its words start near the row's edge */
+int32_t text_left_of(const palette_entry& entry) {
+    return entry.kind == row_kind::choice ? CHOICE_TEXT_LEFT : TEXT_LEFT;
 }
 
 /* A query starting with / or ~/ names a folder up to its last slash and the start of an entry's name after it */
@@ -515,7 +525,7 @@ result_row::result_row(const palette_entry& entry, std::vector<match_run> runs, 
         right_w = m_kind.width();
     }
 
-    int32_t text_w = ROW_WIDTH - ROW_PADDING_RIGHT - right_w - (right_w > 0 ? ROW_GAP : 0) - TEXT_LEFT;
+    int32_t text_w = ROW_WIDTH - ROW_PADDING_RIGHT - right_w - (right_w > 0 ? ROW_GAP : 0) - text_left_of(entry);
     m_label_kept = fitting_length(entry.label, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, text_w);
     m_label.set_text(fitted(entry.label, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, text_w));
     m_subtitle.set_text(fitted(entry.subtitle, subtitle_face(entry), STLXTHEME_CAPTION_SIZE, text_w));
@@ -545,16 +555,22 @@ void result_row::paint(ui::painter& p) {
     bool has_subtitle = !m_entry.subtitle.empty();
     int32_t lines_h = has_subtitle ? LABEL_LINE_HEIGHT + SUBTITLE_LINE_HEIGHT : LABEL_LINE_HEIGHT;
     int32_t label_top = (m_frame.h - lines_h) / 2;
+    int32_t text_left = text_left_of(m_entry);
     paint_marks(p, label_top);
-    m_label.draw(p, TEXT_LEFT, label_top, LABEL_LINE_HEIGHT);
+
+    m_label.draw(p, text_left, label_top, LABEL_LINE_HEIGHT);
     if (has_subtitle) {
-        m_subtitle.draw(p, TEXT_LEFT, label_top + LABEL_LINE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+        m_subtitle.draw(p, text_left, label_top + LABEL_LINE_HEIGHT, SUBTITLE_LINE_HEIGHT);
     }
 
     paint_right(p);
 }
 
 void result_row::paint_icon(ui::painter& p) const {
+    if (m_entry.kind == row_kind::choice) {
+        return;
+    }
+
     int32_t top = (m_frame.h - ICON_SIZE) / 2;
     if (m_entry.icon) {
         p.image({ ROW_PADDING_LEFT, top }, m_entry.icon);
@@ -583,7 +599,7 @@ void result_row::paint_marks(ui::painter& p, int32_t label_top) const {
             continue;
         }
 
-        int32_t x = TEXT_LEFT + stlxgfx_text_width(font, label, run.start);
+        int32_t x = text_left_of(m_entry) + stlxgfx_text_width(font, label, run.start);
         int32_t w = stlxgfx_text_width(font, label + run.start, run.length);
         p.rounded_rect({ x, label_top, w, LABEL_LINE_HEIGHT }, MARK_RADIUS, STLXTHEME_MATCH_MARK);
     }
@@ -603,6 +619,26 @@ void result_row::paint_right(ui::painter& p) const {
         right -= KEYCAP_GAP;
     }
 }
+
+/* A quiet line under Ctrl K's choices, such as why a file opens where Enter opens it */
+class note_line : public ui::widget {
+public:
+    explicit note_line(const std::string& text)
+        : m_text("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {
+        m_text.set_text(fitted(text, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, ROW_WIDTH - 2 * CHOICE_TEXT_LEFT));
+    }
+
+    ui::size measure(ui::size avail) override {
+        return { avail.w, NOTE_HEIGHT };
+    }
+
+    void paint(ui::painter& p) override {
+        m_text.draw(p, CHOICE_TEXT_LEFT, 0, m_frame.h);
+    }
+
+private:
+    text_picture m_text;
+};
 
 /* What matched nothing, and under it a note, such as where files were searched, so a missing file is explained */
 class no_match : public ui::widget {
@@ -776,8 +812,10 @@ public:
     palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
                  const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note);
 
-    /* What a row can do, its first on Enter. Must be set before `show_rows()`, since the footer names them. */
+    /* What a row can do, its first on Enter, and what Ctrl K's list notes about it. The first must be set before
+     * `show_rows()`, since the footer names its actions. */
     std::function<std::vector<row_action>(const palette_entry& entry)> actions_of;
+    std::function<std::string(const palette_entry& entry)> note_of;
 
     /* Ask the file index for the files a query matches or the entries of a folder, returning the request's number,
      * and make a file's row, found or listed. All must be set before the first key. */
@@ -797,6 +835,10 @@ public:
 private:
     void edit(std::string query, size_t cursor);
     void move_caret(size_t cursor);
+    void open_menu();
+    void close_menu();
+    void show_menu();
+    void reselect(const std::string& key);
     void narrow(narrow_mode mode);
     bool is_shown_kind(row_kind kind) const;
     void show_start();
@@ -832,6 +874,15 @@ private:
 
     /* The kind the chips narrow the rows to */
     narrow_mode m_mode = narrow_mode::all;
+
+    /* Ctrl K's list while it is open: the actions of the row it opened on, their choices, the row's label and a
+     * note about the row */
+    bool                       m_is_menu_open = false;
+    std::vector<row_action>    m_menu_actions;
+    std::vector<palette_entry> m_menu_choices;
+    std::string                m_menu_title;
+    std::string                m_menu_note;
+    std::string                m_menu_return; /* the key of the row the list opened on */
 
     /* The newest file request, a search or a listing, the last answer's rows, which the query filters until the
      * newest is answered, the folder a listing's rows are in, and the walk the files' head counts */
@@ -876,10 +927,46 @@ palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_sur
     m_footer = add<palette_footer>();
 }
 
-/* Esc backs out of a narrowed list before the palette closes, as Backspace in an empty field does */
+/* Esc backs out one level, Ctrl K's list, then a narrowed list, then the palette, and Backspace in an empty field
+ * backs out of narrowing too. Typing leaves Ctrl K's list for the rows. */
 bool palette_view::on_key_down(const ui::key_event& e) {
     bool is_command = (e.modifiers & COMMAND_MODS) != 0;
-    bool is_chip_key = (e.modifiers & CHORD_MOD_CTRL) && e.usage >= HID_USAGE_1 && e.usage < HID_USAGE_1 + CHIP_COUNT;
+    bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
+    if (is_ctrl && e.usage == HID_USAGE_K) {
+        if (m_is_menu_open) {
+            close_menu();
+        } else {
+            open_menu();
+        }
+
+        return true;
+    }
+
+    if (m_is_menu_open && e.usage == HID_USAGE_ESCAPE) {
+        close_menu();
+        return true;
+    }
+
+    bool is_chord = is_ctrl && (e.usage == HID_USAGE_C || e.usage == HID_USAGE_ENTER);
+    if (m_is_menu_open && is_chord) {
+        std::string keys = e.usage == HID_USAGE_C ? "Ctrl C" : "Ctrl Enter";
+        for (row_action& action : m_menu_actions) {
+            if (action.keys == keys) {
+                action.run();
+                break;
+            }
+        }
+
+        return true;
+    }
+
+    bool is_menu_key = e.usage == HID_USAGE_UP || e.usage == HID_USAGE_DOWN || e.usage == HID_USAGE_PAGE_UP ||
+                       e.usage == HID_USAGE_PAGE_DOWN || e.usage == HID_USAGE_ENTER;
+    if (m_is_menu_open && !is_menu_key) {
+        close_menu();
+    }
+
+    bool is_chip_key = is_ctrl && e.usage >= HID_USAGE_1 && e.usage < HID_USAGE_1 + CHIP_COUNT;
     if (is_chip_key) {
         narrow(CHIP_MODES[e.usage - HID_USAGE_1]);
         return true;
@@ -891,8 +978,7 @@ bool palette_view::on_key_down(const ui::key_event& e) {
         return true;
     }
 
-    bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
-    if (is_ctrl && (e.usage == HID_USAGE_C || e.usage == HID_USAGE_ENTER)) {
+    if (is_chord) {
         run_keyed(e.usage == HID_USAGE_C ? "Ctrl C" : "Ctrl Enter");
         return true;
     }
@@ -1010,13 +1096,7 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     m_file_total = answer->total;
     m_is_file_answer_newest = true;
     show_rows();
-    for (size_t i = 0; i < m_rows.size(); i++) {
-        if (row_key(*m_row_entries[i]) == selected_key) {
-            select(i);
-            move_selection(0);
-            break;
-        }
-    }
+    reselect(selected_key);
 }
 
 std::string palette_view::walk_text() const {
@@ -1057,7 +1137,9 @@ void palette_view::show_rows() {
 
     std::string_view query = trimmed(m_query);
     typed_path path = parse_path(query);
-    if (path.is_path) {
+    if (m_is_menu_open) {
+        show_menu();
+    } else if (path.is_path) {
         show_listing(path);
     } else if (!query.empty()) {
         show_matches(query);
@@ -1068,6 +1150,69 @@ void palette_view::show_rows() {
     }
 
     select(0);
+}
+
+/* Ctrl K lists the selected row's actions in place of the rows, each with its chord, as Alfred lists its actions */
+void palette_view::open_menu() {
+    if (m_rows.empty()) {
+        return;
+    }
+
+    const palette_entry& entry = *m_row_entries[m_selected];
+    m_menu_actions = actions_of(entry);
+    if (m_menu_actions.empty()) {
+        return;
+    }
+
+    m_menu_title = entry.label;
+    m_menu_note = note_of ? note_of(entry) : std::string();
+    m_menu_return = row_key(entry);
+    m_menu_choices.clear();
+    for (size_t i = 0; i < m_menu_actions.size(); i++) {
+        palette_entry choice;
+        choice.kind = row_kind::choice;
+        choice.choice = i;
+        choice.label = m_menu_actions[i].label;
+        for (size_t at = 0; at < m_menu_actions[i].keys.size();) {
+            size_t end = std::min(m_menu_actions[i].keys.find(' ', at), m_menu_actions[i].keys.size());
+            choice.keys.push_back(m_menu_actions[i].keys.substr(at, end - at));
+            at = end + 1;
+        }
+
+        m_menu_choices.push_back(std::move(choice));
+    }
+
+    m_is_menu_open = true;
+    show_rows();
+}
+
+/* Closing the list selects again the row it opened on */
+void palette_view::close_menu() {
+    m_is_menu_open = false;
+    show_rows();
+    reselect(m_menu_return);
+}
+
+void palette_view::reselect(const std::string& key) {
+    for (size_t i = 0; i < m_rows.size(); i++) {
+        if (row_key(*m_row_entries[i]) == key) {
+            select(i);
+            move_selection(0);
+            return;
+        }
+    }
+}
+
+void palette_view::show_menu() {
+    section_head* head = add_head("ACTIONS");
+    head->set_end(m_menu_title);
+    for (const palette_entry& choice : m_menu_choices) {
+        add_row(choice, {}, nullptr);
+    }
+
+    if (!m_menu_note.empty()) {
+        m_list->content()->add<note_line>(m_menu_note);
+    }
 }
 
 /* A chip's key or click narrows the rows to its kind, and again, or narrowing to all, shows every kind */
@@ -1328,7 +1473,8 @@ void palette_view::show_listing(const typed_path& path) {
 /* Tab completes the query to the selected row's name, or to a file's path, which browses its folder. A typed path
  * keeps its folder as typed, and a folder's slash lists the folder. */
 void palette_view::complete() {
-    if (m_rows.empty() || m_row_entries[m_selected]->kind == row_kind::more_files) {
+    row_kind kind = m_rows.empty() ? row_kind::more_files : m_row_entries[m_selected]->kind;
+    if (kind == row_kind::more_files || kind == row_kind::choice) {
         return;
     }
 
@@ -1361,6 +1507,11 @@ bool palette_view::go_up() {
 /* Enter's action for the selected row, and for a typed path how to complete a name and go up. The right side names
  * the chips' keys, or Esc while they narrow the rows. */
 void palette_view::update_footer() {
+    if (m_is_menu_open) {
+        m_footer->show({ { "Choose", "Enter" } }, { { "Back", "Esc" } });
+        return;
+    }
+
     std::vector<footer_item> items;
     bool is_path = parse_path(trimmed(m_query)).is_path;
     if (!m_rows.empty()) {
@@ -1375,6 +1526,8 @@ void palette_view::update_footer() {
 
         if (actions.empty()) {
             items.push_back({ KIND_VERBS[static_cast<size_t>(entry.kind)], "Enter" });
+        } else if (!is_path) {
+            items.push_back({ "Actions", "Ctrl K" });
         }
     }
 
@@ -1504,12 +1657,18 @@ void palette_view::choose(size_t index) {
     }
 
     select(index);
-    if (m_row_entries[index]->kind == row_kind::more_files) {
+    const palette_entry& entry = *m_row_entries[index];
+    if (entry.kind == row_kind::more_files) {
         narrow(narrow_mode::files);
         return;
     }
 
-    std::vector<row_action> actions = actions_of(*m_row_entries[index]);
+    if (entry.kind == row_kind::choice) {
+        m_menu_actions[entry.choice].run();
+        return;
+    }
+
+    std::vector<row_action> actions = actions_of(entry);
     if (!actions.empty()) {
         actions.front().run();
     }
@@ -2065,12 +2224,38 @@ std::unique_ptr<ui::widget> quick_actions::build() {
                 on_copy(value);
             } } };
         case row_kind::more_files:
+        case row_kind::choice:
             break;
         }
 
         return {};
     };
 
+    view->note_of = [this](const palette_entry& entry) {
+        return entry.kind == row_kind::file ? file_note(entry.file) : std::string();
+    };
+
     view->show_rows();
     return view;
+}
+
+/* Why a file opens where Enter opens it: the handler of its own type, of the nearest type it derives from, or none */
+std::string quick_actions::file_note(const found_file& file) const {
+    const char* mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
+    if (strcmp(mime_type, FOLDER_TYPE) == 0) {
+        return "";
+    }
+
+    const char* handled = nullptr;
+    const stlxconf_file_handler_t* handler = stlxconf_find_file_opener(&m_conf, mime_type, &handled);
+    if (!handler) {
+        return std::string("No program opens ") + mime_type + " files, so Enter shows it in File Manager.";
+    }
+
+    std::string opener = program_label(m_conf, handler->path) + " opens it as the handler for " + handled;
+    if (strcmp(handled, mime_type) == 0) {
+        return opener + ".";
+    }
+
+    return opener + ", the nearest type " + mime_type + " derives from.";
 }
