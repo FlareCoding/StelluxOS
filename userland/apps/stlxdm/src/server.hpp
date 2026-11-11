@@ -603,6 +603,7 @@ private:
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
+    void copy_text(const std::string& text);
     bool send_clipboard_answer(dm_client& c);
     void send_clipboard_answers(dm_client& c);
 

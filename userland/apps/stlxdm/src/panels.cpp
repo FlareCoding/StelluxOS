@@ -210,6 +210,13 @@ int dm_panels::init(
         run_in_terminal(program, args);
     };
 
+    m_quick->on_copy = [this](const std::string& text) {
+        m_popover.close();
+        if (on_copy) {
+            on_copy(text);
+        }
+    };
+
     return 0;
 }
 
