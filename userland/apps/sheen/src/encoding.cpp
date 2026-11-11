@@ -24,6 +24,8 @@ static constexpr qsizetype BINARY_PROBE_BYTES = 64 * 1024;
 static constexpr qsizetype VALIDATION_CHUNK_BYTES = 1024 * 1024;
 static constexpr uchar UTF8_CONTINUATION_MASK = 0xC0;
 static constexpr uchar UTF8_CONTINUATION_BITS = 0x80;
+static constexpr qsizetype UTF16_SHARE_NUMERATOR = 9;
+static constexpr qsizetype UTF16_SHARE_DENOMINATOR = 10;
 
 // A second mark after the first one is text, which the converters keep instead of skipping
 static constexpr QStringConverter::Flags CONVERTER_FLAGS =
@@ -246,6 +248,25 @@ bool looks_binary(const QByteArray& bytes) {
     }
 
     return QByteArrayView(bytes).first(qMin(bytes.size(), BINARY_PROBE_BYTES)).contains('\0');
+}
+
+QByteArray guess_utf16(const QByteArray& bytes) {
+    QByteArrayView probe = QByteArrayView(bytes).first(qMin(bytes.size(), BINARY_PROBE_BYTES));
+    qsizetype even_nuls = 0;
+    qsizetype odd_nuls = 0;
+    for (qsizetype i = 0; i < probe.size(); i++) {
+        if (probe[i] == '\0') {
+            (i % 2 == 0 ? even_nuls : odd_nuls)++;
+        }
+    }
+
+    // Nearly every other byte NUL, and nearly all of them on one side
+    qsizetype pairs = probe.size() / 2;
+    if (pairs == 0 || qMax(even_nuls, odd_nuls) * UTF16_SHARE_DENOMINATOR < pairs * UTF16_SHARE_NUMERATOR) {
+        return QByteArray();
+    }
+
+    return odd_nuls > even_nuls ? QByteArrayLiteral("UTF-16LE") : QByteArrayLiteral("UTF-16BE");
 }
 
 QList<QByteArray> available_encodings() {
