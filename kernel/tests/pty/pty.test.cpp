@@ -627,3 +627,153 @@ TEST(pty_test, cooked_line_keeps_4095_bytes_and_rings_past_them) {
     EXPECT_EQ(resource::close(task, hm), resource::OK);
     EXPECT_EQ(resource::close(task, hs), resource::OK);
 }
+
+TEST(pty_test, cooked_eof_on_an_empty_line_reads_as_end_of_file) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // Ctrl D on an empty line polls readable, reads as 0 once and echoes nothing
+    EXPECT_EQ(resource::write(task, hm, "\x04", 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(slave->ops->poll(slave, nullptr) & sync::POLL_IN, sync::POLL_IN);
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(0));
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(resource::ERR_AGAIN));
+
+    EXPECT_EQ(resource::write(task, hm, "z\r", 2), static_cast<ssize_t>(2));
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(line, "z\n", 2), 0);
+
+    char echo_buf[16] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(echo_buf, "z\r\n", 3), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, cooked_eof_sends_a_pending_line_without_its_end) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // Ctrl D after "abc" hands over the three letters, with no line end and no end of file
+    EXPECT_EQ(resource::write(task, hm, "abc\x04", 4), static_cast<ssize_t>(4));
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(line, "abc", 3), 0);
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(resource::ERR_AGAIN));
+
+    char echo_buf[16] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(echo_buf, "abc", 3), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, cooked_eof_reads_after_the_input_before_it) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // A line, an end of file and a line in one write reach the reader in that order, the end of file
+    // keeping the slave readable once the line before it is read
+    EXPECT_EQ(resource::write(task, hm, "one\r\x04two\r", 9), static_cast<ssize_t>(9));
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(4));
+    EXPECT_EQ(string::memcmp(line, "one\n", 4), 0);
+    EXPECT_EQ(slave->ops->poll(slave, nullptr) & sync::POLL_IN, sync::POLL_IN);
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(0));
+
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(4));
+    EXPECT_EQ(string::memcmp(line, "two\n", 4), 0);
+
+    // An end of file no one reads goes away with the pty
+    EXPECT_EQ(resource::write(task, hm, "\x04", 1), static_cast<ssize_t>(1));
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, raw_read_skips_an_eof_left_from_cooked_mode) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // An end of file still queued when the program goes raw is skipped, never read as the end
+    EXPECT_EQ(resource::write(task, hm, "\x04", 1), static_cast<ssize_t>(1));
+    terminal::ld_set_mode(&ep->channel->m_ld, terminal::STLX_TCSETS_RAW);
+    EXPECT_EQ(resource::write(task, hm, "q", 1), static_cast<ssize_t>(1));
+
+    char got[16] = {};
+    EXPECT_EQ(resource::read(task, hs, got, sizeof(got)), static_cast<ssize_t>(1));
+    EXPECT_EQ(got[0], 'q');
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}

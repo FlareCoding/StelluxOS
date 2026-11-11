@@ -2,15 +2,17 @@
 #define STELLUX_TERMINAL_LINE_DISCIPLINE_H
 
 #include "common/types.h"
+#include "common/ring_buffer.h"
 #include "sync/spinlock.h"
-
-struct ring_buffer;
 
 namespace terminal {
 
 // The longest cooked line, the 4,095 bytes Linux keeps, with room left for the line's end
 constexpr size_t LD_LINE_BUF_MAX = 4095;
 constexpr uint32_t LD_MODE_RAW = 1;
+
+// The ends of file Ctrl D can queue before a reader takes them, past which it is ignored
+constexpr size_t LD_EOF_MAX = 4;
 
 struct echo_target {
     void (*write)(void* ctx, const uint8_t* buf, size_t len);
@@ -30,6 +32,9 @@ struct line_discipline {
     char line_buf[LD_LINE_BUF_MAX + 1];
     size_t line_len;
     char prev_char;
+
+    // An end of file is a placeholder byte in the sink under one of these marks, free while unlinked
+    ring_buffer_mark eof_marks[LD_EOF_MAX];
     sync::spinlock lock;
 };
 
@@ -73,6 +78,19 @@ __PRIVILEGED_CODE size_t ld_input_buf(line_discipline* ld, ring_buffer* sink,
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE size_t ld_room_needed(line_discipline* ld);
+
+/**
+ * @brief Read what the line discipline delivered to sink, as ring_buffer_read
+ * does, except that an end of file reads as 0 once, after the input before
+ * it. A raw read drops an end of file left from cooked mode. The sink must
+ * be read only through this function.
+ * @return Bytes read (> 0), 0 at an end of file or once the sink drained
+ * after either side closed, RB_ERR_AGAIN when nonblock finds nothing, or
+ * RB_ERR_INTR when a signal interrupted the wait.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ld_read(line_discipline* ld, ring_buffer* sink,
+                                  uint8_t* buf, size_t len, bool nonblock);
 
 /**
  * @brief Switch between raw and cooked mode. Resets line buffer.

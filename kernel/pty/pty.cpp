@@ -39,6 +39,11 @@ __PRIVILEGED_CODE void pty_channel::ref_destroy(pty_channel* self) {
         return;
     }
 
+    // Queued end of file marks belong to the line discipline, so they leave the ring without a free
+    ring_buffer_mark_list unread_marks;
+    unread_marks.init();
+    ring_buffer_take_marks(self->m_input_rb, unread_marks);
+
     ring_buffer_destroy(self->m_input_rb);
     ring_buffer_destroy(self->m_output_rb);
     heap::kfree_delete(self);
@@ -152,8 +157,8 @@ static ssize_t pty_slave_read(
 
     ssize_t result;
     RUN_ELEVATED({
-        result = ring_buffer_read(ep->channel->m_input_rb,
-                                  static_cast<uint8_t*>(kdst), count, nonblock);
+        result = terminal::ld_read(&ep->channel->m_ld, ep->channel->m_input_rb,
+                                   static_cast<uint8_t*>(kdst), count, nonblock);
     });
 
     return result;

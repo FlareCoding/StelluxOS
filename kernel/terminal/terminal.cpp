@@ -90,6 +90,10 @@ __PRIVILEGED_CODE ring_buffer* console_input_rb() {
     return g_console.input_rb;
 }
 
+__PRIVILEGED_CODE ssize_t console_read(uint8_t* buf, size_t len, bool nonblock) {
+    return ld_read(&g_console.ld, g_console.input_rb, buf, len, nonblock);
+}
+
 __PRIVILEGED_CODE static ssize_t terminal_read(
     resource::resource_object* obj, void* kdst, size_t count, uint32_t flags
 ) {
@@ -99,7 +103,7 @@ __PRIVILEGED_CODE static ssize_t terminal_read(
 
     auto* rb = static_cast<ring_buffer*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
-    return ring_buffer_read(rb, static_cast<uint8_t*>(kdst), count, nonblock);
+    return ld_read(&g_console.ld, rb, static_cast<uint8_t*>(kdst), count, nonblock);
 }
 
 __PRIVILEGED_CODE static ssize_t terminal_write(
