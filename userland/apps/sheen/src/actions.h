@@ -1,26 +1,49 @@
 #ifndef SHEEN_ACTIONS_H
 #define SHEEN_ACTIONS_H
 
-/* Every command Sheen offers, listed once with its label and keys. The shortcuts are built from `COMMANDS`, and
- * Scintilla keeps only movement, selection, deletion and clipboard keys, so this is the one keymap. */
+/* Every command Sheen offers, listed once with its menu, label and keys. The menus and shortcuts are built from
+ * `COMMANDS`, and Scintilla keeps only movement, selection, deletion and clipboard keys, so this is the one keymap. */
 enum class command {
     NEW_FILE,
     OPEN_FILE,
+    OPEN_RECENT,
     SAVE,
     SAVE_AS,
     SAVE_ALL,
+    REOPEN_WITH_ENCODING,
+    SAVE_WITH_ENCODING,
     CLOSE_TAB,
+    CLOSE_ALL_TABS,
     QUIT,
     UNDO,
     REDO,
     CUT,
     COPY,
     PASTE,
+    DELETE_LINE,
+    DUPLICATE,
+    MOVE_LINES_UP,
+    MOVE_LINES_DOWN,
+    INSERT_LINE_BELOW,
+    INSERT_LINE_ABOVE,
+    INDENT,
+    OUTDENT,
+    UPPER_CASE,
+    LOWER_CASE,
     SELECT_ALL,
+    SELECT_LINE,
+    ADD_NEXT_MATCH,
+    SELECT_ALL_MATCHES,
+    LANGUAGE,
     WORD_WRAP,
+    LINE_NUMBERS,
+    INDENT_GUIDES,
+    COLUMN_EDGE,
+    WHITESPACE,
     ZOOM_IN,
     ZOOM_OUT,
     ZOOM_RESET,
+    MATCHING_BRACKET,
     RECENT_TAB,
     NEXT_TAB,
     PREVIOUS_TAB,
@@ -35,53 +58,89 @@ enum class command {
     TAB_7,
     TAB_8,
     LAST_TAB,
+    ABOUT,
 };
+
+enum class menu { FILE, EDIT, SELECTION, FIND, VIEW, GO, HELP, NONE };
 
 enum class command_kind {
     ACTION,
-    TOGGLE, // a command with an on and off state that belongs to the current tab
+    TOGGLE,  // a check row whose state belongs to the current tab
+    SUBMENU, // a row whose menu the window fills each time it opens
 };
 
 struct command_entry {
     command id;
+    menu place;                // NONE for a command reached only by its keys
     const char* label;
-    const char* shortcut;  // in QKeySequence's portable text, empty for none
-    const char* alternate; // a second key for the same command, empty for none
+    const char* shortcut;      // in QKeySequence's portable text, empty for none
+    const char* alternate;     // a second key for the same command, empty for none
     command_kind kind;
+    bool starts_group;         // a hairline separates it from the row above it in its menu
 };
 
+/* The menus in the order the menu button lists them, with the letter Alt opens each by */
+inline constexpr const char* MENU_TITLES[] = { "File", "Edit", "Selection", "Find", "View", "Go", "Help" };
+inline constexpr char MENU_KEYS[] = { 'F', 'E', 'S', 'I', 'V', 'G', 'H' };
+
 inline constexpr command_entry COMMANDS[] = {
-    { command::NEW_FILE, "New File", "Ctrl+N", "", command_kind::ACTION },
-    { command::OPEN_FILE, "Open...", "Ctrl+O", "", command_kind::ACTION },
-    { command::SAVE, "Save", "Ctrl+S", "", command_kind::ACTION },
-    { command::SAVE_AS, "Save As...", "Ctrl+Shift+S", "", command_kind::ACTION },
-    { command::SAVE_ALL, "Save All", "Ctrl+Alt+S", "", command_kind::ACTION },
-    { command::CLOSE_TAB, "Close Tab", "Ctrl+W", "Ctrl+F4", command_kind::ACTION },
-    { command::QUIT, "Quit", "Ctrl+Q", "", command_kind::ACTION },
-    { command::UNDO, "Undo", "Ctrl+Z", "", command_kind::ACTION },
-    { command::REDO, "Redo", "Ctrl+Shift+Z", "Ctrl+Y", command_kind::ACTION },
-    { command::CUT, "Cut", "Ctrl+X", "", command_kind::ACTION },
-    { command::COPY, "Copy", "Ctrl+C", "", command_kind::ACTION },
-    { command::PASTE, "Paste", "Ctrl+V", "", command_kind::ACTION },
-    { command::SELECT_ALL, "Select All", "Ctrl+A", "", command_kind::ACTION },
-    { command::WORD_WRAP, "Word Wrap", "Alt+Z", "", command_kind::TOGGLE },
-    { command::ZOOM_IN, "Zoom In", "Ctrl+=", "Ctrl++", command_kind::ACTION },
-    { command::ZOOM_OUT, "Zoom Out", "Ctrl+-", "", command_kind::ACTION },
-    { command::ZOOM_RESET, "Reset Zoom", "Ctrl+0", "", command_kind::ACTION },
-    { command::RECENT_TAB, "Recent Tab", "Ctrl+Tab", "", command_kind::ACTION },
-    { command::NEXT_TAB, "Next Tab", "Ctrl+PgDown", "", command_kind::ACTION },
-    { command::PREVIOUS_TAB, "Previous Tab", "Ctrl+PgUp", "", command_kind::ACTION },
-    { command::MOVE_TAB_LEFT, "Move Tab Left", "Ctrl+Shift+PgUp", "", command_kind::ACTION },
-    { command::MOVE_TAB_RIGHT, "Move Tab Right", "Ctrl+Shift+PgDown", "", command_kind::ACTION },
-    { command::TAB_1, "Tab 1", "Alt+1", "", command_kind::ACTION },
-    { command::TAB_2, "Tab 2", "Alt+2", "", command_kind::ACTION },
-    { command::TAB_3, "Tab 3", "Alt+3", "", command_kind::ACTION },
-    { command::TAB_4, "Tab 4", "Alt+4", "", command_kind::ACTION },
-    { command::TAB_5, "Tab 5", "Alt+5", "", command_kind::ACTION },
-    { command::TAB_6, "Tab 6", "Alt+6", "", command_kind::ACTION },
-    { command::TAB_7, "Tab 7", "Alt+7", "", command_kind::ACTION },
-    { command::TAB_8, "Tab 8", "Alt+8", "", command_kind::ACTION },
-    { command::LAST_TAB, "Last Tab", "Alt+9", "", command_kind::ACTION },
+    { command::NEW_FILE, menu::FILE, "New File", "Ctrl+N", "", command_kind::ACTION, false },
+    { command::OPEN_FILE, menu::FILE, "Open...", "Ctrl+O", "", command_kind::ACTION, false },
+    { command::OPEN_RECENT, menu::FILE, "Open Recent", "", "", command_kind::SUBMENU, false },
+    { command::SAVE, menu::FILE, "Save", "Ctrl+S", "", command_kind::ACTION, true },
+    { command::SAVE_AS, menu::FILE, "Save As...", "Ctrl+Shift+S", "", command_kind::ACTION, false },
+    { command::SAVE_ALL, menu::FILE, "Save All", "Ctrl+Alt+S", "", command_kind::ACTION, false },
+    { command::REOPEN_WITH_ENCODING, menu::FILE, "Reopen with Encoding", "", "", command_kind::SUBMENU, true },
+    { command::SAVE_WITH_ENCODING, menu::FILE, "Save with Encoding", "", "", command_kind::SUBMENU, false },
+    { command::CLOSE_TAB, menu::FILE, "Close Tab", "Ctrl+W", "Ctrl+F4", command_kind::ACTION, true },
+    { command::CLOSE_ALL_TABS, menu::FILE, "Close All Tabs", "", "", command_kind::ACTION, false },
+    { command::QUIT, menu::FILE, "Quit", "Ctrl+Q", "", command_kind::ACTION, true },
+    { command::UNDO, menu::EDIT, "Undo", "Ctrl+Z", "", command_kind::ACTION, false },
+    { command::REDO, menu::EDIT, "Redo", "Ctrl+Shift+Z", "Ctrl+Y", command_kind::ACTION, false },
+    { command::CUT, menu::EDIT, "Cut", "Ctrl+X", "", command_kind::ACTION, true },
+    { command::COPY, menu::EDIT, "Copy", "Ctrl+C", "", command_kind::ACTION, false },
+    { command::PASTE, menu::EDIT, "Paste", "Ctrl+V", "", command_kind::ACTION, false },
+    { command::DELETE_LINE, menu::EDIT, "Delete Line", "Ctrl+Shift+K", "", command_kind::ACTION, true },
+    { command::DUPLICATE, menu::EDIT, "Duplicate", "Ctrl+Shift+D", "", command_kind::ACTION, false },
+    { command::MOVE_LINES_UP, menu::EDIT, "Move Line Up", "Alt+Up", "", command_kind::ACTION, false },
+    { command::MOVE_LINES_DOWN, menu::EDIT, "Move Line Down", "Alt+Down", "", command_kind::ACTION, false },
+    { command::INSERT_LINE_BELOW, menu::EDIT, "Insert Line Below", "Ctrl+Return", "", command_kind::ACTION, false },
+    { command::INSERT_LINE_ABOVE, menu::EDIT, "Insert Line Above", "Ctrl+Shift+Return", "", command_kind::ACTION,
+      false },
+    { command::INDENT, menu::EDIT, "Indent", "Ctrl+]", "", command_kind::ACTION, true },
+    { command::OUTDENT, menu::EDIT, "Outdent", "Ctrl+[", "", command_kind::ACTION, false },
+    { command::UPPER_CASE, menu::EDIT, "Upper Case", "", "", command_kind::ACTION, true },
+    { command::LOWER_CASE, menu::EDIT, "Lower Case", "", "", command_kind::ACTION, false },
+    { command::SELECT_ALL, menu::SELECTION, "Select All", "Ctrl+A", "", command_kind::ACTION, false },
+    { command::SELECT_LINE, menu::SELECTION, "Select Line", "Ctrl+L", "", command_kind::ACTION, false },
+    { command::ADD_NEXT_MATCH, menu::SELECTION, "Add Next Match", "Ctrl+D", "", command_kind::ACTION, true },
+    { command::SELECT_ALL_MATCHES, menu::SELECTION, "Select All Matches", "Ctrl+Shift+L", "", command_kind::ACTION,
+      false },
+    { command::LANGUAGE, menu::VIEW, "Language", "", "", command_kind::SUBMENU, false },
+    { command::WORD_WRAP, menu::VIEW, "Word Wrap", "Alt+Z", "", command_kind::TOGGLE, true },
+    { command::LINE_NUMBERS, menu::VIEW, "Line Numbers", "", "", command_kind::TOGGLE, false },
+    { command::INDENT_GUIDES, menu::VIEW, "Indent Guides", "", "", command_kind::TOGGLE, false },
+    { command::COLUMN_EDGE, menu::VIEW, "Column Edge at 120", "", "", command_kind::TOGGLE, false },
+    { command::WHITESPACE, menu::VIEW, "Whitespace", "", "", command_kind::TOGGLE, false },
+    { command::ZOOM_IN, menu::VIEW, "Zoom In", "Ctrl+=", "Ctrl++", command_kind::ACTION, true },
+    { command::ZOOM_OUT, menu::VIEW, "Zoom Out", "Ctrl+-", "", command_kind::ACTION, false },
+    { command::ZOOM_RESET, menu::VIEW, "Reset Zoom", "Ctrl+0", "", command_kind::ACTION, false },
+    { command::MATCHING_BRACKET, menu::GO, "Matching Bracket", "Ctrl+M", "", command_kind::ACTION, false },
+    { command::RECENT_TAB, menu::GO, "Recent Tab", "Ctrl+Tab", "", command_kind::ACTION, true },
+    { command::NEXT_TAB, menu::GO, "Next Tab", "Ctrl+PgDown", "", command_kind::ACTION, false },
+    { command::PREVIOUS_TAB, menu::GO, "Previous Tab", "Ctrl+PgUp", "", command_kind::ACTION, false },
+    { command::MOVE_TAB_LEFT, menu::GO, "Move Tab Left", "Ctrl+Shift+PgUp", "", command_kind::ACTION, false },
+    { command::MOVE_TAB_RIGHT, menu::GO, "Move Tab Right", "Ctrl+Shift+PgDown", "", command_kind::ACTION, false },
+    { command::TAB_1, menu::NONE, "Tab 1", "Alt+1", "", command_kind::ACTION, false },
+    { command::TAB_2, menu::NONE, "Tab 2", "Alt+2", "", command_kind::ACTION, false },
+    { command::TAB_3, menu::NONE, "Tab 3", "Alt+3", "", command_kind::ACTION, false },
+    { command::TAB_4, menu::NONE, "Tab 4", "Alt+4", "", command_kind::ACTION, false },
+    { command::TAB_5, menu::NONE, "Tab 5", "Alt+5", "", command_kind::ACTION, false },
+    { command::TAB_6, menu::NONE, "Tab 6", "Alt+6", "", command_kind::ACTION, false },
+    { command::TAB_7, menu::NONE, "Tab 7", "Alt+7", "", command_kind::ACTION, false },
+    { command::TAB_8, menu::NONE, "Tab 8", "Alt+8", "", command_kind::ACTION, false },
+    { command::LAST_TAB, menu::NONE, "Last Tab", "Alt+9", "", command_kind::ACTION, false },
+    { command::ABOUT, menu::HELP, "About Sheen", "", "", command_kind::ACTION, false },
 };
 
 #endif
