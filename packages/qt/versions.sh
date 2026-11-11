@@ -1,11 +1,13 @@
 # Version and source pins for the qt recipe. Sourced by build.sh on the
 # host, by container.sh inside, and by the dispatcher for package_version.
 
-# Qt modules the kit holds: qtbase for Core, Gui and Widgets, qtsvg for SVG icons
+# Qt modules the kit holds: qtbase for Core, Gui and Widgets, qtsvg for SVG icons, and qt5compat
+# for the text codecs of Core5Compat
 QT_VER="6.11.2"
 QT_URL="https://download.qt.io/official_releases/qt/${QT_VER%.*}/$QT_VER/submodules"
 QTBASE_SHA256="5b2e00eccaf5a4d8c14134ffa0ea8dfd0a35ae1ffc7f8d87fa4305a1ed23cf22"
 QTSVG_SHA256="d594337feca84c26fb67fe87b85e6a5c12fda404b611d905f9d138210c311876"
+QT5COMPAT_SHA256="68c320fe3391096a9f2d870170edf1b67dac8af1d0e51c0c9e5343807f114287"
 
 # The tree's make targets build the sysroot from these, which build.sh holds to the
 # Makefile's versions. The checksums verify downloads the Makefile leaves unverified.
@@ -17,7 +19,7 @@ LLVM_SHA256="6898f963c8e938981e6c4a302e83ec5beb4630147c7311183cf61069af16333d"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/llvm-project-$LLVM_VER.src.tar.xz"
 
 # Package release number, bumped when the recipe changes without Qt changing
-QT_PKG_REL="1"
+QT_PKG_REL="2"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {
