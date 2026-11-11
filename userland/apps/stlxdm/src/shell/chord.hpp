@@ -11,9 +11,8 @@ constexpr uint8_t CHORD_MOD_CTRL = 1u << 1;
 constexpr uint8_t CHORD_MOD_ALT = 1u << 2;
 constexpr uint8_t CHORD_MOD_SUPER = 1u << 3;
 
-/* Parses a plus-separated chord such as ctrl+alt+t into modifier bits and the HID usage of its last letter or
- * digit. Returns false when a key is neither a modifier name nor one lowercase letter or digit, or when no
- * key is a letter or digit. */
+/* Parses a plus-separated chord such as ctrl+alt+t or shift+print into modifier bits and the HID usage of its key.
+ * Refuses unknown words, a chord with no key, and a key that types held without Ctrl, Alt or Super, which apps need. */
 bool parse_chord(const char* chord, uint8_t* out_mods, uint16_t* out_usage);
 
 /* The names keycaps show for the keys of `chord`, such as Super and S, or none when `parse_chord` refuses it */

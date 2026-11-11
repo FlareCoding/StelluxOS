@@ -9,8 +9,8 @@ HOST_CXX ?= c++
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(SRC_DIR)/damage.cpp
-HEADERS   := $(SRC_DIR)/damage.hpp
+SOURCES   := $(SRC_DIR)/damage.cpp $(SRC_DIR)/shell/chord.cpp
+HEADERS   := $(SRC_DIR)/damage.hpp $(SRC_DIR)/shell/chord.hpp
 TESTS     := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))
 
 CXXFLAGS := -std=c++20 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)
