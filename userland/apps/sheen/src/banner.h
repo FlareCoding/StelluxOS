@@ -12,7 +12,7 @@
 class QHBoxLayout;
 class QLabel;
 
-enum class banner_kind { CHANGE, FAILURE };
+enum class banner_kind { CHANGE, READ_ONLY, FAILURE };
 
 struct banner_action {
     QString label;

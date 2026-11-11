@@ -543,6 +543,21 @@ void document::remember_disk_state() {
     QFileInfo info(m_file.path);
     m_file.size = info.isFile() ? info.size() : -1;
     m_file.modified = info.lastModified();
+    refresh_read_only();
+}
+
+bool document::refresh_read_only() {
+    QFileInfo info(m_file.path);
+    bool is_read_only = info.isFile() && !(info.permissions() & QFileDevice::WriteOwner);
+    bool is_changed = is_read_only != m_is_read_only;
+    m_is_read_only = is_read_only;
+    return is_changed;
+}
+
+bool document::claim_read_only_note() {
+    bool is_first = m_is_read_only && !m_is_read_only_noted;
+    m_is_read_only_noted = m_is_read_only_noted || is_first;
+    return is_first;
 }
 
 void document::detect_language() {

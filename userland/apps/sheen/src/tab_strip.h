@@ -2,7 +2,7 @@
 #define SHEEN_TAB_STRIP_H
 
 /* The row of open files above the text, painted from the theme's tokens on the glass. An unsaved file shows an
- * amber dot in its close slot, which turns into the close glyph under the pointer. */
+ * amber dot in its close slot, which turns into the close glyph under the pointer, and a read-only one a lock. */
 #include <QAbstractButton>
 #include <QTabBar>
 #include <QWidget>
@@ -16,6 +16,12 @@ public:
     explicit tab_strip(QWidget* parent);
 
     void set_tab_modified(int index, bool is_modified);
+
+    /* Set before the tab's text, whose change lays the tabs out again for the lock's width */
+    void set_tab_locked(int index, bool is_locked);
+
+    /* Strikes the tab's name through, as for a file deleted on disk */
+    void set_tab_struck(int index, bool is_struck);
 
     /* The part of the strip the row shows, whose clipped ends fade */
     void set_visible_span(int offset, int width);
@@ -37,6 +43,9 @@ protected:
 private:
     QRect close_slot(int index) const;
     bool is_tab_modified(int index) const;
+    bool is_tab_locked(int index) const;
+    bool is_tab_struck(int index) const;
+    void set_tab_flag(int index, int flag, bool is_set);
     void set_hover(int tab, bool is_slot_hovered);
 
     QFont m_font;
