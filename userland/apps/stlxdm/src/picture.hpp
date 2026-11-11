@@ -85,6 +85,10 @@ public:
     std::unique_ptr<picture> make_picture(size_t bytes) override;
 };
 
+/* `bytes` and half as many again, the memory to make for a picture whose
+ * size keeps changing, as a window's does while it resizes */
+size_t room_to_grow(size_t bytes);
+
 /* A picture the CPU draws into and a compose reads, `width` by `height`
  * pixels with rows `width` pixels apart, and its twin when its maker makes
  * twins, which the compose then reads in its place. Whoever draws into the
@@ -93,10 +97,15 @@ public:
  * it must drop before its maker. */
 class twinned_picture {
 public:
-    /* Makes the picture, and its twin when `maker` makes twins, every pixel
-     * marked changed, or returns null when memory runs out. The pixels are
-     * undefined, so the caller must draw every one before a compose. */
-    static std::unique_ptr<twinned_picture> make(picture_maker& maker, uint32_t width, uint32_t height);
+    /* Makes the picture, and its twin when `maker` makes twins, with room for
+     * `min_bytes` when memory allows, every pixel marked changed and undefined
+     * for the caller to draw before a compose. Null when memory runs out. */
+    static std::unique_ptr<twinned_picture> make(
+        picture_maker& maker,
+        uint32_t width,
+        uint32_t height,
+        size_t min_bytes = 0
+    );
 
     twinned_picture(const twinned_picture&) = delete;
     twinned_picture& operator=(const twinned_picture&) = delete;
@@ -116,8 +125,8 @@ public:
     uint64_t address() const;
 
     /* Gives the picture the size `width` by `height` when its memory holds
-     * that many pixels, every pixel marked changed and undefined, as after
-     * `make`. False when it does not. */
+     * that many pixels and is not over four times what they need, every pixel
+     * marked changed and undefined, as after `make`. False otherwise. */
     bool resize(uint32_t width, uint32_t height);
 
     /* Marks the pixels of `r` changed, ignoring those outside the picture */
@@ -148,9 +157,15 @@ private:
 class window_twin {
 public:
     /* Makes a twin of a picture `width` by `height` pixels with rows `pitch`
-     * bytes apart, every pixel marked changed, or returns null when `maker`
-     * makes no twins or memory runs out */
-    static std::unique_ptr<window_twin> make(picture_maker& maker, uint32_t pitch, uint32_t width, uint32_t height);
+     * bytes apart, with room for `min_bytes` when memory allows, every pixel
+     * marked changed. Null when `maker` makes no twins or memory runs out. */
+    static std::unique_ptr<window_twin> make(
+        picture_maker& maker,
+        uint32_t pitch,
+        uint32_t width,
+        uint32_t height,
+        size_t min_bytes = 0
+    );
 
     window_twin(const window_twin&) = delete;
     window_twin& operator=(const window_twin&) = delete;
@@ -160,6 +175,11 @@ public:
     uint32_t pitch() const { return m_pitch; }
     uint32_t width() const { return m_width; }
     uint32_t height() const { return m_height; }
+
+    /* Gives the twin the shape of a picture `width` by `height` pixels with
+     * rows `pitch` bytes apart, every pixel marked changed, when its memory
+     * holds it and is not over four times what it needs. False otherwise. */
+    bool resize(uint32_t pitch, uint32_t width, uint32_t height);
 
     /* Marks the pixels of `r` changed, ignoring those outside the twin */
     void mark_changed(const damage_list::rect& r);
@@ -282,10 +302,10 @@ public:
 
     /* Draws the frame of `w`, which must be decorated and have a current
      * buffer, when its size, its title, `st` or `maker` differs from the
-     * last draw, making a strip's picture and its twin first when the strip
-     * outgrew it or `maker` did not make it. Returns false when memory runs
-     * out, and `place` and `blend` then wait for an update that returns
-     * true. */
+     * last draw, making a strip's picture and its twin first when its
+     * `resize` refuses the strip or `maker` did not make it. Returns false
+     * when memory runs out, and `place` and `blend` then wait for an update
+     * that returns true. */
     bool update(picture_maker& maker, const dm_window& w, const decor::chrome_state& st);
 
     /* Puts the strips at `w`'s place into `shown`, in the pixels of an

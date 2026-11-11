@@ -11,6 +11,9 @@ static_assert(frame_picture::STRIPS == decor::FRAME_STRIPS);
 
 constexpr uint32_t BYTES_PER_PIXEL = 4;
 
+/* A resize keeps memory holding at most this many times the bytes its new size needs */
+constexpr size_t MEMORY_OVER_NEED_MAX = 4;
+
 namespace {
 
 /* A picture in stlxdm's heap, which no GPU reads */
@@ -98,8 +101,8 @@ static void clear_inside(
     }
 }
 
-/* Gives `picture` the size of `strip`, keeping its memory when `is_same_maker` says `maker` made it and it holds the
- * strip. False when memory runs out */
+/* Gives `picture` the size of `strip`, keeping its memory when `is_same_maker` says `maker` made it and its `resize`
+ * accepts the strip, else making it anew, with room to grow when it replaces memory. False when memory runs out */
 static bool fit_strip(
     std::unique_ptr<twinned_picture>& picture,
     picture_maker& maker,
@@ -115,7 +118,8 @@ static bool fit_strip(
 
     /* No compose still reads the old memory, since frames are drawn only after the last compose ended */
     picture.reset();
-    picture = twinned_picture::make(maker, width, height);
+    size_t bytes = static_cast<size_t>(width) * height * BYTES_PER_PIXEL;
+    picture = twinned_picture::make(maker, width, height, is_reusable ? room_to_grow(bytes) : 0);
 
     return picture != nullptr;
 }
@@ -376,19 +380,51 @@ static void take_changed(
     changed.clear();
 }
 
-std::unique_ptr<twinned_picture> twinned_picture::make(picture_maker& maker, uint32_t width, uint32_t height) {
-    size_t bytes = static_cast<size_t>(width) * height * BYTES_PER_PIXEL;
-    std::unique_ptr<twinned_picture> made(new twinned_picture());
-    made->m_memory = maker.make_picture(bytes);
-    if (!made->m_memory) {
-        return nullptr;
+/* Whether `memory` holds `bytes` without holding over `MEMORY_OVER_NEED_MAX` times as many */
+static bool fits_memory(size_t bytes, size_t memory) {
+    return bytes <= memory && bytes * MEMORY_OVER_NEED_MAX >= memory;
+}
+
+/* Makes `memory` of `bytes`, and `twin` of as many when `maker` makes twins. False when memory runs out */
+static bool make_memory(
+    picture_maker& maker,
+    size_t bytes,
+    std::unique_ptr<picture>& memory,
+    std::unique_ptr<picture>& twin
+) {
+    twin.reset();
+    memory.reset();
+    memory = maker.make_picture(bytes);
+    if (!memory) {
+        return false;
     }
 
     if (maker.makes_twins()) {
-        made->m_twin = maker.make_twin(bytes);
-        if (!made->m_twin) {
-            return nullptr;
-        }
+        twin = maker.make_twin(bytes);
+    }
+
+    return twin || !maker.makes_twins();
+}
+
+size_t room_to_grow(size_t bytes) {
+    return bytes + bytes / 2;
+}
+
+std::unique_ptr<twinned_picture> twinned_picture::make(
+    picture_maker& maker,
+    uint32_t width,
+    uint32_t height,
+    size_t min_bytes
+) {
+    size_t needed = static_cast<size_t>(width) * height * BYTES_PER_PIXEL;
+    std::unique_ptr<twinned_picture> made(new twinned_picture());
+    bool is_made = make_memory(maker, std::max(needed, min_bytes), made->m_memory, made->m_twin);
+    if (!is_made && min_bytes > needed) {
+        is_made = make_memory(maker, needed, made->m_memory, made->m_twin);
+    }
+
+    if (!is_made) {
+        return nullptr;
     }
 
     made->m_width = width;
@@ -404,7 +440,7 @@ uint64_t twinned_picture::address() const {
 }
 
 bool twinned_picture::resize(uint32_t width, uint32_t height) {
-    if (static_cast<size_t>(width) * height * BYTES_PER_PIXEL > m_memory->bytes()) {
+    if (!fits_memory(static_cast<size_t>(width) * height * BYTES_PER_PIXEL, m_memory->bytes())) {
         return false;
     }
 
@@ -427,13 +463,24 @@ void twinned_picture::take_copies(std::vector<damage_list::rect>& copies) {
     take_changed(m_changed, m_width, m_height, copies);
 }
 
-std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pitch, uint32_t width, uint32_t height) {
+std::unique_ptr<window_twin> window_twin::make(
+    picture_maker& maker,
+    uint32_t pitch,
+    uint32_t width,
+    uint32_t height,
+    size_t min_bytes
+) {
     if (!maker.makes_twins()) {
         return nullptr;
     }
 
+    size_t needed = static_cast<size_t>(pitch) * height;
     std::unique_ptr<window_twin> made(new window_twin());
-    made->m_twin = maker.make_twin(static_cast<size_t>(pitch) * height);
+    made->m_twin = maker.make_twin(std::max(needed, min_bytes));
+    if (!made->m_twin && min_bytes > needed) {
+        made->m_twin = maker.make_twin(needed);
+    }
+
     if (!made->m_twin) {
         return nullptr;
     }
@@ -444,6 +491,20 @@ std::unique_ptr<window_twin> window_twin::make(picture_maker& maker, uint32_t pi
     made->m_changed.add_full();
 
     return made;
+}
+
+bool window_twin::resize(uint32_t pitch, uint32_t width, uint32_t height) {
+    if (!fits_memory(static_cast<size_t>(pitch) * height, m_twin->bytes())) {
+        return false;
+    }
+
+    m_pitch = pitch;
+    m_width = width;
+    m_height = height;
+    m_changed.clear();
+    m_changed.add_full();
+
+    return true;
 }
 
 void window_twin::mark_changed(const damage_list::rect& r) {
