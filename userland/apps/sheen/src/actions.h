@@ -78,6 +78,7 @@ enum class command {
     TAB_7,
     TAB_8,
     LAST_TAB,
+    KEYBOARD_SHORTCUTS,
     ABOUT,
 };
 
@@ -181,6 +182,7 @@ inline constexpr command_entry COMMANDS[] = {
     { command::TAB_7, menu::NONE, "Tab 7", "Alt+7", "", command_kind::ACTION, false },
     { command::TAB_8, menu::NONE, "Tab 8", "Alt+8", "", command_kind::ACTION, false },
     { command::LAST_TAB, menu::NONE, "Last Tab", "Alt+9", "", command_kind::ACTION, false },
+    { command::KEYBOARD_SHORTCUTS, menu::HELP, "Keyboard Shortcuts", "", "", command_kind::ACTION, false },
     { command::ABOUT, menu::HELP, "About Sheen", "", "", command_kind::ACTION, false },
 };
 
