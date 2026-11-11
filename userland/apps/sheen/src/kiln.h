@@ -5,6 +5,7 @@
  * takes its color from the tags the lexer publishes for it, or from the language's own table. */
 #include "settings.h"
 
+#include <QByteArray>
 #include <QByteArrayView>
 #include <QList>
 #include <QString>
@@ -16,6 +17,13 @@
 class ScintillaEditBase;
 
 struct language;
+
+/* How a language writes comments, each part empty where it has none */
+struct comment_syntax {
+    QByteArray line;
+    QByteArray block_open;
+    QByteArray block_close;
+};
 
 /* The text's em size in pixels for every view made after it is set */
 void set_text_size(float em_px);
@@ -32,6 +40,9 @@ const language* find_language(const QString& file_name, QByteArrayView first_lin
 void apply_language(ScintillaEditBase* view, const language* lang);
 
 QString language_name(const language* lang);
+
+/* The comment syntax of `lang`, none for plain text */
+comment_syntax comment_syntax_of(const language* lang);
 
 /* A theme color as Scintilla takes it, 0xAABBGGRR */
 sptr_t scintilla_rgba(uint32_t argb);

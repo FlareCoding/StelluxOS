@@ -40,6 +40,13 @@ struct language {
     QList<language_property> properties;
 };
 
+struct comment_entry {
+    const char* language;
+    const char* line;
+    const char* block_open;
+    const char* block_close;
+};
+
 struct bidi_control {
     const char* utf8;
     const char* name;
@@ -257,6 +264,14 @@ static const language LANGUAGES[] = {
 };
 
 static constexpr int KEYWORD_SET_COUNT = sizeof(language::keywords) / sizeof(language::keywords[0]);
+
+static const comment_entry COMMENTS[] = {
+    { "C", "//", "/*", "*/" },        { "C++", "//", "/*", "*/" },    { "JavaScript", "//", "/*", "*/" },
+    { "Rust", "//", "/*", "*/" },     { "Python", "#", "", "" },       { "Shell", "#", "", "" },
+    { "Makefile", "#", "", "" },      { "YAML", "#", "", "" },         { "INI", "#", "", "" },
+    { "Lua", "--", "--[[", "]]" },    { "Markdown", "", "<!--", "-->" }, { "HTML", "", "<!--", "-->" },
+    { "XML", "", "<!--", "-->" },
+};
 
 // Marks that reorder text without showing, such as a comment that hides live code, each drawn as its short name
 static constexpr bidi_control BIDI_CONTROLS[] = {
@@ -628,6 +643,16 @@ void apply_language(ScintillaEditBase* view, const language* lang) {
     s_identifier_styles.insert(lang, identifiers);
 
     view->send(SCI_COLOURISE, 0, -1);
+}
+
+comment_syntax comment_syntax_of(const language* lang) {
+    for (const comment_entry& entry : COMMENTS) {
+        if (lang && qstrcmp(lang->name, entry.language) == 0) {
+            return { entry.line, entry.block_open, entry.block_close };
+        }
+    }
+
+    return {};
 }
 
 QString language_name(const language* lang) {

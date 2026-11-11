@@ -278,10 +278,87 @@ static void highlight_brackets(ScintillaEditBase* view, bool is_on) {
     }
 }
 
-static QByteArray line_bytes(ScintillaEditBase* view, sptr_t line, sptr_t end) {
-    sptr_t start = view->send(SCI_POSITIONFROMLINE, line);
+static QByteArray text_between(ScintillaEditBase* view, sptr_t start, sptr_t end) {
     const char* text = reinterpret_cast<const char*>(view->send(SCI_GETRANGEPOINTER, start, end - start));
     return QByteArray(text, end - start);
+}
+
+static QByteArray line_bytes(ScintillaEditBase* view, sptr_t line, sptr_t end) {
+    return text_between(view, view->send(SCI_POSITIONFROMLINE, line), end);
+}
+
+// Comments the selected lines at their shallowest indent, or uncomments them when each already starts with the
+// comment, as one undo step. Blank lines stay as they are
+static void toggle_line_comment(ScintillaEditBase* view, const QByteArray& token) {
+    sptr_t first = 0;
+    sptr_t last = 0;
+    selected_lines(view, &first, &last);
+
+    bool is_commented = true;
+    sptr_t shallowest = -1;
+    for (sptr_t line = first; line <= last; line++) {
+        sptr_t start = view->send(SCI_GETLINEINDENTPOSITION, line);
+        sptr_t end = view->send(SCI_GETLINEENDPOSITION, line);
+        if (start == end) {
+            continue;
+        }
+
+        sptr_t indent = view->send(SCI_GETLINEINDENTATION, line);
+        shallowest = shallowest < 0 ? indent : qMin(shallowest, indent);
+        is_commented = is_commented && text_between(view, start, end).startsWith(token);
+    }
+
+    if (token.isEmpty() || shallowest < 0) {
+        return;
+    }
+
+    QByteArray comment = token + ' ';
+    view->send(SCI_BEGINUNDOACTION);
+    for (sptr_t line = last; line >= first; line--) {
+        sptr_t start = view->send(SCI_GETLINEINDENTPOSITION, line);
+        if (start == view->send(SCI_GETLINEENDPOSITION, line)) {
+            continue;
+        }
+
+        if (is_commented) {
+            bool has_space = view->send(SCI_GETCHARAT, start + token.size()) == ' ';
+            view->send(SCI_DELETERANGE, start, token.size() + (has_space ? 1 : 0));
+        } else {
+            sptr_t at = view->send(SCI_FINDCOLUMN, line, shallowest);
+            view->send(SCI_INSERTTEXT, at, reinterpret_cast<sptr_t>(comment.constData()));
+        }
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+}
+
+// Wraps the selection, or the caret's line without one, in a block comment, or unwraps it when it already is one
+static void toggle_block_comment(ScintillaEditBase* view, const QByteArray& open, const QByteArray& close) {
+    if (open.isEmpty()) {
+        return;
+    }
+
+    sptr_t start = view->send(SCI_GETSELECTIONSTART);
+    sptr_t end = view->send(SCI_GETSELECTIONEND);
+    if (start == end) {
+        sptr_t line = view->send(SCI_LINEFROMPOSITION, start);
+        start = view->send(SCI_GETLINEINDENTPOSITION, line);
+        end = view->send(SCI_GETLINEENDPOSITION, line);
+    }
+
+    QByteArray text = text_between(view, start, end);
+    bool is_long_enough = text.size() >= open.size() + close.size();
+    bool is_commented = is_long_enough && text.startsWith(open) && text.endsWith(close);
+    view->send(SCI_BEGINUNDOACTION);
+    if (is_commented) {
+        view->send(SCI_DELETERANGE, end - close.size(), close.size());
+        view->send(SCI_DELETERANGE, start, open.size());
+    } else {
+        view->send(SCI_INSERTTEXT, end, reinterpret_cast<sptr_t>(close.constData()));
+        view->send(SCI_INSERTTEXT, start, reinterpret_cast<sptr_t>(open.constData()));
+    }
+
+    view->send(SCI_ENDUNDOACTION);
 }
 
 // The next item's marker after `item`, the same bullet or the next number, followed by the same spacing
@@ -836,6 +913,14 @@ void editor_window::run(command id) {
         case command::INSERT_LINE_ABOVE:
             insert_line(view, true);
             break;
+        case command::TOGGLE_COMMENT:
+            toggle_line_comment(view, comment_syntax_of(doc->lang()).line);
+            break;
+        case command::TOGGLE_BLOCK_COMMENT: {
+            comment_syntax comments = comment_syntax_of(doc->lang());
+            toggle_block_comment(view, comments.block_open, comments.block_close);
+            break;
+        }
         case command::INDENT:
             indent_lines(view, 1);
             break;
@@ -994,6 +1079,10 @@ void editor_window::refresh_commands() {
     for (command id : { command::FOLD, command::UNFOLD, command::FOLD_ALL, command::UNFOLD_ALL }) {
         m_actions.value(id)->setEnabled(is_free && can_fold);
     }
+
+    comment_syntax comments = comment_syntax_of(doc ? doc->lang() : nullptr);
+    m_actions.value(command::TOGGLE_COMMENT)->setEnabled(is_free && has_text && !comments.line.isEmpty());
+    m_actions.value(command::TOGGLE_BLOCK_COMMENT)->setEnabled(is_free && has_text && !comments.block_open.isEmpty());
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
     m_actions.value(command::REVERT)->setEnabled(is_free && doc && !doc->is_untitled() && doc->is_modified());
@@ -2341,6 +2430,8 @@ void editor_window::show_text_menu(const QPoint& anchor) {
     erase->setEnabled(!view->send(SCI_GETSELECTIONEMPTY));
     menu.addSeparator();
     menu.addAction(m_actions.value(command::SELECT_ALL));
+    menu.addSeparator();
+    menu.addAction(m_actions.value(command::TOGGLE_COMMENT));
 
     QString find_keys = m_actions.value(command::FIND)->shortcut().toString(QKeySequence::NativeText);
     menu.addSeparator();
