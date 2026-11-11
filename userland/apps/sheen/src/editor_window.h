@@ -85,6 +85,8 @@ private:
     void check_disk(document* doc);
     void select_tab(int index);
     void show_empty_state();
+    void show_tab_list();
+    void close_saved_tabs();
 
     void show_current_document();
     void refresh_tab(document* doc);
