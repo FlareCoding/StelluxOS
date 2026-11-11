@@ -41,6 +41,9 @@ struct file_record {
 
 enum class disk_state { SAME, CHANGED, DELETED };
 
+/* Code is for source, scripts and config, Text for notes, prose and plain files */
+enum class edit_mode { CODE, TEXT };
+
 /* Where the caret, the selection and the scroll stood, so a reopened tab returns to them */
 struct view_state {
     sptr_t caret = 0;
@@ -92,7 +95,19 @@ public:
     sptr_t keep_scintilla_document() const;
 
     void set_encoding(const file_encoding& encoding);
+
+    /* A language the user did not pick a mode for takes its own mode, Code for every lexed language but Markdown */
     void set_language(const language* lang);
+
+    /* Resets the view to the mode's defaults. A chosen mode stays when the file's language changes */
+    void set_mode(edit_mode mode, bool is_chosen);
+    edit_mode mode() const { return m_mode; }
+
+    /* Keeps Text mode's reading width centered as the view's width changes */
+    void fit_text_width();
+
+    /* Code mode marks function names on the lines in view, so each edit, scroll or showing marks them again */
+    void refresh_function_names();
     void set_eol_mode(int eol_mode);
     void convert_eols(int eol_mode);
 
@@ -150,6 +165,8 @@ private:
     file_record m_file;
     bool m_is_eol_recount_queued = false;
     const language* m_language = nullptr;
+    edit_mode m_mode = edit_mode::TEXT;
+    bool m_is_mode_chosen = false;
     int m_untitled_number;
     const sheen_settings& m_settings;
     bool m_is_deleted = false;

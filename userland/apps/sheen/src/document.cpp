@@ -296,6 +296,32 @@ void document::set_encoding(const file_encoding& encoding) {
 void document::set_language(const language* lang) {
     m_language = lang;
     apply_language(m_view, m_language);
+    if (!m_is_mode_chosen) {
+        set_mode(is_code_language(lang) ? edit_mode::CODE : edit_mode::TEXT, false);
+    }
+}
+
+void document::set_mode(edit_mode mode, bool is_chosen) {
+    m_mode = mode;
+    m_is_mode_chosen = m_is_mode_chosen || is_chosen;
+    apply_mode_defaults(m_view, mode == edit_mode::CODE ? m_settings.code : m_settings.text);
+    if (mode == edit_mode::TEXT) {
+        clear_function_names(m_view);
+    } else {
+        refresh_function_names();
+    }
+}
+
+void document::fit_text_width() {
+    if (m_mode == edit_mode::TEXT) {
+        fit_reading_width(m_view, m_settings.text.wrap_column);
+    }
+}
+
+void document::refresh_function_names() {
+    if (m_mode == edit_mode::CODE) {
+        mark_function_names(m_view, m_language);
+    }
 }
 
 void document::set_eol_mode(int eol_mode) {
@@ -484,6 +510,7 @@ void document::configure_view() {
     set_indentation({ !m_settings.insert_spaces, m_settings.tab_width });
     m_view->send(SCI_SETCARETPERIOD, m_settings.caret_blink_ms);
     m_view->send(SCI_SETCHANGEHISTORY, CHANGE_HISTORY_SHOWN);
+    set_mode(edit_mode::TEXT, false);
 }
 
 void document::replace_text(const QByteArray& utf8) {
