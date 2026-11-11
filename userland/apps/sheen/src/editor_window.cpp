@@ -566,17 +566,6 @@ void editor_window::fill_submenu(command id, QMenu* submenu) {
             }
 
             break;
-        case command::REOPEN_WITH_ENCODING:
-        case command::SAVE_WITH_ENCODING:
-            for (const QByteArray& name : available_encodings()) {
-                QAction* action = submenu->addAction(encoding_label(name), [this, id, name] {
-                    id == command::REOPEN_WITH_ENCODING ? reopen_with_encoding(name) : save_with_encoding(name);
-                });
-                action->setCheckable(true);
-                action->setChecked(doc && doc->file().encoding.name == name);
-            }
-
-            break;
         case command::LANGUAGE: {
             QAction* plain = submenu->addAction(language_name(nullptr), [this] {
                 current_document()->set_language(nullptr);
@@ -666,6 +655,10 @@ void editor_window::run(command id) {
         }
         case command::REVERT:
             revert_document(doc);
+            break;
+        case command::REOPEN_WITH_ENCODING:
+        case command::SAVE_WITH_ENCODING:
+            pick_encoding(id);
             break;
         case command::CLOSE_TAB:
             close_document(current);
@@ -857,6 +850,7 @@ void editor_window::refresh_commands() {
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
     m_actions.value(command::REVERT)->setEnabled(is_free && doc && !doc->is_untitled() && doc->is_modified());
+    m_actions.value(command::REOPEN_WITH_ENCODING)->setEnabled(is_free && has_text && !doc->is_untitled());
     m_tab_row->menu()->setEnabled(is_free);
     if (!doc) {
         return;
@@ -1375,7 +1369,7 @@ bool editor_window::write_document(document* doc, const QString& path) {
                                   doc->view()->send(SCI_GOTOLINE, line - 1);
                                   doc->view()->setFocus();
                               } },
-                             { QStringLiteral("Save as UTF-8"), [this] { save_with_encoding(UTF_8); } } } });
+                             { QStringLiteral("Save as UTF-8"), [this] { save_with_encoding({ UTF_8, false }); } } } });
         return false;
     }
 
@@ -2100,14 +2094,10 @@ void editor_window::fill_encoding_menu(document* doc, QMenu* menu) {
     menu->addAction(heading.arg(encoding_label(encoding)))->setEnabled(false);
     menu->addSeparator();
 
-    QMenu* reopen = menu->addMenu(QStringLiteral("Reopen with Encoding"));
-    reopen->setStyle(m_menu_style);
+    QAction* reopen = menu->addAction(QStringLiteral("Reopen with Encoding..."),
+                                      [this] { pick_encoding(command::REOPEN_WITH_ENCODING); });
     reopen->setEnabled(!doc->is_untitled() && QFileInfo(doc->file().path).isFile());
-    fill_submenu(command::REOPEN_WITH_ENCODING, reopen);
-
-    QMenu* save = menu->addMenu(QStringLiteral("Save with Encoding"));
-    save->setStyle(m_menu_style);
-    fill_submenu(command::SAVE_WITH_ENCODING, save);
+    menu->addAction(QStringLiteral("Save with Encoding..."), [this] { pick_encoding(command::SAVE_WITH_ENCODING); });
     if (doc->is_untitled()) {
         return;
     }
@@ -2228,6 +2218,69 @@ void editor_window::show_tab_menu(int index, const QPoint& anchor) {
 }
 
 // Rereading from disk drops unsaved edits, so they get the usual question first
+// Every encoding Sheen reads and writes, those chosen this session first. Saving offers UTF-8 with a BOM as well
+void editor_window::pick_encoding(command id) {
+    document* doc = current_document();
+    if (!doc || doc->placeholder() || m_open_sheet) {
+        return;
+    }
+
+    bool is_save = id == command::SAVE_WITH_ENCODING;
+    QList<std::pair<QString, file_encoding>> choices;
+    for (const QByteArray& name : available_encodings()) {
+        file_encoding encoding = is_save ? encoding_for_save(name) : file_encoding { name, false };
+        choices.append({ encoding_label(encoding), encoding });
+        if (is_save && name == UTF_8) {
+            choices.append({ encoding_label(file_encoding { UTF_8, true }), file_encoding { UTF_8, true } });
+        }
+    }
+
+    QList<std::pair<QString, file_encoding>> ordered;
+    for (const QString& label : m_recent_encodings) {
+        for (const auto& choice : choices) {
+            if (choice.first == label) {
+                ordered.append(choice);
+            }
+        }
+    }
+
+    for (const auto& choice : choices) {
+        if (!m_recent_encodings.contains(choice.first)) {
+            ordered.append(choice);
+        }
+    }
+
+    QString current = encoding_label(doc->file().encoding);
+    QList<picker_row> rows;
+    for (const auto& [label, encoding] : ordered) {
+        bool is_recent = m_recent_encodings.contains(label);
+        QString section = m_recent_encodings.isEmpty() ? QString()
+                        : is_recent                    ? QStringLiteral("Recently used")
+                                                       : QStringLiteral("All encodings");
+        rows.append({ label, section, label == current });
+    }
+
+    QPointer<ScintillaEditBase> view = doc->view();
+    m_picker->on_changed = nullptr;
+    m_picker->on_accepted = nullptr;
+    m_picker->on_cancelled = [view] {
+        if (view) {
+            view->setFocus();
+        }
+    };
+
+    m_picker->on_chosen = [this, is_save, ordered](int row) {
+        const auto& [label, encoding] = ordered.at(row);
+        m_recent_encodings.removeAll(label);
+        m_recent_encodings.prepend(label);
+        is_save ? save_with_encoding(encoding) : reopen_with_encoding(encoding.name);
+    };
+
+    QString placeholder = is_save ? QStringLiteral("Save with encoding, %1 known")
+                                  : QStringLiteral("Reopen with encoding, %1 known");
+    m_picker->open_list(placeholder.arg(ordered.size()), rows);
+}
+
 void editor_window::reopen_with_encoding(const QByteArray& name) {
     document* doc = current_document();
     if (doc->is_modified()) {
@@ -2251,10 +2304,10 @@ void editor_window::reopen_with_encoding(const QByteArray& name) {
 }
 
 // The file keeps its old encoding when the save fails, such as when the new one cannot hold every line
-void editor_window::save_with_encoding(const QByteArray& name) {
+void editor_window::save_with_encoding(const file_encoding& encoding) {
     document* doc = current_document();
     file_encoding previous = doc->file().encoding;
-    doc->set_encoding(encoding_for_save(name));
+    doc->set_encoding(encoding);
     if (doc->is_untitled() ? !save_document_as(doc) : !write_document(doc, doc->file().path)) {
         doc->set_encoding(previous);
     }

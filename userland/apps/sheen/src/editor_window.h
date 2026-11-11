@@ -117,8 +117,9 @@ private:
     void fill_line_ending_menu(document* doc, QMenu* menu);
     void show_text_menu(const QPoint& anchor);
     void show_tab_menu(int index, const QPoint& anchor);
+    void pick_encoding(command id);
     void reopen_with_encoding(const QByteArray& name);
-    void save_with_encoding(const QByteArray& name);
+    void save_with_encoding(const file_encoding& encoding);
     void show_about();
     QString sheet_folder() const;
 
@@ -137,6 +138,7 @@ private:
     QList<document*> m_recent_tabs;
     QList<closed_tab> m_closed_tabs;
     QStringList m_recent_files;
+    QStringList m_recent_encodings;
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;
     sheet* m_open_sheet = nullptr;
