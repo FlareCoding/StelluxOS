@@ -18,6 +18,8 @@
 namespace terminal {
 
 constexpr size_t INPUT_RING_CAPACITY = 4096;
+static_assert(INPUT_RING_CAPACITY >= LD_LINE_BUF_MAX + 1,
+              "the console's input ring must hold a whole cooked line and its end");
 
 __PRIVILEGED_BSS static struct {
     ring_buffer* input_rb;

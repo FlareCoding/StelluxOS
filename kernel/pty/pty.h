@@ -15,6 +15,8 @@ namespace pty {
 constexpr int32_t OK  = 0;
 constexpr int32_t ERR = -1;
 constexpr size_t PTY_RING_CAPACITY = 4096;
+static_assert(PTY_RING_CAPACITY >= terminal::LD_LINE_BUF_MAX + 1,
+              "the slave's input ring must hold a whole cooked line and its end");
 
 /** Output processing flags (applied in the slave->master direction). */
 constexpr uint32_t PTY_OFLAG_ONLCR = (1u << 0); // map NL -> CR+NL

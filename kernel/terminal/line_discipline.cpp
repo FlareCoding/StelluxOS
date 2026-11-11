@@ -11,6 +11,7 @@ constexpr char LD_CH_INTR = 0x03; // ^C
 constexpr char LD_CH_QUIT = 0x1C; // ^backslash
 constexpr char LD_CH_SUSP = 0x1A; // ^Z
 
+constexpr uint8_t LD_CH_BELL = 0x07;
 constexpr size_t LD_TAB_WIDTH = 8;
 constexpr size_t LD_UTF8_CONTINUATION_MAX = 3;
 
@@ -156,15 +157,17 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
             echo->write(echo->ctx, erase_seq, erase_len);
         }
     } else if (is_line_byte(c)) {
-        if (ld->line_len < LD_LINE_BUF_MAX) {
+        // A full line drops the byte and rings the bell in place of its echo
+        bool fits = ld->line_len < LD_LINE_BUF_MAX;
+        if (fits) {
             ld->line_buf[ld->line_len++] = c;
-            if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
-            if (echo && echo->write) {
-                uint8_t byte = static_cast<uint8_t>(c);
-                echo->write(echo->ctx, &byte, 1);
-            }
-        } else {
-            if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+        }
+
+        if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
+        if (echo && echo->write) {
+            uint8_t byte = fits ? static_cast<uint8_t>(c) : LD_CH_BELL;
+            echo->write(echo->ctx, &byte, 1);
         }
     } else {
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);

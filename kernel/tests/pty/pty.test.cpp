@@ -583,3 +583,47 @@ TEST(pty_test, cooked_erase_backs_over_a_tab) {
     EXPECT_EQ(resource::close(task, hm), resource::OK);
     EXPECT_EQ(resource::close(task, hs), resource::OK);
 }
+
+TEST(pty_test, cooked_line_keeps_4095_bytes_and_rings_past_them) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // Five letters past what a line holds drop, each ringing the bell
+    static char sent[terminal::LD_LINE_BUF_MAX + 6];
+    for (size_t i = 0; i + 1 < sizeof(sent); i++) {
+        sent[i] = 'a';
+    }
+
+    sent[sizeof(sent) - 1] = '\r';
+    EXPECT_EQ(resource::write(task, hm, sent, sizeof(sent)), static_cast<ssize_t>(sizeof(sent)));
+
+    static char line[sizeof(sent)];
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(terminal::LD_LINE_BUF_MAX + 1));
+    EXPECT_EQ(line[terminal::LD_LINE_BUF_MAX - 1], 'a');
+    EXPECT_EQ(line[terminal::LD_LINE_BUF_MAX], '\n');
+
+    static char echo_buf[sizeof(sent) + 8];
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)),
+              static_cast<ssize_t>(terminal::LD_LINE_BUF_MAX + 7));
+    EXPECT_EQ(echo_buf[terminal::LD_LINE_BUF_MAX - 1], 'a');
+    EXPECT_EQ(string::memcmp(echo_buf + terminal::LD_LINE_BUF_MAX, "\a\a\a\a\a\r\n", 7), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
