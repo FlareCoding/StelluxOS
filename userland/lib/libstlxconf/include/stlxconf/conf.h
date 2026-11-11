@@ -16,6 +16,7 @@ extern "C" {
 #define STLXCONF_MAX_AUTOSTART 8
 #define STLXCONF_MAX_URL_HANDLERS 8
 #define STLXCONF_MAX_FILE_HANDLERS 32
+#define STLXCONF_MAX_ACTIONS 32
 
 #define STLXCONF_DEFAULT_KEY_REPEAT_DELAY_MS    400
 #define STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS 40
@@ -99,6 +100,20 @@ typedef struct {
     bool from_drop_in;
 } stlxconf_file_handler_t;
 
+/* One entry Quick Actions lists beside the apps, the name being the section suffix. `keywords` are space separated
+ * words that also find it, and `action` is exec, which runs `path` with its space separated `args`. */
+typedef struct {
+    char name[64];
+    char label[64];
+    char subtitle[128]; /* what it does, shown under the label */
+    char keywords[128];
+    char icon_path[256];
+    char action[32];
+    char path[256];
+    char args[256];
+    bool from_drop_in;
+} stlxconf_action_t;
+
 /**
  * The desktop configuration, parsed from an INI-style file. Every
  * field holds its default until the file overrides it, so a missing
@@ -141,6 +156,9 @@ typedef struct {
 
     stlxconf_file_handler_t file_handlers[STLXCONF_MAX_FILE_HANDLERS];
     uint32_t file_handler_count;
+
+    stlxconf_action_t actions[STLXCONF_MAX_ACTIONS];
+    uint32_t action_count;
 } stlxconf_t;
 
 /**
@@ -156,9 +174,9 @@ void stlxconf_defaults(stlxconf_t* conf);
 int stlxconf_load(stlxconf_t* conf, const char* path);
 
 /**
- * @brief Adds the launchers, shortcuts, autostart entries, URL handlers and
- * file handlers of every .conf file in `dir`, in name order, to the loaded
- * configuration.
+ * @brief Adds the launchers, shortcuts, autostart entries, URL handlers, file
+ * handlers and actions of every .conf file in `dir`, in name order, to the
+ * loaded configuration.
  * They stay out of stlxconf_save, since their files own them, and any other
  * section of a drop-in file is ignored.
  * @return 0 on success, also when the directory does not exist, -1 when

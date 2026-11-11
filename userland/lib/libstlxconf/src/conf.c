@@ -25,6 +25,7 @@ typedef enum {
     SEC_AUTOSTART,
     SEC_URL_HANDLER,
     SEC_FILE_HANDLER,
+    SEC_ACTION,
 } conf_section_t;
 
 static const char* const COMPOSITOR_NAMES[] = {
@@ -164,6 +165,15 @@ static void enter_section(stlxconf_t* conf, char* name,
                          sizeof(conf->file_handlers[*item_idx].mime_type));
             conf->file_handlers[*item_idx].from_drop_in = from_drop_in;
         }
+    } else if (strncmp(name, "action:", 7) == 0) {
+        *sec = SEC_ACTION;
+        *item_idx = conf->action_count < STLXCONF_MAX_ACTIONS
+                  ? (int32_t)conf->action_count++ : -1;
+        if (*item_idx >= 0) {
+            copy_bounded(conf->actions[*item_idx].name, name + 7,
+                         sizeof(conf->actions[*item_idx].name));
+            conf->actions[*item_idx].from_drop_in = from_drop_in;
+        }
     } else {
         *sec = SEC_NONE;
     }
@@ -291,6 +301,30 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
             copy_bounded(fh->path, val, sizeof(fh->path));
         } else if (strcmp(key, "args") == 0) {
             copy_bounded(fh->args, val, sizeof(fh->args));
+        }
+
+        return;
+    }
+    case SEC_ACTION: {
+        if (item_idx < 0) {
+            return;
+        }
+
+        stlxconf_action_t* ac = &conf->actions[item_idx];
+        if (strcmp(key, "label") == 0) {
+            copy_bounded(ac->label, val, sizeof(ac->label));
+        } else if (strcmp(key, "subtitle") == 0) {
+            copy_bounded(ac->subtitle, val, sizeof(ac->subtitle));
+        } else if (strcmp(key, "keywords") == 0) {
+            copy_bounded(ac->keywords, val, sizeof(ac->keywords));
+        } else if (strcmp(key, "icon") == 0) {
+            copy_bounded(ac->icon_path, val, sizeof(ac->icon_path));
+        } else if (strcmp(key, "action") == 0) {
+            copy_bounded(ac->action, val, sizeof(ac->action));
+        } else if (strcmp(key, "path") == 0) {
+            copy_bounded(ac->path, val, sizeof(ac->path));
+        } else if (strcmp(key, "args") == 0) {
+            copy_bounded(ac->args, val, sizeof(ac->args));
         }
 
         return;
@@ -475,6 +509,36 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
         }
 
         fprintf(f, "icon=%s\n", it->icon_path);
+    }
+
+    for (uint32_t i = 0; i < conf->action_count; i++) {
+        const stlxconf_action_t* ac = &conf->actions[i];
+        if (ac->from_drop_in) {
+            continue;
+        }
+
+        fprintf(f, "\n[action:%s]\n", ac->name);
+        fprintf(f, "label=%s\n", ac->label);
+        if (ac->subtitle[0]) {
+            fprintf(f, "subtitle=%s\n", ac->subtitle);
+        }
+
+        if (ac->keywords[0]) {
+            fprintf(f, "keywords=%s\n", ac->keywords);
+        }
+
+        if (ac->icon_path[0]) {
+            fprintf(f, "icon=%s\n", ac->icon_path);
+        }
+
+        fprintf(f, "action=%s\n", ac->action);
+        if (ac->path[0]) {
+            fprintf(f, "path=%s\n", ac->path);
+        }
+
+        if (ac->args[0]) {
+            fprintf(f, "args=%s\n", ac->args);
+        }
     }
 
     for (uint32_t i = 0; i < conf->autostart_count; i++) {
