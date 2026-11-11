@@ -62,6 +62,9 @@ public:
     /* Fired by Quick Actions' calculator: text to put on the clipboard */
     std::function<void(const std::string& text)> on_copy;
 
+    /* Fired by a file Quick Actions opens: a program to run with exactly these args, true when it started */
+    std::function<bool(const char* program, const std::vector<std::string>& args)> on_exec;
+
     bool dirty() const {
         return m_host.dirty() || m_dock_host.dirty() || m_popover.dirty();
     }
@@ -108,6 +111,10 @@ public:
 
     /* Opens Quick Actions in place of any popover, or closes it when it is open */
     void toggle_quick_actions() { toggle_popover(*m_quick); }
+
+    /* Readable while Quick Actions' file index has news, which `pump_quick_files()` takes */
+    int quick_files_fd() const { return m_quick ? m_quick->files_fd() : -1; }
+    void pump_quick_files() { m_quick->pump_files(); }
 
     /* Whether a press at (`x`, `y`) closes the popover: one outside an open
      * or opening popover that is not pinned, and outside the bar's targets */

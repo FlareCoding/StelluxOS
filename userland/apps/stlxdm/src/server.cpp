@@ -58,6 +58,26 @@ static void spawn_app(const char* path, const char* args) {
     printf("stlxdm: spawned %s\r\n", path);
 }
 
+/* Starts `path` with exactly `args`, so a file's path holding spaces stays one argument */
+static bool exec_app(const char* path, const std::vector<std::string>& args) {
+    std::vector<const char*> argv;
+    for (const std::string& arg : args) {
+        argv.push_back(arg.c_str());
+    }
+
+    argv.push_back(nullptr);
+    int handle = proc_exec(path, argv.data());
+    if (handle < 0) {
+        printf("stlxdm: failed to spawn %s\r\n", path);
+        return false;
+    }
+
+    proc_detach(handle);
+    printf("stlxdm: spawned %s\r\n", path);
+
+    return true;
+}
+
 /* Apps stlxdm spawns inherit the raised limits */
 static void raise_handle_limit() {
     rlimit limit = { HANDLE_LIMIT, HANDLE_LIMIT };
@@ -694,6 +714,10 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
 
     out.panels->on_copy = [this](const std::string& text) {
         copy_text(text);
+    };
+
+    out.panels->on_exec = [](const char* path, const std::vector<std::string>& args) {
+        return exec_app(path, args);
     };
 
     out.panels->use_picture_maker(m_gpu_composes ? m_gpu_compositor.get() : nullptr);
