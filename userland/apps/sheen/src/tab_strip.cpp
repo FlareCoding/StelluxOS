@@ -1,5 +1,7 @@
 #include "tab_strip.h"
+#include "menu_style.h"
 
+#include <QContextMenuEvent>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QMouseEvent>
@@ -11,6 +13,7 @@
 
 static constexpr int ROW_HEIGHT = 36;
 static constexpr int ROW_INSET_X = 8;
+static constexpr int MENU_BUTTON_GAP = 6;
 static constexpr int TAB_HEIGHT = 31;
 static constexpr int TAB_PADDING_LEFT = 14;
 static constexpr int TAB_PADDING_RIGHT = 8;
@@ -193,6 +196,13 @@ void tab_strip::mouseReleaseEvent(QMouseEvent* event) {
     event->accept();
 }
 
+void tab_strip::contextMenuEvent(QContextMenuEvent* event) {
+    int tab = tabAt(event->pos());
+    if (tab >= 0 && on_context_menu) {
+        on_context_menu(tab, event->globalPos());
+    }
+}
+
 void tab_strip::leaveEvent(QEvent* event) {
     set_hover(-1, false);
     QTabBar::leaveEvent(event);
@@ -216,12 +226,15 @@ void tab_strip::set_hover(int tab, bool is_slot_hovered) {
     }
 }
 
-tab_row::tab_row(QWidget* parent) : QWidget(parent), m_tabs(new tab_strip(this)) {
+tab_row::tab_row(QWidget* parent) : QWidget(parent), m_menu(new menu_button(this)), m_tabs(new tab_strip(this)) {
     setFixedHeight(ROW_HEIGHT);
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(ROW_INSET_X, 0, ROW_INSET_X, 0);
     layout->setSpacing(0);
+
+    layout->addWidget(m_menu, 0, Qt::AlignVCenter);
+    layout->addSpacing(MENU_BUTTON_GAP);
     layout->addWidget(m_tabs, 0, Qt::AlignBottom);
     layout->addStretch(1);
 

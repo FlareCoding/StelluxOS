@@ -2,13 +2,16 @@
 #include "empty_state.h"
 #include "file_sheet.h"
 #include "kiln.h"
+#include "menu_style.h"
 #include "tab_strip.h"
 
 #include <QAction>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QMenu>
 #include <QScreen>
@@ -30,6 +33,9 @@ static constexpr int WINDOW_MIN_W = 720;
 static constexpr int WINDOW_MIN_H = 480;
 static constexpr int RECENT_FILE_LIMIT = 20;
 
+// Wide enough that each menu's chevron stands apart from its name, with room for the keycaps under the hairline
+static constexpr int CASCADE_WIDTH = 272;
+
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
 
 static const eol_choice EOL_CHOICES[] = {
@@ -45,8 +51,13 @@ static const command TAB_COMMANDS[] = {
 
 // Commands that act on the current document, which an empty window has none of
 static const command DOCUMENT_COMMANDS[] = {
-    command::SAVE, command::SAVE_AS, command::UNDO, command::REDO, command::CUT, command::COPY, command::PASTE,
-    command::SELECT_ALL, command::WORD_WRAP,
+    command::SAVE, command::SAVE_AS, command::REOPEN_WITH_ENCODING, command::SAVE_WITH_ENCODING,
+    command::CLOSE_ALL_TABS, command::UNDO, command::REDO, command::CUT, command::COPY, command::PASTE,
+    command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN,
+    command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
+    command::LOWER_CASE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
+    command::SELECT_ALL_MATCHES, command::LANGUAGE, command::WORD_WRAP, command::LINE_NUMBERS,
+    command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
 };
 
 static QString eol_label(int mode) {
@@ -74,6 +85,15 @@ static row_glyph empty_glyph(command id) {
     }
 }
 
+// Just under the caret, where a menu opened from the keyboard appears
+static QPoint below_caret(ScintillaEditBase* view) {
+    sptr_t caret = view->send(SCI_GETCURRENTPOS);
+    sptr_t line_height = view->send(SCI_TEXTHEIGHT, view->send(SCI_LINEFROMPOSITION, caret));
+    QPoint point(static_cast<int>(view->send(SCI_POINTXFROMPOSITION, 0, caret)),
+                 static_cast<int>(view->send(SCI_POINTYFROMPOSITION, 0, caret) + line_height));
+    return view->viewport()->mapToGlobal(point);
+}
+
 static QString lines_phrase(int count) {
     return count == 1 ? QStringLiteral("1 line") : QStringLiteral("%1 lines").arg(count);
 }
@@ -84,9 +104,77 @@ static QString character_phrase(char32_t code) {
     return QStringLiteral("%1 (U+%2)").arg(QString::fromUcs4(&code, 1), hex);
 }
 
+// The lines a selection covers, so line commands act on whole lines
+static void selected_lines(ScintillaEditBase* view, sptr_t* first, sptr_t* last) {
+    sptr_t start = view->send(SCI_GETSELECTIONSTART);
+    sptr_t end = view->send(SCI_GETSELECTIONEND);
+    *first = view->send(SCI_LINEFROMPOSITION, start);
+    *last = view->send(SCI_LINEFROMPOSITION, end);
+    if (*last > *first && view->send(SCI_POSITIONFROMLINE, *last) == end) {
+        (*last)--;
+    }
+}
+
+static void indent_lines(ScintillaEditBase* view, int direction) {
+    sptr_t first = 0;
+    sptr_t last = 0;
+    selected_lines(view, &first, &last);
+    sptr_t width = view->send(SCI_GETINDENT);
+    view->send(SCI_BEGINUNDOACTION);
+    for (sptr_t line = first; line <= last; line++) {
+        sptr_t indent = view->send(SCI_GETLINEINDENTATION, line);
+        view->send(SCI_SETLINEINDENTATION, line, qMax<sptr_t>(0, indent + direction * width));
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+}
+
+static void insert_line(ScintillaEditBase* view, bool is_above) {
+    view->send(SCI_BEGINUNDOACTION);
+    if (is_above) {
+        view->send(SCI_HOME);
+        view->send(SCI_NEWLINE);
+        view->send(SCI_LINEUP);
+    } else {
+        view->send(SCI_LINEEND);
+        view->send(SCI_NEWLINE);
+    }
+
+    view->send(SCI_ENDUNDOACTION);
+}
+
+// Selects the caret's line, and each repeat extends the selection by the next line
+static void select_line(ScintillaEditBase* view) {
+    sptr_t first = 0;
+    sptr_t last = 0;
+    selected_lines(view, &first, &last);
+
+    sptr_t start = view->send(SCI_POSITIONFROMLINE, first);
+    sptr_t end = view->send(SCI_POSITIONFROMLINE, last + 1);
+    bool is_whole_lines = view->send(SCI_GETSELECTIONSTART) == start && view->send(SCI_GETSELECTIONEND) == end;
+    if (is_whole_lines) {
+        end = view->send(SCI_POSITIONFROMLINE, last + 2);
+    }
+
+    view->send(SCI_SETSEL, start, end < 0 ? view->send(SCI_GETLENGTH) : end);
+}
+
+static void go_to_matching_bracket(ScintillaEditBase* view) {
+    sptr_t caret = view->send(SCI_GETCURRENTPOS);
+    sptr_t match = view->send(SCI_BRACEMATCH, caret, 0);
+    if (match < 0 && caret > 0) {
+        match = view->send(SCI_BRACEMATCH, caret - 1, 0);
+    }
+
+    if (match >= 0) {
+        view->send(SCI_GOTOPOS, match);
+    }
+}
+
 editor_window::editor_window()
     : m_tab_row(new tab_row(this)), m_stack(new QStackedWidget(this)),
-      m_empty_state(new empty_state(this)), m_status(new status_bar(this)) {
+      m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
+      m_main_menu(new QMenu(this)) {
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -104,6 +192,7 @@ editor_window::editor_window()
     connect(tabs(), &QTabBar::currentChanged, this, [this] { show_current_document(); });
     connect(tabs(), &QTabBar::tabCloseRequested, this, [this](int index) { close_document(index); });
 
+    tabs()->on_context_menu = [this](int index, const QPoint& anchor) { show_tab_menu(index, anchor); };
     m_tab_row->on_empty_double_click = [this] { new_document(); };
     m_status->on_fact_clicked = [this](file_fact fact, const QPoint& anchor) { show_fact_menu(fact, anchor); };
 
@@ -112,7 +201,10 @@ editor_window::editor_window()
     refresh_commands();
 }
 
-editor_window::~editor_window() = default;
+// The closed tabs' kept documents go with the process, and the views release their own
+editor_window::~editor_window() {
+    delete m_menu_style;
+}
 
 void editor_window::open_paths(const QStringList& paths) {
     QString folder;
@@ -154,8 +246,14 @@ void editor_window::closeEvent(QCloseEvent* event) {
     event->accept();
 }
 
-// Each action is the window's, so its keys work wherever the focus is in the window
+// Each action is the window's too, so its keys work for commands outside the menus
 void editor_window::create_commands() {
+    for (const char* title : MENU_TITLES) {
+        auto* submenu = new QMenu(QString::fromLatin1(title), this);
+        submenu->setStyle(m_menu_style);
+        m_menus.append(submenu);
+    }
+
     for (const command_entry& entry : COMMANDS) {
         command id = entry.id;
         auto* action = new QAction(QString::fromLatin1(entry.label), this);
@@ -170,9 +268,142 @@ void editor_window::create_commands() {
 
         action->setShortcuts(keys);
         action->setCheckable(entry.kind == command_kind::TOGGLE);
-        connect(action, &QAction::triggered, this, [this, id] { run(id); });
-        addAction(action);
+        if (entry.kind == command_kind::SUBMENU) {
+            auto* submenu = new QMenu(this);
+            submenu->setStyle(m_menu_style);
+            connect(submenu, &QMenu::aboutToShow, this, [this, id, submenu] { fill_submenu(id, submenu); });
+            action->setMenu(submenu);
+        } else {
+            connect(action, &QAction::triggered, this, [this, id] { run(id); });
+            addAction(action);
+        }
+
         m_actions.insert(id, action);
+        if (entry.place == menu::NONE) {
+            continue;
+        }
+
+        QMenu* target = m_menus.at(static_cast<int>(entry.place));
+        if (entry.starts_group && !target->isEmpty()) {
+            target->addSeparator();
+        }
+
+        target->addAction(action);
+    }
+
+    m_main_menu->setStyle(m_menu_style);
+    m_main_menu->setMinimumWidth(CASCADE_WIDTH);
+    for (QMenu* submenu : m_menus) {
+        if (!submenu->isEmpty()) {
+            m_main_menu->addMenu(submenu);
+        }
+    }
+
+    connect(m_menus.at(static_cast<int>(menu::GO)), &QMenu::aboutToShow, this, [this] {
+        QMenu* go = m_menus.at(static_cast<int>(menu::GO));
+        for (QAction* action : go->actions()) {
+            if (action->property("tab").isValid()) {
+                go->removeAction(action);
+                action->deleteLater();
+            }
+        }
+
+        QAction* separator = go->addSeparator();
+        separator->setProperty("tab", true);
+        for (int index = 0; index < tabs()->count(); index++) {
+            QString keys = index < static_cast<int>(std::size(TAB_COMMANDS)) ? QStringLiteral("\tAlt+%1").arg(index + 1)
+                                                                             : QString();
+            QAction* action = go->addAction(m_documents[index]->display_name() + keys,
+                                            [this, index] { select_tab(index); });
+            action->setProperty("tab", true);
+            action->setCheckable(true);
+            action->setChecked(index == tabs()->currentIndex());
+        }
+    });
+
+    connect(m_tab_row->menu(), &QAbstractButton::clicked, this, [this] { show_menu(m_main_menu, false); });
+    auto* open_menu = new QAction(this);
+    open_menu->setShortcut(QKeySequence(Qt::Key_F10));
+    connect(open_menu, &QAction::triggered, this, [this] { show_menu(m_main_menu, true); });
+    addAction(open_menu);
+
+    // Shift F10 and the Menu key open the text menu at the caret, as a right click does at the pointer
+    auto* open_text_menu = new QAction(this);
+    open_text_menu->setShortcuts({ QKeySequence(Qt::SHIFT | Qt::Key_F10), QKeySequence(Qt::Key_Menu) });
+    connect(open_text_menu, &QAction::triggered, this, [this] {
+        if (document* doc = current_document()) {
+            show_text_menu(below_caret(doc->view()));
+        }
+    });
+
+    addAction(open_text_menu);
+    for (int index = 0; index < static_cast<int>(std::size(MENU_KEYS)); index++) {
+        if (m_menus.at(index)->isEmpty()) {
+            continue;
+        }
+
+        auto* action = new QAction(this);
+        action->setShortcut(QKeySequence(Qt::ALT | static_cast<Qt::Key>(MENU_KEYS[index])));
+        connect(action, &QAction::triggered, this, [this, index] { show_menu(m_menus.at(index), true); });
+        addAction(action);
+    }
+}
+
+void editor_window::fill_submenu(command id, QMenu* submenu) {
+    submenu->clear();
+    document* doc = current_document();
+    switch (id) {
+        case command::OPEN_RECENT:
+            for (const QString& path : m_recent_files) {
+                submenu->addAction(path, [this, path] { open_path(path, QByteArray(), insertion_index()); });
+            }
+
+            if (!m_recent_files.isEmpty()) {
+                submenu->addSeparator();
+                submenu->addAction(QStringLiteral("Clear"), [this] {
+                    m_recent_files.clear();
+                    if (m_documents.empty()) {
+                        show_empty_state();
+                    }
+                });
+            }
+
+            break;
+        case command::REOPEN_WITH_ENCODING:
+        case command::SAVE_WITH_ENCODING:
+            for (const QByteArray& name : available_encodings()) {
+                QAction* action = submenu->addAction(encoding_label(name), [this, id, name] {
+                    id == command::REOPEN_WITH_ENCODING ? reopen_with_encoding(name) : save_with_encoding(name);
+                });
+                action->setCheckable(true);
+                action->setChecked(doc && doc->file().encoding.name == name);
+            }
+
+            break;
+        case command::LANGUAGE: {
+            QAction* plain = submenu->addAction(language_name(nullptr), [this] {
+                current_document()->set_language(nullptr);
+                refresh_status();
+            });
+            plain->setCheckable(true);
+            plain->setChecked(doc && !doc->lang());
+            for (const language* lang : all_languages()) {
+                QAction* action = submenu->addAction(language_name(lang), [this, lang] {
+                    current_document()->set_language(lang);
+                    refresh_status();
+                });
+                action->setCheckable(true);
+                action->setChecked(doc && doc->lang() == lang);
+            }
+
+            break;
+        }
+        default:
+            break;
+    }
+
+    if (submenu->isEmpty()) {
+        submenu->addAction(QStringLiteral("Nothing yet"))->setEnabled(false);
     }
 }
 
@@ -227,6 +458,15 @@ void editor_window::run(command id) {
         case command::CLOSE_TAB:
             close_document(current);
             break;
+        case command::CLOSE_ALL_TABS: {
+            QList<document*> docs;
+            for (const std::unique_ptr<document>& open : m_documents) {
+                docs.append(open.get());
+            }
+
+            close_documents(docs, QStringLiteral("closing"));
+            break;
+        }
         case command::UNDO:
             view->send(SCI_UNDO);
             break;
@@ -242,11 +482,66 @@ void editor_window::run(command id) {
         case command::PASTE:
             view->send(SCI_PASTE);
             break;
+        case command::DELETE_LINE:
+            view->send(SCI_LINEDELETE);
+            break;
+        case command::DUPLICATE:
+            view->send(SCI_SELECTIONDUPLICATE);
+            break;
+        case command::MOVE_LINES_UP:
+            view->send(SCI_MOVESELECTEDLINESUP);
+            break;
+        case command::MOVE_LINES_DOWN:
+            view->send(SCI_MOVESELECTEDLINESDOWN);
+            break;
+        case command::INSERT_LINE_BELOW:
+            insert_line(view, false);
+            break;
+        case command::INSERT_LINE_ABOVE:
+            insert_line(view, true);
+            break;
+        case command::INDENT:
+            indent_lines(view, 1);
+            break;
+        case command::OUTDENT:
+            indent_lines(view, -1);
+            break;
+        case command::UPPER_CASE:
+            view->send(SCI_UPPERCASE);
+            break;
+        case command::LOWER_CASE:
+            view->send(SCI_LOWERCASE);
+            break;
         case command::SELECT_ALL:
             view->send(SCI_SELECTALL);
             break;
+        case command::SELECT_LINE:
+            select_line(view);
+            break;
+        case command::ADD_NEXT_MATCH:
+            view->send(SCI_TARGETWHOLEDOCUMENT);
+            view->send(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE);
+            view->send(SCI_MULTIPLESELECTADDNEXT);
+            break;
+        case command::SELECT_ALL_MATCHES:
+            view->send(SCI_TARGETWHOLEDOCUMENT);
+            view->send(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE);
+            view->send(SCI_MULTIPLESELECTADDEACH);
+            break;
         case command::WORD_WRAP:
             view->send(SCI_SETWRAPMODE, is_checked ? SC_WRAP_WORD : SC_WRAP_NONE);
+            break;
+        case command::LINE_NUMBERS:
+            set_line_numbers_shown(view, is_checked);
+            break;
+        case command::INDENT_GUIDES:
+            view->send(SCI_SETINDENTATIONGUIDES, is_checked ? SC_IV_LOOKBOTH : SC_IV_NONE);
+            break;
+        case command::COLUMN_EDGE:
+            view->send(SCI_SETEDGEMODE, is_checked ? EDGE_LINE : EDGE_NONE);
+            break;
+        case command::WHITESPACE:
+            view->send(SCI_SETVIEWWS, is_checked ? SCWS_VISIBLEALWAYS : SCWS_INVISIBLE);
             break;
         case command::ZOOM_IN:
             view->send(SCI_ZOOMIN);
@@ -256,6 +551,9 @@ void editor_window::run(command id) {
             break;
         case command::ZOOM_RESET:
             view->send(SCI_SETZOOM, 0);
+            break;
+        case command::MATCHING_BRACKET:
+            go_to_matching_bracket(view);
             break;
         case command::RECENT_TAB:
             if (m_recent_tabs.size() > 1) {
@@ -282,6 +580,9 @@ void editor_window::run(command id) {
         case command::LAST_TAB:
             select_tab(count - 1);
             break;
+        case command::ABOUT:
+            show_about();
+            break;
         default:
             for (int index = 0; index < static_cast<int>(std::size(TAB_COMMANDS)); index++) {
                 if (TAB_COMMANDS[index] == id && index < count) {
@@ -293,7 +594,7 @@ void editor_window::run(command id) {
     }
 }
 
-// Every command stands disabled while a sheet runs, and document commands need a document
+// Every command but the sheet's own stands disabled while a sheet runs, and document commands need a document
 void editor_window::refresh_commands() {
     bool is_free = !m_open_sheet;
     document* doc = current_document();
@@ -305,11 +606,36 @@ void editor_window::refresh_commands() {
         m_actions.value(id)->setEnabled(is_free && doc);
     }
 
+    m_tab_row->menu()->setEnabled(is_free);
     if (!doc) {
         return;
     }
 
-    m_actions.value(command::WORD_WRAP)->setChecked(doc->view()->send(SCI_GETWRAPMODE) != SC_WRAP_NONE);
+    ScintillaEditBase* view = doc->view();
+    m_actions.value(command::WORD_WRAP)->setChecked(view->send(SCI_GETWRAPMODE) != SC_WRAP_NONE);
+    m_actions.value(command::LINE_NUMBERS)->setChecked(are_line_numbers_shown(view));
+    m_actions.value(command::INDENT_GUIDES)->setChecked(view->send(SCI_GETINDENTATIONGUIDES) != SC_IV_NONE);
+    m_actions.value(command::COLUMN_EDGE)->setChecked(view->send(SCI_GETEDGEMODE) != EDGE_NONE);
+    m_actions.value(command::WHITESPACE)->setChecked(view->send(SCI_GETVIEWWS) != SCWS_INVISIBLE);
+}
+
+// Opened from the keyboard, a menu lights its first row the way the arrow keys do, which leaves a submenu closed
+void editor_window::show_menu(QMenu* menu, bool is_from_keyboard) {
+    if (m_open_sheet) {
+        return;
+    }
+
+    if (is_from_keyboard) {
+        QTimer::singleShot(0, menu, [menu] {
+            QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+            QCoreApplication::sendEvent(menu, &down);
+        });
+    }
+
+    QWidget* button = m_tab_row->menu();
+    m_tab_row->menu()->set_open(true);
+    menu->exec(button->mapToGlobal(QPoint(0, button->height())));
+    m_tab_row->menu()->set_open(false);
 }
 
 int editor_window::run_sheet(sheet& open_sheet) {
@@ -339,6 +665,17 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
     index = qBound(0, index, static_cast<int>(m_documents.size()));
     m_documents.insert(m_documents.begin() + index, std::move(owned));
     m_stack->addWidget(view);
+
+    // A right click outside the selection moves the caret there first, as a left click would
+    view->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(view, &QWidget::customContextMenuRequested, this, [this, view](const QPoint& point) {
+        sptr_t at = view->send(SCI_POSITIONFROMPOINT, point.x(), point.y());
+        if (at < view->send(SCI_GETSELECTIONSTART) || at > view->send(SCI_GETSELECTIONEND)) {
+            view->send(SCI_GOTOPOS, at);
+        }
+
+        show_text_menu(view->viewport()->mapToGlobal(point));
+    });
 
     connect(view, &ScintillaEditBase::savePointChanged, this, [this, doc, view] {
         QTimer::singleShot(0, view, [this, doc] {
@@ -888,34 +1225,20 @@ void editor_window::show_fact_menu(file_fact fact, const QPoint& anchor) {
     }
 
     QMenu menu(this);
+    menu.setStyle(m_menu_style);
     switch (fact) {
-        case file_fact::LANGUAGE: {
-            QAction* plain = menu.addAction(language_name(nullptr), [this, doc] {
-                doc->set_language(nullptr);
-                refresh_status();
-            });
-            plain->setCheckable(true);
-            plain->setChecked(!doc->lang());
-            for (const language* lang : all_languages()) {
-                QAction* action = menu.addAction(language_name(lang), [this, doc, lang] {
-                    doc->set_language(lang);
-                    refresh_status();
-                });
-                action->setCheckable(true);
-                action->setChecked(doc->lang() == lang);
-            }
-
+        case file_fact::LANGUAGE:
+            fill_submenu(command::LANGUAGE, &menu);
             break;
-        }
         case file_fact::ENCODING: {
             QMenu* reopen = menu.addMenu(QStringLiteral("Reopen with Encoding"));
+            reopen->setStyle(m_menu_style);
             reopen->setEnabled(!doc->is_untitled() && QFileInfo(doc->file().path).isFile());
-            QMenu* save = menu.addMenu(QStringLiteral("Save with Encoding"));
-            for (const QByteArray& name : available_encodings()) {
-                reopen->addAction(encoding_label(name), [this, name] { reopen_with_encoding(name); });
-                save->addAction(encoding_label(name), [this, name] { save_with_encoding(name); });
-            }
+            fill_submenu(command::REOPEN_WITH_ENCODING, reopen);
 
+            QMenu* save = menu.addMenu(QStringLiteral("Save with Encoding"));
+            save->setStyle(m_menu_style);
+            fill_submenu(command::SAVE_WITH_ENCODING, save);
             break;
         }
         case file_fact::LINE_ENDING:
@@ -934,6 +1257,81 @@ void editor_window::show_fact_menu(file_fact fact, const QPoint& anchor) {
     }
 
     menu.exec(anchor - QPoint(0, menu.sizeHint().height()));
+}
+
+// The text's own menu for the pointer's place or the caret's: undo, the clipboard and the selection
+void editor_window::show_text_menu(const QPoint& anchor) {
+    document* doc = current_document();
+    if (!doc || !doc->view()->isVisible() || m_open_sheet) {
+        return;
+    }
+
+    ScintillaEditBase* view = doc->view();
+    QMenu menu(this);
+    menu.setStyle(m_menu_style);
+    menu.addAction(m_actions.value(command::UNDO));
+    menu.addAction(m_actions.value(command::REDO));
+    menu.addSeparator();
+
+    for (command id : { command::CUT, command::COPY, command::PASTE }) {
+        menu.addAction(m_actions.value(id));
+    }
+
+    QAction* erase = menu.addAction(QStringLiteral("Delete\tDel"), [view] { view->send(SCI_CLEAR); });
+    erase->setEnabled(!view->send(SCI_GETSELECTIONEMPTY));
+    menu.addSeparator();
+    menu.addAction(m_actions.value(command::SELECT_ALL));
+    menu.exec(anchor);
+}
+
+void editor_window::show_tab_menu(int index, const QPoint& anchor) {
+    if (m_open_sheet) {
+        return;
+    }
+
+    document* doc = m_documents.at(index).get();
+    QMenu menu(this);
+    menu.setStyle(m_menu_style);
+    menu.addAction(QStringLiteral("Close\tCtrl+W"), [this, doc] { close_document(index_of(doc)); });
+
+    menu.addAction(QStringLiteral("Close Others"), [this, doc] {
+        QList<document*> others;
+        for (const std::unique_ptr<document>& open : m_documents) {
+            if (open.get() != doc) {
+                others.append(open.get());
+            }
+        }
+
+        close_documents(others, QStringLiteral("closing"));
+    });
+
+    menu.addAction(QStringLiteral("Close to the Right"), [this, doc] {
+        QList<document*> right;
+        for (size_t open = index_of(doc) + 1; open < m_documents.size(); open++) {
+            right.append(m_documents[open].get());
+        }
+
+        close_documents(right, QStringLiteral("closing"));
+    });
+
+    menu.addAction(QStringLiteral("Close Saved"), [this] {
+        QList<document*> saved;
+        for (const std::unique_ptr<document>& open : m_documents) {
+            if (!open->is_modified()) {
+                saved.append(open.get());
+            }
+        }
+
+        close_documents(saved, QStringLiteral("closing"));
+    });
+
+    menu.addSeparator();
+    QAction* copy_path = menu.addAction(QStringLiteral("Copy Path"), [doc] {
+        QGuiApplication::clipboard()->setText(doc->file().path);
+    });
+    copy_path->setEnabled(!doc->is_untitled());
+    menu.addAction(QStringLiteral("Copy Name"), [doc] { QGuiApplication::clipboard()->setText(doc->display_name()); });
+    menu.exec(anchor);
 }
 
 // Rereading from disk drops unsaved edits, so they get the usual question first
@@ -967,6 +1365,15 @@ void editor_window::save_with_encoding(const QByteArray& name) {
     }
 
     refresh_status();
+}
+
+void editor_window::show_about() {
+    prompt_sheet about(this, QStringLiteral("Sheen"),
+                       QStringLiteral("The Stellux text editor, built on Scintilla and Lexilla with Qt. The license "
+                                      "texts are in /usr/share/licenses/sheen, and "
+                                      "/usr/share/doc/sheen/BUILDINFO names every version."),
+                       QStringLiteral("Close"), QString(), false);
+    run_sheet(about);
 }
 
 // The current file's folder, else the folder of the most recent tab with one, else the last a sheet showed

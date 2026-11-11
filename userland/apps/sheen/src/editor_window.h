@@ -1,8 +1,8 @@
 #ifndef SHEEN_EDITOR_WINDOW_H
 #define SHEEN_EDITOR_WINDOW_H
 
-/* Sheen's window: a tab per document, the current document's text and the status bar. Commands arrive through
- * `run` from their keys, and every question is a sheet inside the window. */
+/* Sheen's window: the menu button, a tab per document, the current document's text and the status bar. Commands
+ * arrive through `run`, and every question is a sheet inside the window. */
 #include "actions.h"
 #include "document.h"
 #include "sheet.h"
@@ -17,8 +17,10 @@
 
 class QAction;
 class QLabel;
+class QMenu;
 class QStackedWidget;
 class empty_state;
+class menu_style;
 class sheet;
 class tab_row;
 class tab_strip;
@@ -37,8 +39,10 @@ protected:
 
 private:
     void create_commands();
+    void fill_submenu(command id, QMenu* submenu);
     void run(command id);
     void refresh_commands();
+    void show_menu(QMenu* menu, bool is_from_keyboard);
     int run_sheet(sheet& open_sheet);
     void set_open_sheet(sheet* open_sheet);
     void focus_current_document();
@@ -70,14 +74,20 @@ private:
     void refresh_tab(document* doc);
     void refresh_status();
     void show_fact_menu(file_fact fact, const QPoint& anchor);
+    void show_text_menu(const QPoint& anchor);
+    void show_tab_menu(int index, const QPoint& anchor);
     void reopen_with_encoding(const QByteArray& name);
     void save_with_encoding(const QByteArray& name);
+    void show_about();
     QString sheet_folder() const;
 
     tab_row* m_tab_row;
     QStackedWidget* m_stack;
     empty_state* m_empty_state;
     status_bar* m_status;
+    menu_style* m_menu_style;
+    QMenu* m_main_menu;
+    QList<QMenu*> m_menus;
     std::vector<std::unique_ptr<document>> m_documents;
     QList<document*> m_recent_tabs;
     QStringList m_recent_files;

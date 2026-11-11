@@ -24,6 +24,10 @@ void apply_language(ScintillaEditBase* view, const language* lang);
 
 QString language_name(const language* lang);
 
+/* Shows or hides the gutter's line numbers. The unsaved bars stay either way */
+void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown);
+bool are_line_numbers_shown(ScintillaEditBase* view);
+
 /* Every language Sheen colors, in the order a menu lists them */
 QList<const language*> all_languages();
 

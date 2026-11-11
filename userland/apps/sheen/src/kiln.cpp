@@ -475,6 +475,17 @@ QString language_name(const language* lang) {
     return lang ? QString::fromLatin1(lang->name) : QStringLiteral("Plain Text");
 }
 
+void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown) {
+    int bar_left = GUTTER_WIDTH - GUTTER_BAR_GAP - STLXTHEME_MARKER_WIDTH;
+    view->send(SCI_SETMARGINWIDTHN, NUMBER_MARGIN, is_shown ? bar_left - GUTTER_NUMBER_GAP : 0);
+    view->send(SCI_SETMARGINWIDTHN, NUMBER_GAP_MARGIN, is_shown ? GUTTER_NUMBER_GAP : 0);
+    fit_line_numbers(view);
+}
+
+bool are_line_numbers_shown(ScintillaEditBase* view) {
+    return view->send(SCI_GETMARGINWIDTHN, NUMBER_MARGIN) > 0;
+}
+
 QList<const language*> all_languages() {
     QList<const language*> languages;
     for (const language& lang : LANGUAGES) {
