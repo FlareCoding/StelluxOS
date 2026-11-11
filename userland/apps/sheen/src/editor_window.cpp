@@ -60,6 +60,7 @@ static constexpr int STATUS_NOTE_MS = 4000;
 
 static constexpr int SWITCHER_GAP = 8;
 static constexpr int GOTO_MARKER = 1;
+static constexpr char BRACKETS[] = "()[]{}";
 static constexpr int PERMILLE = 1000;
 static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
 static constexpr qint64 BYTES_PER_GB = 1024 * BYTES_PER_MB;
@@ -241,6 +242,31 @@ static void fold_at_caret(ScintillaEditBase* view, bool is_folding) {
     view->send(SCI_FOLDLINE, header, is_folding ? SC_FOLDACTION_CONTRACT : SC_FOLDACTION_EXPAND);
     if (is_folding && header != line) {
         view->send(SCI_GOTOPOS, view->send(SCI_GETLINEENDPOSITION, header));
+    }
+}
+
+static bool is_bracket_at(ScintillaEditBase* view, sptr_t position) {
+    char character = static_cast<char>(view->send(SCI_GETCHARAT, position));
+    return position >= 0 && character != 0 && QByteArrayView(BRACKETS).contains(character);
+}
+
+// Boxes the bracket at the caret, else the one before it, with its partner, or marks it alone when it has none
+static void highlight_brackets(ScintillaEditBase* view, bool is_on) {
+    sptr_t caret = view->send(SCI_GETCURRENTPOS);
+    sptr_t at = !is_on                          ? -1
+              : is_bracket_at(view, caret)      ? caret
+              : is_bracket_at(view, caret - 1) ? caret - 1
+                                                : -1;
+    if (at < 0) {
+        view->send(SCI_BRACEHIGHLIGHT, INVALID_POSITION, INVALID_POSITION);
+        return;
+    }
+
+    sptr_t match = view->send(SCI_BRACEMATCH, at, 0);
+    if (match < 0) {
+        view->send(SCI_BRACEBADLIGHT, at);
+    } else {
+        view->send(SCI_BRACEHIGHLIGHT, at, match);
     }
 }
 
@@ -1021,6 +1047,10 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
     connect(view, &ScintillaEditBase::updateUi, this, [this, doc](Scintilla::Update updated) {
         if (static_cast<int>(updated) & (SC_UPDATE_CONTENT | SC_UPDATE_V_SCROLL)) {
             doc->refresh_function_names();
+        }
+
+        if (static_cast<int>(updated) & (SC_UPDATE_CONTENT | SC_UPDATE_SELECTION)) {
+            highlight_brackets(doc->view(), doc->mode() == edit_mode::CODE && !doc->is_large());
         }
 
         if (doc == current_document()) {

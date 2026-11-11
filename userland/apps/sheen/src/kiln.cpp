@@ -221,6 +221,10 @@ static const QList<style_role> DIFF_ROLES = {
 
 // Preprocessor tracking would dim inactive branches, which reads as commented out code
 static constexpr int FUNCTION_INDICATOR = INDICATOR_CONTAINER + 1;
+static constexpr int BRACKET_INDICATOR = INDICATOR_CONTAINER + 3;
+static constexpr int LONE_BRACKET_INDICATOR = INDICATOR_CONTAINER + 4;
+static constexpr int BRACKET_FILL_ALPHA = 0x14;
+static constexpr int BRACKET_OUTLINE_ALPHA = 0x80;
 static constexpr int NARROW_BAR_GAP = 2;
 
 // The styles each lexer gives plain identifiers, where a following ( marks a function name
@@ -517,6 +521,19 @@ void apply_text_area_look(ScintillaEditBase* view) {
 
     view->send(SCI_INDICSETSTYLE, FUNCTION_INDICATOR, INDIC_TEXTFORE);
     view->send(SCI_INDICSETFORE, FUNCTION_INDICATOR, scintilla_rgb(STLXTHEME_TEXT));
+
+    // The bracket pair at the caret is boxed in cream, and a bracket without a partner in the danger color
+    for (auto [indicator, color] : { std::pair { BRACKET_INDICATOR, STLXTHEME_TEXT },
+                                     std::pair { LONE_BRACKET_INDICATOR, STLXTHEME_DANGER } }) {
+        view->send(SCI_INDICSETSTYLE, indicator, INDIC_STRAIGHTBOX);
+        view->send(SCI_INDICSETFORE, indicator, scintilla_rgb(color));
+        view->send(SCI_INDICSETALPHA, indicator, BRACKET_FILL_ALPHA);
+        view->send(SCI_INDICSETOUTLINEALPHA, indicator, BRACKET_OUTLINE_ALPHA);
+        view->send(SCI_INDICSETUNDER, indicator, true);
+    }
+
+    view->send(SCI_BRACEHIGHLIGHTINDICATOR, true, BRACKET_INDICATOR);
+    view->send(SCI_BRACEBADLIGHTINDICATOR, true, LONE_BRACKET_INDICATOR);
 
     view->send(SCI_SETINDENTATIONGUIDES, SC_IV_LOOKBOTH);
     view->send(SCI_SETEDGEMODE, EDGE_LINE);
