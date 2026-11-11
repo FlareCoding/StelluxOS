@@ -2,6 +2,7 @@
  * rows they own, so compose needs no step for them, and the popover's tree paints into a picture above the windows. */
 #include "panels.hpp"
 #include "material.hpp"
+#include "shell/programs.hpp"
 
 #include <stlx/net.h>
 #include <stlxtheme/theme.h>
@@ -9,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 /* The tooltip is glass inside a brass hairline premixed over the warm glass tint, so the tooltip draws opaque */
 constexpr uint32_t TIP_LINE = 0xFF3A3326;
@@ -203,6 +205,11 @@ int dm_panels::init(
         run_action(action);
     };
 
+    m_quick->on_run_program = [this](const char* program, const char* args) {
+        m_popover.close();
+        run_in_terminal(program, args);
+    };
+
     return 0;
 }
 
@@ -260,6 +267,13 @@ void dm_panels::launch(const stlxconf_pin_t& pin) {
 
     if (on_launch) {
         on_launch(pin);
+    }
+}
+
+void dm_panels::run_in_terminal(const char* program, const char* args) {
+    std::string command = args[0] ? std::string(program) + " " + args : program;
+    if (on_spawn) {
+        on_spawn(TERMINAL_PATH, command.c_str());
     }
 }
 

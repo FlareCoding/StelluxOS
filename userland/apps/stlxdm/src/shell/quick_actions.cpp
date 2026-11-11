@@ -4,14 +4,17 @@
 #include "dock.hpp"
 #include "draw.hpp"
 #include "keycap.hpp"
+#include "programs.hpp"
 #include "quick_match.hpp"
 
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
 #include <cstring>
+#include <dirent.h>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <utility>
 
 constexpr int32_t PALETTE_WIDTH = 800;
@@ -74,22 +77,30 @@ constexpr uint16_t HID_USAGE_UP = 0x52;
 
 constexpr uint8_t COMMAND_MODS = CHORD_MOD_CTRL | CHORD_MOD_ALT | CHORD_MOD_SUPER;
 
-constexpr std::string_view PLACEHOLDER = "Search apps and actions";
+constexpr std::string_view PLACEHOLDER = "Search apps, actions and programs";
 constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
+
+constexpr const char* PROGRAM_DIRS[] = { "/bin", "/usr/bin" };
+constexpr const char* PROGRAM_ICON_PATH = "/etc/res/icons/doc-exec-32.png";
+
+/* Power... asks before restarting or shutting down, so the programs that do it at once, and init, stay unlisted */
+constexpr const char* UNLISTED_PROGRAMS[] = { "init", "reboot", "shutdown" };
 
 namespace {
 
 /* The kinds rank in this order where matches are equally good */
-enum class row_kind : uint8_t { app, action };
+enum class row_kind : uint8_t { app, action, program };
 
-constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS" };
-constexpr const char* KIND_NAMES[] = { "Application", "Action" };
-constexpr const char* KIND_VERBS[] = { "Open", "Run" };
+constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS" };
+constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program" };
+constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal" };
 
 /* One thing the palette starts, as its row shows it */
 struct palette_entry {
     row_kind                 kind = row_kind::app;
     uint32_t                 index = 0; /* into the configuration's launchers or actions */
+    std::string              program;   /* with `args`, what a program's row runs in Terminal */
+    std::string              args;
     std::string              label;
     std::string              subtitle;
     bool                     is_subtitle_path = false; /* drawn in Plex Mono */
@@ -370,7 +381,7 @@ class no_match : public ui::widget {
 public:
     explicit no_match(const std::string& query)
         : m_text("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT) {
-        std::string text = "No apps or actions match " + query;
+        std::string text = "No apps, actions or programs match " + query;
         m_text.set_text(fitted(text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
                                ROW_WIDTH - 2 * NO_MATCH_PADDING_X));
     }
@@ -466,6 +477,7 @@ private:
     void move_caret(size_t cursor);
     void show_rows();
     void show_matches(std::string_view query);
+    bool find_command(std::string_view query);
     void add_head(const char* title);
     void add_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name);
     void select(size_t index);
@@ -476,6 +488,9 @@ private:
     std::vector<palette_entry> m_entries;
     std::string                m_query;
     size_t                     m_caret = 0;
+
+    /* The row that runs a program the query names with the words after it, while `find_command` found one */
+    palette_entry m_command;
 
     query_field*    m_field;
     result_list*    m_list;
@@ -632,7 +647,8 @@ void palette_view::show_matches(std::string_view query) {
         }
     }
 
-    if (found.empty()) {
+    bool has_command = find_command(query);
+    if (found.empty() && !has_command) {
         m_list->content()->add<no_match>(std::string(query));
         return;
     }
@@ -645,13 +661,20 @@ void palette_view::show_matches(std::string_view query) {
         return a.entry->kind < b.entry->kind;
     });
 
-    add_head("TOP HIT");
-    const found_entry& top = found.front();
-    add_row(*top.entry, top.match.runs, KIND_NAMES[static_cast<size_t>(top.entry->kind)]);
+    size_t first_rest = 0;
+    if (has_command) {
+        add_head(KIND_HEADS[static_cast<size_t>(row_kind::program)]);
+        add_row(m_command, {}, nullptr);
+    } else {
+        add_head("TOP HIT");
+        const found_entry& top = found.front();
+        add_row(*top.entry, top.match.runs, KIND_NAMES[static_cast<size_t>(top.entry->kind)]);
+        first_rest = 1;
+    }
 
-    for (row_kind kind : { row_kind::app, row_kind::action }) {
+    for (row_kind kind : { row_kind::app, row_kind::action, row_kind::program }) {
         size_t shown = 0;
-        for (size_t i = 1; i < found.size() && shown < KIND_ROWS_MAX; i++) {
+        for (size_t i = first_rest; i < found.size() && shown < KIND_ROWS_MAX; i++) {
             if (found[i].entry->kind != kind) {
                 continue;
             }
@@ -664,6 +687,33 @@ void palette_view::show_matches(std::string_view query) {
             shown++;
         }
     }
+}
+
+/* A query that names a program and goes on with words runs that program in Terminal with the words as its args,
+ * split at spaces as every args value in stlxdm.conf is */
+bool palette_view::find_command(std::string_view query) {
+    size_t space = query.find(' ');
+    if (space == std::string_view::npos) {
+        return false;
+    }
+
+    std::string_view name = query.substr(0, space);
+    for (const palette_entry& entry : m_entries) {
+        if (entry.kind != row_kind::program || entry.label != name) {
+            continue;
+        }
+
+        m_command = entry;
+        m_command.label = "Run " + std::string(query);
+        m_command.subtitle = entry.program + " in Terminal";
+        m_command.is_subtitle_path = false;
+        m_command.args = std::string(trimmed(query.substr(space + 1)));
+        m_command.keys.clear();
+
+        return true;
+    }
+
+    return false;
 }
 
 void palette_view::add_head(const char* title) {
@@ -763,6 +813,76 @@ palette_entry launcher_entry(const stlxconf_t& conf, uint32_t index, const stlxg
     return entry;
 }
 
+bool is_launched(const stlxconf_t& conf, const std::string& path) {
+    for (uint32_t i = 0; i < conf.pin_count; i++) {
+        if (path == conf.pins[i].path) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Hidden files, the programs Power... stands in for, and a name already listed stay out */
+bool is_left_out(const std::vector<palette_entry>& listed, const char* name) {
+    if (name[0] == '.') {
+        return true;
+    }
+
+    for (const char* unlisted : UNLISTED_PROGRAMS) {
+        if (strcmp(name, unlisted) == 0) {
+            return true;
+        }
+    }
+
+    for (const palette_entry& program : listed) {
+        if (program.label == name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* The programs of /bin and /usr/bin that no launcher runs, by name, where /bin wins a name both hold */
+std::vector<palette_entry> program_entries(const stlxconf_t& conf, const stlxgfx_surface_t* icon) {
+    std::vector<palette_entry> programs;
+    for (const char* dir_path : PROGRAM_DIRS) {
+        DIR* dir = opendir(dir_path);
+        if (!dir) {
+            continue;
+        }
+
+        while (dirent* file = readdir(dir)) {
+            std::string path = std::string(dir_path) + "/" + file->d_name;
+            struct stat st;
+            bool is_program = stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+            if (!is_program || is_left_out(programs, file->d_name) || is_launched(conf, path)) {
+                continue;
+            }
+
+            palette_entry program;
+            program.kind = row_kind::program;
+            program.label = file->d_name;
+            program.program = path;
+            program.icon = icon;
+
+            program.subtitle = path;
+            program.is_subtitle_path = true;
+            program.keys = shortcut_keys(conf, STLXCONF_ACTION_EXEC, TERMINAL_PATH, path.c_str());
+            programs.push_back(std::move(program));
+        }
+
+        closedir(dir);
+    }
+
+    std::sort(programs.begin(), programs.end(), [](const palette_entry& a, const palette_entry& b) {
+        return a.label < b.label;
+    });
+
+    return programs;
+}
+
 /* An action's row shows its subtitle, else the command it runs */
 palette_entry action_entry(const stlxconf_t& conf, uint32_t index, const stlxgfx_surface_t* icon) {
     const stlxconf_action_t& action = conf.actions[index];
@@ -789,7 +909,8 @@ palette_entry action_entry(const stlxconf_t& conf, uint32_t index, const stlxgfx
 
 quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_surface_t*>& launcher_icons)
     : m_conf(conf), m_launcher_icons(launcher_icons),
-      m_search_glyph(make_search_glyph(FIELD_GLYPH_SIZE, STLXTHEME_TEXT_DIM)) {
+      m_search_glyph(make_search_glyph(FIELD_GLYPH_SIZE, STLXTHEME_TEXT_DIM)),
+      m_program_icon(load_icon(PROGRAM_ICON_PATH)) {
     for (uint32_t i = 0; i < conf.action_count; i++) {
         const char* path = conf.actions[i].icon_path;
         m_action_icons.push_back(path[0] ? load_icon(path) : nullptr);
@@ -802,6 +923,7 @@ quick_actions::~quick_actions() {
     }
 
     stlxgfx_destroy_surface(m_search_glyph);
+    stlxgfx_destroy_surface(m_program_icon);
 }
 
 int32_t quick_actions::width() const {
@@ -846,12 +968,22 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         entries.push_back(action_entry(m_conf, i, icon));
     }
 
+    for (palette_entry& program : program_entries(m_conf, m_program_icon)) {
+        entries.push_back(std::move(program));
+    }
+
     auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph);
     view->on_choose = [this](const palette_entry& entry) {
-        if (entry.kind == row_kind::app) {
+        switch (entry.kind) {
+        case row_kind::app:
             on_launch(m_conf.pins[entry.index]);
-        } else {
+            break;
+        case row_kind::action:
             on_run(m_conf.actions[entry.index]);
+            break;
+        case row_kind::program:
+            on_run_program(entry.program.c_str(), entry.args.c_str());
+            break;
         }
     };
 

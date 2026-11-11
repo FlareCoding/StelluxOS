@@ -151,6 +151,7 @@ private:
     void sync_bar_targets();
     void launch(const stlxconf_pin_t& pin);
     void run_action(const stlxconf_action_t& action);
+    void run_in_terminal(const char* program, const char* args);
     void hover_pin(int32_t index, bool entered);
     bool find_tooltip(damage_list::rect& tip, const char*& label) const;
 
