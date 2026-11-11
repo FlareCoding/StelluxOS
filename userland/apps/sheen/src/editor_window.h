@@ -48,6 +48,9 @@ public:
      * folder opens the Open sheet there once the window shows */
     void open_paths(const QStringList& paths);
 
+    /* Paths a later launch handed over. The window comes forward, and an open sheet stays with its tabs behind it */
+    void receive_paths(const QStringList& paths);
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void changeEvent(QEvent* event) override;
