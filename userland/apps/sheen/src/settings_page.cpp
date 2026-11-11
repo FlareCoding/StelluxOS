@@ -93,6 +93,13 @@ static QLabel* make_label(const QString& text, const QFont& font, uint32_t color
     return label;
 }
 
+// Prose that wraps onto another line rather than widen the page past a narrow window
+static QLabel* make_wrapping_label(const QString& text, const QFont& font, uint32_t color, QWidget* parent) {
+    QLabel* label = make_label(text, font, color, parent);
+    label->setWordWrap(true);
+    return label;
+}
+
 static QFont caption_font() {
     QFont font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::DemiBold);
     font.setCapitalization(QFont::AllUppercase);
@@ -318,7 +325,7 @@ public:
         words->setSpacing(0);
         words->addWidget(make_label(QString::fromLatin1(fact.label), ui_font(STLXTHEME_BODY_SIZE, QFont::Medium),
                                     STLXTHEME_TEXT, this));
-        words->addWidget(make_label(note, ui_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM, this));
+        words->addWidget(make_wrapping_label(note, ui_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM, this));
 
         auto* layout = new QHBoxLayout(this);
         layout->setContentsMargins(ROW_PADDING_X, ROW_PADDING_Y, ROW_PADDING_X, ROW_PADDING_Y);
@@ -350,7 +357,7 @@ static QVBoxLayout* make_page_layout(QWidget* content) {
 static QVBoxLayout* make_titles(const QString& name, const QString& subtitle, QWidget* content) {
     auto* titles = new QVBoxLayout;
     titles->addWidget(make_label(name, ui_font(STLXTHEME_PAGE_TITLE_SIZE, QFont::DemiBold), STLXTHEME_TEXT, content));
-    titles->addWidget(make_label(subtitle, ui_font(STLXTHEME_BODY_SIZE), STLXTHEME_TEXT_DIM, content));
+    titles->addWidget(make_wrapping_label(subtitle, ui_font(STLXTHEME_BODY_SIZE), STLXTHEME_TEXT_DIM, content));
     return titles;
 }
 
@@ -387,8 +394,8 @@ public:
         words->addWidget(make_label(QString::fromLatin1(field.label), ui_font(STLXTHEME_BODY_SIZE, QFont::Medium),
                                     STLXTHEME_TEXT, this));
         if (field.note[0]) {
-            words->addWidget(make_label(QString::fromLatin1(field.note), ui_font(STLXTHEME_CAPTION_SIZE),
-                                        STLXTHEME_TEXT_DIM, this));
+            words->addWidget(make_wrapping_label(QString::fromLatin1(field.note), ui_font(STLXTHEME_CAPTION_SIZE),
+                                                 STLXTHEME_TEXT_DIM, this));
         }
 
         m_key_line = make_label(QString(), mono_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM, this);
