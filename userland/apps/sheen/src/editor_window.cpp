@@ -73,6 +73,9 @@ static constexpr char BRACKETS[] = "()[]{}";
 static constexpr char OPENING_BRACKETS[] = "([{";
 static constexpr char CLOSING_BRACKETS[] = ")]}";
 
+// Far enough back for any block a person selects inside, near enough to answer at once
+static constexpr sptr_t BRACKET_SCAN_BYTES = 256 * 1024;
+
 // A list item in Text mode: its indent, a bullet or a number with its delimiter, the spacing and the item's text
 static const QRegularExpression LIST_ITEM(QStringLiteral("^(\\s*)(?:([-*+])|(\\d+)([.)]))(\\s+)(.*)$"));
 static constexpr int PERMILLE = 1000;
@@ -105,10 +108,17 @@ static const command DOCUMENT_COMMANDS[] = {
     command::DELETE_LINE, command::DUPLICATE, command::MOVE_LINES_UP, command::MOVE_LINES_DOWN, command::JOIN_LINES,
     command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::TRANSFORM,
     command::UPPER_CASE, command::LOWER_CASE, command::TITLE_CASE, command::SORT_LINES,
-    command::TRIM_TRAILING_WHITESPACE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
+    command::TRIM_TRAILING_WHITESPACE, command::SELECT_ALL, command::SELECT_INSIDE_BRACKETS, command::ADD_CARET_ABOVE,
+    command::ADD_CARET_BELOW, command::CARETS_AT_LINE_ENDS, command::UNDO_SELECTION, command::SELECT_LINE, command::ADD_NEXT_MATCH,
     command::SELECT_ALL_MATCHES, command::FIND, command::REPLACE, command::FIND_NEXT, command::FIND_PREVIOUS,
     command::FIND_WORD, command::GO_TO_LINE, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
     command::LINE_NUMBERS, command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
+};
+
+// The commands that change the selection, which Undo Selection steps back through
+static const command SELECTION_COMMANDS[] = {
+    command::SELECT_ALL, command::SELECT_LINE, command::SELECT_INSIDE_BRACKETS, command::ADD_NEXT_MATCH,
+    command::SELECT_ALL_MATCHES, command::ADD_CARET_ABOVE, command::ADD_CARET_BELOW, command::CARETS_AT_LINE_ENDS,
 };
 
 static QString eol_label(int mode) {
@@ -391,6 +401,56 @@ static void toggle_block_comment(ScintillaEditBase* view, const QByteArray& open
     }
 
     view->send(SCI_ENDUNDOACTION);
+}
+
+// A caret on the line past the outermost caret, at the first caret's column as far as that line reaches
+static void add_caret(ScintillaEditBase* view, int direction) {
+    sptr_t first_caret = view->send(SCI_GETSELECTIONNCARET, 0);
+    sptr_t edge = view->send(SCI_LINEFROMPOSITION, first_caret);
+    for (sptr_t index = 1; index < view->send(SCI_GETSELECTIONS); index++) {
+        sptr_t line = view->send(SCI_LINEFROMPOSITION, view->send(SCI_GETSELECTIONNCARET, index));
+        edge = direction < 0 ? qMin(edge, line) : qMax(edge, line);
+    }
+
+    sptr_t target = edge + direction;
+    if (target < 0 || target >= view->send(SCI_GETLINECOUNT)) {
+        return;
+    }
+
+    sptr_t at = view->send(SCI_FINDCOLUMN, target, view->send(SCI_GETCOLUMN, first_caret));
+    view->send(SCI_ADDSELECTION, at, at);
+    view->send(SCI_SCROLLCARET);
+}
+
+// A caret at the end of each line the selection covers, in place of the selection
+static void carets_at_line_ends(ScintillaEditBase* view) {
+    sptr_t first = 0;
+    sptr_t last = 0;
+    selected_lines(view, &first, &last);
+
+    sptr_t end = view->send(SCI_GETLINEENDPOSITION, first);
+    view->send(SCI_SETSELECTION, end, end);
+    for (sptr_t line = first + 1; line <= last; line++) {
+        end = view->send(SCI_GETLINEENDPOSITION, line);
+        view->send(SCI_ADDSELECTION, end, end);
+    }
+}
+
+// Selects inside the innermost brackets around the selection, and with just their inside selected, the brackets too
+static void select_inside_brackets(ScintillaEditBase* view) {
+    sptr_t start = view->send(SCI_GETSELECTIONSTART);
+    sptr_t end = view->send(SCI_GETSELECTIONEND);
+    for (sptr_t at = start - 1; at >= qMax<sptr_t>(0, start - BRACKET_SCAN_BYTES); at--) {
+        bool is_opening = QByteArrayView(OPENING_BRACKETS).contains(static_cast<char>(view->send(SCI_GETCHARAT, at)));
+        sptr_t match = is_opening ? view->send(SCI_BRACEMATCH, at, 0) : -1;
+        if (match < end) {
+            continue;
+        }
+
+        bool is_inside_selected = start == at + 1 && end == match;
+        view->send(SCI_SETSEL, is_inside_selected ? at : at + 1, is_inside_selected ? match + 1 : match);
+        return;
+    }
 }
 
 // The selected lines, or every line without a selection
@@ -1007,6 +1067,10 @@ void editor_window::run(command id) {
     }
 
     ScintillaEditBase* view = doc->view();
+    if (std::ranges::find(SELECTION_COMMANDS, id) != std::end(SELECTION_COMMANDS)) {
+        doc->remember_selection();
+    }
+
     bool is_checked = m_actions.value(id)->isChecked();
     int count = tabs()->count();
     int current = tabs()->currentIndex();
@@ -1117,6 +1181,19 @@ void editor_window::run(command id) {
             break;
         case command::SELECT_LINE:
             select_line(view);
+            break;
+        case command::SELECT_INSIDE_BRACKETS:
+            select_inside_brackets(view);
+            break;
+        case command::ADD_CARET_ABOVE:
+        case command::ADD_CARET_BELOW:
+            add_caret(view, id == command::ADD_CARET_ABOVE ? -1 : 1);
+            break;
+        case command::CARETS_AT_LINE_ENDS:
+            carets_at_line_ends(view);
+            break;
+        case command::UNDO_SELECTION:
+            doc->undo_selection();
             break;
         case command::ADD_NEXT_MATCH:
             view->send(SCI_TARGETWHOLEDOCUMENT);
@@ -1369,6 +1446,10 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
         }
 
         bool is_text_change = static_cast<int>(type) & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT);
+        if (is_text_change) {
+            doc->forget_selections();
+        }
+
         if (is_text_change && doc->is_untitled() && view->send(SCI_LINEFROMPOSITION, position) == 0) {
             QTimer::singleShot(0, view, [this, doc] { refresh_tab(doc); });
         }

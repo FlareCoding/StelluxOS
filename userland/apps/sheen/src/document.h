@@ -8,6 +8,7 @@
 #include "settings.h"
 
 #include <QDateTime>
+#include <QList>
 #include <QString>
 
 #include <Scintilla.h>
@@ -53,6 +54,12 @@ struct view_state {
     sptr_t anchor = 0;
     sptr_t first_line = 0;
     int wrap_mode = SC_WRAP_NONE;
+};
+
+/* Every caret of a view with its anchor, and which one is the main, as Undo Selection puts them back */
+struct selection_state {
+    QList<std::pair<sptr_t, sptr_t>> ranges;
+    sptr_t main = 0;
 };
 
 /* The first character an encoding cannot hold, as a refused save names it */
@@ -198,6 +205,12 @@ public:
 
     /* The widget the tab shows, which takes the keys: the placeholder, or else the text */
     QWidget* shown_widget() const;
+
+    /* Keeps the selection before a selection command changes it, for Undo Selection to put back. An edit forgets
+     * them, since their positions no longer hold */
+    void remember_selection();
+    bool undo_selection();
+    void forget_selections() { m_selections.clear(); }
     const file_record& file() const { return m_file; }
     const language* lang() const { return m_language; }
 
@@ -231,6 +244,7 @@ private:
     bool m_is_large = false;
     bool m_is_wrap_limited = false;
     bool m_is_wrap_chosen = false;
+    QList<selection_state> m_selections;
 };
 
 /* Counts each kind of line ending in UTF-8 text, a CR LF pair as one */

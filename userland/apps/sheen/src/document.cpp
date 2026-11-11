@@ -22,6 +22,7 @@ static constexpr qsizetype FIRST_LINE_PROBE_BYTES = 256;
 static constexpr int MAX_NAME_CHARS = 32;
 static constexpr qsizetype MAX_UTF8_BYTES = 4;
 static constexpr int INDENT_PROBE_LINES = 1000;
+static constexpr qsizetype SELECTION_HISTORY_LIMIT = 50;
 static constexpr int MIN_INDENT_STEP = 2;
 static constexpr int MAX_INDENT_STEP = 8;
 static constexpr int KEY_MODIFIER_SHIFT = 16;
@@ -48,11 +49,9 @@ static const key_binding KEPT_KEYS[] = {
     { SCK_DOWN, SCMOD_NORM, SCI_LINEDOWN },
     { SCK_DOWN, SHIFT, SCI_LINEDOWNEXTEND },
     { SCK_DOWN, CTRL, SCI_LINESCROLLDOWN },
-    { SCK_DOWN, ALT_SHIFT, SCI_LINEDOWNRECTEXTEND },
     { SCK_UP, SCMOD_NORM, SCI_LINEUP },
     { SCK_UP, SHIFT, SCI_LINEUPEXTEND },
     { SCK_UP, CTRL, SCI_LINESCROLLUP },
-    { SCK_UP, ALT_SHIFT, SCI_LINEUPRECTEXTEND },
     { SCK_LEFT, SCMOD_NORM, SCI_CHARLEFT },
     { SCK_LEFT, SHIFT, SCI_CHARLEFTEXTEND },
     { SCK_LEFT, CTRL, SCI_WORDLEFT },
@@ -147,6 +146,36 @@ void document::show_page(QWidget* page, const QString& name) {
 
 QWidget* document::shown_widget() const {
     return m_placeholder ? m_placeholder : static_cast<QWidget*>(m_view);
+}
+
+void document::remember_selection() {
+    selection_state state;
+    for (sptr_t index = 0; index < m_view->send(SCI_GETSELECTIONS); index++) {
+        sptr_t caret = m_view->send(SCI_GETSELECTIONNCARET, index);
+        state.ranges.append({ caret, m_view->send(SCI_GETSELECTIONNANCHOR, index) });
+    }
+
+    state.main = m_view->send(SCI_GETMAINSELECTION);
+    m_selections.append(state);
+    if (m_selections.size() > SELECTION_HISTORY_LIMIT) {
+        m_selections.removeFirst();
+    }
+}
+
+bool document::undo_selection() {
+    if (m_selections.isEmpty()) {
+        return false;
+    }
+
+    selection_state state = m_selections.takeLast();
+    for (qsizetype index = 0; index < state.ranges.size(); index++) {
+        auto [caret, anchor] = state.ranges.at(index);
+        m_view->send(index == 0 ? SCI_SETSELECTION : SCI_ADDSELECTION, caret, anchor);
+    }
+
+    m_view->send(SCI_SETMAINSELECTION, state.main);
+    m_view->send(SCI_SCROLLCARET);
+    return true;
 }
 
 void document::apply_settings() {
