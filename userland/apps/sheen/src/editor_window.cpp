@@ -265,9 +265,20 @@ void editor_window::open_paths(const QStringList& paths) {
         new_document();
     }
 
-    if (!folder.isEmpty()) {
+    if (!folder.isEmpty() && !m_open_sheet) {
         QTimer::singleShot(0, this, [this, folder] { choose_files_to_open(folder); });
     }
+}
+
+// Raised before the files open, since the desktop drops an activation that arrives too long after the user's press
+void editor_window::receive_paths(const QStringList& paths) {
+    if (isMinimized()) {
+        showNormal();
+    }
+
+    raise();
+    activateWindow();
+    open_paths(paths);
 }
 
 // Quitting asks once about every unsaved tab, and a sheet open in the window keeps it open
@@ -847,7 +858,10 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
     }
 
     refresh_tab(doc);
-    select_tab(index);
+    if (!m_open_sheet || tabs()->currentIndex() == index) {
+        select_tab(index);
+    }
+
     return doc;
 }
 
@@ -885,8 +899,9 @@ tab_strip* editor_window::tabs() const {
 }
 
 // New and opened tabs go to the right of the current one, so related files stay together
+// Behind a sheet new tabs join the end of the strip, so the tab an open flow holds by index stays put
 int editor_window::insertion_index() const {
-    return tabs()->currentIndex() + 1;
+    return m_open_sheet ? tabs()->count() : tabs()->currentIndex() + 1;
 }
 
 int editor_window::lowest_free_untitled_number() const {
@@ -942,7 +957,10 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     QFileInfo info(path);
     QString absolute = info.absoluteFilePath();
     if (document* open = find_open(absolute)) {
-        select_tab(index_of(open));
+        if (!m_open_sheet) {
+            select_tab(index_of(open));
+        }
+
         return true;
     }
 
@@ -975,7 +993,7 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
         }
     }
 
-    document* pristine = current && current->is_pristine() ? current : nullptr;
+    document* pristine = current && current->is_pristine() && !m_open_sheet ? current : nullptr;
     auto doc = std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings);
     if (!info.exists()) {
         doc->set_new_path(absolute);
