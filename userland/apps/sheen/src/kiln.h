@@ -36,6 +36,9 @@ QString language_name(const language* lang);
 /* A theme color as Scintilla takes it, 0xAABBGGRR */
 sptr_t scintilla_rgba(uint32_t argb);
 
+/* Defines `marker` to tint the lines it marks with `argb`, under their text */
+void define_line_tint(ScintillaEditBase* view, int marker, uint32_t argb);
+
 /* Shows or hides the gutter's line numbers. The unsaved bars stay either way */
 void set_line_numbers_shown(ScintillaEditBase* view, bool is_shown);
 bool are_line_numbers_shown(ScintillaEditBase* view);

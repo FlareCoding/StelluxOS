@@ -1,11 +1,13 @@
 #include "editor_window.h"
 #include "banner.h"
+#include "chrome.h"
 #include "empty_state.h"
 #include "file_loader.h"
 #include "file_sheet.h"
 #include "find_bar.h"
 #include "kiln.h"
 #include "menu_style.h"
+#include "picker.h"
 #include "placeholder.h"
 #include "tab_strip.h"
 #include "tab_switcher.h"
@@ -23,6 +25,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPointer>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStackedWidget>
@@ -30,6 +33,14 @@
 #include <QVBoxLayout>
 
 #include <ScintillaEditBase.h>
+
+// Where the caret, selection and scroll stood before go to line, so Esc can put them back
+struct view_place {
+    sptr_t anchor;
+    sptr_t caret;
+    sptr_t first_line;
+    sptr_t x_offset;
+};
 
 struct eol_choice {
     int mode;
@@ -48,6 +59,7 @@ static constexpr int CASCADE_WIDTH = 272;
 static constexpr int STATUS_NOTE_MS = 4000;
 
 static constexpr int SWITCHER_GAP = 8;
+static constexpr int GOTO_MARKER = 1;
 static constexpr int PERMILLE = 1000;
 static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
 static constexpr qint64 BYTES_PER_GB = 1024 * BYTES_PER_MB;
@@ -79,7 +91,7 @@ static const command DOCUMENT_COMMANDS[] = {
     command::INSERT_LINE_BELOW, command::INSERT_LINE_ABOVE, command::INDENT, command::OUTDENT, command::UPPER_CASE,
     command::LOWER_CASE, command::SELECT_ALL, command::SELECT_LINE, command::ADD_NEXT_MATCH,
     command::SELECT_ALL_MATCHES, command::FIND, command::REPLACE, command::FIND_NEXT, command::FIND_PREVIOUS,
-    command::FIND_WORD, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
+    command::FIND_WORD, command::GO_TO_LINE, command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP,
     command::LINE_NUMBERS, command::INDENT_GUIDES, command::COLUMN_EDGE, command::WHITESPACE, command::MATCHING_BRACKET,
 };
 
@@ -184,6 +196,39 @@ static void select_line(ScintillaEditBase* view) {
     view->send(SCI_SETSEL, start, end < 0 ? view->send(SCI_GETLENGTH) : end);
 }
 
+// "42" or "42:15", with the column at the line's start when absent
+static bool read_line_target(const QString& query, sptr_t* line, sptr_t* column) {
+    QStringList parts = query.trimmed().split(QLatin1Char(':'));
+    bool is_line = false;
+    bool is_column = true;
+    *line = parts.at(0).toLongLong(&is_line);
+    *column = parts.size() > 1 && !parts.at(1).isEmpty() ? parts.at(1).toLongLong(&is_column) : 1;
+    return is_line && is_column && parts.size() <= 2 && *line > 0 && *column > 0;
+}
+
+// Reads a go to line query back, such as Line 143, column 9 of 348 lines
+static QString line_target_help(const QString& query, sptr_t line, sptr_t column, sptr_t lines) {
+    QString target = picker::emphasized(QString::number(line));
+    if (!query.trimmed().section(QLatin1Char(':'), 1).isEmpty()) {
+        target += QStringLiteral(", column %1").arg(picker::emphasized(QString::number(column)));
+    }
+
+    if (line > lines) {
+        return QStringLiteral("Line %1 is past the end of %2 lines").arg(target).arg(lines);
+    }
+
+    return QStringLiteral("Line %1 of %2 lines").arg(target).arg(lines);
+}
+
+// Centers a line, counted from one, and tints it
+static void preview_line(ScintillaEditBase* view, sptr_t line) {
+    view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
+    view->send(SCI_ENSUREVISIBLE, line - 1);
+    sptr_t shown = view->send(SCI_VISIBLEFROMDOCLINE, line - 1);
+    view->send(SCI_SETFIRSTVISIBLELINE, qMax<sptr_t>(0, shown - view->send(SCI_LINESONSCREEN) / 2));
+    view->send(SCI_MARKERADD, line - 1, GOTO_MARKER);
+}
+
 static void go_to_matching_bracket(ScintillaEditBase* view) {
     sptr_t caret = view->send(SCI_GETCURRENTPOS);
     sptr_t match = view->send(SCI_BRACEMATCH, caret, 0);
@@ -250,6 +295,7 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
       m_main_menu(new QMenu(this)), m_switcher(new tab_switcher(this)) {
     m_find_bar = new find_bar(this);
+    m_picker = new picker(m_stack);
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -705,6 +751,9 @@ void editor_window::run(command id) {
         case command::FIND_WORD:
             m_find_bar->set_view(view);
             m_find_bar->find_word_at_caret();
+            break;
+        case command::GO_TO_LINE:
+            go_to_line();
             break;
         case command::SELECT_ALL_MATCHES:
             view->send(SCI_TARGETWHOLEDOCUMENT);
@@ -1819,7 +1868,7 @@ void editor_window::refresh_status() {
     sptr_t line = view->send(SCI_LINEFROMPOSITION, caret) + 1;
     sptr_t column = view->send(SCI_GETCOLUMN, caret) + 1;
     QString position = QStringLiteral("Ln %1, Col %2").arg(line).arg(column);
-    QList<status_item> left = { { status_kind::POSITION, position, {}, false } };
+    QList<status_item> left = { { status_kind::POSITION, position, {}, true } };
 
     sptr_t selections = view->send(SCI_GETSELECTIONS);
     sptr_t start = view->send(SCI_GETSELECTIONSTART);
@@ -1889,9 +1938,79 @@ void editor_window::show_status_note(const QString& note) {
 }
 
 // Each status button's menu opens upward from it, and the button shows as open meanwhile
+// Ctrl G previews each line as its digits arrive, Enter moves the caret there and Esc puts the view back
+void editor_window::go_to_line() {
+    document* doc = current_document();
+    if (!doc || doc->placeholder() || m_open_sheet) {
+        return;
+    }
+
+    QPointer<ScintillaEditBase> view = doc->view();
+    view_place before = { view->send(SCI_GETANCHOR), view->send(SCI_GETCURRENTPOS), view->send(SCI_GETFIRSTVISIBLELINE),
+                          view->send(SCI_GETXOFFSET) };
+    sptr_t lines = view->send(SCI_GETLINECOUNT);
+    QString help = QStringLiteral("A line from 1 to %1, or line:column").arg(lines);
+    QString from = QStringLiteral("Ln %1").arg(view->send(SCI_LINEFROMPOSITION, before.caret) + 1);
+    QString aside = QStringLiteral("from %1, Esc returns").arg(picker::code(from));
+
+    define_line_tint(view, GOTO_MARKER, STLXTHEME_MATCH_MARK);
+
+    m_picker->on_changed = [this, view, lines, help](const QString& query) {
+        sptr_t line = 0;
+        sptr_t column = 0;
+        if (!view) {
+            return;
+        }
+
+        if (!read_line_target(query, &line, &column)) {
+            view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
+            m_picker->set_help(help);
+            return;
+        }
+
+        preview_line(view, qMin(line, lines));
+        m_picker->set_help(line_target_help(query, line, column, lines));
+    };
+
+    m_picker->on_accepted = [view, lines](const QString& query) {
+        sptr_t line = 0;
+        sptr_t column = 0;
+        if (!view) {
+            return;
+        }
+
+        view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
+        if (read_line_target(query, &line, &column)) {
+            view->send(SCI_GOTOPOS, view->send(SCI_FINDCOLUMN, qMin(line, lines) - 1, column - 1));
+        }
+
+        view->setFocus();
+    };
+
+    m_picker->on_cancelled = [view, before] {
+        if (!view) {
+            return;
+        }
+
+        view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
+        view->send(SCI_SETSEL, before.anchor, before.caret);
+        view->send(SCI_SETFIRSTVISIBLELINE, before.first_line);
+        view->send(SCI_SETXOFFSET, before.x_offset);
+        view->setFocus();
+    };
+
+    m_picker->open(QStringLiteral(":"), help, aside);
+}
+
+// Each status button's menu opens upward from it, and the button shows as open meanwhile
 void editor_window::show_status_menu(status_kind kind, const QPoint& anchor) {
     document* doc = current_document();
     if (!doc || m_open_sheet) {
+        return;
+    }
+
+    if (kind == status_kind::POSITION) {
+        go_to_line();
         return;
     }
 
