@@ -8,7 +8,10 @@ struct shell_program {
     const char* args;
 };
 
+/* Runs the program its first argument names, with the rest as that program's arguments */
+constexpr const char* TERMINAL_PATH = "/bin/stlxterm";
+
 constexpr shell_program SETTINGS_PROGRAM = { "Settings", "/bin/stlxsettings", "" };
-constexpr shell_program TASK_MONITOR_PROGRAM = { "Task monitor", "/bin/stlxterm", "/bin/stlxtop" };
+constexpr shell_program TASK_MONITOR_PROGRAM = { "Task monitor", TERMINAL_PATH, "/bin/stlxtop" };
 
 #endif
