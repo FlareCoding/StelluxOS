@@ -735,6 +735,9 @@ void settings_page::refresh_footer() {
                                 : QStringLiteral("%1 unsaved changes, apply to every tab on save").arg(count);
     m_footer_note->setText(note);
     m_revert->setEnabled(count > 0);
+
+    // With nothing to save the amber Save is withdrawn, dim beside Revert, as Stellux Settings does
+    m_save->setDefault(count > 0);
     m_save->setEnabled(count > 0);
     if (on_changed) {
         on_changed();
