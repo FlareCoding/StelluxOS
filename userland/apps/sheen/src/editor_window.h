@@ -103,6 +103,7 @@ private:
 
     void show_current_document();
     void refresh_tab(document* doc);
+    void refresh_tab_names();
     void refresh_status();
     void refresh_banner();
     void show_banner(document* doc, const banner_message& message);

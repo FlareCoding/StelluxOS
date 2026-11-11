@@ -35,6 +35,11 @@ static constexpr int TAB_FLAG_BITS = 8;
 static constexpr int TAB_FLAGS = (1 << TAB_FLAG_BITS) - 1;
 static constexpr int PERMILLE = 1000;
 static constexpr int PROGRESS_LINE = 2;
+static constexpr int NAME_HINT_GAP = 8;
+static constexpr int MIN_NAME_WIDTH = 48;
+
+// Parts a tab's name from its hint inside the tab's text
+static constexpr QChar HINT_MARK(0x1F);
 static constexpr qreal CLOSE_GLYPH_HALF = 3;
 static constexpr qreal CLOSE_GLYPH_STROKE = 1.4;
 static constexpr qreal HALF_PIXEL = 0.5;
@@ -127,6 +132,32 @@ static void paint_lock(QPainter& painter, const QRectF& box) {
     painter.drawPath(arch);
 }
 
+// A name too long for its tab is elided in the middle, keeping its extension, and gives up its hint only when the hint
+// would leave too little of it
+static void paint_label(QPainter& painter, const QRect& label, const QString& text, const QColor& color) {
+    QFontMetricsF metrics(painter.font());
+    QString name = text.section(HINT_MARK, 0, 0);
+    QString hint = text.section(HINT_MARK, 1);
+    qreal hint_width = hint.isEmpty() ? 0 : NAME_HINT_GAP + metrics.horizontalAdvance(hint);
+    if (label.width() - hint_width < MIN_NAME_WIDTH) {
+        hint.clear();
+        hint_width = 0;
+    }
+
+    qreal name_width = label.width() - hint_width;
+    if (metrics.horizontalAdvance(name) > name_width) {
+        name = metrics.elidedText(name, Qt::ElideMiddle, name_width);
+    }
+
+    painter.setPen(color);
+    painter.drawText(label, Qt::AlignVCenter | Qt::AlignLeft, name);
+    if (!hint.isEmpty()) {
+        painter.setPen(TEXT_DIM);
+        int hint_left = qCeil(metrics.horizontalAdvance(name)) + NAME_HINT_GAP;
+        painter.drawText(label.adjusted(hint_left, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, hint);
+    }
+}
+
 static void paint_unsaved_dot(QPainter& painter, const QRect& slot) {
     painter.setPen(Qt::NoPen);
     painter.setBrush(ACCENT);
@@ -166,6 +197,13 @@ void tab_strip::set_tab_struck(int index, bool is_struck) {
     set_tab_flag(index, TAB_STRUCK, is_struck);
 }
 
+void tab_strip::set_tab_name(int index, const QString& name, const QString& hint) {
+    QString text = hint.isEmpty() ? name : name + HINT_MARK + hint;
+    if (tabText(index) != text) {
+        setTabText(index, text);
+    }
+}
+
 // Above the flags in the tab's data, offset by one so that zero means no progress
 void tab_strip::set_tab_progress(int index, int permille) {
     int data = tabData(index).toInt();
@@ -178,7 +216,11 @@ void tab_strip::set_tab_progress(int index, int permille) {
 
 // The label's width is rounded up, so a name that fits is never cut by a fraction of a pixel
 QSize tab_strip::tabSizeHint(int index) const {
-    int label = qCeil(QFontMetricsF(m_font).horizontalAdvance(tabText(index)));
+    QFontMetricsF metrics(m_font);
+    QString hint = tabText(index).section(HINT_MARK, 1);
+    qreal text = metrics.horizontalAdvance(tabText(index).section(HINT_MARK, 0, 0))
+               + (hint.isEmpty() ? 0 : NAME_HINT_GAP + metrics.horizontalAdvance(hint));
+    int label = qCeil(text);
     int lock = is_tab_locked(index) ? LOCK_SIZE + LOCK_LABEL_GAP : 0;
 
     int natural = TAB_PADDING_LEFT + lock + label + LABEL_SLOT_GAP + SLOT_SIZE + TAB_PADDING_RIGHT;
@@ -221,19 +263,11 @@ void tab_strip::paintEvent(QPaintEvent*) {
         }
 
         QRect label(label_left, rect.top(), slot.left() - LABEL_SLOT_GAP - label_left, rect.height());
-
         QFont name_font = m_font;
         name_font.setStrikeOut(is_tab_struck(index));
         painter.setFont(name_font);
         QColor tone = is_tab_struck(index) ? TEXT_DISABLED : is_current ? TEXT : is_hovered ? TEXT_SECONDARY : TEXT_DIM;
-        painter.setPen(tone);
-
-        QString text = tabText(index);
-        if (QFontMetricsF(m_font).horizontalAdvance(text) > label.width()) {
-            text = painter.fontMetrics().elidedText(text, Qt::ElideMiddle, label.width());
-        }
-
-        painter.drawText(label, Qt::AlignVCenter | Qt::AlignLeft, text);
+        paint_label(painter, label, tabText(index), tone);
 
         bool is_slot_hovered = is_hovered && m_is_slot_hovered;
         if (is_tab_modified(index) && !is_slot_hovered) {

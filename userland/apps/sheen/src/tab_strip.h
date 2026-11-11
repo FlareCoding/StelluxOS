@@ -17,11 +17,14 @@ public:
 
     void set_tab_modified(int index, bool is_modified);
 
-    /* Set before the tab's text, whose change lays the tabs out again for the lock's width */
+    /* Set before the tab's name, whose change lays the tabs out again for the lock's width */
     void set_tab_locked(int index, bool is_locked);
 
     /* Strikes the tab's name through, as for a file deleted on disk */
     void set_tab_struck(int index, bool is_struck);
+
+    /* `name`, then `hint` in the dimmest tone, such as the folder that tells two same-named files apart */
+    void set_tab_name(int index, const QString& name, const QString& hint);
 
     /* How much of a loading file has arrived, in thousandths, drawn along the tab's bottom edge. -1 draws none */
     void set_tab_progress(int index, int permille);

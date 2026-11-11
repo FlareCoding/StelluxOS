@@ -215,6 +215,25 @@ static qint64 free_memory() {
     return page_size * free_pages;
 }
 
+// The nearest folder above `path` that differs from the folder as far above each other path, empty when none does
+static QString telling_folder(const QString& path, const QStringList& others) {
+    QStringList folders = QFileInfo(path).absolutePath().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (qsizetype depth = 1; depth <= folders.size(); depth++) {
+        const QString& folder = folders.at(folders.size() - depth);
+        bool is_shared = false;
+        for (const QString& other : others) {
+            QStringList theirs = QFileInfo(other).absolutePath().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+            is_shared = is_shared || (depth <= theirs.size() && theirs.at(theirs.size() - depth) == folder);
+        }
+
+        if (!is_shared) {
+            return folder;
+        }
+    }
+
+    return QString();
+}
+
 // Gigabytes with one decimal from 1 GB on, whole megabytes below
 static QString size_label(qint64 bytes) {
     if (bytes >= BYTES_PER_GB) {
@@ -1473,6 +1492,7 @@ void editor_window::remove_document(int index, bool keeps_text) {
         select_tab(index_of(next));
     }
 
+    refresh_tab_names();
     if (m_documents.empty()) {
         show_empty_state();
         setWindowTitle(QStringLiteral("Sheen"));
@@ -1715,10 +1735,7 @@ void editor_window::refresh_tab(document* doc) {
         return;
     }
 
-    tabs()->set_tab_locked(index, doc->is_read_only());
-    tabs()->set_tab_struck(index, doc->is_deleted());
-
-    tabs()->setTabText(index, doc->display_name());
+    refresh_tab_names();
     tabs()->setTabToolTip(index, doc->is_untitled() ? QStringLiteral("Never saved")
                                  : doc->is_deleted() ? QStringLiteral("Deleted on disk")
                                                      : doc->file().path);
@@ -1726,6 +1743,24 @@ void editor_window::refresh_tab(document* doc) {
     tabs()->updateGeometry();
     if (doc == current_document()) {
         setWindowTitle(doc->display_name());
+    }
+}
+
+// Tabs that share a name each add the folder that tells them apart, so a name's change can reach every tab
+void editor_window::refresh_tab_names() {
+    for (int index = 0; index < static_cast<int>(m_documents.size()); index++) {
+        document* doc = m_documents[index].get();
+        QStringList twins;
+        for (const std::unique_ptr<document>& other : m_documents) {
+            if (other.get() != doc && !other->is_untitled() && other->display_name() == doc->display_name()) {
+                twins.append(other->file().path);
+            }
+        }
+
+        QString hint = doc->is_untitled() || twins.isEmpty() ? QString() : telling_folder(doc->file().path, twins);
+        tabs()->set_tab_locked(index, doc->is_read_only());
+        tabs()->set_tab_struck(index, doc->is_deleted());
+        tabs()->set_tab_name(index, doc->display_name(), hint);
     }
 }
 
