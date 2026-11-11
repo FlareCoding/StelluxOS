@@ -40,6 +40,9 @@ public:
 
     std::function<void()> on_closed;
 
+    /* Called before a step moves the selection to another match, so Back can return */
+    std::function<void()> on_jump;
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;

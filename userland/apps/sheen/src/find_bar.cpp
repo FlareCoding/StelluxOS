@@ -428,6 +428,10 @@ bool find_bar::step(bool is_forward) {
     }
 
     if (is_found) {
+        if (on_jump) {
+            on_jump();
+        }
+
         select_match(start, end);
         m_anchor = start;
     }

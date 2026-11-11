@@ -60,6 +60,7 @@ static constexpr int WINDOW_MIN_H = 480;
 static constexpr int CLOSED_TAB_LIMIT = 20;
 static constexpr int RECENT_FILE_LIMIT = 20;
 static constexpr int RECENT_COMMAND_LIMIT = 5;
+static constexpr qsizetype JUMP_LIMIT = 50;
 
 // Wide enough that each menu's chevron stands apart from its name, with room for the keycaps under the hairline
 static constexpr int CASCADE_WIDTH = 272;
@@ -453,6 +454,11 @@ static void select_inside_brackets(ScintillaEditBase* view) {
     }
 }
 
+static caret_place caret_place_of(document* doc) {
+    sptr_t caret = doc->view()->send(SCI_GETCURRENTPOS);
+    return { doc, doc->view()->send(SCI_LINEFROMPOSITION, caret), doc->view()->send(SCI_GETCOLUMN, caret) };
+}
+
 // The selected lines, or every line without a selection
 static std::pair<sptr_t, sptr_t> line_span(ScintillaEditBase* view) {
     if (view->send(SCI_GETSELECTIONEMPTY)) {
@@ -716,7 +722,9 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
       m_main_menu(new QMenu(this)), m_switcher(new tab_switcher(this)) {
     m_find_bar = new find_bar(this);
+    m_find_bar->on_jump = [this] { record_jump(current_document()); };
     m_picker = new picker(m_stack);
+
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -1268,7 +1276,12 @@ void editor_window::run(command id) {
             set_zoom(0);
             break;
         case command::MATCHING_BRACKET:
+            record_jump(doc);
             go_to_matching_bracket(view);
+            break;
+        case command::GO_BACK:
+        case command::GO_FORWARD:
+            step_jump(id == command::GO_BACK);
             break;
         case command::RECENT_TAB:
             step_recent_tab(1);
@@ -2071,6 +2084,10 @@ void editor_window::remove_document(int index, bool keeps_text) {
         }
     }
 
+    auto is_in_closing_tab = [doc](const caret_place& place) { return place.doc == doc; };
+    m_back_places.removeIf(is_in_closing_tab);
+    m_forward_places.removeIf(is_in_closing_tab);
+
     // The most recently used tab takes over, as Ctrl Tab would reach it
     m_recent_tabs.removeAll(doc);
     document* next = m_recent_tabs.isEmpty() ? nullptr : m_recent_tabs.first();
@@ -2330,6 +2347,10 @@ void editor_window::show_current_document() {
         return;
     }
 
+    if (!m_recent_tabs.isEmpty() && m_recent_tabs.first() != doc) {
+        record_jump(m_recent_tabs.first());
+    }
+
     m_recent_tabs.removeAll(doc);
     m_recent_tabs.prepend(doc);
 
@@ -2534,7 +2555,7 @@ void editor_window::go_to_line(bool is_from_palette) {
         m_picker->set_help(line_target_help(query, line, column, lines));
     };
 
-    m_picker->on_accepted = [view, lines](const QString& query) {
+    m_picker->on_accepted = [this, doc, view, lines](const QString& query) {
         sptr_t line = 0;
         sptr_t column = 0;
         if (!view) {
@@ -2543,6 +2564,7 @@ void editor_window::go_to_line(bool is_from_palette) {
 
         view->send(SCI_MARKERDELETEALL, GOTO_MARKER);
         if (read_line_target(query, &line, &column)) {
+            record_jump(doc);
             view->send(SCI_GOTOPOS, view->send(SCI_FINDCOLUMN, qMin(line, lines) - 1, column - 1));
         }
 
@@ -2796,6 +2818,53 @@ document* editor_window::settings_document() const {
     }
 
     return nullptr;
+}
+
+// Keeps where the caret stood before a jump, for Back, and a new jump drops the way Forward
+void editor_window::record_jump(document* doc) {
+    if (m_is_stepping_jumps || !doc || doc->placeholder()) {
+        return;
+    }
+
+    caret_place here = caret_place_of(doc);
+    if (m_back_places.isEmpty() || m_back_places.last() != here) {
+        m_back_places.append(here);
+    }
+
+    if (m_back_places.size() > JUMP_LIMIT) {
+        m_back_places.removeFirst();
+    }
+
+    m_forward_places.clear();
+}
+
+// Each step keeps where the caret was for the other direction, passing places it already stands at
+void editor_window::step_jump(bool is_back) {
+    QList<caret_place>& from = is_back ? m_back_places : m_forward_places;
+    QList<caret_place>& to = is_back ? m_forward_places : m_back_places;
+    document* doc = current_document();
+    bool has_caret = doc && !doc->placeholder();
+    while (has_caret && !from.isEmpty() && from.last() == caret_place_of(doc)) {
+        from.removeLast();
+    }
+
+    if (from.isEmpty()) {
+        return;
+    }
+
+    caret_place target = from.takeLast();
+    if (has_caret) {
+        to.append(caret_place_of(doc));
+    }
+
+    m_is_stepping_jumps = true;
+    select_tab(index_of(target.doc));
+    m_is_stepping_jumps = false;
+
+    ScintillaEditBase* view = target.doc->view();
+    sptr_t line = qMin(target.line, view->send(SCI_GETLINECOUNT) - 1);
+    view->send(SCI_GOTOPOS, view->send(SCI_FINDCOLUMN, line, target.column));
+    view->setFocus();
 }
 
 // Ctrl Comma opens the Settings tab or focuses the one already open, turned to `section` such as Shortcuts if named
