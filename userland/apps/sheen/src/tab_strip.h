@@ -23,6 +23,9 @@ public:
     /* Strikes the tab's name through, as for a file deleted on disk */
     void set_tab_struck(int index, bool is_struck);
 
+    /* How much of a loading file has arrived, in thousandths, drawn along the tab's bottom edge. -1 draws none */
+    void set_tab_progress(int index, int permille);
+
     /* The part of the strip the row shows, whose clipped ends fade */
     void set_visible_span(int offset, int width);
 
@@ -45,6 +48,7 @@ private:
     bool is_tab_modified(int index) const;
     bool is_tab_locked(int index) const;
     bool is_tab_struck(int index) const;
+    int tab_progress(int index) const;
     void set_tab_flag(int index, int flag, bool is_set);
     void set_hover(int tab, bool is_slot_hovered);
 

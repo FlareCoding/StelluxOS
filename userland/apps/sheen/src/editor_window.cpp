@@ -1,6 +1,7 @@
 #include "editor_window.h"
 #include "banner.h"
 #include "empty_state.h"
+#include "file_loader.h"
 #include "file_sheet.h"
 #include "kiln.h"
 #include "menu_style.h"
@@ -46,6 +47,12 @@ static constexpr int CASCADE_WIDTH = 272;
 static constexpr int STATUS_NOTE_MS = 4000;
 
 static constexpr int SWITCHER_GAP = 8;
+static constexpr int PERMILLE = 1000;
+static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
+static constexpr qint64 BYTES_PER_GB = 1024 * BYTES_PER_MB;
+
+// Files from here on read on a worker thread, where reading at once would hold the window still for a moment
+static constexpr qint64 ASYNC_LOAD_BYTES = 4 * BYTES_PER_MB;
 static constexpr int INDENT_WIDTHS[] = { 2, 4, 8 };
 static constexpr QChar BULLET(0x2022);
 static const QString NOTE_SEPARATOR = QStringLiteral("   ");
@@ -185,6 +192,36 @@ static void go_to_matching_bracket(ScintillaEditBase* view) {
     if (match >= 0) {
         view->send(SCI_GOTOPOS, match);
     }
+}
+
+// Free memory as /dev/sysinfo/mem reports it, or 0 when it cannot be read
+static qint64 free_memory() {
+    QFile file(QStringLiteral("/dev/sysinfo/mem"));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return 0;
+    }
+
+    qint64 page_size = 0;
+    qint64 free_pages = 0;
+    for (const QByteArray& line : file.readAll().split('\n')) {
+        QList<QByteArray> field = line.simplified().split(' ');
+        if (field.size() == 2 && field[0] == "page_size") {
+            page_size = field[1].toLongLong();
+        } else if (field.size() == 2 && field[0] == "free_pages") {
+            free_pages = field[1].toLongLong();
+        }
+    }
+
+    return page_size * free_pages;
+}
+
+// Gigabytes with one decimal from 1 GB on, whole megabytes below
+static QString size_label(qint64 bytes) {
+    if (bytes >= BYTES_PER_GB) {
+        return QStringLiteral("%1 GB").arg(QString::number(static_cast<double>(bytes) / BYTES_PER_GB, 'f', 1));
+    }
+
+    return QStringLiteral("%1 MB").arg((bytes + BYTES_PER_MB / 2) / BYTES_PER_MB);
 }
 
 editor_window::editor_window(const sheen_settings& settings, const QStringList& problems)
@@ -638,7 +675,8 @@ void editor_window::run(command id) {
             refresh_status();
             break;
         case command::WORD_WRAP:
-            view->send(SCI_SETWRAPMODE, is_checked ? SC_WRAP_WORD : SC_WRAP_NONE);
+            doc->choose_wrap(is_checked);
+            refresh_status();
             break;
         case command::LINE_NUMBERS:
             set_line_numbers_shown(view, is_checked);
@@ -716,6 +754,13 @@ void editor_window::refresh_commands() {
     bool has_text = doc && !doc->placeholder();
     for (command id : DOCUMENT_COMMANDS) {
         m_actions.value(id)->setEnabled(is_free && has_text);
+    }
+
+    // A large file stays plain and unwrapped, since styling or wrapping all of it would stall the window
+    if (doc && doc->is_large()) {
+        for (command id : { command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP }) {
+            m_actions.value(id)->setEnabled(false);
+        }
     }
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
@@ -828,6 +873,15 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
             QTimer::singleShot(0, view, [this, doc] {
                 doc->recount_eols();
                 refresh_status();
+            });
+        }
+
+        // A paste can carry the text past the wrap limit, and wrap turns off once the change is complete
+        if (is_text_change && doc->is_wrap_over_limit()) {
+            QTimer::singleShot(0, view, [this, doc] {
+                if (doc->limit_wrap()) {
+                    refresh_status();
+                }
             });
         }
 
@@ -992,6 +1046,10 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
         return false;
     }
 
+    if (info.isFile() && info.size() >= ASYNC_LOAD_BYTES) {
+        return load_in_background(absolute, info.size(), encoding, index);
+    }
+
     QByteArray bytes;
     if (info.exists()) {
         QFile file(absolute);
@@ -1027,6 +1085,78 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     }
 
     return true;
+}
+
+// A large file reads on a worker thread behind its tab's progress, and one that may not fit in memory asks first.
+// Before the window shows there is nothing to ask over, so a file named at launch opens
+bool editor_window::load_in_background(const QString& path, qint64 size, const QByteArray& encoding, int index) {
+    QString name = QFileInfo(path).fileName();
+    qint64 free_bytes = free_memory();
+    if (free_bytes > 0 && size > free_bytes / 2 && isVisible() && !m_open_sheet) {
+        QString title = QStringLiteral("%1 is %2 and %3 of memory is free").arg(name, size_label(size),
+                                                                                 size_label(free_bytes));
+        prompt_sheet question(this, title, QStringLiteral("Opening it could run Stellux out of memory."),
+                              QStringLiteral("Open Anyway"), QString(), false);
+        if (static_cast<prompt_answer>(run_sheet(question)) != prompt_answer::PRIMARY) {
+            return false;
+        }
+    }
+
+    document* current = current_document();
+    document* pristine = current && current->is_pristine() && !m_open_sheet ? current : nullptr;
+
+    auto owned = std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings);
+    document* doc = owned.get();
+    auto* placeholder = new loading_placeholder(m_stack, name, size);
+    m_stack->addWidget(placeholder);
+    file_loader* loader = doc->begin_load(path, size, encoding, placeholder);
+
+    placeholder->on_cancel = [this, doc] { close_document(index_of(doc)); };
+    loader->on_finished = [this, doc](const load_result& result) { finish_loading(doc, result); };
+    loader->on_progress = [this, doc, placeholder](qint64 done, qint64 total) {
+        placeholder->set_progress(done, total);
+        tabs()->set_tab_progress(index_of(doc), static_cast<int>(done * PERMILLE / total));
+    };
+
+    remember_recent_file(path);
+    add_document(std::move(owned), index);
+    if (pristine) {
+        remove_document(index_of(pristine), false);
+    }
+
+    tabs()->set_tab_progress(index_of(doc), 0);
+    loader->start();
+    return true;
+}
+
+// A file that cannot be read or decoded closes its tab and says why over the tab that takes its place
+void editor_window::finish_loading(document* doc, const load_result& result) {
+    int index = index_of(doc);
+    tabs()->set_tab_progress(index, -1);
+    QString path = doc->file().path;
+    if (result.outcome == load_outcome::TEXT) {
+        doc->finish_load(result);
+    } else if (result.outcome == load_outcome::BINARY) {
+        doc->end_load();
+        hold_binary(doc, path, result.bytes);
+    } else {
+        bool is_undecodable = result.outcome == load_outcome::UNDECODABLE;
+        QString subject = is_undecodable ? QFileInfo(path).fileName() : QStringLiteral("Couldn't open %1").arg(path);
+        QString reason = is_undecodable
+                       ? QStringLiteral(" is not valid %1, so it was not opened.").arg(encoding_label(result.encoding))
+                       : QStringLiteral(": %1.").arg(result.error.toLower());
+        remove_document(index, false);
+        if (document* current = current_document()) {
+            show_banner(current, { banner_kind::FAILURE, subject, reason, {} });
+        }
+
+        return;
+    }
+
+    refresh_tab(doc);
+    if (doc == current_document()) {
+        show_current_document();
+    }
 }
 
 // The file's bytes wait behind a placeholder in its tab until the user picks how to read them
@@ -1309,10 +1439,12 @@ prompt_answer editor_window::ask_about_unsaved(document* doc, const QString& pur
     return static_cast<prompt_answer>(run_sheet(prompt));
 }
 
-// A closed tab joins the reopen stack, keeping its Scintilla document when its text exists nowhere else
+// A closed tab joins the reopen stack, keeping its Scintilla document when its text exists nowhere else, except a
+// large file's, which keeps only its path
 void editor_window::remove_document(int index, bool keeps_text) {
     document* doc = m_documents.at(index).get();
     bool has_only_copy = keeps_text || (doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) > 0);
+    has_only_copy = has_only_copy && !doc->is_large();
     closed_tab closed = { doc->file(), doc->lang(), doc->current_view_state(), index, doc->untitled_number(),
                           has_only_copy ? doc->keep_scintilla_document() : 0 };
     if (!doc->is_untitled() || closed.scintilla_document) {
@@ -1604,6 +1736,14 @@ void editor_window::refresh_status() {
         notes.prepend(QStringLiteral("Read-only"));
     }
 
+    if (doc && doc->is_large()) {
+        notes.prepend(QStringLiteral("Large file: no highlighting, wrap or folding"));
+    }
+
+    if (doc && doc->is_wrap_limited()) {
+        notes.prepend(QStringLiteral("Unwrapped at this size, Alt Z wraps it"));
+    }
+
     notes.removeAll(QString());
     m_status->set_message(notes.join(NOTE_SEPARATOR));
     if (!doc || doc->placeholder()) {
@@ -1647,8 +1787,8 @@ void editor_window::refresh_status() {
                           : QStringLiteral("Not valid UTF-8, opened as %1").arg(encoding_label(file.encoding));
     QString mode = doc->mode() == edit_mode::CODE ? QStringLiteral("Code") : QStringLiteral("Text");
     QList<status_item> right = {
-        { status_kind::MODE, mode, {}, true },
-        { status_kind::LANGUAGE, language_name(doc->lang()), {}, true },
+        { status_kind::MODE, mode, {}, !doc->is_large() },
+        { status_kind::LANGUAGE, language_name(doc->lang()), {}, !doc->is_large() },
         { status_kind::ENCODING, encoding_label(file.encoding), encoding_note, true },
         { status_kind::LINE_ENDING, eol, {}, true },
     };

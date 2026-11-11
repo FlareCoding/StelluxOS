@@ -12,11 +12,14 @@
 
 #include <Scintilla.h>
 
+#include <memory>
 #include <optional>
 
 class ScintillaEditBase;
 class QWidget;
+class file_loader;
 struct language;
+struct load_result;
 
 struct eol_counts {
     qsizetype crlf = 0;
@@ -72,6 +75,30 @@ public:
     void hold(const QString& path, const QByteArray& bytes, QWidget* placeholder);
     bool open_held(const QByteArray& encoding);
     QWidget* placeholder() const { return m_placeholder; }
+
+    /* Starts reading the file at `path` on a worker thread behind `placeholder`, which the document then owns. A file
+     * of the settings' large size or more opens in large file mode. The caller wires the loader and starts it */
+    file_loader* begin_load(const QString& path, qint64 size, const QByteArray& encoding, QWidget* placeholder);
+
+    /* Shows the text the loader filled in place of the placeholder */
+    void finish_load(const load_result& result);
+
+    /* Stops a load and drops its placeholder, as when the file turns out binary or unreadable */
+    void end_load();
+
+    /* Plain and unwrapped, since styling or wrapping the whole of a large file would stall the window */
+    bool is_large() const { return m_is_large; }
+
+    /* Whether the text has grown past the size wrapping stays cheap at while still wrapped by default */
+    bool is_wrap_over_limit() const;
+
+    /* Turns wrap off for a text past that size, unless the user chose wrap for it. True when it did */
+    bool limit_wrap();
+
+    /* Wrap as the user set it from View or Alt Z, which the size limit then leaves alone */
+    void choose_wrap(bool is_wrapped);
+
+    bool is_wrap_limited() const { return m_is_wrap_limited; }
 
     /* Fills the view with `bytes`, the contents of the file at `path`, decoded as `encoding`, or as detected when
      * `encoding` is empty. Returns false when the bytes are not valid in `encoding` */
@@ -165,6 +192,8 @@ public:
 private:
     void configure_view();
     void replace_text(const QByteArray& utf8);
+    void settle_text(const eol_counts& counts);
+    void enter_large_file_mode();
     void remember_disk_state();
     void detect_language();
     QByteArray first_line() const;
@@ -184,6 +213,13 @@ private:
     std::optional<banner_message> m_banner;
     QByteArray m_held_bytes;
     QWidget* m_placeholder = nullptr;
+    std::unique_ptr<file_loader> m_loader;
+    bool m_is_large = false;
+    bool m_is_wrap_limited = false;
+    bool m_is_wrap_chosen = false;
 };
+
+/* Counts each kind of line ending in UTF-8 text, a CR LF pair as one */
+eol_counts count_eols(QByteArrayView text);
 
 #endif
