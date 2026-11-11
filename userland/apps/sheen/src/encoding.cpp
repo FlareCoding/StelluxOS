@@ -300,5 +300,5 @@ QString encoding_label(const QByteArray& name) {
 
 QString encoding_label(const file_encoding& encoding) {
     QString label = encoding_label(encoding.name);
-    return encoding.has_bom && encoding.name == UTF_8 ? label + QStringLiteral(" with BOM") : label;
+    return encoding.has_bom && encoding.name == UTF_8 ? label + QStringLiteral(" BOM") : label;
 }
