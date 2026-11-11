@@ -28,6 +28,9 @@ damage_list::rect dock_tile_rect(const dock_layout& layout, uint32_t index);
  * give its executable's name as the app id in its HELLO for its windows to match a launcher. */
 bool launches_app(const stlxconf_pin_t& pin, const char* app_id);
 
+/* The image at `path` at the dock's icon size. Null when it cannot be read or decoded, or memory runs out. */
+stlxgfx_surface_t* load_icon(const char* path);
+
 /* The icon of `pin`, else the default icon, at the dock's icon size.
  * Null when neither loads or memory runs out. */
 stlxgfx_surface_t* load_launcher_icon(const stlxconf_pin_t& pin);

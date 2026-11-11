@@ -7,6 +7,7 @@
 #include "shell/direct_host.hpp"
 #include "shell/dock.hpp"
 #include "shell/popover.hpp"
+#include "shell/quick_actions.hpp"
 #include "shell/stats.hpp"
 #include "shell/stats_panel.hpp"
 #include "shell/system_menu.hpp"
@@ -102,6 +103,9 @@ public:
     void close_popover() { m_popover.close(); }
     void close_popover_now() { m_popover.close_now(); }
 
+    /* Opens Quick Actions in place of any popover, or closes it when it is open */
+    void toggle_quick_actions() { toggle_popover(*m_quick); }
+
     /* Whether a press at (`x`, `y`) closes the popover: one outside an open
      * or opening popover that is not pinned, and outside the bar's targets */
     bool dismisses_popover(int32_t x, int32_t y) const;
@@ -146,6 +150,7 @@ private:
     void switch_popover(popover_panel& panel);
     void sync_bar_targets();
     void launch(const stlxconf_pin_t& pin);
+    void run_action(const stlxconf_action_t& action);
     void hover_pin(int32_t index, bool entered);
     bool find_tooltip(damage_list::rect& tip, const char*& label) const;
 
@@ -160,7 +165,7 @@ private:
     stlxgfx_surface_t* m_dock = nullptr;
     stlxgfx_surface_t* m_bar_glass = nullptr;
 
-    /* The launcher icons the dock's tiles draw */
+    /* The icons the dock's tiles and Quick Actions draw, one per launcher and null where none loaded */
     std::vector<stlxgfx_surface_t*> m_icons;
 
     /* The dock's tiles, which its tree owns, and where its shelf and band lie */
@@ -181,10 +186,11 @@ private:
     network_summary m_network;
     uint64_t m_net_query_ns = 0;
 
-    /* The popover host under the bar, and the popover panels the bar's targets open */
+    /* The popover host, the popover panels the bar's targets open, and Quick Actions, which a shortcut opens */
     popover_host m_popover;
     std::unique_ptr<system_menu> m_menu;
     std::unique_ptr<stats_panel> m_stats_panel;
+    std::unique_ptr<quick_actions> m_quick;
 
     /* Dock pin under the pointer, -1 outside, drives the tooltip */
     int32_t m_hover_pin = -1;

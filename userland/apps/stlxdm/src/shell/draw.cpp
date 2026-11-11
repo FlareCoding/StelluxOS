@@ -64,6 +64,43 @@ stlxgfx_surface_t* make_ring_picture(int32_t w, int32_t h, int32_t radius, uint3
     return picture;
 }
 
+/* Distance from (`x`, `y`) to the segment from (`ax`, `ay`) to (`bx`, `by`) */
+static float segment_distance(float x, float y, float ax, float ay, float bx, float by) {
+    float dx = bx - ax;
+    float dy = by - ay;
+    float along = std::clamp(((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy), 0.0f, 1.0f);
+
+    return std::hypot(x - ax - along * dx, y - ay - along * dy);
+}
+
+/* Drawn on a 16 unit grid: a ring around (7, 7) of radius 4.75 and a handle from (10.6, 10.6) to (14, 14), both
+ * stroked 1.6 wide with round ends */
+stlxgfx_surface_t* make_search_glyph(int32_t size, uint32_t color) {
+    stlxgfx_surface_t* picture = make_clear_picture(size, size);
+    if (!picture) {
+        return nullptr;
+    }
+
+    float unit = static_cast<float>(size) / 16.0f;
+    float half_stroke = 0.8f * unit;
+    uint32_t alpha = color >> 24;
+    for (int32_t y = 0; y < size; y++) {
+        uint32_t* row = reinterpret_cast<uint32_t*>(picture->pixels + static_cast<size_t>(y) * picture->pitch);
+        for (int32_t x = 0; x < size; x++) {
+            float px = (static_cast<float>(x) + 0.5f) / unit;
+            float py = (static_cast<float>(y) + 0.5f) / unit;
+            float ring = std::fabs(std::hypot(px - 7.0f, py - 7.0f) - 4.75f);
+            float handle = segment_distance(px, py, 10.6f, 10.6f, 14.0f, 14.0f);
+            float distance = std::min(ring, handle) * unit;
+
+            float coverage = std::clamp(half_stroke + 0.5f - distance, 0.0f, 1.0f);
+            row[x] = static_cast<uint32_t>(coverage * static_cast<float>(alpha) + 0.5f) << 24 | (color & 0xFFFFFF);
+        }
+    }
+
+    return picture;
+}
+
 /* Signed distance from the center of pixel (`x`, `y`) to the edge of a rect
  * with corners of `radius`, negative inside */
 static float rounded_rect_distance(int32_t x, int32_t y, const ui::rect& box, int32_t radius) {

@@ -176,9 +176,7 @@ int dm_panels::init(
 
     for (uint32_t i = 0; i < conf.pin_count; i++) {
         stlxgfx_surface_t* icon = load_launcher_icon(conf.pins[i]);
-        if (icon) {
-            m_icons.push_back(icon);
-        }
+        m_icons.push_back(icon);
 
         dock_tile* tile = band->add<dock_tile>(icon, conf.pins[i], i);
         tile->on_launch = [this](const stlxconf_pin_t& pin) {
@@ -193,6 +191,17 @@ int dm_panels::init(
     }
 
     m_dock_host.set_root(std::move(band));
+
+    m_quick = std::make_unique<quick_actions>(conf, m_icons);
+    m_quick->on_launch = [this](const stlxconf_pin_t& pin) {
+        m_popover.close();
+        launch(pin);
+    };
+
+    m_quick->on_run = [this](const stlxconf_action_t& action) {
+        m_popover.close();
+        run_action(action);
+    };
 
     return 0;
 }
@@ -254,6 +263,15 @@ void dm_panels::launch(const stlxconf_pin_t& pin) {
     }
 }
 
+void dm_panels::run_action(const stlxconf_action_t& action) {
+    stlxconf_action_kind_t kind = stlxconf_action_kind(action.action);
+    if (kind == STLXCONF_ACTION_EXEC && on_spawn) {
+        on_spawn(action.path, action.args);
+    } else if (kind == STLXCONF_ACTION_POWER && on_power) {
+        on_power();
+    }
+}
+
 damage_list::rect dm_panels::launcher_tile(uint32_t index) const {
     if (index >= m_conf->pin_count) {
         return {};
@@ -277,6 +295,7 @@ int32_t dm_panels::launcher_of(const char* app_id) const {
 }
 
 void dm_panels::show_running_launchers(uint64_t running, int32_t focused) {
+    m_quick->show_running(running);
     for (size_t i = 0; i < m_tiles.size(); i++) {
         bool is_running = ((running >> i) & 1) != 0;
         m_tiles[i]->show_running(is_running, is_running && static_cast<int32_t>(i) == focused);
@@ -329,11 +348,12 @@ void dm_panels::toggle_popover(popover_panel& panel) {
     m_popover.open(panel, m_frost);
 }
 
-/* While an unpinned panel is open, the pointer entering another panel's target opens that panel in its place */
+/* While an unpinned panel of a bar target is open, the pointer entering another target opens that one's panel in
+ * its place */
 void dm_panels::switch_popover(popover_panel& panel) {
     popover_panel* open = m_popover.panel();
-    bool is_other_open = open && open != &panel;
-    if (is_other_open && !open->pinned()) {
+    bool is_bar_panel_open = open == m_menu.get() || open == m_stats_panel.get();
+    if (is_bar_panel_open && open != &panel && !open->pinned()) {
         m_popover.open(panel, m_frost);
     }
 }

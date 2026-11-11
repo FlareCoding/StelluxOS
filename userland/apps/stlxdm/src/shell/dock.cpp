@@ -63,11 +63,12 @@ bool launches_app(const stlxconf_pin_t& pin, const char* app_id) {
 }
 
 stlxgfx_surface_t* load_launcher_icon(const stlxconf_pin_t& pin) {
-    stlxgfx_surface_t* icon = pin.icon_path[0] ? stlxgfx_load_image(pin.icon_path) : nullptr;
-    if (!icon) {
-        icon = stlxgfx_load_image(STLXCONF_DEFAULT_ICON);
-    }
+    stlxgfx_surface_t* icon = pin.icon_path[0] ? load_icon(pin.icon_path) : nullptr;
+    return icon ? icon : load_icon(STLXCONF_DEFAULT_ICON);
+}
 
+stlxgfx_surface_t* load_icon(const char* path) {
+    stlxgfx_surface_t* icon = stlxgfx_load_image(path);
     if (!icon) {
         return nullptr;
     }
