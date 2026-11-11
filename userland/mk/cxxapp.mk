@@ -8,6 +8,7 @@
 # Handles both .c and .cpp sources. Links against libc++, libc++abi,
 # and libunwind in addition to musl libc. Requires 'make libcxx' to
 # have been run first. APP_QT := 1 builds the app on Qt, see qt.mk, and
+# APP_QT_MODULES := core5compat adds Qt's Core5Compat module to it.
 # APP_VULKAN := 1 links the app with the Vulkan library, see vulkan.mk.
 # APP_SOURCE_DIRS names subdirectories of src/ holding more C++ sources.
 #
@@ -42,6 +43,13 @@ APP_CXXFLAGS := $(QT_CPPFLAGS)
 APP_LDLIBS   := -Wl,--whole-archive -lstlxqpa -Wl,--no-whole-archive -lstlxwin -lstlxconf $(QT_LDLIBS)
 OBJECTS      += $(QT_MOC_OBJECTS)
 LIB_ARCHIVES += $(SYSROOT)/lib/libstlxqpa.a $(SYSROOT)/lib/libstlxwin.a $(SYSROOT)/lib/libstlxconf.a
+
+# Only an app asking for Core5Compat links it, so every other app links as it would without the module
+ifneq ($(filter core5compat,$(APP_QT_MODULES)),)
+  $(if $(QT_CORE5COMPAT_LDLIBS),,$(error The Qt kit in $(QT_DIR) has no Core5Compat, so packages.lock pins an older kit))
+APP_CXXFLAGS += $(QT_CORE5COMPAT_CPPFLAGS)
+APP_LDLIBS   += $(QT_CORE5COMPAT_LDLIBS)
+endif
 endif
 
 # A Vulkan app's C++ sources compile against the kit's headers, and the app

@@ -59,6 +59,7 @@ fetch_source() {
 mkdir -p "$TOP" "$SOURCES_CACHE"
 fetch_source "$QT_URL/qtbase-everywhere-src-$QT_VER.tar.xz" "$QTBASE_SHA256"
 fetch_source "$QT_URL/qtsvg-everywhere-src-$QT_VER.tar.xz" "$QTSVG_SHA256"
+fetch_source "$QT_URL/qt5compat-everywhere-src-$QT_VER.tar.xz" "$QT5COMPAT_SHA256"
 fetch_source "$MUSL_URL" "$MUSL_SHA256"
 fetch_source "$LLVM_URL" "$LLVM_SHA256"
 

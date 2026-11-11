@@ -11,6 +11,7 @@ ARCH="${1:?usage: container.sh <x86_64|aarch64>}"
 JOBS="$(nproc)"
 QTBASE="qtbase-everywhere-src-$QT_VER"
 QTSVG="qtsvg-everywhere-src-$QT_VER"
+QT5COMPAT="qt5compat-everywhere-src-$QT_VER"
 SYSROOT="/work/sysroot/$ARCH"
 HOST_QT="/work/host-qt"
 KIT="/work/kit/$ARCH"
@@ -111,9 +112,10 @@ EOF
 build_kit() {
     echo "=== qt: building the $ARCH kit ==="
     rm -rf "/work/src/$ARCH" "/work/build/$ARCH" "$KIT"
-    mkdir -p "/work/src/$ARCH" "/work/build/$ARCH/qtbase" "/work/build/$ARCH/qtsvg"
+    mkdir -p "/work/src/$ARCH" "/work/build/$ARCH/qtbase" "/work/build/$ARCH/qtsvg" "/work/build/$ARCH/qt5compat"
     tar -C "/work/src/$ARCH" -xf "/sources/$QTBASE.tar.xz"
     tar -C "/work/src/$ARCH" -xf "/sources/$QTSVG.tar.xz"
+    tar -C "/work/src/$ARCH" -xf "/sources/$QT5COMPAT.tar.xz"
     write_toolchain
 
     cd "/work/build/$ARCH/qtbase"
@@ -127,6 +129,12 @@ build_kit() {
 
     cd "/work/build/$ARCH/qtsvg"
     run_logged configure.log "$PREFIX/bin/qt-configure-module" "/work/src/$ARCH/$QTSVG"
+    cmake --build . --parallel "$JOBS"
+    cmake --install . > /dev/null
+
+    # Without iconv the legacy codecs are Core5Compat's own tables, the same on every libc
+    cd "/work/build/$ARCH/qt5compat"
+    run_logged configure.log "$PREFIX/bin/qt-configure-module" "/work/src/$ARCH/$QT5COMPAT" -no-feature-iconv
     cmake --build . --parallel "$JOBS"
     cmake --install . > /dev/null
 }
@@ -147,7 +155,7 @@ describe_kit() {
 # The licenses of Qt and of the third-party code it bundles, which every program
 # linked against the kit carries
 collect_licenses() {
-    for module in "$QTBASE" "$QTSVG"; do
+    for module in "$QTBASE" "$QTSVG" "$QT5COMPAT"; do
         mkdir -p "$PREFIX/LICENSES/${module%%-*}"
         cp "/work/src/$ARCH/$module"/LICENSES/* "$PREFIX/LICENSES/${module%%-*}/"
     done
