@@ -318,20 +318,19 @@ struct virtio_gpu_scanout {
  * no vertical blank, so a deadline timer per scanout reports each present the
  * device confirmed latched at the scanout's next refresh boundary, within a
  * refresh period of `present()` returning, the boundaries falling 60 a second
- * from when the scanout was last lit. A present's batches share one deadline,
- * GFXFB_PRESENT_TIMEOUT_NS less a refresh period after the present takes the
- * driver's lock, but each counts as unanswered no sooner than a refresh period
- * after its submission, so `present()` can return past that deadline by up to
- * a refresh period for each batch that goes out within a refresh period of it
- * or later, as when its task waited for the CPU, instead of failing a device
- * that answers within a refresh period. Once a batch or a cursor command goes
- * unanswered, which the driver logs once, or the driver detaches, every call
- * that sends a command fails with ERR_DEVICE, but a present whose batch went
- * unanswered returns OK and ends with GFXFB_PRESENT_FAILED, since the device
- * may still read its buffer. Before that, a command the device refuses fails
- * its call with ERR_REFUSED, logged unless the device ran out of memory, or
- * with ERR_NO_MEMORY when the device has no memory left for a new buffer's
- * resource.
+ * from when the scanout was last lit. The device may still read a command it
+ * has not answered, and a busy host can run the device seconds late, so a call
+ * waits for its commands' answers however long they take, counting the host's
+ * delay as time spent waiting for the CPU, and logs an answer that took a
+ * second or more. Each second without an answer, the wait reads the device's
+ * status. Once the device reports that it needs a reset, as a device gone from
+ * the bus also reads, which the driver logs once, or the driver detaches,
+ * every call that sends a command fails with ERR_DEVICE, but a present during
+ * which the device failed returns OK and ends with GFXFB_PRESENT_FAILED, since
+ * the device may still read its buffer. Before that, a command the device
+ * refuses fails its call with ERR_REFUSED, logged unless the device ran out of
+ * memory, or with ERR_NO_MEMORY when the device has no memory left for a new
+ * buffer's resource.
  *
  * The device reports a change of its scanouts through a configuration change
  * interrupt on a vector of its own, which wakes the driver's task. The task
@@ -342,13 +341,13 @@ struct virtio_gpu_scanout {
  * `gfxfb::output_changed()`. Taking a scanout dark hides its cursor and has
  * the device stop showing any buffer on it before the scanout's unended
  * present, if any, ends with GFXFB_PRESENT_DARK. A scanout stays lit and
- * unreported when the device refuses either command or leaves it unanswered, a
- * dark one that cannot light stays dark, and one that cannot light at its new
- * size is reported dark without `relighting`. Each, like a failed read of the
+ * unreported when the device refuses either command or needs a reset, a dark
+ * one that cannot light stays dark, and one that cannot light at its new size
+ * is reported dark without `relighting`. Each, like a failed read of the
  * scanouts, logs an error and waits for the device's next change, for good
- * once a command has gone unanswered, since every later read fails. If the
- * device hides the cursor and then refuses the other command, the scanout
- * stays lit with its cursor hidden until `set_cursor()` shows a picture again.
+ * once the device needs a reset, since every later read fails. If the device
+ * hides the cursor and then refuses the other command, the scanout stays lit
+ * with its cursor hidden until `set_cursor()` shows a picture again.
  * When the device enables no scanout at a usable size at attach, the driver
  * lights scanout 0 at 1024 by 768 anyway, and a change brings it to what the
  * device reports like any other. Without that interrupt, which the driver
@@ -381,14 +380,7 @@ struct virtio_gpu_scanout {
  * a cursor command naming no resource. `move_cursor()` sends the new position,
  * only recording it while the cursor is hidden. The device answers a cursor
  * command by handing it back with no response, so it can refuse only the
- * picture's copy. The cursor command is due GFXFB_PRESENT_TIMEOUT_NS after the
- * call takes the driver's lock and the copy a refresh period sooner, as a
- * present's batches are, but each of the two counts as unanswered no sooner
- * than a refresh period after its submission. So a cursor call returns within
- * GFXFB_PRESENT_TIMEOUT_NS of taking the lock, or a refresh period after its
- * last submission when its task waited for the CPU. Either way
- * `move_cursor()`, whose one submission follows the lock, returns within
- * GFXFB_PRESENT_TIMEOUT_NS of handing the device its command.
+ * picture's copy.
  *
  * Before any other work, the task registers the device's 3D path with the GPU
  * core when the device offers what venus needs (`virtio_gpu_backend`). The 3D
@@ -492,10 +484,9 @@ private:
     int32_t queue_command(const void* request, uint32_t request_size,
                           uint32_t response_size, uint32_t* out_response_offset,
                           const virtio::chain_buffer* list = nullptr);
-    int32_t run_batch(wait_mode mode);
-    int32_t run_batch_until(wait_mode mode, uint64_t deadline_ns, bool logs_refusals = true);
+    int32_t run_batch(wait_mode mode, bool logs_refusals = true);
     int32_t run_unlogged_batch();
-    int32_t wait_for_used(virtio::virtqueue& queue, uint32_t count, wait_mode mode, uint64_t deadline_ns);
+    int32_t wait_for_used(virtio::virtqueue& queue, uint32_t count, wait_mode mode);
 
     // For commands whose response is only a header
     template <typename T>
@@ -527,15 +518,15 @@ private:
     void restore_scanouts();
     void finish_request(mode_request& request, int32_t result);
     int32_t create_cursor_resource();
-    int32_t run_cursor_command(const virtio::virtio_gpu_update_cursor& command, uint64_t deadline_ns);
-    int32_t update_cursor(virtio_gpu_scanout& scanout, const gfxfb::cursor_image& image, uint64_t deadline_ns);
+    int32_t run_cursor_command(const virtio::virtio_gpu_update_cursor& command);
+    int32_t update_cursor(virtio_gpu_scanout& scanout, const gfxfb::cursor_image& image);
     virtio::virtio_gpu_update_cursor cursor_command(
         const virtio_gpu_scanout& scanout,
         uint32_t type,
         uint32_t hot_x,
         uint32_t hot_y
     ) const;
-    int32_t queue_rect_update(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect& rect, uint64_t deadline_ns);
+    int32_t queue_rect_update(const virtio_gpu_buffer& buf, const gfxfb::gfxfb_rect& rect);
     int32_t show_buffer(
         virtio_gpu_scanout& scanout,
         const virtio_gpu_buffer& buf,
@@ -590,7 +581,7 @@ private:
     sync::mutex m_batch_lock;
     bool m_has_completion_interrupt = false;
     bool m_is_registered = false;
-    bool m_is_broken = false; // a batch or a cursor command timed out, so the device may still own the page
+    bool m_is_broken = false; // the device needs a reset, so it may still own the page, or the driver detached
 
     // Read and advanced under `m_batch_lock` once the driver is attached
     uint32_t m_next_resource_id = 1;

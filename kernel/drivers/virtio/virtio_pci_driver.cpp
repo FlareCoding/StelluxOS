@@ -322,6 +322,10 @@ void virtio_pci_driver::reset_device() {
     }
 }
 
+bool virtio_pci_driver::device_needs_reset() {
+    return (read_status() & VIRTIO_STATUS_NEEDS_RESET) != 0;
+}
+
 uint8_t virtio_pci_driver::ack_interrupt() {
     return m_isr_addr ? mmio::read8(m_isr_addr) : 0;
 }

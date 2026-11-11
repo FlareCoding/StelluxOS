@@ -390,8 +390,9 @@ public:
      * cursor is hidden, before any picture, after a hide or since the output
      * last went dark, only records the position, and the cursor stays hidden.
      * The call may wait only for the display's own lock and for the hardware
-     * to take the position, within GFXFB_PRESENT_TIMEOUT_NS of giving it,
-     * never for a vertical blank or for its driver's task.
+     * to take the position, within GFXFB_PRESENT_TIMEOUT_NS of giving it, not
+     * counting time spent waiting for the CPU, never for a vertical blank or
+     * for its driver's task.
      * @param output Index of the output, below the count.
      * @param x Column of the hotspot, negative left of the output.
      * @param y Row of the hotspot, negative above the output.
