@@ -515,6 +515,7 @@ private:
     void handle_detach_buffer(dm_client& c, const uint8_t* payload);
     void handle_commit(dm_client& c, const uint8_t* payload);
     void handle_commit_gpu(dm_client& c, const uint8_t* payload);
+    void handle_activate_window(dm_client& c, const uint8_t* payload);
     void replace_pending(dm_client& c, dm_window& w, int32_t index);
     void destroy_window_tree(dm_client& c, uint32_t win_id);
     void dismiss_window_tree(dm_client& c, uint32_t win_id);
@@ -752,6 +753,9 @@ private:
      * refocused if the popup dies while it holds the focus */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
+
+    /* When the user last pressed a key or button, which a window's request to come forward must follow closely */
+    uint64_t m_last_press_ns = 0;
 
     /* The system figures the shell shows, kept across rebuilds of the panels */
     stats_sampler m_stats;

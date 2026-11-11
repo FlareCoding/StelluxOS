@@ -25,6 +25,7 @@ public:
     void setVisible(bool visible) override;
     void setWindowTitle(const QString& title) override;
     void propagateSizeHints() override;
+    void requestActivateWindow() override;
     bool isExposed() const override;
 
 private:

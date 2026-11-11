@@ -369,6 +369,14 @@ void stlxwin_window_set_fullscreen(stlxwin_window* win, int enabled);
 void stlxwin_window_set_cursor(stlxwin_window* win, stlxwin_cursor cursor);
 
 /**
+ * @brief Ask the display manager to raise and focus a toplevel, bringing
+ * it back when minimized. It grants the request only within about a
+ * second of the user's last key or button press and sends no answer, so
+ * a granted request shows only as STLXWIN_EVT_FOCUS_IN.
+ */
+void stlxwin_window_activate(stlxwin_window* win);
+
+/**
  * @brief Current content size, tracking the latest configure.
  */
 void stlxwin_window_get_size(const stlxwin_window* win,

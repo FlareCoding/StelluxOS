@@ -319,8 +319,9 @@ void QStelluxWindow::setVisible(bool visible) {
     QRegion exposed = visible ? QRegion(QRect(QPoint(), geometry().size())) : QRegion();
     QWindowSystemInterface::handleExposeEvent(window(), exposed);
 
+    // Qt takes a newly shown window as active at once, as stlxdm focuses new toplevels and grabbing popups itself
     if (visible && window()->type() != Qt::ToolTip) {
-        requestActivateWindow();
+        QPlatformWindow::requestActivateWindow();
     }
 }
 
@@ -339,6 +340,13 @@ void QStelluxWindow::propagateSizeHints() {
     QSize maximum = windowMaximumSize();
     stlxwin_window_set_min_size(m_handle, to_stlxwin_extent(minimum.width()), to_stlxwin_extent(minimum.height()));
     stlxwin_window_set_max_size(m_handle, to_stlxwin_extent(maximum.width()), to_stlxwin_extent(maximum.height()));
+}
+
+// stlxdm decides whether a shown window comes forward, and Qt learns it from the focus event that follows
+void QStelluxWindow::requestActivateWindow() {
+    if (m_handle) {
+        stlxwin_window_activate(m_handle);
+    }
 }
 
 bool QStelluxWindow::isExposed() const {

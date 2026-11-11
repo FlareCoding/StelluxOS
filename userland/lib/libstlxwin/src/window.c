@@ -229,6 +229,15 @@ void stlxwin_window_set_cursor(stlxwin_window* win, stlxwin_cursor cursor) {
     set_field(win, SWP_FIELD_CURSOR, (uint32_t)cursor, 0, NULL);
 }
 
+void stlxwin_window_activate(stlxwin_window* win) {
+    if (!win || win->dead) {
+        return;
+    }
+
+    swp_activate_window msg = { win->win_id };
+    stlxwin_send(win->conn, SWP_MSG_ACTIVATE_WINDOW, &msg, sizeof(msg));
+}
+
 void stlxwin_window_get_size(const stlxwin_window* win,
                              uint32_t* w, uint32_t* h) {
     if (w) {

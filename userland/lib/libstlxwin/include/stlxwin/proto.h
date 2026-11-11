@@ -55,6 +55,8 @@ enum {
 
     SWP_MSG_SET_LAYOUT     = 0x0110,
 
+    SWP_MSG_ACTIVATE_WINDOW = 0x0111,
+
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
     SWP_MSG_RELEASE        = 0x0203,
@@ -275,6 +277,13 @@ typedef struct {
     swp_layout_entry entries[SWP_OUTPUTS_MAX]; /* `count` used */
 } swp_set_layout;
 _Static_assert(sizeof(swp_set_layout) == 204, "wire layout");
+
+/* Asks the DM to raise and focus a toplevel, or bring it back when minimized. The DM grants it only soon after the
+ * user's last key or button press, with no overlay or grabbing popup holding the input, and sends no answer. */
+typedef struct {
+    uint32_t win_id;
+} swp_activate_window;
+_Static_assert(sizeof(swp_activate_window) == 4, "wire layout");
 
 /* ---- DM to client ---- */
 
