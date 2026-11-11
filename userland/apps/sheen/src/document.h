@@ -17,11 +17,23 @@ class ScintillaEditBase;
 class QWidget;
 struct language;
 
+struct eol_counts {
+    qsizetype crlf = 0;
+    qsizetype cr = 0;
+    qsizetype lf = 0;
+};
+
+struct indentation {
+    bool uses_tabs;
+    int width;
+};
+
 struct file_record {
     QString path;
     file_encoding encoding = { QByteArrayLiteral("UTF-8"), false };
     int eol_mode = SC_EOL_LF;    // the line ending new lines take
     bool has_mixed_eols = false;
+    eol_counts eols;             // as the file was read
     qint64 size = -1;            // at the last load or save, to notice a change made elsewhere
     QDateTime modified;
 };
@@ -81,6 +93,14 @@ public:
      * The claim is true when no recount is queued yet */
     bool claim_eol_recount();
     void recount_eols();
+
+    /* Tabs or spaces by what most indented lines start with, and the width by the most common step between the
+     * indents of neighboring lines, from the first indented lines. Null when no line is indented */
+    std::optional<indentation> detect_indentation() const;
+    void set_indentation(const indentation& indent);
+
+    /* Rewrites every line's indentation in tabs or in spaces, as one undo step */
+    void convert_indentation(bool to_tabs);
 
     /* Binds a document that was never saved to `path`, which the first save creates */
     void set_new_path(const QString& path);
