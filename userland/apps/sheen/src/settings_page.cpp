@@ -10,11 +10,13 @@
 #include <QComboBox>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -53,17 +55,35 @@ static constexpr int KEYS_OR_GAP = 8;
 static constexpr int FILTER_WIDTH = 260;
 static constexpr qreal CAPTION_LETTER_SPACING = 106; // percent, 0.06 em between letters
 static constexpr qreal HALF_PIXEL = 0.5;
+static constexpr int RAIL_ICON_SIZE = 16;
+static constexpr qreal RAIL_GLYPH_STROKE = 1.25;
+
+enum class page_glyph { PEN, BRACKETS, PAGE, FOLDER, KEYBOARD };
 
 struct page_entry {
     const char* name;
     const char* subtitle;
+    page_glyph glyph;
+};
+
+/* A row stating what a page cannot change, shown after the keys of its group */
+struct page_fact {
+    const char* page;
+    const char* group;
+    const char* label;
+    const char* note; // %1 names the system's monospace face
+    const char* value;
 };
 
 static constexpr page_entry PAGES[] = {
-    { "Editor", "Type, indentation and the caret, for every tab." },
-    { "Code", "How a tab in Code mode starts, before View changes it." },
-    { "Text", "How a tab in Text mode starts, before View changes it." },
-    { "Files", "New files, and the size from which a file opens plain." },
+    { "Editor", "Type, indentation and the caret, for every tab.", page_glyph::PEN },
+    { "Code", "How a tab in Code mode starts, before View changes it.", page_glyph::BRACKETS },
+    { "Text", "How a tab in Text mode starts, before View changes it.", page_glyph::PAGE },
+    { "Files", "New files, and the size from which a file opens plain.", page_glyph::FOLDER },
+};
+
+static constexpr page_fact FACTS[] = {
+    { "Editor", "Type", "Typeface", "%1, ligatures off, as the terminal", "fixed" },
 };
 
 static QLabel* make_label(const QString& text, const QFont& font, uint32_t color, QWidget* parent) {
@@ -109,6 +129,59 @@ static QList<QStringList> entry_keys(const command_entry& entry) {
     }
 
     return keys;
+}
+
+// The rail's glyphs on a 16 px grid: a pen, brackets, a page, a folder and a keyboard
+static void paint_page_glyph(QPainter* painter, page_glyph glyph) {
+    switch (glyph) {
+        case page_glyph::PEN:
+            painter->drawPolygon(QPolygonF({ QPointF(10.5, 2.75), QPointF(13.25, 5.5), QPointF(6, 12.75),
+                                             QPointF(3.25, 10) }));
+            painter->drawPolyline(QPolygonF({ QPointF(3.25, 10), QPointF(2.5, 13.5), QPointF(6, 12.75) }));
+            break;
+        case page_glyph::BRACKETS:
+            painter->drawPolyline(QPolygonF({ QPointF(6, 3.5), QPointF(2.5, 8), QPointF(6, 12.5) }));
+            painter->drawPolyline(QPolygonF({ QPointF(10, 3.5), QPointF(13.5, 8), QPointF(10, 12.5) }));
+            break;
+        case page_glyph::PAGE:
+            painter->drawRoundedRect(QRectF(3.5, 2, 9, 12), 1.25, 1.25);
+            painter->drawLine(QPointF(5.75, 6), QPointF(10.25, 6));
+            painter->drawLine(QPointF(5.75, 8.5), QPointF(10.25, 8.5));
+            painter->drawLine(QPointF(5.75, 11), QPointF(8.5, 11));
+            break;
+        case page_glyph::FOLDER:
+            painter->drawPolygon(QPolygonF({ QPointF(2, 12.5), QPointF(2, 3.5), QPointF(6, 3.5), QPointF(7.5, 5.25),
+                                             QPointF(14, 5.25), QPointF(14, 12.5) }));
+            break;
+        case page_glyph::KEYBOARD:
+            painter->drawRoundedRect(QRectF(1.5, 4, 13, 8), 1.5, 1.5);
+            for (qreal x : { 4.5, 7.0, 9.5, 12.0 }) {
+                painter->drawPoint(QPointF(x, 6.75));
+            }
+
+            painter->drawLine(QPointF(5, 9.5), QPointF(11, 9.5));
+            break;
+    }
+}
+
+// A page's glyph in the rail's dim tone, lit while its page shows
+static QIcon page_icon(page_glyph glyph) {
+    QIcon icon;
+    for (QIcon::Mode mode : { QIcon::Normal, QIcon::Selected }) {
+        QPixmap pixmap(RAIL_ICON_SIZE, RAIL_ICON_SIZE);
+        pixmap.fill(Qt::transparent);
+
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QColor tone = token(mode == QIcon::Selected ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY);
+        painter.setPen(QPen(tone, RAIL_GLYPH_STROKE, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        paint_page_glyph(&painter, glyph);
+        painter.end();
+
+        icon.addPixmap(pixmap, mode);
+    }
+
+    return icon;
 }
 
 namespace {
@@ -236,7 +309,35 @@ private:
     QVBoxLayout* m_layout;
 };
 
+/* A fact a page states rather than a key, such as the typeface, its value dim at the right in place of a control */
+class fact_row : public QWidget {
+public:
+    fact_row(const page_fact& fact, QWidget* parent) : QWidget(parent) {
+        QString note = QString::fromLatin1(fact.note).arg(QString::fromLatin1(STLXTHEME_MONO_FONT_FAMILY));
+        auto* words = new QVBoxLayout;
+        words->setSpacing(0);
+        words->addWidget(make_label(QString::fromLatin1(fact.label), ui_font(STLXTHEME_BODY_SIZE, QFont::Medium),
+                                    STLXTHEME_TEXT, this));
+        words->addWidget(make_label(note, ui_font(STLXTHEME_CAPTION_SIZE), STLXTHEME_TEXT_DIM, this));
+
+        auto* layout = new QHBoxLayout(this);
+        layout->setContentsMargins(ROW_PADDING_X, ROW_PADDING_Y, ROW_PADDING_X, ROW_PADDING_Y);
+        layout->addLayout(words, 1);
+        layout->addWidget(make_label(QString::fromLatin1(fact.value), mono_font(STLXTHEME_CAPTION_SIZE),
+                                     STLXTHEME_TEXT_DIM, this));
+    }
+};
+
 } // namespace
+
+// The facts a page states in `group`, after the group's keys
+static void add_facts(group_card* card, const QString& page, const QString& group) {
+    for (const page_fact& fact : FACTS) {
+        if (card && page == QLatin1String(fact.page) && group == QLatin1String(fact.group)) {
+            card->add(new fact_row(fact, card));
+        }
+    }
+}
 
 // A page's margins and its column of titles, groups and rows
 static QVBoxLayout* make_page_layout(QWidget* content) {
@@ -522,6 +623,7 @@ settings_page::settings_page(const sheen_settings& settings, QWidget* parent)
     : QWidget(parent), m_rail(new QListWidget(this)), m_pages(new QStackedWidget(this)), m_saved(settings) {
     m_rail->setFixedWidth(RAIL_WIDTH);
     m_rail->setFrameShape(QFrame::NoFrame);
+    m_rail->setIconSize(QSize(RAIL_ICON_SIZE, RAIL_ICON_SIZE));
     m_rail->setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::Medium));
     m_rail->setStyleSheet(QStringLiteral("QListWidget { background: transparent; padding: %1px; }"
                                          "QListWidget::item { height: 32px; padding-left: 10px; color: %2; "
@@ -543,11 +645,11 @@ settings_page::settings_page(const sheen_settings& settings, QWidget* parent)
             }
         }
 
-        m_rail->addItem(name);
+        m_rail->addItem(new QListWidgetItem(page_icon(entry.glyph), name));
         m_pages->addWidget(make_page(name, QString::fromLatin1(entry.subtitle), page_fields));
     }
 
-    m_rail->addItem(QStringLiteral("Shortcuts"));
+    m_rail->addItem(new QListWidgetItem(page_icon(page_glyph::KEYBOARD), QStringLiteral("Shortcuts")));
     m_pages->addWidget(make_shortcuts_page());
 
     auto* footer = new QWidget(this);
@@ -611,6 +713,7 @@ QWidget* settings_page::make_page(const QString& name, const QString& subtitle, 
     group_card* card = nullptr;
     for (const setting_field& field : fields) {
         if (group != QLatin1String(field.group)) {
+            add_facts(card, name, group);
             group = QString::fromLatin1(field.group);
             card = add_group(layout, group, !card, content).second;
         }
@@ -622,6 +725,7 @@ QWidget* settings_page::make_page(const QString& name, const QString& subtitle, 
         m_rows.append(row);
     }
 
+    add_facts(card, name, group);
     layout->addStretch(1);
     return make_scroll(content);
 }
