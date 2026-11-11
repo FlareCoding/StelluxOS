@@ -258,7 +258,7 @@ static sptr_t scintilla_rgb(uint32_t argb) {
     return static_cast<sptr_t>(((argb & 0xFF) << 16) | (argb & 0xFF00) | ((argb >> 16) & 0xFF));
 }
 
-static sptr_t scintilla_rgba(uint32_t argb) {
+sptr_t scintilla_rgba(uint32_t argb) {
     return static_cast<sptr_t>((argb & 0xFF000000u) | static_cast<uint32_t>(scintilla_rgb(argb)));
 }
 
