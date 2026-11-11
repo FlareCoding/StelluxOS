@@ -129,8 +129,33 @@ document::document(QWidget* parent, int untitled_number, const sheen_settings& s
     configure_view();
 }
 
+// The placeholder may be closing its own tab from a button's signal, so it goes once that returns
 document::~document() {
+    if (m_placeholder) {
+        m_placeholder->deleteLater();
+    }
+
     delete m_view;
+}
+
+// No encoding yet, so the tab reopened after a close looks at the bytes again
+void document::hold(const QString& path, const QByteArray& bytes, QWidget* placeholder) {
+    m_file.path = path;
+    m_file.encoding = {};
+    m_held_bytes = bytes;
+    m_placeholder = placeholder;
+    remember_disk_state();
+}
+
+bool document::open_held(const QByteArray& encoding) {
+    if (!load(m_file.path, m_held_bytes, encoding)) {
+        return false;
+    }
+
+    m_held_bytes.clear();
+    m_placeholder->deleteLater();
+    m_placeholder = nullptr;
+    return true;
 }
 
 bool document::load(const QString& path, const QByteArray& bytes, const QByteArray& encoding) {

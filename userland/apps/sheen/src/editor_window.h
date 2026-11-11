@@ -76,6 +76,7 @@ private:
     void new_document();
     void choose_files_to_open(const QString& folder);
     bool open_path(const QString& path, const QByteArray& encoding, int index);
+    void hold_binary(document* doc, const QString& path, const QByteArray& bytes);
     bool save_document(document* doc);
     bool save_document_as(document* doc, const QString& title = QString());
     bool write_document(document* doc, const QString& path);

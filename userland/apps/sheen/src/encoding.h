@@ -35,6 +35,10 @@ encoded_text encode_text(const QByteArray& utf8, const file_encoding& encoding);
 /* NUL bytes near the start mark a file that is not text in any single or multi byte encoding Sheen detects */
 bool looks_binary(const QByteArray& bytes);
 
+/* UTF-16 LE or BE when the NULs of a file without a byte order mark fall on every other byte, as ASCII text in
+ * UTF-16 has them, empty otherwise */
+QByteArray guess_utf16(const QByteArray& bytes);
+
 /* The encodings Sheen can read and write here, Unicode first */
 QList<QByteArray> available_encodings();
 

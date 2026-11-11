@@ -4,6 +4,7 @@
 #include "file_sheet.h"
 #include "kiln.h"
 #include "menu_style.h"
+#include "placeholder.h"
 #include "tab_strip.h"
 #include "tab_switcher.h"
 
@@ -685,8 +686,10 @@ void editor_window::refresh_commands() {
         action->setEnabled(is_free);
     }
 
+    // A file held behind its placeholder has no text yet to act on
+    bool has_text = doc && !doc->placeholder();
     for (command id : DOCUMENT_COMMANDS) {
-        m_actions.value(id)->setEnabled(is_free && doc);
+        m_actions.value(id)->setEnabled(is_free && has_text);
     }
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
@@ -940,22 +943,14 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
 
             return false;
         }
-
-        if (looks_binary(bytes)) {
-            prompt_sheet question(this, QStringLiteral("%1 looks binary").arg(info.fileName()),
-                                  QStringLiteral("It has NUL bytes in its first 64 KB. As text it shows them as marks, "
-                                                 "and saving keeps every byte."),
-                                  QStringLiteral("Open as Text"), QString(), false);
-            if (static_cast<prompt_answer>(run_sheet(question)) != prompt_answer::PRIMARY) {
-                return false;
-            }
-        }
     }
 
     document* pristine = current && current->is_pristine() ? current : nullptr;
     auto doc = std::make_unique<document>(m_stack, lowest_free_untitled_number(), m_settings);
     if (!info.exists()) {
         doc->set_new_path(absolute);
+    } else if (encoding.isEmpty() && looks_binary(bytes)) {
+        hold_binary(doc.get(), absolute, bytes);
     } else if (!doc->load(absolute, bytes, encoding)) {
         if (current) {
             QString reason = QStringLiteral(" is not valid %1, so it was not opened.").arg(encoding_label(encoding));
@@ -972,6 +967,23 @@ bool editor_window::open_path(const QString& path, const QByteArray& encoding, i
     }
 
     return true;
+}
+
+// The file's bytes wait behind a placeholder in its tab until the user picks how to read them
+void editor_window::hold_binary(document* doc, const QString& path, const QByteArray& bytes) {
+    auto* placeholder = new binary_placeholder(m_stack, QFileInfo(path).fileName(), guess_utf16(bytes));
+    m_stack->addWidget(placeholder);
+    doc->hold(path, bytes, placeholder);
+    placeholder->on_close = [this, doc] { close_document(index_of(doc)); };
+    placeholder->on_open_as = [this, doc](const QByteArray& encoding) {
+        if (!doc->open_held(encoding)) {
+            show_banner(doc, { banner_kind::FAILURE, doc->display_name(),
+                               QStringLiteral(" is not valid %1.").arg(encoding_label(encoding)), {} });
+            return;
+        }
+
+        show_current_document();
+    };
 }
 
 // A clean tab whose file is on disk has nothing to write, and a file changed elsewhere asks before it is replaced
@@ -1311,7 +1323,12 @@ void editor_window::reopen_closed_tab() {
 }
 
 // A clean tab follows its file quietly, an unsaved one keeps the user's text and says what happened
+// A held file has no text yet to fall behind its file
 void editor_window::check_disk(document* doc) {
+    if (doc->placeholder()) {
+        return;
+    }
+
     disk_state state = doc->check_disk();
     if (state == disk_state::SAME) {
         return;
@@ -1480,9 +1497,10 @@ void editor_window::show_current_document() {
 
     m_recent_tabs.removeAll(doc);
     m_recent_tabs.prepend(doc);
-    m_stack->setCurrentWidget(doc->view());
+    QWidget* shown = doc->placeholder() ? doc->placeholder() : doc->view();
+    m_stack->setCurrentWidget(shown);
     if (!m_open_sheet) {
-        doc->view()->setFocus();
+        shown->setFocus();
         check_disk(doc);
     }
 
@@ -1512,7 +1530,7 @@ void editor_window::refresh_tab(document* doc) {
 void editor_window::refresh_status() {
     document* doc = current_document();
     m_status->set_message(m_status_note);
-    if (!doc) {
+    if (!doc || doc->placeholder()) {
         m_status->set_items({}, {});
         return;
     }

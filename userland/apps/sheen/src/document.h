@@ -64,6 +64,12 @@ public:
     document(const document&) = delete;
     document& operator=(const document&) = delete;
 
+    /* Keeps the bytes of a file that looks binary unopened behind `placeholder`, which the document then owns, until
+     * `open_held` decodes them */
+    void hold(const QString& path, const QByteArray& bytes, QWidget* placeholder);
+    bool open_held(const QByteArray& encoding);
+    QWidget* placeholder() const { return m_placeholder; }
+
     /* Fills the view with `bytes`, the contents of the file at `path`, decoded as `encoding`, or as detected when
      * `encoding` is empty. Returns false when the bytes are not valid in `encoding` */
     bool load(const QString& path, const QByteArray& bytes, const QByteArray& encoding);
@@ -148,6 +154,8 @@ private:
     const sheen_settings& m_settings;
     bool m_is_deleted = false;
     std::optional<banner_message> m_banner;
+    QByteArray m_held_bytes;
+    QWidget* m_placeholder = nullptr;
 };
 
 #endif
