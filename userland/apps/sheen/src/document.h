@@ -3,12 +3,15 @@
 
 /* One open file: the Scintilla view that edits it in UTF-8, its language, and the record of the file on disk with
  * the encoding and line ending it keeps. A document without a path has never been saved. */
+#include "banner.h"
 #include "encoding.h"
 
 #include <QDateTime>
 #include <QString>
 
 #include <Scintilla.h>
+
+#include <optional>
 
 class ScintillaEditBase;
 class QWidget;
@@ -22,6 +25,8 @@ struct file_record {
     qint64 size = -1;            // at the last load or save, to notice a change made elsewhere
     QDateTime modified;
 };
+
+enum class disk_state { SAME, CHANGED, DELETED };
 
 /* The first character an encoding cannot hold, as a refused save names it */
 struct unencodable_char {
@@ -45,6 +50,9 @@ public:
     /* Rereads the file from disk as `encoding`. Returns false with `error` set when it does not decode as one */
     bool reload_as(const QByteArray& encoding, QString* error);
 
+    /* Replaces the text with the file's current contents as one undo step, keeping the caret's line and column */
+    bool reload_from_disk(QString* error);
+
     /* Writes the text to `path` through a temporary file renamed over it, so a failed save leaves the file as it was.
      * Returns false with `error` set, or with `unencodable` naming the first character the encoding cannot hold */
     bool save(const QString& path, QString* error, unencodable_char* unencodable);
@@ -62,13 +70,24 @@ public:
     /* Binds a document that was never saved to `path`, which the first save creates */
     void set_new_path(const QString& path);
 
+    /* Compares the file on disk with the record of the last load or save */
+    disk_state check_disk() const;
+
+    /* Takes the file on disk as it is now as the record, so a change made elsewhere stops counting */
+    void accept_disk_state();
+    void set_deleted(bool is_deleted);
+
     bool is_modified() const;
+    bool is_deleted() const { return m_is_deleted; }
     bool is_untitled() const { return m_file.path.isEmpty(); }
     bool is_pristine() const;
     int untitled_number() const { return m_untitled_number; }
     int changed_line_count() const;
     QString display_name() const;
     QString first_line_name() const;
+
+    const std::optional<banner_message>& banner() const { return m_banner; }
+    void set_banner(const std::optional<banner_message>& message) { m_banner = message; }
 
     ScintillaEditBase* view() const { return m_view; }
     const file_record& file() const { return m_file; }
@@ -87,6 +106,8 @@ private:
     bool m_is_eol_recount_queued = false;
     const language* m_language = nullptr;
     int m_untitled_number;
+    bool m_is_deleted = false;
+    std::optional<banner_message> m_banner;
 };
 
 #endif

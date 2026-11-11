@@ -1,8 +1,8 @@
 #ifndef SHEEN_EDITOR_WINDOW_H
 #define SHEEN_EDITOR_WINDOW_H
 
-/* Sheen's window: the menu button, a tab per document, the current document's text and the status bar. Commands
- * arrive through `run`, and every question is a sheet inside the window. */
+/* Sheen's window: the menu button, a tab per document, a banner about the current file, its text and the status
+ * bar. Commands arrive through `run`, and every question is a sheet inside the window. */
 #include "actions.h"
 #include "document.h"
 #include "sheet.h"
@@ -19,6 +19,7 @@ class QAction;
 class QLabel;
 class QMenu;
 class QStackedWidget;
+class banner;
 class empty_state;
 class menu_style;
 class sheet;
@@ -36,6 +37,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void changeEvent(QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     void create_commands();
@@ -63,16 +66,21 @@ private:
     bool save_document_as(document* doc, const QString& title = QString());
     bool write_document(document* doc, const QString& path);
     bool save_documents(const QList<document*>& docs, const QString& purpose);
+    void revert_document(document* doc);
     bool close_document(int index);
     bool close_documents(const QList<document*>& docs, const QString& purpose);
     prompt_answer ask_about_unsaved(document* doc, const QString& purpose);
     void remove_document(int index);
+    void check_disk(document* doc);
     void select_tab(int index);
     void show_empty_state();
 
     void show_current_document();
     void refresh_tab(document* doc);
     void refresh_status();
+    void refresh_banner();
+    void show_banner(document* doc, const banner_message& message);
+    void show_status_note(const QString& note);
     void show_fact_menu(file_fact fact, const QPoint& anchor);
     void show_text_menu(const QPoint& anchor);
     void show_tab_menu(int index, const QPoint& anchor);
@@ -82,6 +90,7 @@ private:
     QString sheet_folder() const;
 
     tab_row* m_tab_row;
+    banner* m_banner;
     QStackedWidget* m_stack;
     empty_state* m_empty_state;
     status_bar* m_status;
@@ -94,6 +103,7 @@ private:
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;
     sheet* m_open_sheet = nullptr;
+    QString m_status_note;
 };
 
 #endif

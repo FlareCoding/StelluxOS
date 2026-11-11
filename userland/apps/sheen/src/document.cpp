@@ -83,7 +83,6 @@ static const key_binding KEPT_KEYS[] = {
     { SCK_INSERT, SCMOD_NORM, SCI_EDITTOGGLEOVERTYPE },
     { SCK_INSERT, SHIFT, SCI_PASTE },
     { SCK_INSERT, CTRL, SCI_COPYALLOWLINE },
-    { SCK_ESCAPE, SCMOD_NORM, SCI_CANCEL },
     { SCK_BACK, SCMOD_NORM, SCI_DELETEBACK },
     { SCK_BACK, SHIFT, SCI_DELETEBACK },
     { SCK_BACK, CTRL, SCI_DELWORDLEFT },
@@ -168,6 +167,45 @@ bool document::reload_as(const QByteArray& encoding, QString* error) {
     return true;
 }
 
+bool document::reload_from_disk(QString* error) {
+    QFile file(m_file.path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = file.errorString();
+        return false;
+    }
+
+    QByteArray bytes = file.readAll();
+    decoded_text text;
+    if (!decode_as(bytes, m_file.encoding.name, &text)) {
+        text = decode_detected(bytes);
+    }
+
+    sptr_t caret = m_view->send(SCI_GETCURRENTPOS);
+    sptr_t line = m_view->send(SCI_LINEFROMPOSITION, caret);
+    sptr_t column = m_view->send(SCI_GETCOLUMN, caret);
+    sptr_t first_line = m_view->send(SCI_GETFIRSTVISIBLELINE);
+
+    // One undo step, so Ctrl Z brings back the text from before the reload
+    m_view->send(SCI_BEGINUNDOACTION);
+    m_view->send(SCI_TARGETWHOLEDOCUMENT);
+    m_view->send(SCI_REPLACETARGET, text.utf8.size(), reinterpret_cast<sptr_t>(text.utf8.constData()));
+    m_view->send(SCI_ENDUNDOACTION);
+    m_view->send(SCI_SETSAVEPOINT);
+
+    sptr_t last_line = m_view->send(SCI_GETLINECOUNT) - 1;
+    m_view->send(SCI_GOTOPOS, m_view->send(SCI_FINDCOLUMN, qMin(line, last_line), column));
+    m_view->send(SCI_SETFIRSTVISIBLELINE, first_line);
+
+    eol_counts counts = count_eols(text.utf8);
+    m_file.encoding = text.encoding;
+    set_eol_mode(majority_eol_mode(counts));
+    m_file.has_mixed_eols = has_mixed_eols(counts);
+
+    m_is_deleted = false;
+    remember_disk_state();
+    return true;
+}
+
 bool document::save(const QString& path, QString* error, unencodable_char* unencodable) {
     QByteArray utf8 = text();
     encoded_text encoded = encode_text(utf8, m_file.encoding);
@@ -204,6 +242,7 @@ bool document::save(const QString& path, QString* error, unencodable_char* unenc
     m_view->send(SCI_SETSAVEPOINT);
     bool is_renamed = path != m_file.path;
     m_file.path = path;
+    m_is_deleted = false;
     remember_disk_state();
     if (is_renamed) {
         detect_language();
@@ -250,8 +289,31 @@ void document::set_new_path(const QString& path) {
     detect_language();
 }
 
+disk_state document::check_disk() const {
+    if (m_file.path.isEmpty() || m_file.size < 0) {
+        return disk_state::SAME;
+    }
+
+    QFileInfo info(m_file.path);
+    if (!info.isFile()) {
+        return disk_state::DELETED;
+    }
+
+    bool is_changed = info.size() != m_file.size || info.lastModified() != m_file.modified;
+    return is_changed ? disk_state::CHANGED : disk_state::SAME;
+}
+
+void document::accept_disk_state() {
+    remember_disk_state();
+}
+
+void document::set_deleted(bool is_deleted) {
+    m_is_deleted = is_deleted;
+}
+
+// A file deleted on disk counts as unsaved, since its text now lives only here
 bool document::is_modified() const {
-    return m_view->send(SCI_GETMODIFY) != 0;
+    return m_is_deleted || m_view->send(SCI_GETMODIFY) != 0;
 }
 
 // An untouched untitled document, which a file opened next takes the place of
@@ -325,6 +387,7 @@ void document::replace_text(const QByteArray& utf8) {
     eol_counts counts = count_eols(utf8);
     set_eol_mode(majority_eol_mode(counts));
     m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_is_deleted = false;
     remember_disk_state();
     fit_line_numbers(m_view);
 }
