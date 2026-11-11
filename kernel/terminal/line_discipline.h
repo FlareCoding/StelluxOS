@@ -56,13 +56,22 @@ __PRIVILEGED_CODE void ld_input(line_discipline* ld, ring_buffer* sink,
  * Acquires ld->lock once for the entire buffer. More efficient than
  * per-byte ld_input for process-context callers (PTY master write).
  * Echo, ring_buffer_write, and signal sends are called while holding
- * ld->lock and must be nonblocking.
+ * ld->lock and must be nonblocking. Stops at the first byte the sink
+ * has no room for, so input is never dropped.
+ * @return The bytes taken from buf.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void ld_input_buf(line_discipline* ld, ring_buffer* sink,
-                                     const echo_target* echo,
-                                     const signal_target* sig,
-                                     const char* buf, size_t len);
+__PRIVILEGED_CODE size_t ld_input_buf(line_discipline* ld, ring_buffer* sink,
+                                       const echo_target* echo,
+                                       const signal_target* sig,
+                                       const char* buf, size_t len);
+
+/**
+ * @brief The room the sink must have before ld_input_buf can take any
+ * byte: one byte in raw mode, the pending line and its end in cooked.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t ld_room_needed(line_discipline* ld);
 
 /**
  * @brief Switch between raw and cooked mode. Resets line buffer.

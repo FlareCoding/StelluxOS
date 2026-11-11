@@ -121,25 +121,53 @@ __PRIVILEGED_CODE void ld_input(line_discipline* ld, ring_buffer* sink,
     ld_process_byte(ld, sink, echo, sig, c, false, irq);
 }
 
-__PRIVILEGED_CODE void ld_input_buf(line_discipline* ld, ring_buffer* sink,
-                                     const echo_target* echo,
-                                     const signal_target* sig,
-                                     const char* buf, size_t len) {
+// The sink room taking c needs: a byte in raw mode, the whole pending line when c ends one in cooked mode
+static size_t room_for_byte(const line_discipline* ld, char c) {
+    if (ld->isig && signal_for_char(c)) {
+        return 0;
+    }
+
+    if (ld->mode == LD_MODE_RAW) {
+        return 1;
+    }
+
+    bool is_line_end = (c == '\r' || c == '\n') && !(ld->prev_char == '\r' && c == '\n');
+    return is_line_end ? ld->line_len + 1 : 0;
+}
+
+__PRIVILEGED_CODE static bool sink_has_room(ring_buffer* sink, size_t len) {
+    return len == 0 || ring_buffer_wait_writable(sink, len, false, true) >= 0;
+}
+
+__PRIVILEGED_CODE size_t ld_input_buf(line_discipline* ld, ring_buffer* sink,
+                                       const echo_target* echo,
+                                       const signal_target* sig,
+                                       const char* buf, size_t len) {
     sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
 
     // The raw bulk path only applies with ISIG off, interception needs
     // the per-byte scan
     if (ld->mode == LD_MODE_RAW && !ld->isig) {
         sync::spin_unlock_irqrestore(ld->lock, irq);
-        (void)ring_buffer_write(sink, reinterpret_cast<const uint8_t*>(buf), len, true);
-        return;
+        ssize_t written = ring_buffer_write(sink, reinterpret_cast<const uint8_t*>(buf), len, true);
+        return written > 0 ? static_cast<size_t>(written) : 0;
     }
 
-    for (size_t i = 0; i < len; i++) {
-        ld_process_byte(ld, sink, echo, sig, buf[i], true, irq);
+    size_t taken = 0;
+    while (taken < len && sink_has_room(sink, room_for_byte(ld, buf[taken]))) {
+        ld_process_byte(ld, sink, echo, sig, buf[taken], true, irq);
+        taken++;
     }
 
     sync::spin_unlock_irqrestore(ld->lock, irq);
+    return taken;
+}
+
+__PRIVILEGED_CODE size_t ld_room_needed(line_discipline* ld) {
+    sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
+    size_t room = ld->mode == LD_MODE_RAW ? 1 : ld->line_len + 1;
+    sync::spin_unlock_irqrestore(ld->lock, irq);
+    return room;
 }
 
 int32_t ld_set_mode(line_discipline* ld, uint32_t cmd) {
