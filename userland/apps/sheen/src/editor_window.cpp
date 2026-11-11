@@ -5,8 +5,10 @@
 #include "kiln.h"
 #include "menu_style.h"
 #include "tab_strip.h"
+#include "tab_switcher.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QDir>
@@ -40,6 +42,7 @@ static constexpr int RECENT_FILE_LIMIT = 20;
 static constexpr int CASCADE_WIDTH = 272;
 static constexpr int STATUS_NOTE_MS = 4000;
 
+static constexpr int SWITCHER_GAP = 8;
 static constexpr QChar BULLET(0x2022);
 
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
@@ -182,7 +185,7 @@ static void go_to_matching_bracket(ScintillaEditBase* view) {
 editor_window::editor_window()
     : m_tab_row(new tab_row(this)), m_banner(new banner(this)), m_stack(new QStackedWidget(this)),
       m_empty_state(new empty_state(this)), m_status(new status_bar(this)), m_menu_style(new menu_style),
-      m_main_menu(new QMenu(this)) {
+      m_main_menu(new QMenu(this)), m_switcher(new tab_switcher(this)) {
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -606,10 +609,10 @@ void editor_window::run(command id) {
             go_to_matching_bracket(view);
             break;
         case command::RECENT_TAB:
-            if (m_recent_tabs.size() > 1) {
-                select_tab(index_of(m_recent_tabs.at(1)));
-            }
-
+            step_recent_tab(1);
+            break;
+        case command::RECENT_TAB_BACK:
+            step_recent_tab(-1);
             break;
         case command::NEXT_TAB:
             select_tab((current + 1) % count);
@@ -1343,6 +1346,58 @@ void editor_window::select_tab(int index) {
     }
 
     tabs()->setCurrentIndex(index);
+}
+
+// A first Ctrl Tab picks the previous tab and a second while Ctrl stays held shows the list. Ctrl coming up opens
+// the lit tab, so a quick tap flips between two files
+void editor_window::step_recent_tab(int step) {
+    int count = static_cast<int>(m_recent_tabs.size());
+    if (count < 2) {
+        return;
+    }
+
+    if (!m_is_switching_tabs) {
+        m_is_switching_tabs = true;
+        m_switch_index = step > 0 ? 1 : count - 1;
+        qApp->installEventFilter(this);
+        return;
+    }
+
+    m_switch_index = (m_switch_index + step + count) % count;
+    QStringList names;
+    QList<bool> unsaved;
+    for (document* doc : m_recent_tabs) {
+        names.append(doc->display_name());
+        unsaved.append(doc->is_modified());
+    }
+
+    int top = m_tab_row->mapTo(this, QPoint(0, m_tab_row->height())).y() + SWITCHER_GAP;
+    m_switcher->show_list(names, unsaved, m_switch_index, top);
+}
+
+void editor_window::finish_tab_switch(bool opens_lit_tab) {
+    qApp->removeEventFilter(this);
+    m_is_switching_tabs = false;
+    m_switcher->hide();
+    if (opens_lit_tab && m_switch_index < m_recent_tabs.size()) {
+        select_tab(index_of(m_recent_tabs.at(m_switch_index)));
+    }
+}
+
+// Watches the whole application only while Ctrl Tab is held, for Ctrl coming up, Esc or a click
+bool editor_window::eventFilter(QObject* watched, QEvent* event) {
+    if (!m_is_switching_tabs) {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    bool is_ctrl_up = event->type() == QEvent::KeyRelease && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Control;
+    bool is_escape = event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape;
+    if (is_ctrl_up || is_escape || event->type() == QEvent::MouseButtonPress) {
+        finish_tab_switch(is_ctrl_up);
+        return is_escape;
+    }
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void editor_window::show_tab_list() {

@@ -25,6 +25,7 @@ class menu_style;
 class sheet;
 class tab_row;
 class tab_strip;
+class tab_switcher;
 
 /* A closed tab, enough to open it again where it was */
 struct closed_tab {
@@ -49,6 +50,7 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     void changeEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void create_commands();
@@ -85,6 +87,8 @@ private:
     void check_disk(document* doc);
     void select_tab(int index);
     void show_empty_state();
+    void step_recent_tab(int step);
+    void finish_tab_switch(bool opens_lit_tab);
     void show_tab_list();
     void close_saved_tabs();
 
@@ -117,6 +121,9 @@ private:
     QString m_last_sheet_folder;
     QHash<command, QAction*> m_actions;
     sheet* m_open_sheet = nullptr;
+    tab_switcher* m_switcher;
+    bool m_is_switching_tabs = false;
+    int m_switch_index = 0;
     QString m_status_note;
 };
 
