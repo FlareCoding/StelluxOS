@@ -347,6 +347,7 @@ void document::set_language(const language* lang) {
 void document::set_mode(edit_mode mode, bool is_chosen) {
     m_mode = mode;
     m_is_mode_chosen = m_is_mode_chosen || is_chosen;
+    set_folding_shown(m_view, mode == edit_mode::CODE && !m_is_large);
     apply_mode_defaults(m_view, mode == edit_mode::CODE ? m_settings.code : m_settings.text);
     limit_wrap();
     if (mode == edit_mode::TEXT) {

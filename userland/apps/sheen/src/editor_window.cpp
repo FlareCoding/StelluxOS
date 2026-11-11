@@ -229,6 +229,21 @@ static void preview_line(ScintillaEditBase* view, sptr_t line) {
     view->send(SCI_MARKERADD, line - 1, GOTO_MARKER);
 }
 
+// Folds or opens the block holding the caret from its header, leaving the caret on the header once its line hides
+static void fold_at_caret(ScintillaEditBase* view, bool is_folding) {
+    sptr_t line = view->send(SCI_LINEFROMPOSITION, view->send(SCI_GETCURRENTPOS));
+    bool is_header = view->send(SCI_GETFOLDLEVEL, line) & SC_FOLDLEVELHEADERFLAG;
+    sptr_t header = is_header ? line : view->send(SCI_GETFOLDPARENT, line);
+    if (header < 0) {
+        return;
+    }
+
+    view->send(SCI_FOLDLINE, header, is_folding ? SC_FOLDACTION_CONTRACT : SC_FOLDACTION_EXPAND);
+    if (is_folding && header != line) {
+        view->send(SCI_GOTOPOS, view->send(SCI_GETLINEENDPOSITION, header));
+    }
+}
+
 static void go_to_matching_bracket(ScintillaEditBase* view) {
     sptr_t caret = view->send(SCI_GETCURRENTPOS);
     sptr_t match = view->send(SCI_BRACEMATCH, caret, 0);
@@ -776,6 +791,16 @@ void editor_window::run(command id) {
         case command::WHITESPACE:
             view->send(SCI_SETVIEWWS, is_checked ? SCWS_VISIBLEALWAYS : SCWS_INVISIBLE);
             break;
+        case command::FOLD:
+        case command::UNFOLD:
+            fold_at_caret(view, id == command::FOLD);
+            break;
+        case command::FOLD_ALL:
+            view->send(SCI_FOLDALL, SC_FOLDACTION_CONTRACT | SC_FOLDACTION_CONTRACT_EVERY_LEVEL);
+            break;
+        case command::UNFOLD_ALL:
+            view->send(SCI_FOLDALL, SC_FOLDACTION_EXPAND);
+            break;
         case command::ZOOM_IN:
             view->send(SCI_ZOOMIN);
             break;
@@ -846,6 +871,12 @@ void editor_window::refresh_commands() {
         for (command id : { command::CODE_MODE, command::TEXT_MODE, command::LANGUAGE, command::WORD_WRAP }) {
             m_actions.value(id)->setEnabled(false);
         }
+    }
+
+    // Only Code mode folds, and a large file has no lexer to find its blocks
+    bool can_fold = has_text && doc->mode() == edit_mode::CODE && !doc->is_large();
+    for (command id : { command::FOLD, command::UNFOLD, command::FOLD_ALL, command::UNFOLD_ALL }) {
+        m_actions.value(id)->setEnabled(is_free && can_fold);
     }
 
     m_actions.value(command::REOPEN_CLOSED_TAB)->setEnabled(is_free && !m_closed_tabs.isEmpty());
