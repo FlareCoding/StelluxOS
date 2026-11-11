@@ -78,6 +78,7 @@ private:
     document* find_open(const QString& path) const;
     tab_strip* tabs() const;
     int insertion_index() const;
+    bool is_untitled_number_taken(int number) const;
     int lowest_free_untitled_number() const;
     void remember_recent_file(const QString& path);
 

@@ -1345,18 +1345,20 @@ int editor_window::insertion_index() const {
     return m_open_sheet ? tabs()->count() : tabs()->currentIndex() + 1;
 }
 
+bool editor_window::is_untitled_number_taken(int number) const {
+    for (const std::unique_ptr<document>& doc : m_documents) {
+        if (doc->is_untitled() && doc->untitled_number() == number) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 int editor_window::lowest_free_untitled_number() const {
     int number = 1;
-    bool is_taken = true;
-    while (is_taken) {
-        is_taken = false;
-        for (const std::unique_ptr<document>& doc : m_documents) {
-            if (doc->is_untitled() && doc->untitled_number() == number) {
-                is_taken = true;
-                number++;
-                break;
-            }
-        }
+    while (is_untitled_number_taken(number)) {
+        number++;
     }
 
     return number;
@@ -1896,7 +1898,13 @@ void editor_window::reopen_closed_tab() {
         return;
     }
 
-    auto doc = std::make_unique<document>(m_stack, closed.untitled_number, m_settings);
+    // An untitled tab opened since the close may hold the number, and then the lowest free one is taken
+    int number = closed.untitled_number;
+    if (is_untitled_number_taken(number)) {
+        number = lowest_free_untitled_number();
+    }
+
+    auto doc = std::make_unique<document>(m_stack, number, m_settings);
     doc->adopt(closed.scintilla_document, closed.file, closed.lang);
     doc->restore_view_state(closed.view);
     add_document(std::move(doc), closed.index);
