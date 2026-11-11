@@ -26,6 +26,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStackedWidget>
@@ -61,6 +62,11 @@ static constexpr int STATUS_NOTE_MS = 4000;
 static constexpr int SWITCHER_GAP = 8;
 static constexpr int GOTO_MARKER = 1;
 static constexpr char BRACKETS[] = "()[]{}";
+static constexpr char OPENING_BRACKETS[] = "([{";
+static constexpr char CLOSING_BRACKETS[] = ")]}";
+
+// A list item in Text mode: its indent, a bullet or a number with its delimiter, the spacing and the item's text
+static const QRegularExpression LIST_ITEM(QStringLiteral("^(\\s*)(?:([-*+])|(\\d+)([.)]))(\\s+)(.*)$"));
 static constexpr int PERMILLE = 1000;
 static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
 static constexpr qint64 BYTES_PER_GB = 1024 * BYTES_PER_MB;
@@ -268,6 +274,88 @@ static void highlight_brackets(ScintillaEditBase* view, bool is_on) {
     } else {
         view->send(SCI_BRACEHIGHLIGHT, at, match);
     }
+}
+
+static QByteArray line_bytes(ScintillaEditBase* view, sptr_t line, sptr_t end) {
+    sptr_t start = view->send(SCI_POSITIONFROMLINE, line);
+    const char* text = reinterpret_cast<const char*>(view->send(SCI_GETRANGEPOINTER, start, end - start));
+    return QByteArray(text, end - start);
+}
+
+// The next item's marker after `item`, the same bullet or the next number, followed by the same spacing
+static QString next_list_marker(const QRegularExpressionMatch& item) {
+    QString bullet = item.captured(2);
+    QString lead = bullet.isEmpty() ? QString::number(item.captured(3).toLongLong() + 1) + item.captured(4) : bullet;
+    return lead + item.captured(5);
+}
+
+// Enter keeps the indent. Code adds a level after an opening bracket and Text continues a list, where Enter on an
+// empty item ends the list instead. A closing bracket typed alone on its line outdents to its partner's line
+static void continue_line(ScintillaEditBase* view, int character, bool is_code) {
+    if (view->send(SCI_GETSELECTIONS) != 1) {
+        return;
+    }
+
+    sptr_t caret = view->send(SCI_GETCURRENTPOS);
+    sptr_t line = view->send(SCI_LINEFROMPOSITION, caret);
+    char line_end = view->send(SCI_GETEOLMODE) == SC_EOL_CR ? '\r' : '\n';
+    if (character == line_end && line > 0) {
+        sptr_t previous = line - 1;
+        QString text = QString::fromUtf8(line_bytes(view, previous, view->send(SCI_GETLINEENDPOSITION, previous)));
+        sptr_t indent = view->send(SCI_GETLINEINDENTATION, previous);
+
+        QString trimmed = text.trimmed();
+        bool opens_block = !trimmed.isEmpty() && QByteArrayView(OPENING_BRACKETS).contains(trimmed.back().toLatin1());
+        QRegularExpressionMatch item = LIST_ITEM.match(text);
+        QString marker;
+
+        if (is_code && opens_block) {
+            sptr_t unit = view->send(SCI_GETINDENT);
+            indent += unit > 0 ? unit : view->send(SCI_GETTABWIDTH);
+        } else if (!is_code && item.hasMatch() && item.captured(6).isEmpty()) {
+            sptr_t start = view->send(SCI_POSITIONFROMLINE, previous) + item.capturedLength(1);
+            view->send(SCI_SETTARGETRANGE, start, caret);
+            view->send(SCI_REPLACETARGET, 0, reinterpret_cast<sptr_t>(""));
+            return;
+        } else if (!is_code && item.hasMatch()) {
+            marker = next_list_marker(item);
+        }
+
+        view->send(SCI_SETLINEINDENTATION, line, indent);
+        sptr_t at = view->send(SCI_GETLINEINDENTPOSITION, line);
+        QByteArray bytes = marker.toUtf8();
+        view->send(SCI_INSERTTEXT, at, reinterpret_cast<sptr_t>(bytes.constData()));
+        view->send(SCI_SETEMPTYSELECTION, at + bytes.size());
+        return;
+    }
+
+    bool is_closing = QByteArrayView(CLOSING_BRACKETS).contains(static_cast<char>(character));
+    if (!is_code || !is_closing || !line_bytes(view, line, caret - 1).trimmed().isEmpty()) {
+        return;
+    }
+
+    // The bracket just typed is styled first, since a bracket matches only one of the same style
+    view->send(SCI_COLOURISE, view->send(SCI_POSITIONFROMLINE, line), caret);
+    sptr_t match = view->send(SCI_BRACEMATCH, caret - 1, 0);
+    if (match >= 0) {
+        sptr_t match_line = view->send(SCI_LINEFROMPOSITION, match);
+        view->send(SCI_SETLINEINDENTATION, line, view->send(SCI_GETLINEINDENTATION, match_line));
+        view->send(SCI_SETEMPTYSELECTION, view->send(SCI_GETLINEINDENTPOSITION, line) + 1);
+    }
+}
+
+// Enter types its line end inside one undo action, so the indentation continue_line adds undoes with it
+static bool type_line_end(ScintillaEditBase* view, const QKeyEvent* key) {
+    bool is_enter = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter;
+    Qt::KeyboardModifiers extra = key->modifiers() & ~(Qt::ShiftModifier | Qt::KeypadModifier);
+    if (!is_enter || extra != Qt::NoModifier) {
+        return false;
+    }
+
+    view->send(SCI_BEGINUNDOACTION);
+    view->send(SCI_NEWLINE);
+    view->send(SCI_ENDUNDOACTION);
+    return true;
 }
 
 static void go_to_matching_bracket(ScintillaEditBase* view) {
@@ -1064,6 +1152,11 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
     });
 
     connect(view, &ScintillaEditBase::zoom, this, [view] { fit_line_numbers(view); });
+    connect(view, &ScintillaEditBase::charAdded, this, [doc](int character) {
+        continue_line(doc->view(), character, doc->mode() == edit_mode::CODE);
+    });
+
+    view->installEventFilter(this);
 
     {
         QSignalBlocker blocker(tabs());
@@ -1785,8 +1878,13 @@ void editor_window::finish_tab_switch(bool opens_lit_tab) {
     }
 }
 
-// Watches the whole application only while Ctrl Tab is held, for Ctrl coming up, Esc or a click
+// Watches each text for Enter, and the whole application while Ctrl Tab is held for Ctrl coming up, Esc or a click
 bool editor_window::eventFilter(QObject* watched, QEvent* event) {
+    auto* view = qobject_cast<ScintillaEditBase*>(watched);
+    if (view && event->type() == QEvent::KeyPress && type_line_end(view, static_cast<QKeyEvent*>(event))) {
+        return true;
+    }
+
     if (!m_is_switching_tabs) {
         return QMainWindow::eventFilter(watched, event);
     }
