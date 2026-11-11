@@ -75,6 +75,14 @@ constexpr int32_t NO_MATCH_PADDING_X = 40;
 constexpr int32_t NO_MATCH_GAP = 4;
 constexpr int32_t NOTE_HEIGHT = 32;
 
+/* The strip a failed start shows under its row, on cream at .03 inside a faint ring */
+constexpr int32_t STRIP_MARGIN_TOP = 4;
+constexpr int32_t STRIP_HEIGHT = 40;
+constexpr int32_t STRIP_PADDING_X = 12;
+constexpr int32_t STRIP_MARK_SIZE = 16;
+constexpr int32_t STRIP_TEXT_LEFT = STRIP_PADDING_X + STRIP_MARK_SIZE + 10;
+constexpr uint32_t STRIP_FILL = 0x08FFF0D7;
+
 constexpr int32_t FOOTER_HEIGHT = 36;
 constexpr int32_t FOOTER_PADDING_LEFT = 14;
 constexpr int32_t FOOTER_PADDING_RIGHT = 10;
@@ -620,6 +628,36 @@ void result_row::paint_right(ui::painter& p) const {
     }
 }
 
+/* What kept a row from starting, in a strip under the row: a mark in the danger color, then the reason */
+class failure_strip : public ui::widget {
+public:
+    explicit failure_strip(const std::string& message)
+        : m_text("", STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_SECONDARY),
+          m_mark("!", STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_DANGER_TEXT) {
+        int32_t max_w = ROW_WIDTH - STRIP_TEXT_LEFT - STRIP_PADDING_X;
+        m_text.set_text(fitted(message, STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, max_w));
+    }
+
+    ui::size measure(ui::size avail) override {
+        return { avail.w, STRIP_MARGIN_TOP + STRIP_HEIGHT };
+    }
+
+    void paint(ui::painter& p) override {
+        ui::rect strip = { 0, STRIP_MARGIN_TOP, m_frame.w, STRIP_HEIGHT };
+        p.rounded_rect(strip, STLXTHEME_CONTROL_RADIUS, STRIP_FILL);
+        p.rounded_stroke(strip, STLXTHEME_CONTROL_RADIUS, STLXTHEME_LINE_SUBTLE);
+
+        ui::point center = { STRIP_PADDING_X + STRIP_MARK_SIZE / 2, strip.y + strip.h / 2 };
+        p.circle(center, STRIP_MARK_SIZE / 2, STLXTHEME_DANGER);
+        m_mark.draw(p, center.x - m_mark.width() / 2, strip.y, strip.h);
+        m_text.draw(p, STRIP_TEXT_LEFT, strip.y, strip.h);
+    }
+
+private:
+    text_picture m_text;
+    text_picture m_mark;
+};
+
 /* A quiet line under Ctrl K's choices, such as why a file opens where Enter opens it */
 class note_line : public ui::widget {
 public:
@@ -823,11 +861,18 @@ public:
     std::function<uint64_t(const std::string& folder, const std::string& prefix)> list_files;
     std::function<palette_entry(const found_file& file, bool is_listed)> make_file_entry;
 
+    /* Shows File Manager with a configuration file selected. Must be set before the first key. */
+    std::function<void(const std::string& path)> reveal;
+
     /* Shows the rows the query matches, first once the callbacks are set, then after each change */
     void show_rows();
 
     /* Shows an answer to the newest file request, dropping an older one, and the walk's count in the files' head */
     void show_files(const file_answer* answer, const walk_state& walk);
+
+    /* Keeps the palette open with a strip saying what kept the selected row from starting, and the file its launcher
+     * or action came from. A vanished file's row leaves the list, its strip heading the list instead. */
+    void show_failure(const std::string& message, const std::string& source_path, const std::string& gone_path);
 
     bool focusable() const override { return true; }
     bool on_key_down(const ui::key_event& e) override;
@@ -854,6 +899,8 @@ private:
     bool find_command(std::string_view query);
     section_head* add_head(const char* title);
     void add_row(const palette_entry& entry, std::vector<match_run> runs, const char* kind_name);
+    void add_strip();
+    bool is_failed_row() const;
     void select(size_t index);
     void move_selection(int32_t rows);
     void choose(size_t index);
@@ -883,6 +930,16 @@ private:
     std::string                m_menu_title;
     std::string                m_menu_note;
     std::string                m_menu_return; /* the key of the row the list opened on */
+
+    /* The failure a strip shows until the query changes: its reason, the file the row's launcher or action came from,
+     * and the key of the row it shows under, none when the strip heads the list */
+    struct failure {
+        std::string message;
+        std::string source_path;
+        std::string row_key;
+    };
+
+    failure m_failure;
 
     /* The newest file request, a search or a listing, the last answer's rows, which the query filters until the
      * newest is answered, the folder a listing's rows are in, and the walk the files' head counts */
@@ -1047,6 +1104,7 @@ bool palette_view::on_key_down(const ui::key_event& e) {
 void palette_view::edit(std::string query, size_t cursor) {
     m_query = std::move(query);
     m_caret = cursor;
+    m_failure = {};
     m_field->show(m_query, m_caret);
 
     std::string_view searched = trimmed(m_query);
@@ -1099,6 +1157,27 @@ void palette_view::show_files(const file_answer* answer, const walk_state& walk)
     reselect(selected_key);
 }
 
+/* A failure from Ctrl K's list closes the list, so the strip shows under the row the list opened on */
+void palette_view::show_failure(const std::string& message, const std::string& source_path,
+                                const std::string& gone_path) {
+    std::string selected = m_rows.empty() ? std::string() : row_key(*m_row_entries[m_selected]);
+    if (m_is_menu_open) {
+        m_is_menu_open = false;
+        selected = m_menu_return;
+    }
+
+    m_failure = { message, source_path, gone_path.empty() ? selected : std::string() };
+
+    auto is_gone = [&gone_path](const palette_entry& entry) {
+        return entry.kind == row_kind::file && entry.path == gone_path;
+    };
+
+    m_file_entries.erase(std::remove_if(m_file_entries.begin(), m_file_entries.end(), is_gone), m_file_entries.end());
+    m_entries.erase(std::remove_if(m_entries.begin(), m_entries.end(), is_gone), m_entries.end());
+    show_rows();
+    reselect(selected);
+}
+
 std::string palette_view::walk_text() const {
     return m_walk.walking ? "indexing, " + shown_number(static_cast<double>(m_walk.found)) + " so far" : "";
 }
@@ -1137,6 +1216,10 @@ void palette_view::show_rows() {
 
     std::string_view query = trimmed(m_query);
     typed_path path = parse_path(query);
+    if (!m_failure.message.empty() && m_failure.row_key.empty()) {
+        add_strip();
+    }
+
     if (m_is_menu_open) {
         show_menu();
     } else if (path.is_path) {
@@ -1514,7 +1597,13 @@ void palette_view::update_footer() {
 
     std::vector<footer_item> items;
     bool is_path = parse_path(trimmed(m_query)).is_path;
-    if (!m_rows.empty()) {
+    if (is_failed_row()) {
+        bool is_launcher = m_row_entries[m_selected]->kind == row_kind::app;
+        items.push_back({ "Try Again", "Enter" });
+        if (!m_failure.source_path.empty()) {
+            items.push_back({ is_launcher ? "Show Launcher File" : "Show Action File", "Ctrl Enter" });
+        }
+    } else if (!m_rows.empty()) {
         const palette_entry& entry = *m_row_entries[m_selected];
         std::vector<row_action> actions = actions_of(entry);
         for (const row_action& action : actions) {
@@ -1615,6 +1704,15 @@ void palette_view::add_row(const palette_entry& entry, std::vector<match_run> ru
     m_row_reveal_tops.push_back(m_follows_head ? m_content_h - HEAD_HEIGHT : m_content_h);
     m_content_h += ROW_HEIGHT;
     m_follows_head = false;
+
+    if (!m_failure.message.empty() && row_key(entry) == m_failure.row_key) {
+        add_strip();
+    }
+}
+
+void palette_view::add_strip() {
+    m_list->content()->add<failure_strip>(m_failure.message);
+    m_content_h += STRIP_MARGIN_TOP + STRIP_HEIGHT;
 }
 
 void palette_view::select(size_t index) {
@@ -1674,9 +1772,21 @@ void palette_view::choose(size_t index) {
     }
 }
 
-/* Runs the selected row's action `keys` name, where a calculation copies on Ctrl C as on Enter */
+bool palette_view::is_failed_row() const {
+    bool has_row_strip = !m_failure.message.empty() && !m_failure.row_key.empty();
+    return has_row_strip && !m_rows.empty() && row_key(*m_row_entries[m_selected]) == m_failure.row_key;
+}
+
+/* Runs the selected row's action `keys` name, where a calculation copies on Ctrl C as on Enter, and Ctrl Enter on a
+ * row that failed to start shows the file its launcher or action came from */
 void palette_view::run_keyed(const char* keys) {
     if (m_rows.empty()) {
+        return;
+    }
+
+    bool shows_source = strcmp(keys, "Ctrl Enter") == 0 && is_failed_row() && !m_failure.source_path.empty();
+    if (shows_source) {
+        reveal(m_failure.source_path);
         return;
     }
 
@@ -1794,6 +1904,14 @@ std::vector<palette_entry> program_entries(const stlxconf_t& conf, const stlxgfx
     });
 
     return programs;
+}
+
+/* A configuration file as a strip names it, relative to stlxdm's own folder, such as conf.d/browser.conf */
+std::string shown_source(const std::string& path) {
+    std::string folder = STLXCONF_DROP_IN_DIR;
+    folder = folder.substr(0, folder.rfind('/') + 1);
+
+    return path.compare(0, folder.size(), folder) == 0 ? path.substr(folder.size()) : path;
 }
 
 /* The label of the first launcher that runs `path`, else the program's file name */
@@ -2009,6 +2127,7 @@ void quick_actions::remember_file(const found_file& file) {
 
 void quick_actions::closed() {
     m_show_files = nullptr;
+    m_show_failure = nullptr;
 }
 
 void quick_actions::pump_files() {
@@ -2048,6 +2167,51 @@ void quick_actions::open_with(const stlxconf_file_handler_t& handler, const std:
     on_exec(handler.path, handler_args);
 }
 
+/* A program that is missing, or is no program, keeps the palette open with a strip that says so and names the file
+ * its launcher or action came from, which Ctrl Enter then shows */
+bool quick_actions::is_startable(const char* verb, const std::string& label, const char* path, const char* owner,
+                                 const char* source_path) {
+    struct stat st;
+    bool exists = stat(path, &st) == 0;
+    if (exists && S_ISREG(st.st_mode)) {
+        return true;
+    }
+
+    std::string message = "Couldn't " + std::string(verb) + " " + label + ": " + path;
+    message += exists ? " isn't a program." : " is missing.";
+    std::string source = source_path ? source_path : "";
+    if (owner && !source.empty()) {
+        message += " Its " + std::string(owner) + " is " + shown_source(source) + ".";
+    }
+
+    if (m_show_failure) {
+        m_show_failure(message, source, "");
+    }
+
+    return false;
+}
+
+/* A file gone since the walk leaves the list and this session's picks, and its strip says so */
+bool quick_actions::is_still_there(const found_file& file) {
+    struct stat st;
+    if (stat(file.path.c_str(), &st) == 0) {
+        return true;
+    }
+
+    m_picks.erase(std::remove(m_picks.begin(), m_picks.end(), "file " + file.path), m_picks.end());
+    m_picked_files.erase(std::remove_if(m_picked_files.begin(), m_picked_files.end(), [&file](const found_file& kept) {
+        return kept.path == file.path;
+    }), m_picked_files.end());
+
+    if (m_show_failure) {
+        std::string folder = file.name_start > 1 ? file.path.substr(0, file.name_start - 1) : "/";
+        m_show_failure(std::string(file.name()) + " is gone from " + folder + " since the files were indexed.", "",
+                       file.path);
+    }
+
+    return false;
+}
+
 row_action quick_actions::show_in_files(const std::string& path) {
     return { "Show in File Manager", "Ctrl Enter", [this, path]() {
         on_exec(FILE_MANAGER_PATH, { path });
@@ -2063,7 +2227,12 @@ row_action quick_actions::copy(const std::string& label, const std::string& text
 /* A launcher starts as the dock starts it, and its program shows in File Manager or copies as a path */
 std::vector<row_action> quick_actions::launcher_actions(uint32_t index, const std::string& pick) {
     const stlxconf_pin_t& pin = m_conf.pins[index];
-    row_action open = { "Open", "Enter", [this, &pin, pick]() {
+    std::string label = pin.label[0] ? pin.label : file_name(pin.path);
+    row_action open = { "Open", "Enter", [this, &pin, label, pick]() {
+        if (!is_startable("start", label, pin.path, "launcher", pin.source_path)) {
+            return;
+        }
+
         remember_pick(pick);
         on_launch(pin);
     } };
@@ -2073,12 +2242,18 @@ std::vector<row_action> quick_actions::launcher_actions(uint32_t index, const st
 
 std::vector<row_action> quick_actions::action_actions(uint32_t index, const std::string& pick) {
     const stlxconf_action_t& action = m_conf.actions[index];
-    std::vector<row_action> actions = { { "Run", "Enter", [this, &action, pick]() {
+    bool runs_program = stlxconf_action_kind(action.action) == STLXCONF_ACTION_EXEC;
+    std::string label = action.label[0] ? action.label : action.name;
+    std::vector<row_action> actions = { { "Run", "Enter", [this, &action, runs_program, label, pick]() {
+        if (runs_program && !is_startable("run", label, action.path, "action", action.source_path)) {
+            return;
+        }
+
         remember_pick(pick);
         on_run(action);
     } } };
 
-    if (stlxconf_action_kind(action.action) == STLXCONF_ACTION_EXEC) {
+    if (runs_program) {
         std::string command = action.args[0] ? std::string(action.path) + " " + action.args : action.path;
         actions.push_back(copy("Copy Command", command));
     }
@@ -2089,6 +2264,10 @@ std::vector<row_action> quick_actions::action_actions(uint32_t index, const std:
 std::vector<row_action> quick_actions::program_actions(const std::string& path, const std::string& args,
                                                        const std::string& pick) {
     row_action run = { "Run in Terminal", "Enter", [this, path, args, pick]() {
+        if (!is_startable("run", file_name(path.c_str()), path.c_str(), nullptr, nullptr)) {
+            return;
+        }
+
         remember_pick(pick);
         on_run_program(path.c_str(), args.c_str());
     } };
@@ -2100,6 +2279,19 @@ std::vector<row_action> quick_actions::program_actions(const std::string& path, 
 std::vector<row_action> quick_actions::file_actions(const found_file& file, const std::string& pick) {
     const char* mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
     row_action open = { file_verb(mime_type), "Enter", [this, file, mime_type, pick]() {
+        if (!is_still_there(file)) {
+            return;
+        }
+
+        const stlxconf_file_handler_t* handler = nullptr;
+        if (strcmp(mime_type, FOLDER_TYPE) != 0) {
+            handler = stlxconf_find_file_opener(&m_conf, mime_type, nullptr);
+        }
+
+        if (handler && !is_startable("open", std::string(file.name()), handler->path, nullptr, nullptr)) {
+            return;
+        }
+
         remember_pick(pick);
         remember_file(file);
         open_file(file.path, mime_type);
@@ -2206,6 +2398,14 @@ std::unique_ptr<ui::widget> quick_actions::build() {
     palette_view* shown = view.get();
     m_show_files = [shown](const file_answer* answer, const walk_state& walk) {
         shown->show_files(answer, walk);
+    };
+
+    m_show_failure = [shown](const std::string& message, const std::string& source_path, const std::string& gone_path) {
+        shown->show_failure(message, source_path, gone_path);
+    };
+
+    view->reveal = [this](const std::string& path) {
+        on_exec(FILE_MANAGER_PATH, { path });
     };
 
     view->actions_of = [this](const palette_entry& entry) -> std::vector<row_action> {
