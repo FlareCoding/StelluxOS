@@ -26,6 +26,12 @@ public:
         dispatch_pointer_button({ x, y }, btn, down);
     }
 
+    /* Offers a key to the focused widget and its parents, true when one took it */
+    bool key(const ui::key_event& e, bool down) { return dispatch_key(e, down); }
+
+    /* Focuses the first focusable widget of a tree where none has the focus yet */
+    void focus_first() { focus_next(); }
+
     /* Whether a widget that took a press owns the pointer until its release */
     bool holds_pointer() const { return m_pointer_grab != nullptr; }
 };

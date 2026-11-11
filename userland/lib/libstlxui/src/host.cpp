@@ -285,17 +285,20 @@ void host::dispatch_scroll(point p, int16_t dy) {
 }
 
 /* Keys go to the focus and bubble, an unconsumed tab cycles focus */
-void host::dispatch_key(const key_event& e, bool down) {
+bool host::dispatch_key(const key_event& e, bool down) {
     for (widget* w = m_focus; w != nullptr; w = w->m_parent) {
         bool consumed = down ? w->on_key_down(e) : w->on_key_up(e);
         if (consumed) {
-            return;
+            return true;
         }
     }
 
     if (down && e.ch == '\t') {
         focus_next();
+        return true;
     }
+
+    return false;
 }
 
 void host::invalidate_rects(const std::vector<rect>& rects) {

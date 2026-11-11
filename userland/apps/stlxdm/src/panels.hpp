@@ -89,8 +89,14 @@ public:
     void use_picture_maker(picture_maker* maker) { m_popover.use_picture_maker(maker); }
 
     /* Whether Esc closes the popover, as it does while an unpinned popover panel
-     * is open. A pinned one leaves Esc to the hotkeys and the focused window. */
+     * is open. A pinned one leaves Esc to the focused window. */
     bool escape_closes_popover() const { return m_popover.panel() && !m_popover.panel()->pinned(); }
+
+    /* Whether the open popover panel takes the keyboard, so no key reaches the focused window while it is open */
+    bool popover_takes_keys() const { return m_popover.panel() && m_popover.panel()->takes_keys(); }
+
+    /* Offers a key to the open popover panel, true when its tree took it */
+    bool popover_key(const ui::key_event& e, bool down) { return m_popover.key(e, down); }
 
     bool popover_contains(int32_t x, int32_t y) const { return m_popover.contains(x, y); }
     void close_popover() { m_popover.close(); }

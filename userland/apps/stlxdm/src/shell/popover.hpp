@@ -24,6 +24,13 @@ public:
     virtual int32_t width() const = 0;
     virtual int32_t left(int32_t output_w) const = 0;
 
+    /* The output row the panel's top edge lies on, by default a few pixels under the bar */
+    virtual int32_t top() const;
+
+    /* Whether the panel takes the keyboard while open, its first focusable widget focused as it opens, where other
+     * panels leave keys to the focused window */
+    virtual bool takes_keys() const { return false; }
+
     /* Builds the content the host shows until the panel closes */
     virtual std::unique_ptr<ui::widget> build() = 0;
 
@@ -97,6 +104,9 @@ public:
     void pointer_move(int32_t x, int32_t y);
     void pointer_button(int32_t x, int32_t y, uint8_t button, bool down);
 
+    /* Offers a key to the open or opening panel, true when its tree took it */
+    bool key(const ui::key_event& e, bool down);
+
     /* Lets the open panel update its live values, once a second */
     void refresh();
 
@@ -113,6 +123,7 @@ private:
     direct_host    m_host;
     panel_picture  m_picture;
     int32_t        m_left = 0;
+    int32_t        m_top = 0;
 
     phase    m_phase = phase::closed;
     uint64_t m_phase_start_ns = 0;

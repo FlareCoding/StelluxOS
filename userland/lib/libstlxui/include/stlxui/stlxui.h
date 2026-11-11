@@ -522,7 +522,7 @@ protected:
     void dispatch_pointer_move(point p);
     void dispatch_pointer_button(point p, uint8_t button, bool down);
     void dispatch_scroll(point p, int16_t dy);
-    void dispatch_key(const key_event& e, bool down);
+    bool dispatch_key(const key_event& e, bool down); /* true when a widget took the key or Tab moved the focus */
     void focus_next();
 
     std::unique_ptr<widget> m_root;
