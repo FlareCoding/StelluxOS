@@ -11,6 +11,9 @@ constexpr char LD_CH_INTR = 0x03; // ^C
 constexpr char LD_CH_QUIT = 0x1C; // ^backslash
 constexpr char LD_CH_SUSP = 0x1A; // ^Z
 
+constexpr size_t LD_TAB_WIDTH = 8;
+constexpr size_t LD_UTF8_CONTINUATION_MAX = 3;
+
 void ld_init(line_discipline* ld) {
     ld->mode = 0;
     ld->isig = 1;
@@ -34,6 +37,63 @@ static void echo_signal_char(const echo_target* echo, char c) {
         const uint8_t seq[] = {'^', static_cast<uint8_t>(c + 0x40), '\r', '\n'};
         echo->write(echo->ctx, seq, sizeof(seq));
     }
+}
+
+// A byte a cooked line keeps: printable ASCII, a tab, or a byte of a UTF-8 character
+static bool is_line_byte(char c) {
+    uint8_t byte = static_cast<uint8_t>(c);
+    return c == '\t' || (byte >= 0x20 && byte != 0x7F);
+}
+
+static bool is_utf8_continuation(char c) {
+    return (static_cast<uint8_t>(c) & 0xC0) == 0x80;
+}
+
+static bool is_utf8_lead(char c) {
+    return (static_cast<uint8_t>(c) & 0xC0) == 0xC0;
+}
+
+// The column the line's first `len` bytes reach, counted from where the line began
+static size_t line_column(const line_discipline* ld, size_t len) {
+    size_t column = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (ld->line_buf[i] == '\t') {
+            column += LD_TAB_WIDTH - column % LD_TAB_WIDTH;
+        } else if (!is_utf8_continuation(ld->line_buf[i])) {
+            column++;
+        }
+    }
+
+    return column;
+}
+
+// Drops the line's last character, every byte of a UTF-8 one, and writes the echo that rubs it
+// out: a backspace per column a tab took, or backspace, space, backspace. Returns the echo's length.
+static size_t erase_last_char(line_discipline* ld, uint8_t* echo_seq) {
+    size_t last = ld->line_len - 1;
+    size_t start = last;
+    while (start > 0 && last - start < LD_UTF8_CONTINUATION_MAX && is_utf8_continuation(ld->line_buf[start])) {
+        start--;
+    }
+
+    if (start != last && !is_utf8_lead(ld->line_buf[start])) {
+        start = last;
+    }
+
+    size_t echo_len = 3;
+    if (ld->line_buf[start] == '\t') {
+        echo_len = line_column(ld, ld->line_len) - line_column(ld, start);
+        for (size_t i = 0; i < echo_len; i++) {
+            echo_seq[i] = '\b';
+        }
+    } else {
+        echo_seq[0] = '\b';
+        echo_seq[1] = ' ';
+        echo_seq[2] = '\b';
+    }
+
+    ld->line_len = start;
+    return echo_len;
 }
 
 static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
@@ -88,17 +148,14 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
             echo->write(echo->ctx, crlf, 2);
         }
     } else if (c == 0x7F || c == 0x08) {
-        if (ld->line_len > 0) {
-            ld->line_len--;
-            if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
-            if (echo && echo->write) {
-                static const uint8_t bs_seq[] = {'\b', ' ', '\b'};
-                echo->write(echo->ctx, bs_seq, 3);
-            }
-        } else {
-            if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+        uint8_t erase_seq[LD_TAB_WIDTH];
+        size_t erase_len = ld->line_len > 0 ? erase_last_char(ld, erase_seq) : 0;
+        if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
+        if (erase_len > 0 && echo && echo->write) {
+            echo->write(echo->ctx, erase_seq, erase_len);
         }
-    } else if (c >= 0x20 && c <= 0x7E) {
+    } else if (is_line_byte(c)) {
         if (ld->line_len < LD_LINE_BUF_MAX) {
             ld->line_buf[ld->line_len++] = c;
             if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
