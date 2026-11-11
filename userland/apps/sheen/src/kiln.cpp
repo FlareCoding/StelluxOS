@@ -16,6 +16,7 @@
 #include <stlxtheme/theme.h>
 
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 
 enum class syntax_role { IDENTIFIER, KEYWORD, TYPE, STRING, NUMBER, PREPROCESSOR, COMMENT, OPERATOR, EMPHASIS, LINK };
@@ -70,6 +71,7 @@ static float s_text_size = STLXTHEME_TERMINAL_SIZE;
 
 static constexpr double POINTS_PER_INCH = 72;
 static constexpr double SCREEN_DPI = 96;
+static constexpr double PERCENT = 100;
 static constexpr int CARET_WIDTH = 2;
 static constexpr int CARET_BLINK_MS = 500;
 static constexpr int TAB_WIDTH = 4;
@@ -523,6 +525,12 @@ void apply_text_size(ScintillaEditBase* view) {
 
     apply_line_height(view);
     fit_line_numbers(view);
+}
+
+// Scintilla's zoom adds points to every style's size
+int zoom_percent(int zoom) {
+    double points = points_from_pixels(s_text_size);
+    return static_cast<int>(std::lround(PERCENT * (points + zoom) / points));
 }
 
 void apply_text_area_look(ScintillaEditBase* view) {

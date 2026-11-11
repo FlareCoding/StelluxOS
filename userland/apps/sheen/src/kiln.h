@@ -33,6 +33,9 @@ void apply_text_area_look(ScintillaEditBase* view);
 /* Sets every style of `view` to the size set_text_size last set, keeping each style's colors */
 void apply_text_size(ScintillaEditBase* view);
 
+/* The text's size at Scintilla zoom `zoom`, as a percentage of its size unzoomed */
+int zoom_percent(int zoom);
+
 /* Widens the line numbers for the document's line count and zoom, never below the gutter's design width */
 void fit_line_numbers(ScintillaEditBase* view);
 

@@ -9,7 +9,7 @@
 
 #include <functional>
 
-enum class status_kind { POSITION, SELECTION, INDENTATION, OVERTYPE, MODE, LANGUAGE, ENCODING, LINE_ENDING };
+enum class status_kind { POSITION, SELECTION, INDENTATION, OVERTYPE, ZOOM, MODE, LANGUAGE, ENCODING, LINE_ENDING };
 
 struct status_item {
     status_kind kind;
