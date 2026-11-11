@@ -5,6 +5,7 @@
  * the encoding and line ending it keeps. A document without a path has never been saved. */
 #include "banner.h"
 #include "encoding.h"
+#include "settings.h"
 
 #include <QDateTime>
 #include <QString>
@@ -57,7 +58,7 @@ struct unencodable_char {
 class document {
 public:
     /* `untitled_number` names the document until it has a path or a first line, "Untitled 2" for 2 */
-    document(QWidget* parent, int untitled_number);
+    document(QWidget* parent, int untitled_number, const sheen_settings& settings);
     ~document();
 
     document(const document&) = delete;
@@ -144,6 +145,7 @@ private:
     bool m_is_eol_recount_queued = false;
     const language* m_language = nullptr;
     int m_untitled_number;
+    const sheen_settings& m_settings;
     bool m_is_deleted = false;
     std::optional<banner_message> m_banner;
 };

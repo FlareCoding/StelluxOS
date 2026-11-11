@@ -5,6 +5,7 @@
  * bar. Commands arrive through `run`, questions are sheets inside the window, and closed tabs can come back. */
 #include "actions.h"
 #include "document.h"
+#include "settings.h"
 #include "sheet.h"
 #include "status_bar.h"
 
@@ -39,7 +40,8 @@ struct closed_tab {
 
 class editor_window : public QMainWindow {
 public:
-    editor_window();
+    /* `problems` are what reading the settings found, shown in the status bar */
+    editor_window(const sheen_settings& settings, const QStringList& problems);
     ~editor_window() override;
 
     /* Opens each path in a tab. A path that does not exist yet opens as a new file its first save creates, and a
@@ -109,6 +111,7 @@ private:
     void show_about();
     QString sheet_folder() const;
 
+    sheen_settings m_settings;
     tab_row* m_tab_row;
     banner* m_banner;
     QStackedWidget* m_stack;

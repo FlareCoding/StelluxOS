@@ -50,6 +50,8 @@ static constexpr double CARET_LINE_ALPHA = 0.045;
 static constexpr double INDENT_GUIDE_ALPHA = 0.10;
 static constexpr double EDGE_ALPHA = 0.07;
 
+static float s_text_size = STLXTHEME_TERMINAL_SIZE;
+
 static constexpr double POINTS_PER_INCH = 72;
 static constexpr double SCREEN_DPI = 96;
 static constexpr int CARET_WIDTH = 2;
@@ -292,7 +294,7 @@ static double points_from_pixels(double em_px) {
 // Every style starts as plain text in Plex Mono on the pocket, then the lexer's styles take their colors
 static void reset_styles(ScintillaEditBase* view) {
     QByteArray family = QByteArrayLiteral(STLXTHEME_MONO_FONT_FAMILY);
-    int size = static_cast<int>(points_from_pixels(STLXTHEME_TERMINAL_SIZE) * SC_FONT_SIZE_MULTIPLIER + 0.5);
+    int size = static_cast<int>(points_from_pixels(s_text_size) * SC_FONT_SIZE_MULTIPLIER + 0.5);
 
     view->send(SCI_STYLESETFONT, STYLE_DEFAULT, reinterpret_cast<sptr_t>(family.constData()));
     view->send(SCI_STYLESETSIZEFRACTIONAL, STYLE_DEFAULT, size);
@@ -374,6 +376,10 @@ static QString interpreter_of(QByteArrayView first_line) {
     }
 
     return program;
+}
+
+void set_text_size(float em_px) {
+    s_text_size = em_px;
 }
 
 void apply_text_area_look(ScintillaEditBase* view) {

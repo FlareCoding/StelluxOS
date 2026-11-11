@@ -11,6 +11,9 @@ class ScintillaEditBase;
 
 struct language;
 
+/* The text's em size in pixels for every view made after it is set */
+void set_text_size(float em_px);
+
 void apply_text_area_look(ScintillaEditBase* view);
 
 /* Widens the line numbers for the document's line count and zoom, never below the gutter's design width */
