@@ -8,6 +8,16 @@ static void clear_row_range(term_state_t *t, int row, int from, int to) {
         t->cells[row][c] = ' ';
         t->attrs[row][c] = ATTR_DEFAULT;
     }
+
+    if (to >= t->cols) {
+        t->wrapped[row] = 0;
+    }
+}
+
+static void move_row(term_state_t *t, int to, int from) {
+    memcpy(&t->cells[to], &t->cells[from], (size_t)t->cols);
+    memcpy(&t->attrs[to], &t->attrs[from], (size_t)t->cols * sizeof(term_attr_t));
+    t->wrapped[to] = t->wrapped[from];
 }
 
 static void clear_row(term_state_t *t, int row) {
@@ -23,11 +33,14 @@ static void scroll_up_region(term_state_t *t, int n) {
     if (n > region_height) n = region_height;
 
     for (int r = top; r <= bot - n; r++) {
-        memcpy(&t->cells[r], &t->cells[r + n], (size_t)t->cols);
-        memcpy(&t->attrs[r], &t->attrs[r + n], (size_t)t->cols * sizeof(term_attr_t));
+        move_row(t, r, r + n);
     }
     for (int r = bot - n + 1; r <= bot; r++) {
         clear_row(t, r);
+    }
+
+    if (top == 0 && bot == t->rows - 1) {
+        t->scrolled += (uint64_t)n;
     }
 }
 
@@ -40,8 +53,7 @@ static void scroll_down_region(term_state_t *t, int n) {
     if (n > region_height) n = region_height;
 
     for (int r = bot; r >= top + n; r--) {
-        memcpy(&t->cells[r], &t->cells[r - n], (size_t)t->cols);
-        memcpy(&t->attrs[r], &t->attrs[r - n], (size_t)t->cols * sizeof(term_attr_t));
+        move_row(t, r, r - n);
     }
     for (int r = top; r < top + n; r++) {
         clear_row(t, r);
@@ -66,6 +78,7 @@ static void cursor_up_scroll(term_state_t *t) {
 
 static void put_char(term_state_t *t, char ch) {
     if (t->cursor_col >= t->cols) {
+        t->wrapped[t->cursor_row] = 1;
         t->cursor_col = 0;
         cursor_down(t);
     }
@@ -161,6 +174,7 @@ static void enter_alt_screen(term_state_t *t) {
 
     memcpy(t->alt_cells, t->cells, sizeof(t->cells));
     memcpy(t->alt_attrs, t->attrs, sizeof(t->attrs));
+    memcpy(t->alt_wrapped, t->wrapped, sizeof(t->wrapped));
     t->alt_cursor_row = t->cursor_row;
     t->alt_cursor_col = t->cursor_col;
     t->using_alt_screen = 1;
@@ -176,6 +190,7 @@ static void leave_alt_screen(term_state_t *t) {
 
     memcpy(t->cells, t->alt_cells, sizeof(t->cells));
     memcpy(t->attrs, t->alt_attrs, sizeof(t->attrs));
+    memcpy(t->wrapped, t->alt_wrapped, sizeof(t->wrapped));
     t->cursor_row = t->alt_cursor_row;
     t->cursor_col = t->alt_cursor_col;
     t->using_alt_screen = 0;
@@ -191,6 +206,9 @@ static void csi_dispatch_private(term_state_t *t, char cmd) {
             break;
         case 25:   /* DECTCEM: show cursor */
             t->cursor_visible = 1;
+            break;
+        case 2004: /* Bracketed paste */
+            t->bracketed_paste = 1;
             break;
         case 1049: /* Alternate screen, saving cursor */
             if (!t->using_alt_screen) {
@@ -210,6 +228,9 @@ static void csi_dispatch_private(term_state_t *t, char cmd) {
             break;
         case 25:   /* DECTCEM: hide cursor */
             t->cursor_visible = 0;
+            break;
+        case 2004: /* Bracketed paste off */
+            t->bracketed_paste = 0;
             break;
         case 1049: /* Main screen, restoring cursor */
             if (t->using_alt_screen) {
@@ -318,8 +339,7 @@ static void csi_dispatch(term_state_t *t, char cmd) {
             n = t->scroll_bottom - t->cursor_row + 1;
             if (p0 > n) p0 = n;
             for (int r = t->scroll_bottom; r >= t->cursor_row + p0; r--) {
-                memcpy(&t->cells[r], &t->cells[r - p0], (size_t)t->cols);
-                memcpy(&t->attrs[r], &t->attrs[r - p0], (size_t)t->cols * sizeof(term_attr_t));
+                move_row(t, r, r - p0);
             }
             for (int r = t->cursor_row; r < t->cursor_row + p0; r++) {
                 clear_row(t, r);
@@ -333,8 +353,7 @@ static void csi_dispatch(term_state_t *t, char cmd) {
             n = t->scroll_bottom - t->cursor_row + 1;
             if (p0 > n) p0 = n;
             for (int r = t->cursor_row; r <= t->scroll_bottom - p0; r++) {
-                memcpy(&t->cells[r], &t->cells[r + p0], (size_t)t->cols);
-                memcpy(&t->attrs[r], &t->attrs[r + p0], (size_t)t->cols * sizeof(term_attr_t));
+                move_row(t, r, r + p0);
             }
             for (int r = t->scroll_bottom - p0 + 1; r <= t->scroll_bottom; r++) {
                 clear_row(t, r);
@@ -498,8 +517,10 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
             t->cursor_col = 0;
             cursor_down(t);
             t->state = TERM_ST_NORMAL;
-        } else if (ch == 'c') { /* RIS: full reset */
+        } else if (ch == 'c') { /* RIS: full reset, the scrolled count only ever grows */
+            uint64_t scrolled = t->scrolled;
             term_init(t, t->rows, t->cols);
+            t->scrolled = scrolled;
         } else {
             t->state = TERM_ST_NORMAL;
         }
@@ -584,6 +605,8 @@ void term_init(term_state_t *t, int rows, int cols) {
     t->saved_reverse = 0;
     t->using_alt_screen = 0;
     t->app_cursor_keys = 0;
+    t->bracketed_paste = 0;
+    t->scrolled = 0;
     t->state = TERM_ST_NORMAL;
     t->csi_param_count = 0;
     t->csi_current_param = 0;
@@ -598,6 +621,8 @@ void term_init(term_state_t *t, int rows, int cols) {
     }
     memset(t->alt_cells, ' ', sizeof(t->alt_cells));
     memset(t->alt_attrs, 0, sizeof(t->alt_attrs));
+    memset(t->wrapped, 0, sizeof(t->wrapped));
+    memset(t->alt_wrapped, 0, sizeof(t->alt_wrapped));
 }
 
 void term_feed(term_state_t *t, const char *data, int len) {
@@ -624,6 +649,10 @@ void term_resize(term_state_t *t, int rows, int cols) {
             t->alt_attrs[r][c] = ATTR_DEFAULT;
         }
     }
+
+    /* Rows wrapped at the old width, which no longer joins them to the next */
+    memset(t->wrapped, 0, sizeof(t->wrapped));
+    memset(t->alt_wrapped, 0, sizeof(t->alt_wrapped));
 
     t->rows = rows;
     t->cols = cols;

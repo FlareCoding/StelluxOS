@@ -18,9 +18,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <time.h>
 #include <sys/ioctl.h>
 
 #include "keymap.h"
+#include "paste.h"
+#include "select.h"
 #include "term.h"
 
 #define STLX_TCSETS_RAW   0x7301
@@ -34,6 +37,20 @@
 #define BLINK_MS          500
 #define PTY_DRAIN_MAX     16
 #define SHELL_PATH        "/bin/shell"
+
+/* Presses this close in time and place count as one double or triple click, Qt's defaults */
+#define MULTI_CLICK_MS    400
+#define MULTI_CLICK_SLOP  5
+
+/* The echo of one write must fit the pty's output buffer, which the loop drains between writes */
+#define INPUT_WRITE_MAX   2048
+
+#define HID_USAGE_A       0x04
+#define HID_USAGE_C       0x06
+#define HID_USAGE_V       0x19
+#define HID_USAGE_Z       0x1D
+#define HID_USAGE_INSERT  0x49
+#define CTRL_C_BYTE       0x03
 
 static const uint32_t FG_PALETTE[17] = {
     STLXTHEME_TERMINAL_TEXT, // 0: default foreground
@@ -81,6 +98,30 @@ static int32_t g_ascent = 0;
 static uint32_t g_cell_w = 8;
 static uint32_t g_cell_h = 16;
 
+/* The selection, the press dragging it and the clicks it counts. Button
+ * events carry no modifiers, so a click reads the last key event's. */
+static select_t g_select;
+static int g_focused = 1;
+static uint8_t g_modifiers = 0;
+static int g_selecting = 0;
+static int g_clicks = 0;
+static uint64_t g_last_press_ms = 0;
+static int32_t g_last_press_x = 0;
+static int32_t g_last_press_y = 0;
+
+/* Input the pty has not taken yet, such as the rest of a large paste.
+ * Typed keys queue behind it so the program reads input in order. */
+static char* g_input = NULL;
+static size_t g_input_start = 0;
+static size_t g_input_end = 0;
+static size_t g_input_cap = 0;
+
+/* Counted from the first byte of input: what the pty has taken, and the
+ * newest paste's text between its bracketed paste markers */
+static uint64_t g_input_taken = 0;
+static uint64_t g_paste_text_from = 0;
+static uint64_t g_paste_text_to = 0;
+
 /* The grid as it was last painted, diffed against the live grid to
  * find damage. Each buffer of the pair also keeps the spans painted
  * into the other buffer since it was last painted itself, so it
@@ -92,6 +133,9 @@ static int16_t g_span_min[TERM_MAX_ROWS];
 static int16_t g_span_max[TERM_MAX_ROWS];
 static int16_t g_stale_min[2][TERM_MAX_ROWS];
 static int16_t g_stale_max[2][TERM_MAX_ROWS];
+static int16_t g_prev_sel_from[TERM_MAX_ROWS];
+static int16_t g_prev_sel_to[TERM_MAX_ROWS];
+static int g_prev_sel_focused = 1;
 static int g_last_cur_row = -1;
 static int g_last_cur_col = -1;
 static uint32_t g_last_buf_w = 0;
@@ -138,6 +182,14 @@ static void stale_add(int slot, const int16_t* min, const int16_t* max) {
     }
 }
 
+/* The cells of a row the selection lights as [*from, *to), both 0 when none */
+static void selected_cells(int row, int* from, int* to) {
+    if (!select_row_span(&g_select, &g_term, row, from, to)) {
+        *from = 0;
+        *to = 0;
+    }
+}
+
 static void span_mark(int row, int c0, int c1) {
     if (row < 0 || row >= g_term.rows) {
         return;
@@ -146,11 +198,13 @@ static void span_mark(int row, int c0, int c1) {
     if (g_span_max[row] < c1) g_span_max[row] = (int16_t)c1;
 }
 
-/* Paint one run of cells, background first, glyphs on top, and the
- * cursor cell inverted when it falls inside the run */
+/* Paint one run of cells, background first, then the selection's tint,
+ * glyphs on top, and the cursor cell inverted inside the run */
 static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
                         int cursor_on) {
     char ch_buf[2] = { 0, 0 };
+    int sel_from, sel_to;
+    selected_cells(row, &sel_from, &sel_to);
 
     for (int c = c0; c <= c1; c++) {
         int32_t px = PADDING_X + (int32_t)((uint32_t)c * g_cell_w);
@@ -164,6 +218,10 @@ static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
         uint32_t bg = at_cursor ? STLXTHEME_TEXT
                     : BG_PALETTE[g_term.attrs[row][c].bg];
         stlxgfx_fill_rect(s, px, py, g_cell_w, g_cell_h, bg);
+        if (!at_cursor && c >= sel_from && c < sel_to) {
+            uint32_t tint = g_focused ? STLXTHEME_TERMINAL_SELECTION : STLXTHEME_TERMINAL_SELECTION_DIM;
+            stlxgfx_fill_rect_blend(s, px, py, g_cell_w, g_cell_h, tint);
+        }
 
         if (g_term.cells[row][c] != ' ') {
             uint32_t fg = at_cursor ? STLXTHEME_WINDOW_BG
@@ -229,6 +287,32 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         int cc = g_term.cursor_col < g_term.cols
                ? g_term.cursor_col : g_term.cols - 1;
         span_mark(g_term.cursor_row, cc, cc);
+
+        /* So is the selection: cells it took or left repaint, and all of
+         * it when focus changes its tint */
+        for (int r = 0; r < g_term.rows; r++) {
+            int from, to;
+            selected_cells(r, &from, &to);
+            int is_retinted = g_focused != g_prev_sel_focused && from < to;
+            if (from == g_prev_sel_from[r] && to == g_prev_sel_to[r] && !is_retinted) {
+                continue;
+            }
+
+            int lo = TERM_MAX_COLS;
+            int hi = 0;
+            if (from < to) {
+                lo = from;
+                hi = to;
+            }
+
+            if (g_prev_sel_from[r] < g_prev_sel_to[r]) {
+                lo = g_prev_sel_from[r] < lo ? g_prev_sel_from[r] : lo;
+                hi = g_prev_sel_to[r] > hi ? g_prev_sel_to[r] : hi;
+            }
+
+            span_mark(r, lo, hi - 1);
+        }
+
         memcpy(diff_min, g_span_min, sizeof(diff_min));
         memcpy(diff_max, g_span_max, sizeof(diff_max));
 
@@ -315,10 +399,22 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         stlxwin_commit(win, buf, rects, n_rects, 0);
     }
 
-    /* This frame becomes the reference: grid shadow, cursor spot, and
-     * the spans the other buffer of the pair now lacks */
+    /* This frame becomes the reference: grid shadow, selection, cursor
+     * spot, and the spans the other buffer of the pair now lacks */
     memcpy(g_prev_cells, g_term.cells, sizeof(g_prev_cells));
     memcpy(g_prev_attrs, g_term.attrs, sizeof(g_prev_attrs));
+    for (int r = 0; r < TERM_MAX_ROWS; r++) {
+        int from = 0;
+        int to = 0;
+        if (r < g_term.rows) {
+            selected_cells(r, &from, &to);
+        }
+
+        g_prev_sel_from[r] = (int16_t)from;
+        g_prev_sel_to[r] = (int16_t)to;
+    }
+
+    g_prev_sel_focused = g_focused;
     g_prev_valid = 1;
     ground_buffer(buf->pixels);
 
@@ -343,36 +439,95 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     return 0;
 }
 
-static void write_all(int fd, const char* data, size_t len) {
-    while (len > 0) {
-        ssize_t n = write(fd, data, len);
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN) {
-                continue;
-            }
-            return;
+/* Room for len more bytes at the end of the input queue, or NULL */
+static char* input_reserve(size_t len) {
+    if (g_input_end + len > g_input_cap && g_input_start > 0) {
+        memmove(g_input, g_input + g_input_start, g_input_end - g_input_start);
+        g_input_end -= g_input_start;
+        g_input_start = 0;
+    }
+
+    if (g_input_end + len > g_input_cap) {
+        size_t cap = g_input_cap ? g_input_cap : 256;
+        while (cap < g_input_end + len) {
+            cap *= 2;
         }
 
-        data += n;
-        len -= (size_t)n;
+        char* grown = realloc(g_input, cap);
+        if (!grown) {
+            return NULL;
+        }
+
+        g_input = grown;
+        g_input_cap = cap;
     }
+
+    return g_input + g_input_end;
+}
+
+/* Writes queued input as far as the pty takes it, at most INPUT_WRITE_MAX bytes a call */
+static void flush_input(int master_fd) {
+    size_t queued = g_input_end - g_input_start;
+    if (queued == 0) {
+        return;
+    }
+
+    ssize_t n = write(master_fd, g_input + g_input_start, queued < INPUT_WRITE_MAX ? queued : INPUT_WRITE_MAX);
+    if (n > 0) {
+        g_input_start += (size_t)n;
+        g_input_taken += (uint64_t)n;
+    } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+        g_input_taken += g_input_end - g_input_start;
+        g_input_start = g_input_end;
+    }
+
+    if (g_input_start == g_input_end) {
+        g_input_start = 0;
+        g_input_end = 0;
+    }
+}
+
+static void send_input(int master_fd, const char* data, size_t len) {
+    char* room = input_reserve(len);
+    if (!room) {
+        return;
+    }
+
+    memcpy(room, data, len);
+    g_input_end += len;
+    flush_input(master_fd);
+}
+
+/* Drops the newest paste's text the pty has not taken, keeping the end
+ * marker so a program in bracketed paste sees the paste end */
+static void drop_unsent_paste(void) {
+    uint64_t from = g_paste_text_from > g_input_taken ? g_paste_text_from : g_input_taken;
+    if (from >= g_paste_text_to) {
+        return;
+    }
+
+    size_t at = g_input_start + (size_t)(from - g_input_taken);
+    size_t count = (size_t)(g_paste_text_to - from);
+    memmove(g_input + at, g_input + at + count, g_input_end - at - count);
+    g_input_end -= count;
+    g_paste_text_to = from;
 }
 
 /* Translated characters come from the display manager, escape
  * sequences from the local special-key table, control codes from the
- * modifier bit. */
-static void handle_key(int master_fd, uint32_t ch, uint16_t usage,
-                       uint8_t modifiers) {
+ * modifier bit. Returns 1 when the key sent input. */
+static int handle_key(int master_fd, uint32_t ch, uint16_t usage,
+                      uint8_t modifiers) {
     char seq[8];
     int len = keymap_translate(usage, g_term.app_cursor_keys,
                                seq, sizeof(seq));
     if (len > 0) {
-        write_all(master_fd, seq, (size_t)len);
-        return;
+        send_input(master_fd, seq, (size_t)len);
+        return 1;
     }
 
     if (ch == 0 || ch > 0x7E) {
-        return;
+        return 0;
     }
 
     char byte = (char)ch;
@@ -381,7 +536,169 @@ static void handle_key(int master_fd, uint32_t ch, uint16_t usage,
         byte = (char)(low & 0x1F);
     }
 
-    write_all(master_fd, &byte, 1);
+    /* Ctrl C stops a paste still being sent */
+    if (byte == CTRL_C_BYTE) {
+        drop_unsent_paste();
+    }
+
+    send_input(master_fd, &byte, 1);
+    return 1;
+}
+
+static void copy_selection(stlxwin_conn* conn) {
+    size_t len = 0;
+    char* text = select_copy(&g_select, &g_term, &len);
+    if (text && len > 0 && stlxwin_clipboard_set(conn, text, len) < 0) {
+        printf("stlxterm: cannot copy %zu bytes to the clipboard\r\n", len);
+    }
+
+    free(text);
+}
+
+/* The clipboard goes to the program as if typed, bracketed when it
+ * asked. Returns 1 when there was text to send. */
+static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
+    char* text = NULL;
+    long len = stlxwin_clipboard_get(conn, &text);
+    char* room = len > 0 ? input_reserve((size_t)len + 2 * PASTE_MARKER_LEN) : NULL;
+    if (!room) {
+        free(text);
+        return 0;
+    }
+
+    uint64_t queued_end = g_input_taken + (g_input_end - g_input_start);
+    size_t encoded = paste_encode(text, (size_t)len, g_term.bracketed_paste, room);
+    g_input_end += encoded;
+    free(text);
+
+    /* A paste queued behind one still being sent joins its range, so Ctrl C stops both */
+    size_t marker_len = g_term.bracketed_paste ? PASTE_MARKER_LEN : 0;
+    if (g_paste_text_to <= g_input_taken) {
+        g_paste_text_from = queued_end + marker_len;
+    }
+
+    g_paste_text_to = queued_end + encoded - marker_len;
+
+    flush_input(master_fd);
+    return 1;
+}
+
+/* The terminal's own keys: copy and paste, each once per press, and the
+ * Ctrl+Shift letters, which never reach the program as Ctrl letters.
+ * Returns 1 when the key sent input. */
+static int handle_terminal_key(stlxwin_conn* conn, int master_fd, const stlxwin_event* ev,
+                               int* is_terminal_key) {
+    uint8_t mods = ev->key.modifiers & (STLXWIN_MOD_SHIFT | STLXWIN_MOD_CTRL | STLXWIN_MOD_ALT | STLXWIN_MOD_SUPER);
+    uint8_t ctrl_shift = STLXWIN_MOD_CTRL | STLXWIN_MOD_SHIFT;
+    uint16_t usage = ev->key.usage;
+
+    int is_copy = (usage == HID_USAGE_C && mods == ctrl_shift) ||
+                  (usage == HID_USAGE_INSERT && mods == STLXWIN_MOD_CTRL);
+    int is_paste = (usage == HID_USAGE_V && mods == ctrl_shift) ||
+                   (usage == HID_USAGE_INSERT && mods == STLXWIN_MOD_SHIFT);
+    int is_chord = (mods & ctrl_shift) == ctrl_shift && usage >= HID_USAGE_A && usage <= HID_USAGE_Z;
+    *is_terminal_key = is_copy || is_paste || is_chord;
+    if (ev->type != STLXWIN_EVT_KEY_DOWN) {
+        return 0;
+    }
+
+    if (is_copy) {
+        copy_selection(conn);
+        return 0;
+    }
+
+    return is_paste && paste_clipboard(conn, master_fd);
+}
+
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* The grid under a window position, held to the grid: above it is the
+ * start of the first row and below it the end of the last */
+static select_point_t grid_point(int32_t x, int32_t y) {
+    select_point_t p = { 0, 0, 0 };
+    int32_t gx = x - PADDING_X;
+    int32_t gy = y - PADDING_Y;
+    if (gy < 0) {
+        return p;
+    }
+
+    p.row = gy / (int32_t)g_cell_h;
+    if (p.row >= g_term.rows) {
+        p.row = g_term.rows - 1;
+        p.cell = g_term.cols - 1;
+        p.edge = g_term.cols;
+        return p;
+    }
+
+    if (gx > 0) {
+        p.cell = gx / (int32_t)g_cell_w;
+        p.edge = (gx + (int32_t)g_cell_w / 2) / (int32_t)g_cell_w;
+    }
+
+    if (p.cell >= g_term.cols) {
+        p.cell = g_term.cols - 1;
+    }
+
+    if (p.edge > g_term.cols) {
+        p.edge = g_term.cols;
+    }
+
+    return p;
+}
+
+/* A left press starts a selection by cells, a double click by words and
+ * a triple click by lines, and Shift extends the current one instead */
+static void press_select(int32_t x, int32_t y) {
+    uint64_t now = now_ms();
+    int is_repeat = g_clicks > 0 && now - g_last_press_ms <= MULTI_CLICK_MS &&
+                    abs(x - g_last_press_x) <= MULTI_CLICK_SLOP && abs(y - g_last_press_y) <= MULTI_CLICK_SLOP;
+    g_clicks = is_repeat ? g_clicks % 3 + 1 : 1;
+    g_last_press_ms = now;
+    g_last_press_x = x;
+    g_last_press_y = y;
+
+    select_point_t p = grid_point(x, y);
+    if (g_clicks == 1 && (g_modifiers & STLXWIN_MOD_SHIFT) && select_has_text(&g_select)) {
+        select_extend(&g_select, &g_term, p);
+    } else {
+        select_unit_t unit = g_clicks == 1 ? SELECT_BY_CELL : g_clicks == 2 ? SELECT_BY_WORD : SELECT_BY_LINE;
+        select_begin(&g_select, &g_term, p, unit);
+    }
+
+    g_selecting = 1;
+}
+
+/* The left button selects: a press starts or extends a selection,
+ * motion drags it and the release ends it. Returns 1 when it changed. */
+static int handle_selection_pointer(const stlxwin_event* ev) {
+    if (ev->type == STLXWIN_EVT_POINTER_MOTION) {
+        return g_selecting && select_drag(&g_select, &g_term, grid_point(ev->motion.x, ev->motion.y));
+    }
+
+    if (ev->button.button != STLXWIN_BTN_LEFT) {
+        return 0;
+    }
+
+    if (ev->type == STLXWIN_EVT_BUTTON_DOWN) {
+        press_select(ev->button.x, ev->button.y);
+        return 1;
+    }
+
+    if (!g_selecting) {
+        return 0;
+    }
+
+    select_drag(&g_select, &g_term, grid_point(ev->button.x, ev->button.y));
+    g_selecting = 0;
+    if (!select_has_text(&g_select)) {
+        select_clear(&g_select);
+    }
+
+    return 1;
 }
 
 /* Runs `program` with `args` on a fresh pty, whose master end goes to
@@ -483,7 +800,6 @@ int main(int argc, char* argv[]) {
     printf("stlxterm: %dx%d cells\r\n", g_term.cols, g_term.rows);
 
     int running = 1;
-    int focused = 1;
     int cursor_on = 1;
     int dirty = 1;
 
@@ -495,12 +811,13 @@ int main(int argc, char* argv[]) {
             dirty = 0;
         }
 
+        short pty_events = g_input_end > g_input_start ? POLLIN | POLLOUT : POLLIN;
         struct pollfd fds[2] = {
             { stlxwin_conn_fd(conn), POLLIN, 0 },
-            { master_fd, POLLIN, 0 },
+            { master_fd, pty_events, 0 },
         };
 
-        int timeout = focused && g_term.cursor_visible ? BLINK_MS : -1;
+        int timeout = g_focused && g_term.cursor_visible ? BLINK_MS : -1;
         int rc = poll(fds, 2, timeout);
         if (rc < 0) {
             if (errno == EINTR) {
@@ -532,9 +849,17 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            if (dirty && focused) {
+            if (dirty) {
+                select_follow(&g_select, &g_term);
+            }
+
+            if (dirty && g_focused) {
                 cursor_on = 1;
             }
+        }
+
+        if (fds[1].revents & POLLOUT) {
+            flush_input(master_fd);
         }
 
         if (fds[0].revents & POLLIN) {
@@ -553,7 +878,13 @@ int main(int argc, char* argv[]) {
                                      / g_cell_w);
                 int new_rows = (int)((ev.configure.height - 2 * PADDING_Y)
                                      / g_cell_h);
+                int old_rows = g_term.rows;
+                int old_cols = g_term.cols;
                 term_resize(&g_term, new_rows, new_cols);
+                if (g_term.rows != old_rows || g_term.cols != old_cols) {
+                    select_clear(&g_select);
+                    g_selecting = 0;
+                }
 
                 struct winsize ws = { (unsigned short)g_term.rows,
                                       (unsigned short)g_term.cols, 0, 0 };
@@ -562,22 +893,43 @@ int main(int argc, char* argv[]) {
                 break;
             }
             case STLXWIN_EVT_FOCUS_IN:
-                focused = 1;
+                g_focused = 1;
                 cursor_on = 1;
                 dirty = 1;
                 break;
             case STLXWIN_EVT_FOCUS_OUT:
-                focused = 0;
+                g_focused = 0;
                 cursor_on = 0;
+                g_modifiers = 0;
                 dirty = 1;
                 break;
             case STLXWIN_EVT_KEY_DOWN:
-            case STLXWIN_EVT_KEY_REPEAT:
-                handle_key(master_fd, ev.key.ch, ev.key.usage,
-                           ev.key.modifiers);
-                if (focused) {
+            case STLXWIN_EVT_KEY_REPEAT: {
+                g_modifiers = ev.key.modifiers;
+                int is_terminal_key = 0;
+                int sent_input = handle_terminal_key(conn, master_fd, &ev, &is_terminal_key);
+                if (!is_terminal_key) {
+                    sent_input = handle_key(master_fd, ev.key.ch, ev.key.usage, ev.key.modifiers);
+                }
+
+                /* A key that sends input ends the selection */
+                if (sent_input && g_select.active) {
+                    select_clear(&g_select);
+                    dirty = 1;
+                }
+
+                if (g_focused) {
                     cursor_on = 1;
                 }
+                break;
+            }
+            case STLXWIN_EVT_KEY_UP:
+                g_modifiers = ev.key.modifiers;
+                break;
+            case STLXWIN_EVT_BUTTON_DOWN:
+            case STLXWIN_EVT_BUTTON_UP:
+            case STLXWIN_EVT_POINTER_MOTION:
+                dirty |= handle_selection_pointer(&ev);
                 break;
             default:
                 break;

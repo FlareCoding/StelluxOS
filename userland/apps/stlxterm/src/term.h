@@ -16,6 +16,7 @@ typedef struct {
 typedef struct {
     char cells[TERM_MAX_ROWS][TERM_MAX_COLS];
     term_attr_t attrs[TERM_MAX_ROWS][TERM_MAX_COLS];
+    uint8_t wrapped[TERM_MAX_ROWS]; // 1 where a row's text ran past the margin onto the next row
     int rows;
     int cols;
     int cursor_row;
@@ -43,12 +44,19 @@ typedef struct {
     // Alternate screen buffer (DECSET 1049/47)
     char alt_cells[TERM_MAX_ROWS][TERM_MAX_COLS];
     term_attr_t alt_attrs[TERM_MAX_ROWS][TERM_MAX_COLS];
+    uint8_t alt_wrapped[TERM_MAX_ROWS];
     int alt_cursor_row;
     int alt_cursor_col;
     int using_alt_screen;
 
     // DECCKM application cursor keys, consulted by the key encoder
     int app_cursor_keys;
+
+    // DECSET 2004 bracketed paste, consulted by the paste encoder
+    int bracketed_paste;
+
+    // Lines scrolled off the top of the whole screen so far, which keeps a selection on its text
+    uint64_t scrolled;
 
     // Parser state
     enum { TERM_ST_NORMAL, TERM_ST_ESC, TERM_ST_CSI, TERM_ST_OSC, TERM_ST_OSC_ESC } state;

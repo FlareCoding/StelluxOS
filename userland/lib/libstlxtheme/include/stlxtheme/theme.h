@@ -55,6 +55,10 @@
 #define STLXTHEME_SURFACE_ON       0x1CFFF0D7 /* the face of an open bar target, a set pin and the chosen segment */
 #define STLXTHEME_MENU_BG          0xF5181511
 
+/* The terminal's selection, cream behind text that keeps its colors */
+#define STLXTHEME_TERMINAL_SELECTION     0x33FFF0D7
+#define STLXTHEME_TERMINAL_SELECTION_DIM 0x1CFFF0D7 /* in an unfocused window */
+
 /* Dark overlays and solid fills */
 #define STLXTHEME_WINDOW_BG 0xFF12100D /* an opaque window's background, also the default desktop color */
 #define STLXTHEME_CARD      0x24080502 /* fills a step darker than the window background, such as alternate rows */
