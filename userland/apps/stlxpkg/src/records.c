@@ -16,6 +16,7 @@
 #define NEW_RECORD_PATH STATE_DIR "/record.new"
 #define HEADER_MAX      (4 * CATALOG_FILE_MAX)
 #define HEADER_FIELDS   4
+#define PATHS_CHUNK     16384
 
 static char g_path[PATH_MAX];
 
@@ -63,7 +64,34 @@ static bool parse_header(const char* line, catalog_entry* installed) {
     return true;
 }
 
-static int read_header(const char* path, catalog_entry* installed) {
+/* Reads the rest of `file` into a string the caller frees */
+static char* read_rest(FILE* file) {
+    char* text = NULL;
+    size_t capacity = 0;
+    size_t length = 0;
+    while (length == capacity) {
+        capacity = capacity > 0 ? 2 * capacity : PATHS_CHUNK;
+        char* grown = realloc(text, capacity + 1);
+        if (!grown) {
+            free(text);
+            return NULL;
+        }
+
+        text = grown;
+        length += fread(text + length, 1, capacity - length, file);
+    }
+
+    if (ferror(file)) {
+        free(text);
+        return NULL;
+    }
+
+    text[length] = '\0';
+
+    return text;
+}
+
+static int read_record(const char* path, catalog_entry* installed, char** paths) {
     FILE* file = fopen(path, "r");
     if (!file) {
         return errno == ENOENT ? 0 : -1;
@@ -71,19 +99,53 @@ static int read_header(const char* path, catalog_entry* installed) {
 
     char line[HEADER_MAX];
     bool parsed = fgets(line, sizeof(line), file) && parse_header(line, installed);
+    if (parsed && paths) {
+        *paths = read_rest(file);
+        parsed = *paths != NULL;
+    }
+
     fclose(file);
 
     return parsed ? 1 : -1;
 }
 
-int record_read(const char* name, catalog_entry* installed) {
+int record_read(const char* name, catalog_entry* installed, char** paths) {
+    if (name[0] == '.' || strchr(name, '/')) {
+        return 0;
+    }
+
     snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, name);
-    int found = read_header(g_path, installed);
+    int found = read_record(g_path, installed, paths);
     if (found < 0) {
         fprintf(stderr, "stlxpkg: cannot read the record %s\n", g_path);
     }
 
     return found;
+}
+
+int record_delete(const char* name) {
+    snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, name);
+    if (unlink(g_path) != 0) {
+        fprintf(stderr, "stlxpkg: cannot delete the record %s (errno %d)\n", g_path, errno);
+        return -1;
+    }
+
+    return 0;
+}
+
+bool record_paths_hold(const char* paths, const char* line) {
+    size_t length = strlen(line);
+    const char* found = strstr(paths, line);
+    while (found) {
+        bool starts_line = found == paths || found[-1] == '\n';
+        if (starts_line && found[length] == '\n') {
+            return true;
+        }
+
+        found = strstr(found + 1, line);
+    }
+
+    return false;
 }
 
 int record_write(const catalog_entry* entry, const char* paths, size_t length) {
@@ -160,7 +222,7 @@ int records_list(catalog_entry* installed, size_t capacity) {
     struct dirent* item = readdir(directory);
     while (item && count < capacity) {
         snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, item->d_name);
-        if (item->d_name[0] != '.' && read_header(g_path, &installed[count]) == 1) {
+        if (item->d_name[0] != '.' && read_record(g_path, &installed[count], NULL) == 1) {
             count++;
         }
 

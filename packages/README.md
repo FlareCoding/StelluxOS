@@ -55,8 +55,10 @@ against the release's `SHA256SUMS` while unpacking it into a staging tree,
 and moves its paths into place only once all of it checked out. Build
 packages unpack under `/usr/sdk/`, so programs can compile against them on
 Stellux. Each install leaves a record of its paths in
-`/var/lib/stlxpkg/records`. The root filesystem lives in RAM, so installed
-packages last until the next boot.
+`/var/lib/stlxpkg/records`, by which `stlxpkg remove <name>...` deletes the
+package again without the network, and by which an install over an older
+release deletes the paths only that release had. The root filesystem lives
+in RAM, so installed packages last until the next boot.
 
 ## Package format
 

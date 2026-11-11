@@ -8,11 +8,11 @@ HOST_CC ?= clang
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(SRC_DIR)/tar.c
-HEADERS   := $(SRC_DIR)/tar.h
+SOURCES   := $(addprefix $(SRC_DIR)/,tar.c remove.c records.c files.c desktop.c)
+HEADERS   := $(wildcard $(SRC_DIR)/*.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 
-CFLAGS := -std=c11 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)
+CFLAGS := -std=c11 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR) -I../../../lib/libstlxconf/include
 
 run: $(TESTS)
 	@for test in $(TESTS); do echo "[RUN] $$test"; $$test || exit 1; done

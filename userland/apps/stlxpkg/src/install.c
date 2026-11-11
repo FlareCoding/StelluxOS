@@ -1,19 +1,19 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "install.h"
+#include "desktop.h"
 #include "files.h"
 #include "records.h"
+#include "remove.h"
 #include "tar.h"
 
 #include <bearssl/bearssl.h>
-#include <stlxconf/conf.h>
 #include <stlxhttp/http.h>
 #include <zstd.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,13 +23,13 @@
 
 #define STAGING_DIR    STATE_DIR "/staging"
 #define SDK_ROOT       "/usr/sdk"
-#define DM_PID_PATH    "/tmp/stlxdm.pid"
 #define DOWNLOAD_CHUNK 65536
 #define SHA256_SIZE    32
 
 typedef struct {
     const catalog_entry* entry;
     const char*          root;            /* where the archive's own root lands, "" for / */
+    char*                old_paths;       /* the path lines of an older release's record, NULL without one */
     tar_reader           tar;
     int                  file_fd;         /* the staged file being written, -1 between files */
     uint32_t             file_mode;
@@ -96,8 +96,8 @@ static void report_conflict(const install_job* job, bool is_directory) {
             job->entry->name, job->real);
 }
 
-/* A path is free when it is missing, or when it is a directory and so is the entry, since directories are shared.
- * Anything else there belongs to another package or to the image. */
+/* A path is free when missing, when a directory and so is the entry, as directories are shared, or when a file the
+ * package's older release installed. Anything else there belongs to another package or to the image. */
 static int check_path_free(const install_job* job, bool is_directory) {
     struct stat status;
     if (lstat(job->real, &status) != 0) {
@@ -109,11 +109,16 @@ static int check_path_free(const install_job* job, bool is_directory) {
         return -1;
     }
 
-    if (is_directory && S_ISDIR(status.st_mode)) {
+    bool exists_as_directory = S_ISDIR(status.st_mode);
+    if (is_directory && exists_as_directory) {
         return 0;
     }
 
-    report_conflict(job, S_ISDIR(status.st_mode));
+    if (!is_directory && !exists_as_directory && job->old_paths && record_paths_hold(job->old_paths, job->real)) {
+        return 0;
+    }
+
+    report_conflict(job, exists_as_directory);
 
     return -1;
 }
@@ -156,7 +161,7 @@ static int on_entry(void* context, const tar_entry* entry) {
         return -1;
     }
 
-    if (strncmp(job->real, STLXCONF_DROP_IN_DIR "/", strlen(STLXCONF_DROP_IN_DIR "/")) == 0) {
+    if (desktop_reads(job->real)) {
         job->changes_drop_ins = true;
     }
 
@@ -306,23 +311,8 @@ static int commit_paths(install_job* job) {
     return 0;
 }
 
-/* Asks a running desktop to reload its drop-ins, as Settings does after a change */
-static void notify_desktop(void) {
-    FILE* file = fopen(DM_PID_PATH, "r");
-    if (!file) {
-        return;
-    }
-
-    int pid = 0;
-    int fields = fscanf(file, "%d", &pid);
-    fclose(file);
-    if (fields == 1 && pid > 1) {
-        kill(pid, SIGHUP);
-    }
-}
-
-/* Streams, verifies and commits the archive. Staging is deleted on every path, since only directories remain in it
- * once the commit moved the rest. */
+/* Streams, verifies and commits the archive, then deletes what only the older release had. Staging is deleted on
+ * every path, since only directories remain in it once the commit moved the rest. */
 static int install_archive(install_job* job, const catalog* catalog) {
     catalog_archive_url(catalog, job->entry, g_url, sizeof(g_url));
     stlxhttp_request* request = NULL;
@@ -347,6 +337,10 @@ static int install_archive(install_job* job, const catalog* catalog) {
         rc = commit_paths(job);
     }
 
+    if (rc == 0 && job->old_paths) {
+        rc = remove_paths(job->old_paths, job->paths, &job->changes_drop_ins);
+    }
+
     (void)remove_tree(STAGING_DIR);
 
     return rc;
@@ -360,42 +354,48 @@ int install_package(const catalog* catalog, const char* name) {
     }
 
     catalog_entry installed;
-    int found = record_read(name, &installed);
+    char* old_paths = NULL;
+    int found = record_read(name, &installed, &old_paths);
     if (found < 0) {
         return -1;
     }
 
     if (found == 1 && strcmp(installed.sha256, entry->sha256) == 0) {
         printf("stlxpkg: %s %s is installed\n", name, installed.version);
+        free(old_paths);
         return 0;
-    }
-
-    if (found == 1) {
-        fprintf(stderr, "stlxpkg: %s %s is installed from another release\n", name, installed.version);
-        return -1;
     }
 
     if (remove_tree(STAGING_DIR) != 0) {
         fprintf(stderr, "stlxpkg: cannot delete %s (errno %d)\n", STAGING_DIR, errno);
+        free(old_paths);
         return -1;
     }
 
     install_job* job = &g_job;
     free(job->paths);
+    free(job->old_paths);
     memset(job, 0, sizeof(*job));
+
     job->entry = entry;
     job->root = is_build_package(name) ? SDK_ROOT : "";
+    job->old_paths = old_paths;
     job->file_fd = -1;
 
     tar_handlers handlers = { on_entry, on_data, on_end_file, job };
     tar_init(&job->tar, &handlers);
-    printf("stlxpkg: downloading %s %s from %s\n", name, entry->version, catalog->tag);
+    if (old_paths) {
+        printf("stlxpkg: upgrading %s %s to %s from %s\n", name, installed.version, entry->version, catalog->tag);
+    } else {
+        printf("stlxpkg: downloading %s %s from %s\n", name, entry->version, catalog->tag);
+    }
+
     if (install_archive(job, catalog) != 0) {
         return -1;
     }
 
     if (job->changes_drop_ins) {
-        notify_desktop();
+        desktop_reload();
     }
 
     printf("stlxpkg: installed %s %s%s%s\n", name, entry->version, job->root[0] ? " under " : "", job->root);

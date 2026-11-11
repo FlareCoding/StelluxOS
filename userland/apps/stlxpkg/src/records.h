@@ -19,10 +19,22 @@
 int records_lock(void);
 
 /**
- * @brief Reads the first line of package `name`'s record into `installed`, whose file stays empty.
+ * @brief Reads the first line of package `name`'s record into `installed`, whose file stays empty, and unless
+ * `paths` is NULL its path lines into a string the caller frees.
  * @return 1 when the package is installed, 0 when it is not, or -1 once the failure is printed.
  */
-int record_read(const char* name, catalog_entry* installed);
+int record_read(const char* name, catalog_entry* installed, char** paths);
+
+/**
+ * @brief Deletes package `name`'s record.
+ * @return 0, or -1 once the failure is printed.
+ */
+int record_delete(const char* name);
+
+/**
+ * @brief Whether the path lines `paths` hold `line`, a path as records write it.
+ */
+bool record_paths_hold(const char* paths, const char* line);
 
 /**
  * @brief Writes `entry`'s record with the path lines `paths`, replacing the old record in one rename.
