@@ -56,6 +56,17 @@ _Static_assert(STLXWIN_OFFER_TYPES_MAX == SWP_OFFER_TYPES_MAX, "stlxwin.h names 
 _Static_assert(STLXWIN_MIME_MAX == SWP_MIME_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_CLIPBOARD_PRIVATE == SWP_CLIPBOARD_PRIVATE, "stlxwin.h names proto.h's flag");
 _Static_assert(sizeof(stlxwin_offer_types) == sizeof(swp_clipboard_types), "the types copy whole");
+_Static_assert(STLXWIN_DRAG_PICTURE_MAX == SWP_DRAG_PICTURE_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_DROP_WORDS_MAX == SWP_DROP_WORDS_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_DND_COPY == SWP_DND_COPY, "stlxwin.h names proto.h's action");
+_Static_assert(STLXWIN_DND_MOVE == SWP_DND_MOVE, "stlxwin.h names proto.h's action");
+_Static_assert(STLXWIN_DND_LINK == SWP_DND_LINK, "stlxwin.h names proto.h's action");
+_Static_assert(STLXWIN_DRAG_STARTED == SWP_DRAG_STARTED, "stlxwin.h names proto.h's state");
+_Static_assert(STLXWIN_DRAG_REFUSED == SWP_DRAG_REFUSED, "stlxwin.h names proto.h's state");
+_Static_assert(STLXWIN_DRAG_FINISHED == SWP_DRAG_FINISHED, "stlxwin.h names proto.h's state");
+_Static_assert(STLXWIN_DRAG_CANCELLED == SWP_DRAG_CANCELLED, "stlxwin.h names proto.h's state");
+_Static_assert(STLXWIN_DROP_OWN == SWP_DROP_OWN, "stlxwin.h names proto.h's flag");
+_Static_assert(STLXWIN_DROP_FOCUS == SWP_DROP_FOCUS, "stlxwin.h names proto.h's flag");
 
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
@@ -159,7 +170,7 @@ int stlxwin_send(stlxwin_conn* conn, uint16_t type,
 }
 
 /* The handles go with the first byte that goes out, and a sendmsg refused whole is retried whole, since the kernel
- * drops its batch. No message carries more handles than an ATTACH_GPU_BUFFER. */
+ * drops its batch. No message carries more handles than a START_DRAG. */
 int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
                                 const void* payload, uint32_t length,
                                 const int* handles, uint32_t handle_count) {
@@ -490,6 +501,29 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         conn->clip_pending = 0;
         return;
     }
+    case SWP_MSG_DROP_DATA: {
+        swp_drop_data m;
+        if (hdr->length != sizeof(m)) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        if (conn->drop_handle >= 0) {
+            close(conn->drop_handle);
+        }
+
+        conn->drop_len = m.len;
+        conn->drop_handle = m.len > 0 ? take_queued_handle(conn) : -1;
+        conn->drop_pending = 0;
+        return;
+    }
+    case SWP_MSG_DRAG_STATE:
+    case SWP_MSG_DROP_ENTER:
+    case SWP_MSG_DROP_MOTION:
+    case SWP_MSG_DROP_LEAVE:
+    case SWP_MSG_DROP:
+        stlxwin_dnd_take_message(conn, hdr, payload);
+        return;
     case SWP_MSG_CLIPBOARD_TYPES: {
         swp_clipboard_types m;
         if (hdr->length != sizeof(m)) {
@@ -917,6 +951,7 @@ stlxwin_conn* stlxwin_connect(const char* app_id) {
     pthread_mutex_init(&conn->lock, NULL);
     conn->gpu_fd = -1;
     conn->clip_handle = -1;
+    conn->drop_handle = -1;
 
     conn->fd = fd;
     conn->evq_cap = STLXWIN_EVQ_INITIAL;
@@ -957,6 +992,10 @@ void stlxwin_disconnect(stlxwin_conn* conn) {
 
     if (conn->clip_handle >= 0) {
         close(conn->clip_handle);
+    }
+
+    if (conn->drop_handle >= 0) {
+        close(conn->drop_handle);
     }
 
     pthread_mutex_destroy(&conn->lock);

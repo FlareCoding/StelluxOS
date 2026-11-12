@@ -11,7 +11,8 @@
  * handles ATTACH_GPU_BUFFER sends over the socket, which the DM takes
  * when the GPU_INFO after HELLO_REPLY says so. The clipboard's content
  * stays outside it too, in shared memory objects whose handles
- * CLIPBOARD_SET, CLIPBOARD_OFFER and CLIPBOARD_DATA send. Each
+ * CLIPBOARD_SET, CLIPBOARD_OFFER and CLIPBOARD_DATA send, and so does
+ * a drag's, whose handles START_DRAG and DROP_DATA send. Each
  * message is an swp_header followed by header.length payload bytes.
  * All structs are little endian, naturally aligned, padding free, and
  * size asserted so a field edit fails the build instead of corrupting
@@ -42,10 +43,12 @@
 #define SWP_GPU_HANDLES       3u      /* handles one ATTACH_GPU_BUFFER carries */
 #define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
 #define SWP_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
-#define SWP_HANDLES_MAX       4u      /* the most handles one message carries, which both ends read */
+#define SWP_HANDLES_MAX       5u      /* the most handles one message carries, which both ends read */
 
-#define SWP_MIME_MAX        64u   /* a MIME type's bytes with its NUL */
-#define SWP_OFFER_TYPES_MAX 4u    /* representations one offer carries */
+#define SWP_MIME_MAX         64u   /* a MIME type's bytes with its NUL */
+#define SWP_OFFER_TYPES_MAX  4u    /* representations one offer carries */
+#define SWP_DRAG_PICTURE_MAX 512u  /* largest width or height of a drag's picture */
+#define SWP_DROP_WORDS_MAX   64u   /* a drop target's words for the drag's chip with their NUL */
 
 /* The type CLIPBOARD_SET and an untyped CLIPBOARD_GET carry */
 #define SWP_MIME_TEXT "text/plain;charset=utf-8"
@@ -76,6 +79,12 @@ enum {
     SWP_MSG_CLIPBOARD_OFFER = 0x0112,
     SWP_MSG_CLIPBOARD_WATCH = 0x0113,
 
+    SWP_MSG_START_DRAG  = 0x0114,
+    SWP_MSG_CANCEL_DRAG = 0x0115,
+    SWP_MSG_DROP_STATUS = 0x0116,
+    SWP_MSG_DROP_GET    = 0x0117,
+    SWP_MSG_DROP_FINISH = 0x0118,
+
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
     SWP_MSG_RELEASE        = 0x0203,
@@ -90,6 +99,13 @@ enum {
     SWP_MSG_LAYOUT_RESULT  = 0x020C,
 
     SWP_MSG_CLIPBOARD_TYPES = 0x020D,
+
+    SWP_MSG_DRAG_STATE  = 0x020E,
+    SWP_MSG_DROP_ENTER  = 0x020F,
+    SWP_MSG_DROP_MOTION = 0x0210,
+    SWP_MSG_DROP_LEAVE  = 0x0211,
+    SWP_MSG_DROP        = 0x0212,
+    SWP_MSG_DROP_DATA   = 0x0213,
 };
 
 typedef struct {
@@ -337,6 +353,70 @@ typedef struct {
 } swp_activate_window;
 SWP_STATIC_ASSERT(sizeof(swp_activate_window) == 4, "wire layout");
 
+/* What a drop does with the data, which a drag's source allows and its target accepts */
+enum {
+    SWP_DND_COPY = 1u << 0,
+    SWP_DND_MOVE = 1u << 1,
+    SWP_DND_LINK = 1u << 2,
+};
+
+/* Starts a drag from the press `serial` names while it lasts on the window holding the grab, answered by DRAG_STATE.
+ * One sendmsg carries it with the picture's handle first, when it has one, then the offer's as CLIPBOARD_OFFER's. */
+typedef struct {
+    uint32_t  win_id;
+    uint32_t  serial;                /* the press's, from its BUTTON_DOWN, which names the drag from then on */
+    uint32_t  actions;               /* SWP_DND_* the source allows, at least one */
+    uint32_t  item_count;            /* the items dragged, at least 1 */
+
+    /* The picture, premultiplied ARGB8888 in rows of picture_w * 4 bytes from its object's start */
+    uint32_t  picture_w, picture_h;  /* each 1 to SWP_DRAG_PICTURE_MAX, or both 0 for no picture */
+    int32_t   hot_x, hot_y;          /* the picture's pixel under the pointer */
+
+    swp_offer offer;                 /* flags 0, and no representation for a drag only its own client takes */
+} swp_start_drag;
+SWP_STATIC_ASSERT(sizeof(swp_start_drag) == 360, "wire layout");
+
+/* Ends the drag `drag` names as Esc does, when this client started it, and is ignored otherwise */
+typedef struct {
+    uint32_t drag;
+} swp_cancel_drag;
+SWP_STATIC_ASSERT(sizeof(swp_cancel_drag) == 4, "wire layout");
+
+/* A window's answer to each DROP_ENTER and DROP_MOTION. No actions refuses, the words show only while the DM chose
+ * words_action, and an answer for a drag no longer over the window is ignored. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    uint32_t actions;        /* SWP_DND_* accepted where the pointer is, 0 refusing */
+    uint32_t preferred;      /* one of them, 0 when refusing */
+    uint32_t words_action;   /* the SWP_DND_* value the words describe, 0 for a refusal's reason */
+    char     words[SWP_DROP_WORDS_MAX];  /* UTF-8, NUL-terminated, empty for none */
+} swp_drop_status;
+SWP_STATIC_ASSERT(sizeof(swp_drop_status) == 84, "wire layout");
+
+/* Asks for one representation of the drag dropped on win_id. Only the window that took the drop may ask, from its
+ * DROP until its DROP_FINISH, and any other ask is answered with nothing. Answered by one DROP_DATA. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    char     mime[SWP_MIME_MAX];  /* NUL-terminated */
+} swp_drop_get;
+SWP_STATIC_ASSERT(sizeof(swp_drop_get) == 72, "wire layout");
+
+enum {
+    SWP_DROP_FOCUS = 1u << 0,  /* raise and focus the window, as a drop into a text field asks */
+};
+
+/* Ends the drop on win_id with the action done, after which the DM tells the source and closes its objects. An action
+ * the DM did not choose counts as none. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    uint32_t action;        /* SWP_DND_* done, 0 for none */
+    uint32_t flags;         /* SWP_DROP_* */
+} swp_drop_finish;
+SWP_STATIC_ASSERT(sizeof(swp_drop_finish) == 16, "wire layout");
+
 /* ---- DM to client ---- */
 
 enum {
@@ -441,6 +521,75 @@ typedef struct {
     char     types[SWP_OFFER_TYPES_MAX][SWP_MIME_MAX]; /* in the offer's order, `count` used, the rest zero */
 } swp_clipboard_types;
 SWP_STATIC_ASSERT(sizeof(swp_clipboard_types) == 260, "wire layout");
+
+enum {
+    SWP_DRAG_STARTED   = 1,  /* the DM took the drag, and its picture follows the pointer */
+    SWP_DRAG_REFUSED   = 2,  /* the press had ended, another drag ran or an overlay held the input, so no drag */
+    SWP_DRAG_FINISHED  = 3,  /* a target finished the drop with `action`, 0 when it did nothing */
+    SWP_DRAG_CANCELLED = 4,  /* Esc, a release where nothing accepted, or the source's CANCEL_DRAG */
+};
+
+/* The course of a drag, sent to the window that started it: STARTED or REFUSED, then FINISHED or CANCELLED */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;          /* the serial START_DRAG named */
+    uint32_t state;         /* SWP_DRAG_* */
+    uint32_t action;        /* FINISHED's SWP_DND_* action, else 0 */
+} swp_drag_state;
+SWP_STATIC_ASSERT(sizeof(swp_drag_state) == 16, "wire layout");
+
+enum {
+    SWP_DROP_OWN = 1u << 0,  /* the drag comes from this connection */
+};
+
+/* A drag came over win_id's content. The window answers it and each DROP_MOTION with a DROP_STATUS, and refuses
+ * until it does. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    int32_t  x, y;          /* window content local */
+    uint32_t actions;       /* SWP_DND_* the source allows */
+    uint32_t item_count;
+    uint32_t flags;         /* SWP_DROP_OWN */
+    uint32_t modifiers;     /* held, as key records carry them */
+    uint32_t count;         /* representations */
+    char     types[SWP_OFFER_TYPES_MAX][SWP_MIME_MAX];  /* in the offer's order, `count` used, the rest zero */
+} swp_drop_enter;
+SWP_STATIC_ASSERT(sizeof(swp_drop_enter) == 292, "wire layout");
+
+/* The drag over win_id moved or its modifiers changed, sent at most once per DM wakeup */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    int32_t  x, y;
+    uint32_t modifiers;
+} swp_drop_motion;
+SWP_STATIC_ASSERT(sizeof(swp_drop_motion) == 20, "wire layout");
+
+/* The drag left win_id's content, or ended there without a drop on it */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+} swp_drop_leave;
+SWP_STATIC_ASSERT(sizeof(swp_drop_leave) == 8, "wire layout");
+
+/* The drag was dropped on win_id, whose last DROP_STATUS accepted it. The window asks for the representations it
+ * reads with DROP_GET, then sends DROP_FINISH, and after 5 seconds without one counts as having done nothing. */
+typedef struct {
+    uint32_t win_id;
+    uint32_t drag;
+    int32_t  x, y;
+    uint32_t action;        /* the SWP_DND_* action the DM chose */
+    uint32_t modifiers;
+} swp_drop;
+SWP_STATIC_ASSERT(sizeof(swp_drop) == 24, "wire layout");
+
+/* The answer to a DROP_GET, a nonzero len with one SCM_RIGHTS handle of a shared memory object no reader may write,
+ * and 0 when the drop holds no such representation or is not the asking window's to read */
+typedef struct {
+    uint64_t len;           /* bytes from the object's start */
+} swp_drop_data;
+SWP_STATIC_ASSERT(sizeof(swp_drop_data) == 8, "wire layout");
 
 enum {
     SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
@@ -559,7 +708,7 @@ SWP_STATIC_ASSERT(sizeof(swp_header) + sizeof(swp_outputs) <= SWP_MAX_MSG_SIZE, 
 SWP_STATIC_ASSERT(sizeof(swp_header) + sizeof(swp_event_prefix) +
                       SWP_EVENTS_MAX_BATCH * sizeof(swp_event_rec) <= SWP_MAX_MSG_SIZE,
                   "a full EVENT fits a read");
-SWP_STATIC_ASSERT(SWP_HANDLES_MAX >= SWP_GPU_HANDLES && SWP_HANDLES_MAX >= SWP_OFFER_TYPES_MAX,
-                  "an attach's and an offer's handles fit one message");
+SWP_STATIC_ASSERT(SWP_HANDLES_MAX >= SWP_GPU_HANDLES && SWP_HANDLES_MAX >= 1 + SWP_OFFER_TYPES_MAX,
+                  "an attach's handles, and a drag's picture with its offer's, fit one message");
 
 #endif /* STLXWIN_PROTO_H */
