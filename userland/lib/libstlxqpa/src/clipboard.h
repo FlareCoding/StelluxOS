@@ -3,6 +3,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QImage>
 #include <QList>
 #include <QMimeData>
 #include <QPair>
@@ -17,9 +18,9 @@
 // One representation of an item as a MIME type and its bytes
 using representation = QPair<QString, QByteArray>;
 
-// What a copy or a drag offers of Qt's data, the richest first: an image as PNG, files, HTML, then text, and then the
-// app's own formats while room is left, empty markers included
-QList<representation> representations(const QMimeData* data);
+// What a copy or a drag offers of Qt's data, the richest first: an image as PNG unless `includes_image` is false, files,
+// HTML, then text, and then the app's own formats while room is left, empty markers included
+QList<representation> representations(const QMimeData* data, bool includes_image = true);
 
 // An item of the desktop's, the clipboard's or a drop's, fetched one representation at a time as Qt asks for it and
 // kept until its types change
@@ -61,9 +62,17 @@ public:
 
 private:
     void read_types();
+    bool offer(const QList<representation>& reps, bool is_private);
+    void offer_image(QImage image, QList<representation> rest, bool is_private, QClipboard::Mode mode);
 
     stlxwin_conn* m_connection;
     QStelluxMimeData m_item;
+
+    // Counts the app's copies and other apps' changes, so a PNG still encoding for an older copy is never offered
+    uint64_t m_copy = 0;
+
+    // Checked by the encoder's answer before it touches the clipboard, which may be gone by then
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
 
     // The app's own latest copy, which answers its own pastes while the clipboard holds it, as Qt's contract keeps a
     // copy's data within its app, formats the desktop does not carry included
