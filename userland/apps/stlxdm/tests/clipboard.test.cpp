@@ -495,10 +495,11 @@ static void check_history_actions() {
     }
 
     uint64_t two = entry_of_size(history, 2)->id;
-    history.make_current(two, 9);
-    check(history.current().size() == 2 && history.is_current(two) && history.find(two)->copied_ns == 9 &&
-          listed_sizes(history) == std::vector<uint64_t>{ 2, 3, 1 },
+    check(history.make_current(two, 9) && history.current().size() == 2 && history.is_current(two) &&
+              history.find(two)->copied_ns == 9 && listed_sizes(history) == std::vector<uint64_t>{ 2, 3, 1 },
           "an entry made current moves up as a fresh copy");
+    check(!history.make_current(two, 10) && history.find(two)->copied_ns == 9,
+          "making the current entry current changes nothing");
 
     history.remove(two);
     check(history.current().empty() && listed_sizes(history) == std::vector<uint64_t>{ 3, 1 },

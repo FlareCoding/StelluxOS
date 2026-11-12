@@ -2454,10 +2454,13 @@ void server::flush_clipboard() {
     m_history_changed = false;
 }
 
-/* A chosen entry becomes current, and pasting sends the focused window the paste event after its types */
+/* A chosen entry becomes current, which watchers hear of only when it was not already, and pasting sends the focused
+ * window the paste event after its types */
 void server::choose_clipboard_entry(uint64_t id, bool pastes) {
-    m_history.make_current(id, monotonic_ns());
-    note_clipboard_change();
+    if (m_history.make_current(id, monotonic_ns())) {
+        note_clipboard_change();
+    }
+
     if (pastes) {
         paste_into_focus();
     }
