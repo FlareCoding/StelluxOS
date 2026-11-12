@@ -15,6 +15,7 @@ typedef enum {
     FAILURE_VERIFY,
     FAILURE_LOCK,
     FAILURE_MISSING,
+    FAILURE_CANCELLED,
     FAILURE_IO,
 } failure_kind;
 
@@ -37,7 +38,7 @@ failure_kind failure_of_errno(int error);
 
 /**
  * @brief Reports a failed stlxhttp call by its STLXHTTP_ERR_* code and message, as timeout or memory where the code
- * says so and as network otherwise.
+ * says so and as network otherwise, or as the cancel whose signal ended its wait.
  * @return -1, for the caller to return.
  */
 int fail_http(int32_t error, const char* message);

@@ -2,6 +2,7 @@
  * architecture */
 #define _POSIX_C_SOURCE 200809L
 
+#include "cancel.h"
 #include "catalog.h"
 #include "install.h"
 #include "records.h"
@@ -91,10 +92,14 @@ static int list_events(const char* arch) {
     return 0;
 }
 
-/* Each package is its own transaction, and the first failure stops the run */
+/* Each package is its own transaction, and the first failure or a cancel stops the run */
 static int for_each_name(int count, char* args[], bool is_install) {
     for (int i = 1; i < count; i++) {
-        int rc = is_install ? install_package(&g_catalog, args[i]) : remove_package(args[i]);
+        int rc = cancel_check();
+        if (rc == 0) {
+            rc = is_install ? install_package(&g_catalog, args[i]) : remove_package(args[i]);
+        }
+
         if (rc != 0) {
             report_failed(args[i]);
             return 1;
@@ -117,6 +122,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    cancel_watch();
     if (has_events) {
         report_use_events(stdout);
     }

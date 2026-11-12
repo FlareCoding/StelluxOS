@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "install.h"
+#include "cancel.h"
 #include "desktop.h"
 #include "files.h"
 #include "records.h"
@@ -279,7 +280,7 @@ static int stream_archive(install_job* job, stlxhttp_request* request) {
         done += count;
         report_progress(job->entry->name, done, length, monotonic_ns());
         br_sha256_update(&sha256, g_download, (size_t)count);
-        if (unpack_chunk(job, zstd, (size_t)count, &frame_left) != 0) {
+        if (unpack_chunk(job, zstd, (size_t)count, &frame_left) != 0 || cancel_check() != 0) {
             break;
         }
 
@@ -329,6 +330,11 @@ static int install_archive(install_job* job, const catalog* catalog) {
     if (job->file_fd >= 0) {
         close(job->file_fd);
         job->file_fd = -1;
+    }
+
+    /* A cancel is last honored here, before the record write, so a package whose paths start moving is placed whole */
+    if (rc == 0) {
+        rc = cancel_check();
     }
 
     if (rc == 0) {

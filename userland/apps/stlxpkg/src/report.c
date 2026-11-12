@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "report.h"
+#include "cancel.h"
 
 #include <stlxhttp/http.h>
 
@@ -21,6 +22,7 @@ static const char* const FAILURE_KINDS[] = {
     [FAILURE_VERIFY]    = "verify",
     [FAILURE_LOCK]      = "lock",
     [FAILURE_MISSING]   = "missing",
+    [FAILURE_CANCELLED] = "cancelled",
     [FAILURE_IO]        = "io",
 };
 
@@ -71,6 +73,10 @@ failure_kind failure_of_errno(int error) {
 }
 
 int fail_http(int32_t error, const char* message) {
+    if (cancel_check() != 0) {
+        return -1;
+    }
+
     failure_kind kind = FAILURE_NETWORK;
     if (error == STLXHTTP_ERR_TIMEOUT) {
         kind = FAILURE_TIMEOUT;
