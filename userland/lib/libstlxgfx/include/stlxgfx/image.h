@@ -18,6 +18,10 @@ stlxgfx_surface_t* stlxgfx_load_image(const char* path);
  * Returns NULL if the bytes cannot be decoded. */
 stlxgfx_surface_t* stlxgfx_decode_image(const void* data, size_t len);
 
+/* Encode a 32-bit surface as a PNG in memory the caller frees, `out_len` long. `keeps_alpha` writes alpha, taken out
+ * of premultiplied pixels, and without it every pixel is opaque. NULL for another depth or without memory. */
+unsigned char* stlxgfx_encode_png(const stlxgfx_surface_t* surface, int keeps_alpha, size_t* out_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,7 +10,7 @@ HOST_CC ?= clang
 REPO_ROOT := $(abspath ../../../..)
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(SRC_DIR)/surface.c $(SRC_DIR)/text.c
+SOURCES   := $(SRC_DIR)/bmp.c $(SRC_DIR)/image.c $(SRC_DIR)/png.c $(SRC_DIR)/surface.c $(SRC_DIR)/text.c
 HEADERS   := $(wildcard ../include/stlxgfx/*.h ../include/stlxgfx/internal/*.h ../../libstlxtheme/include/stlxtheme/*.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 
