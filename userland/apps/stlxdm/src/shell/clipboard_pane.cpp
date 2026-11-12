@@ -708,8 +708,9 @@ void clip_preview::drop_pictures() {
     m_fitted = nullptr;
 }
 
-/* What the meta line says: a text's lines and characters, an image's format, size and bytes, or where files paste */
-static std::vector<std::string> meta_parts(const shown_entry& entry) {
+/* What the meta line says: a text's lines and characters, an image's format, size and bytes, where files paste, or
+ * that a long text shows its first 64 KB, or that a search's match lies past them */
+static std::vector<std::string> meta_parts(const shown_entry& entry, std::string_view query) {
     if (entry.is_image) {
         return { "PNG", std::to_string(entry.image_w) + " \xC3\x97 " + std::to_string(entry.image_h),
                  size_text(entry.size) };
@@ -728,7 +729,8 @@ static std::vector<std::string> meta_parts(const shown_entry& entry) {
 
     std::vector<std::string> parts = { size_text(entry.size), entry.types.empty() ? "" : entry.types.front() };
     if (entry.is_title_text) {
-        parts.push_back("first 64 KB shown");
+        bool is_match_past = !query.empty() && find_folded(entry.text, query) == std::string_view::npos;
+        parts.push_back(is_match_past ? "match past the first 64 KB" : "first 64 KB shown");
     }
 
     return parts;
@@ -779,7 +781,7 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
         at = end + 1;
     }
 
-    m_meta_parts = meta_parts(entry);
+    m_meta_parts = meta_parts(entry, query);
     invalidate();
 }
 
@@ -1055,6 +1057,7 @@ void clipboard_pane::refresh() {
         m_entries.push_back(show_entry(m_source, *entry));
     }
 
+    ask_texts();
     list(selected_id);
 }
 
@@ -1066,7 +1069,37 @@ void clipboard_pane::search(std::string query) {
     m_query = std::move(query);
     m_is_menu_open = false;
     m_is_asking = false;
+    m_text_matches.clear();
+    ask_texts();
     list(0);
+}
+
+/* The texts past 64 KB whose first 64 KB miss the query go to the searcher, and once one request was made a query
+ * with none asks too, which stops the older search */
+void clipboard_pane::ask_texts() {
+    std::vector<uint64_t> ids;
+    for (const shown_entry& entry : m_entries) {
+        bool is_partly_read = entry.is_title_text && entry.text_len > PREVIEW_BYTES_MAX;
+        if (!m_query.empty() && is_partly_read && find_folded(entry.text, m_query) == std::string_view::npos) {
+            ids.push_back(entry.id);
+        }
+    }
+
+    if (!ids.empty() || m_texts_request != 0) {
+        m_texts_request = m_source.search_texts(m_query, ids);
+    }
+
+    m_is_reading_texts = !ids.empty() && m_texts_request != 0;
+}
+
+void clipboard_pane::show_text_matches(const text_matches& matches) {
+    if (matches.request != m_texts_request || !m_is_reading_texts) {
+        return;
+    }
+
+    m_is_reading_texts = false;
+    m_text_matches = matches.ids;
+    list(m_selected < m_listed.size() ? listed(m_selected).id : 0);
 }
 
 /* Lists the entries the query matches, keeping `selected_id` selected while it is listed, else the entry that took
@@ -1090,7 +1123,7 @@ void clipboard_pane::list(uint64_t selected_id) {
     build();
 }
 
-/* Text matches by its first 64 KB and files by their paths, and an image never matches */
+/* Text matches by its first 64 KB or by what the searcher found past them, files by their paths, and an image never */
 bool clipboard_pane::matches(const shown_entry& entry) const {
     if (m_query.empty()) {
         return true;
@@ -1102,7 +1135,8 @@ bool clipboard_pane::matches(const shown_entry& entry) const {
         });
     }
 
-    return entry.is_title_text && find_folded(entry.text, m_query) != std::string_view::npos;
+    bool is_found_past = std::find(m_text_matches.begin(), m_text_matches.end(), entry.id) != m_text_matches.end();
+    return entry.is_title_text && (find_folded(entry.text, m_query) != std::string_view::npos || is_found_past);
 }
 
 /* The pinned entries head the column, then the rest since the history began, and a search lists its matches alone */
@@ -1418,10 +1452,12 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
     return items;
 }
 
-/* The count of entries and the bytes the budget counts against its limit, or how many of them a search lists */
+/* The count of entries and the bytes the budget counts against its limit, or how many of them a search lists while
+ * the searcher may find more */
 std::string clipboard_pane::footer_end() const {
     if (!m_query.empty()) {
-        return std::to_string(m_listed.size()) + " of " + std::to_string(m_entries.size());
+        std::string listed = std::to_string(m_listed.size()) + " of " + std::to_string(m_entries.size());
+        return m_is_reading_texts ? listed + ", searching" : listed;
     }
 
     size_t count = m_entries.size();

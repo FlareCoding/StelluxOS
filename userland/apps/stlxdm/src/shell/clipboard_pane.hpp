@@ -2,6 +2,7 @@
 #define STLXDM_SHELL_CLIPBOARD_PANE_HPP
 
 #include "../clipboard.hpp"
+#include "clipboard_search.hpp"
 #include "palette_parts.hpp"
 
 #include <stlxconf/conf.h>
@@ -56,6 +57,10 @@ struct clipboard_source {
     std::function<void(uint64_t id, bool pinned)> pin;
     std::function<void(uint64_t id)> remove;
     std::function<void()> clear;
+
+    /* Asks the searcher which of the texts `ids` names hold `query` past their first 64 KB. Returns the request's
+     * number, 0 when the searcher takes none. */
+    std::function<uint64_t(const std::string& query, const std::vector<uint64_t>& ids)> search_texts;
 };
 
 /* One thing an entry's Ctrl K list does, with the keys that run it, space separated */
@@ -105,6 +110,9 @@ public:
      * while it is empty */
     void search(std::string query);
 
+    /* Lists the texts the searcher found holding the query past their first 64 KB, for the newest request only */
+    void show_text_matches(const text_matches& matches);
+
     /* The clipboard's own keys: moving through the entries, Enter, Ctrl Enter, Ctrl P, Delete, Ctrl Shift Delete,
      * Ctrl K, and Esc while Ctrl K's list or the clear question is open. False for any other key. */
     bool on_key(const ui::key_event& e);
@@ -114,6 +122,7 @@ public:
     std::string placeholder() const;
 
 private:
+    void ask_texts();
     void list(uint64_t selected_id);
     bool matches(const shown_entry& entry) const;
     const shown_entry& listed(size_t index) const { return m_entries[m_listed[index]]; }
@@ -137,6 +146,11 @@ private:
     size_t                   m_selected = 0;
     clip_list*               m_list = nullptr;
     clip_preview*            m_preview = nullptr;
+
+    /* The newest request to the searcher, whether its answer is still to come, and the texts answers have found */
+    uint64_t              m_texts_request = 0;
+    bool                  m_is_reading_texts = false;
+    std::vector<uint64_t> m_text_matches;
 
     /* Each entry's row and where it starts in the list's content */
     std::vector<clip_row*> m_rows;
