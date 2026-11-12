@@ -12,8 +12,7 @@
 #include <ctime>
 #include <string>
 
-/* The tooltip is glass inside a brass hairline premixed over the warm glass tint, so the tooltip draws opaque */
-constexpr uint32_t TIP_LINE = 0xFF3A3326;
+/* The tooltip is glass inside the hairline, so the tooltip draws opaque */
 constexpr uint32_t TIP_FG = STLXTHEME_TEXT;
 constexpr int32_t TIP_RADIUS = STLXTHEME_CONTROL_RADIUS;
 constexpr int32_t TIP_PAD_H = 8;
@@ -554,7 +553,7 @@ void dm_panels::compose_top(stlxgfx_surface_t* back,
     stlxgfx_fill_rounded_rect(view, tip.x - r.x, tip.y - r.y,
                               static_cast<uint32_t>(tip.w),
                               static_cast<uint32_t>(tip.h),
-                              static_cast<uint32_t>(TIP_RADIUS), TIP_LINE);
+                              static_cast<uint32_t>(TIP_RADIUS), material::HAIRLINE);
     material::surface glass = { { tip.x + 1, tip.y + 1, tip.w - 2, tip.h - 2 }, TIP_RADIUS - 1 };
     material::draw(view, r.x, r.y, m_frost, glass, r);
     stlxgfx_draw_text(view, m_tip_font, tip.x - r.x + TIP_PAD_H,

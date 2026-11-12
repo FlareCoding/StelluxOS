@@ -652,6 +652,10 @@ int server::serve() {
         printf("stlxdm: captures stay off the clipboard, since their encoder could not start\r\n");
     }
 
+    m_capture.set_frost_lookup([this](uint32_t output) {
+        return m_outputs[output].pres ? frost_of(m_outputs[output]) : nullptr;
+    });
+
     /* The config's autostart entries, or a lone terminal without any */
     if (m_conf->autostart_count > 0) {
         for (uint32_t i = 0; i < m_conf->autostart_count; i++) {
@@ -1254,6 +1258,12 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
 /* Moves the outputs' records, the shell, windows and the pointer from `before` onto the layout, as
  * `follow_outputs()` describes */
 desktop_point server::adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons) {
+    /* Frozen frames no longer match outputs that changed, so a capture ends, the repaint below showing the desktop */
+    if (m_capture.active()) {
+        printf("stlxdm: the outputs changed during a capture, which ends\r\n");
+        m_capture.close();
+    }
+
     sync_outputs();
 
     dm_wallpaper wallpaper(*m_conf);
@@ -1945,7 +1955,50 @@ void server::take_screenshot(const char* mode) {
         return;
     }
 
+    if (strcmp(mode, "region") == 0) {
+        open_capture();
+        return;
+    }
+
     printf("stlxdm: a screenshot shortcut names no capture stlxdm takes: '%s'\r\n", mode);
+}
+
+/* Every served output freezes before anything else draws, so menus and hover states hold still while a region is
+ * aimed */
+void server::open_capture() {
+    if (m_capture.active() || m_power->active()) {
+        return;
+    }
+
+    std::vector<frozen_frame> frames(gfxfb::GFXFB_OUTPUTS_MAX);
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (m_outputs[output].pres && !freeze_output(m_outputs[output], frames[output])) {
+            printf("stlxdm: freezing output %u for a capture failed\r\n", output);
+            return;
+        }
+    }
+
+    m_capture.open(std::move(frames), m_cursor_x, m_cursor_y);
+    move_cursor(m_cursor_x, m_cursor_y, CURSOR_CROSSHAIR);
+    m_damage.add_full();
+}
+
+void server::close_capture() {
+    m_capture.close();
+    move_cursor(m_cursor_x, m_cursor_y, SWP_CURSOR_ARROW);
+    m_damage.add_full();
+}
+
+/* The region's frozen pixels go to the encoder, and the live desktop comes back */
+void server::capture_region(const capture_target& target) {
+    stlxgfx_surface_t* pixels = copy_frozen_rect(m_capture.frame(target.output), target.rect);
+    close_capture();
+    if (!pixels) {
+        printf("stlxdm: copying a %d by %d region for a capture failed\r\n", target.rect.w, target.rect.h);
+        return;
+    }
+
+    m_capture_encoder.encode({ m_next_capture++, pixels, false });
 }
 
 /* The output under the pointer goes to the encoder at once, composed whole as its next frame shows it */
