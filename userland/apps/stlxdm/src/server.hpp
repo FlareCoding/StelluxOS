@@ -666,7 +666,6 @@ private:
     void tell_clipboard_watchers();
     void choose_clipboard_entry(uint64_t id, bool pastes);
     std::string client_label(const dm_client& c) const;
-    static bool same_content(const clipboard_item& a, const clipboard_item& b);
     void send_clipboard_types(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
     void offer_clipboard(dm_client& c, const uint8_t* payload);
