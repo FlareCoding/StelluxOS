@@ -4,6 +4,7 @@
 #include <stlxwin/proto.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,12 +33,77 @@ public:
 
     const std::vector<clipboard_rep>& reps() const { return m_reps; }
     uint32_t flags() const { return m_flags; }
+    bool empty() const { return m_reps.empty(); }
+
+    /* The bytes its representations hold together */
+    uint64_t size() const;
 
 private:
     void close_objects();
 
     std::vector<clipboard_rep> m_reps;
     uint32_t                   m_flags = 0;
+};
+
+/* One copy the history keeps, the current clipboard or one it replaced */
+struct clipboard_entry {
+    uint64_t       id = 0;
+    clipboard_item item;
+    std::string    label;          /* the copier as the bar names it, or stlxdm's own name for its copies */
+    int64_t        copied_ns = 0;  /* CLOCK_MONOTONIC */
+    bool           pinned = false;
+};
+
+/* Whether two items hold the same content, which the server reads from their objects */
+using clipboard_matcher = std::function<bool(const clipboard_item& a, const clipboard_item& b)>;
+
+/* The clipboard and the copies it replaced, newest first, within a budget of entries and bytes besides the current
+ * one. A private copy stays out, the same content copied again moves its entry up, and pinned entries stay. */
+class clipboard_history {
+public:
+    explicit clipboard_history(clipboard_matcher matches);
+
+    void set_limits(uint32_t items, uint64_t bytes);
+    uint32_t item_limit() const { return m_item_limit; }
+    uint64_t byte_limit() const { return m_byte_limit; }
+
+    /* Makes `item` current, keeping the entry it replaces unless that one was private or alone passes the budget */
+    void copy(clipboard_item item, std::string label, int64_t now_ns);
+
+    /* What the clipboard holds, empty while nothing is copied */
+    const clipboard_item& current() const;
+
+    /* The listed entries, pinned ones first, each part newest first */
+    std::vector<const clipboard_entry*> entries() const;
+
+    const clipboard_entry* find(uint64_t id) const;
+    bool is_current(uint64_t id) const;
+
+    /* Makes a kept entry current again as a fresh copy */
+    void make_current(uint64_t id, int64_t now_ns);
+    void set_pinned(uint64_t id, bool pinned);
+
+    /* Removing the current entry empties the clipboard, so a deleted copy leaves it too */
+    void remove(uint64_t id);
+    size_t clear_unpinned();
+    void clear();
+
+    /* What the budget counts: every listed entry but the current one */
+    size_t kept_count() const;
+    uint64_t kept_bytes() const;
+
+private:
+    void retire_current();
+    void evict();
+    size_t index_of(uint64_t id) const;
+
+    clipboard_matcher            m_matches;
+    std::vector<clipboard_entry> m_entries;  /* newest first, the current one first while m_front_is_current */
+    bool                         m_front_is_current = false;
+    clipboard_item               m_private;  /* the current item while it is private */
+    uint64_t                     m_next_id = 1;
+    uint32_t                     m_item_limit = 0;
+    uint64_t                     m_byte_limit = 0;
 };
 
 /* Reads an offer's representations, their objects not yet taken. False when the count passes SWP_OFFER_TYPES_MAX, or a

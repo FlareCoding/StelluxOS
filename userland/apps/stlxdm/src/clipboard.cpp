@@ -1,6 +1,7 @@
 #include "clipboard.hpp"
 
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -33,6 +34,15 @@ clipboard_item& clipboard_item::operator=(clipboard_item&& other) noexcept {
     return *this;
 }
 
+uint64_t clipboard_item::size() const {
+    uint64_t total = 0;
+    for (const clipboard_rep& rep : m_reps) {
+        total += rep.len;
+    }
+
+    return total;
+}
+
 const clipboard_rep* clipboard_item::find(std::string_view mime_type) const {
     for (const clipboard_rep& rep : m_reps) {
         if (rep.mime_type == mime_type) {
@@ -50,6 +60,190 @@ void clipboard_item::close_objects() {
             rep.object = -1;
         }
     }
+}
+
+clipboard_history::clipboard_history(clipboard_matcher matches)
+    : m_matches(std::move(matches)) {
+}
+
+void clipboard_history::set_limits(uint32_t items, uint64_t bytes) {
+    m_item_limit = items;
+    m_byte_limit = bytes;
+    evict();
+}
+
+void clipboard_history::copy(clipboard_item item, std::string label, int64_t now_ns) {
+    retire_current();
+    if (item.empty()) {
+        evict();
+        return;
+    }
+
+    if (item.flags() & SWP_CLIPBOARD_PRIVATE) {
+        m_private = std::move(item);
+        evict();
+        return;
+    }
+
+    /* The same content copied again replaces its entry, keeping its pin */
+    bool pinned = false;
+    for (size_t i = 0; i < m_entries.size(); i++) {
+        if (m_matches(m_entries[i].item, item)) {
+            pinned = m_entries[i].pinned;
+            m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
+            break;
+        }
+    }
+
+    clipboard_entry entry;
+    entry.id = m_next_id++;
+    entry.item = std::move(item);
+    entry.label = std::move(label);
+    entry.copied_ns = now_ns;
+    entry.pinned = pinned;
+
+    m_entries.insert(m_entries.begin(), std::move(entry));
+    m_front_is_current = true;
+    evict();
+}
+
+const clipboard_item& clipboard_history::current() const {
+    return m_front_is_current ? m_entries.front().item : m_private;
+}
+
+std::vector<const clipboard_entry*> clipboard_history::entries() const {
+    std::vector<const clipboard_entry*> listed;
+    for (bool pinned : { true, false }) {
+        for (const clipboard_entry& entry : m_entries) {
+            if (entry.pinned == pinned) {
+                listed.push_back(&entry);
+            }
+        }
+    }
+
+    return listed;
+}
+
+const clipboard_entry* clipboard_history::find(uint64_t id) const {
+    size_t i = index_of(id);
+    return i < m_entries.size() ? &m_entries[i] : nullptr;
+}
+
+bool clipboard_history::is_current(uint64_t id) const {
+    return m_front_is_current && m_entries.front().id == id;
+}
+
+void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
+    size_t i = index_of(id);
+    if (i == m_entries.size() || is_current(id)) {
+        return;
+    }
+
+    clipboard_entry entry = std::move(m_entries[i]);
+    m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
+    retire_current();
+
+    entry.copied_ns = now_ns;
+    m_entries.insert(m_entries.begin(), std::move(entry));
+    m_front_is_current = true;
+    evict();
+}
+
+void clipboard_history::set_pinned(uint64_t id, bool pinned) {
+    size_t i = index_of(id);
+    if (i < m_entries.size()) {
+        m_entries[i].pinned = pinned;
+    }
+
+    evict();
+}
+
+void clipboard_history::remove(uint64_t id) {
+    size_t i = index_of(id);
+    if (i == m_entries.size()) {
+        return;
+    }
+
+    if (is_current(id)) {
+        m_front_is_current = false;
+    }
+
+    m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
+}
+
+size_t clipboard_history::clear_unpinned() {
+    if (m_front_is_current && !m_entries.front().pinned) {
+        m_front_is_current = false;
+    }
+
+    size_t before = m_entries.size();
+    std::erase_if(m_entries, [](const clipboard_entry& entry) {
+        return !entry.pinned;
+    });
+
+    return before - m_entries.size();
+}
+
+void clipboard_history::clear() {
+    m_entries.clear();
+    m_front_is_current = false;
+    m_private = clipboard_item();
+}
+
+size_t clipboard_history::kept_count() const {
+    return m_entries.size() - (m_front_is_current ? 1 : 0);
+}
+
+uint64_t clipboard_history::kept_bytes() const {
+    uint64_t total = 0;
+    for (size_t i = m_front_is_current ? 1 : 0; i < m_entries.size(); i++) {
+        total += m_entries[i].item.size();
+    }
+
+    return total;
+}
+
+/* The current entry becomes an ordinary one, unless it was private or passes the whole budget alone */
+void clipboard_history::retire_current() {
+    m_private = clipboard_item();
+    if (!m_front_is_current) {
+        return;
+    }
+
+    m_front_is_current = false;
+    if (m_entries.front().item.size() > m_byte_limit && !m_entries.front().pinned) {
+        m_entries.erase(m_entries.begin());
+    }
+}
+
+/* The oldest unpinned entries leave first, and the current one never does */
+void clipboard_history::evict() {
+    size_t first_kept = m_front_is_current ? 1 : 0;
+    while (kept_count() > m_item_limit || kept_bytes() > m_byte_limit) {
+        size_t oldest = m_entries.size();
+        for (size_t i = m_entries.size(); i-- > first_kept;) {
+            if (!m_entries[i].pinned) {
+                oldest = i;
+                break;
+            }
+        }
+
+        if (oldest == m_entries.size()) {
+            return;
+        }
+
+        m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(oldest));
+    }
+}
+
+size_t clipboard_history::index_of(uint64_t id) const {
+    for (size_t i = 0; i < m_entries.size(); i++) {
+        if (m_entries[i].id == id) {
+            return i;
+        }
+    }
+
+    return m_entries.size();
 }
 
 /* A MIME type is printable ASCII ended by a NUL inside its field */

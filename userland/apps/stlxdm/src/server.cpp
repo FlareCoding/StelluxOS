@@ -41,6 +41,32 @@ constexpr size_t CLIPBOARD_ASKS_MAX = 64;
 /* A retired GPU compositor's timeline is read at least this often */
 constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;
 
+/* The source the clipboard history names for stlxdm's own copies from Quick Actions */
+constexpr const char* QUICK_ACTIONS_LABEL = "Quick Actions";
+
+static int64_t monotonic_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000000000ll + ts.tv_nsec;
+}
+
+/* Compares two objects' first `len` bytes through read-only mappings, a refused mapping counting as different */
+static bool same_bytes(int a, int b, uint64_t len) {
+    void* first = mmap(nullptr, len, PROT_READ, MAP_SHARED, a, 0);
+    if (first == MAP_FAILED) {
+        return false;
+    }
+
+    void* second = mmap(nullptr, len, PROT_READ, MAP_SHARED, b, 0);
+    bool same = second != MAP_FAILED && memcmp(first, second, len) == 0;
+    if (second != MAP_FAILED) {
+        munmap(second, len);
+    }
+
+    munmap(first, len);
+    return same;
+}
+
 /* Spawns a detached app. args is an optional space-separated argument
  * string tokenized into a scratch copy, no quoting support. */
 static void spawn_app(const char* path, const char* args) {
@@ -771,6 +797,7 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     m_power = std::move(next.power);
     m_gpu_capture = std::move(next.gpu_capture);
     m_hotkeys = std::move(next.hotkeys);
+    m_history.set_limits(m_conf->clipboard_history_items, static_cast<uint64_t>(m_conf->clipboard_history_mb) << 20);
 
     m_backdrop = next.backdrop;
     m_gpu_backdrop = std::move(next.gpu_backdrop);
@@ -1447,7 +1474,7 @@ void server::shutdown() {
         close(c->fd);
     }
     m_clients.clear();
-    m_clipboard = clipboard_item();
+    m_history.clear();
 
     /* Panels hold views into the backdrop, so they go first */
     if (m_panels) {
@@ -2018,9 +2045,9 @@ void server::flush_client(dm_client& c) {
     }
 }
 
-/* Every change of the clipboard comes through here, so each watching client hears of it */
-void server::replace_clipboard(clipboard_item item) {
-    m_clipboard = std::move(item);
+/* Every copy comes through here, so the history keeps it and each watching client hears of it */
+void server::replace_clipboard(clipboard_item item, std::string label) {
+    m_history.copy(std::move(item), std::move(label), monotonic_ns());
     for (auto& c : m_clients) {
         if (c->watches_clipboard) {
             send_clipboard_types(*c);
@@ -2029,8 +2056,41 @@ void server::replace_clipboard(clipboard_item item) {
 }
 
 void server::send_clipboard_types(dm_client& c) {
-    swp_clipboard_types m = describe_types(m_clipboard);
+    swp_clipboard_types m = describe_types(m_history.current());
     send_to(c, SWP_MSG_CLIPBOARD_TYPES, &m, sizeof(m));
+}
+
+/* A client's copies carry its launcher's label, as the bar names it, else its app id */
+std::string server::client_label(const dm_client& c) const {
+    for (uint32_t i = 0; i < m_conf->pin_count; i++) {
+        const stlxconf_pin_t& pin = m_conf->pins[i];
+        if (launches_app(pin, c.app_id) && pin.label[0]) {
+            return pin.label;
+        }
+    }
+
+    return c.app_id;
+}
+
+/* Two items hold the same content when their types, lengths and bytes match */
+bool server::same_content(const clipboard_item& a, const clipboard_item& b) {
+    if (a.reps().size() != b.reps().size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < a.reps().size(); i++) {
+        const clipboard_rep& x = a.reps()[i];
+        const clipboard_rep& y = b.reps()[i];
+        if (x.mime_type != y.mime_type || x.len != y.len) {
+            return false;
+        }
+
+        if (x.len > 0 && !same_bytes(x.object, y.object, x.len)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /* Takes the oldest queued handles in order, one per representation with
@@ -2070,7 +2130,7 @@ void server::set_clipboard(dm_client& c, const uint8_t* payload) {
     }
 
     if (take_queued_handles(c, reps)) {
-        replace_clipboard(clipboard_item(std::move(reps), 0));
+        replace_clipboard(clipboard_item(std::move(reps), 0), client_label(c));
     }
 }
 
@@ -2086,7 +2146,7 @@ void server::offer_clipboard(dm_client& c, const uint8_t* payload) {
     }
 
     if (take_queued_handles(c, reps)) {
-        replace_clipboard(clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE));
+        replace_clipboard(clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE), client_label(c));
     }
 }
 
@@ -2137,7 +2197,7 @@ void server::copy_text(const std::string& text) {
         return;
     }
 
-    replace_clipboard(clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0));
+    replace_clipboard(clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0), QUICK_ACTIONS_LABEL);
 }
 
 /* Copies a file as File Manager's copies are, so it pastes as a file where files paste and as its path elsewhere */
@@ -2155,7 +2215,7 @@ void server::copy_file(const std::string& path) {
     }
 
     replace_clipboard(clipboard_item({ { "text/uri-list", list.size(), list_object },
-                                       { SWP_MIME_TEXT, path.size(), text_object } }, 0));
+                                       { SWP_MIME_TEXT, path.size(), text_object } }, 0), QUICK_ACTIONS_LABEL);
 }
 
 /* Sends a message whose one handle, unless `handle` is -1, rides its first byte, so it leaves only from an empty out_q,
@@ -2200,7 +2260,7 @@ bool server::send_with_handle(dm_client& c, uint16_t type, const void* payload, 
 
 /* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q */
 bool server::send_clipboard_answer(dm_client& c) {
-    const clipboard_rep* found = m_clipboard.find(c.clipboard_asks.front());
+    const clipboard_rep* found = m_history.current().find(c.clipboard_asks.front());
     const clipboard_rep* rep = found && found->object >= 0 ? found : nullptr;
 
     swp_clipboard_data m = { rep ? rep->len : 0 };
