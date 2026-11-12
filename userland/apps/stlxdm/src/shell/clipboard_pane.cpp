@@ -40,6 +40,10 @@ constexpr int32_t EMPTY_GAP = 6;
 constexpr int32_t EMPTY_PADDING_X = 24;
 
 constexpr int32_t FILE_ROW_HEIGHT = 44;
+
+/* The pocket shows the files of a screenful of rows, the last saying how many more there are past them, so a long list
+ * costs no more than the rows that show */
+constexpr size_t FILE_ROWS_MAX = 7;
 constexpr int32_t FILE_ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t FILE_TEXT_LEFT = FILE_ICON_SIZE + 12;
 constexpr int32_t FILE_SIZE_GAP = 12;
@@ -773,7 +777,10 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
     }
 
     m_files.clear();
-    for (const std::string& path : entry.files) {
+    bool has_more = entry.files.size() > FILE_ROWS_MAX;
+    size_t shown_files = has_more ? FILE_ROWS_MAX - 1 : entry.files.size();
+    for (size_t i = 0; i < shown_files; i++) {
+        const std::string& path = entry.files[i];
         struct stat st;
         bool is_there = stat(path.c_str(), &st) == 0;
         std::string folder = path.substr(0, path.rfind('/'));
@@ -784,6 +791,18 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
                             std::make_unique<text_picture>("", STLXTHEME_MONO_FONT_PATH, META_SIZE,
                                                            STLXTHEME_TEXT_DIM),
                             std::make_unique<text_picture>(size, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE,
+                                                           STLXTHEME_TEXT_SECONDARY),
+                            {}, {} });
+    }
+
+    if (has_more) {
+        std::string more = "and " + std::to_string(entry.files.size() - shown_files) + " more";
+        m_files.push_back({ nullptr, more, "",
+                            std::make_unique<text_picture>("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
+                                                           STLXTHEME_TEXT_SECONDARY),
+                            std::make_unique<text_picture>("", STLXTHEME_MONO_FONT_PATH, META_SIZE,
+                                                           STLXTHEME_TEXT_DIM),
+                            std::make_unique<text_picture>("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE,
                                                            STLXTHEME_TEXT_SECONDARY),
                             {}, {} });
     }
