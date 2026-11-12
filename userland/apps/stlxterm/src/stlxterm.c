@@ -821,6 +821,24 @@ static int paste_text(int master_fd, char* text, size_t len) {
     return 1;
 }
 
+/* The pill says why files were left out of a drop or a paste, another computer before a name the shell would misread */
+static void note_left_out(const drop_paste_t* paste) {
+    char note[OVERLAY_TEXT_MAX];
+    if (paste->remote == 1) {
+        snprintf(note, sizeof(note), "This file is on another computer (%s)", paste->host);
+    } else if (paste->remote > 1) {
+        snprintf(note, sizeof(note), "%u files are on another computer (%s)", (unsigned)paste->remote, paste->host);
+    } else if (paste->unsafe == 1) {
+        snprintf(note, sizeof(note), "A name holds a line break, so it was left out");
+    } else if (paste->unsafe > 1) {
+        snprintf(note, sizeof(note), "%u names hold line breaks, so they were left out", (unsigned)paste->unsafe);
+    } else {
+        return;
+    }
+
+    show_pill(note, 0, NOTE_PILL_MS);
+}
+
 /* A paste with no text says what the clipboard holds instead, which watching the clipboard tells from then on */
 static void note_textless_paste(stlxwin_conn* conn) {
     const char* note = "The clipboard holds no text";
@@ -837,7 +855,25 @@ static void note_textless_paste(stlxwin_conn* conn) {
     show_pill(note, 0, NOTE_PILL_MS);
 }
 
+/* A copied file pastes as its quoted path, as a drop does, leaving out a name the shell would misread, and anything
+ * without a URI list as its text. Returns 1 when something pasted. */
 static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
+    char* list = NULL;
+    long list_len = stlxwin_clipboard_get_type(conn, "text/uri-list", &list);
+    drop_paste_t paste = { 0 };
+    int rc = list_len > 0 ? drop_paste_uri_list(list, (size_t)list_len, &paste) : -1;
+    free(list);
+    if (rc == 0 && paste.pasted + paste.remote + paste.unsafe > 0) {
+        note_left_out(&paste);
+        if (paste.pasted > 0) {
+            queue_paste(master_fd, paste.text, paste.len);
+        }
+
+        free(paste.text);
+        return paste.pasted > 0;
+    }
+
+    free(paste.text);
     char* text = NULL;
     long len = stlxwin_clipboard_get(conn, &text);
     if (len <= 0) {
@@ -872,24 +908,6 @@ static void answer_drag(stlxwin_window* win, const stlxwin_event* ev) {
     }
 
     stlxwin_drop_status(win, STLXWIN_DND_COPY, STLXWIN_DND_COPY, STLXWIN_DND_COPY, g_drop_words);
-}
-
-/* The pill says why files were left out of a drop, another computer before a name the shell would misread */
-static void note_left_out(const drop_paste_t* paste) {
-    char note[OVERLAY_TEXT_MAX];
-    if (paste->remote == 1) {
-        snprintf(note, sizeof(note), "This file is on another computer (%s)", paste->host);
-    } else if (paste->remote > 1) {
-        snprintf(note, sizeof(note), "%u files are on another computer (%s)", (unsigned)paste->remote, paste->host);
-    } else if (paste->unsafe == 1) {
-        snprintf(note, sizeof(note), "A name holds a line break, so it was left out");
-    } else if (paste->unsafe > 1) {
-        snprintf(note, sizeof(note), "%u names hold line breaks, so they were left out", (unsigned)paste->unsafe);
-    } else {
-        return;
-    }
-
-    show_pill(note, 0, NOTE_PILL_MS);
 }
 
 /* A drop pastes its files' quoted paths, which hold no line break to ask about, or its text as Ctrl Shift V does.
