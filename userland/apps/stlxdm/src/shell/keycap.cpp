@@ -37,8 +37,9 @@ std::vector<std::string> shortcut_keys(const stlxconf_t& conf, stlxconf_action_k
     for (uint32_t i = 0; i < conf.shortcut_count; i++) {
         const stlxconf_shortcut_t& shortcut = conf.shortcuts[i];
         bool same_kind = stlxconf_action_kind(shortcut.action) == kind;
-        bool same_program = strcmp(shortcut.path, path) == 0 && strcmp(shortcut.args, args) == 0;
-        if (!same_kind || (kind == STLXCONF_ACTION_EXEC && !same_program)) {
+        bool same_target = strcmp(shortcut.path, path) == 0 && strcmp(shortcut.args, args) == 0;
+        bool has_target = kind == STLXCONF_ACTION_EXEC || kind == STLXCONF_ACTION_SCREENSHOT;
+        if (!same_kind || (has_target && !same_target)) {
             continue;
         }
 

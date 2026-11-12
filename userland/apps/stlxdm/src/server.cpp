@@ -740,6 +740,12 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         open_power();
     };
 
+    /* The palette goes at once rather than fading, so the freeze composes the desktop without it */
+    out.panels->on_screenshot = [this](const char* mode) {
+        m_panels->close_popover_now();
+        take_screenshot(mode);
+    };
+
     out.panels->on_copy = [this](const std::string& text) {
         copy_text(text);
     };

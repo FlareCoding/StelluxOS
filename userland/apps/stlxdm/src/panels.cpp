@@ -349,6 +349,8 @@ void dm_panels::run_action(const stlxconf_action_t& action) {
         on_spawn(action.path, action.args);
     } else if (kind == STLXCONF_ACTION_POWER && on_power) {
         on_power();
+    } else if (kind == STLXCONF_ACTION_SCREENSHOT && on_screenshot) {
+        on_screenshot(action.args);
     }
 }
 

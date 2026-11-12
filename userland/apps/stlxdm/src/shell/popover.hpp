@@ -84,7 +84,8 @@ public:
     /* Fades the open panel out */
     void close();
 
-    /* Closes the open panel with its fade already run, so the next flush takes it down before the frame composes */
+    /* Closes the open panel with its fade already run, so the next flush takes it down before the frame composes. It is
+     * invisible at once, so a freeze composed before that flush leaves it out. */
     void close_now();
 
     /* The panel open or opening, null while none is or one is closing */

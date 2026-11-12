@@ -172,6 +172,7 @@ void popover_host::close_now() {
     close();
     if (m_phase == phase::closing) {
         m_phase_start_ns = monotonic_ns() - CLOSE_NS;
+        m_opacity = 0;
     }
 }
 

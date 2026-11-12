@@ -2454,7 +2454,8 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         const stlxconf_action_t& action = m_conf.actions[i];
         stlxconf_action_kind_t kind = stlxconf_action_kind(action.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && action.path[0];
-        if (!runs_program && kind != STLXCONF_ACTION_POWER) {
+        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_SCREENSHOT;
+        if (!runs_program && !runs_own_action) {
             continue;
         }
 
