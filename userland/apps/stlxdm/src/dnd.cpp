@@ -1,6 +1,7 @@
 #include "dnd.hpp"
 #include "shell/chord.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 /* The control characters a target's words lose */
@@ -9,6 +10,11 @@ constexpr unsigned char DELETE_CHARACTER = 0x7F;
 
 /* The order a drop falls back through when neither a modifier nor the target picks its action */
 constexpr uint32_t FALLBACK_ORDER[] = { SWP_DND_MOVE, SWP_DND_COPY, SWP_DND_LINK };
+
+/* The chip sits this far right of the pointer, this far under the picture and at least this far below the pointer */
+constexpr int32_t CHIP_RIGHT_OF_POINTER = 18;
+constexpr int32_t CHIP_UNDER_PICTURE = 6;
+constexpr int32_t CHIP_BELOW_POINTER = 24;
 
 bool is_one_dnd_action(uint32_t action) {
     return action != 0 && (action & (action - 1)) == 0 && (action & ~DND_ACTIONS) == 0;
@@ -86,4 +92,61 @@ bool read_start_drag(const swp_start_drag& start, std::vector<clipboard_rep>* re
     }
 
     return read_offer(start.offer, reps);
+}
+
+static const char* action_name(uint32_t action) {
+    switch (action) {
+    case SWP_DND_COPY: return "Copy";
+    case SWP_DND_MOVE: return "Move";
+    case SWP_DND_LINK: return "Link";
+    default:           return "";
+    }
+}
+
+static dnd_chip::glyph action_glyph(uint32_t action) {
+    switch (action) {
+    case SWP_DND_COPY: return dnd_chip::glyph::copy;
+    case SWP_DND_MOVE: return dnd_chip::glyph::move;
+    case SWP_DND_LINK: return dnd_chip::glyph::link;
+    default:           return dnd_chip::glyph::none;
+    }
+}
+
+dnd_chip chip_for(uint32_t action, const dnd_answer& answer) {
+    dnd_chip chip;
+    if (action != 0) {
+        bool has_own_words = answer.words_action == action && !answer.words.empty();
+        chip.mark = action_glyph(action);
+        chip.words = has_own_words ? answer.words : action_name(action);
+        return chip;
+    }
+
+    bool has_reason = answer.actions == 0 && answer.words_action == 0 && !answer.words.empty();
+    if (has_reason) {
+        chip.mark = dnd_chip::glyph::refusal;
+        chip.words = answer.words;
+    }
+
+    return chip;
+}
+
+damage_list::rect place_chip(int32_t x, int32_t y, const damage_list::rect& picture, int32_t width, int32_t height,
+                             const damage_list::rect& output) {
+    bool has_picture = picture.w > 0 && picture.h > 0;
+    int32_t below = y + CHIP_BELOW_POINTER;
+    if (has_picture) {
+        below = std::max(below, picture.y + picture.h + CHIP_UNDER_PICTURE);
+    }
+
+    damage_list::rect chip = { x + CHIP_RIGHT_OF_POINTER, below, width, height };
+    if (chip.y + chip.h > output.y + output.h) {
+        int32_t above = has_picture ? picture.y : y;
+        chip.y = above - CHIP_UNDER_PICTURE - height;
+    }
+
+    if (chip.x + chip.w > output.x + output.w) {
+        chip.x = x - CHIP_RIGHT_OF_POINTER - width;
+    }
+
+    return chip;
 }

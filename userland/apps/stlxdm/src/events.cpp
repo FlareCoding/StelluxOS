@@ -458,9 +458,15 @@ void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     damage_cursor();
 }
 
-/* Shows the pointer's shape on `out`'s hardware cursor, sending its
- * picture unless it shows already, or hides the cursor and returns false */
+/* Shows the pointer's shape on `out`'s hardware cursor, sending its picture unless it shows already, or hides the
+ * cursor and returns false, as it does while a drag's picture moves in the frames */
 bool server::show_hardware_cursor(dm_output& out) {
+    if (drag_shows()) {
+        out.pres->hide_cursor();
+        out.cursor_picture = nullptr;
+        return false;
+    }
+
     presenter::cursor_picture picture;
     bool has_picture = m_cursor.picture(m_cursor_shape, picture);
     bool showing = has_picture && picture.pixels == out.cursor_picture;

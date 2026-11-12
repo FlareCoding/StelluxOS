@@ -180,8 +180,14 @@ void server::start_drag(dm_client& c, dm_window* w, std::unique_ptr<dnd_session>
     swp_drag_state started = { w->win_id, m_dnd->drag, SWP_DRAG_STARTED, 0 };
     send_window_message(c, w, SWP_MSG_DRAG_STATE, &started, sizeof(started));
 
+    if (!m_drag_look.draw_picture(frame_maker(), *m_dnd)) {
+        printf("stlxdm: drag %u shows no picture, as memory ran out\r\n", m_dnd->drag);
+    }
+
     move_cursor(m_cursor_x, m_cursor_y, SWP_CURSOR_ARROW);
+    refresh_cursor_planes();
     update_drag_target();
+    damage_drag();
 }
 
 /* A cancel from the source ends a drag still following the pointer, and is ignored once it dropped */
@@ -259,6 +265,7 @@ bool server::route_drag_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t
     }
 
     dnd_session& s = *m_dnd;
+    damage_drag();
     s.x = x;
     s.y = y;
     s.buttons = buttons;
@@ -266,6 +273,7 @@ bool server::route_drag_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t
 
     move_cursor(x, y, SWP_CURSOR_ARROW);
     update_drag_target();
+    damage_drag();
 
     if (wheel != 0) {
         scroll_under_drag(x, y, wheel);
@@ -348,16 +356,29 @@ void server::update_drag_target() {
 
     s.target = under;
     s.answer = {};
-    s.action = 0;
+    refresh_drag_action();
     if (under) {
         send_drop_enter(under);
         s.motion_pending = false;
     }
 }
 
+/* The action a release does now, and the chip and opacity that show it */
 void server::refresh_drag_action() {
     dnd_session& s = *m_dnd;
-    s.action = s.target ? choose_dnd_action(s.actions, s.answer, s.modifiers) : 0;
+    uint32_t action = s.target ? choose_dnd_action(s.actions, s.answer, s.modifiers) : 0;
+    dnd_chip chip = chip_for(action, s.answer);
+    if (action == s.action && chip == m_drag_look.chip()) {
+        return;
+    }
+
+    damage_drag();
+    s.action = action;
+    if (!(chip == m_drag_look.chip()) && !m_drag_look.draw_chip(chip)) {
+        printf("stlxdm: drag %u shows no chip, as memory ran out\r\n", s.drag);
+    }
+
+    damage_drag();
 }
 
 void server::scroll_under_drag(int32_t x, int32_t y, int16_t wheel) {
@@ -429,9 +450,12 @@ void server::drop_drag() {
 
     swp_drop m = { w->win_id, s.drag, s.x - w->x, s.y - w->y, s.action, s.modifiers };
     send_window_message(*owner, w, SWP_MSG_DROP, &m, sizeof(m));
+    hide_drag();
+
     s.phase = dnd_session::stage::dropped;
     s.motion_pending = false;
     s.finish_deadline_ns = now_ns() + DND_FINISH_TIMEOUT_NS;
+    refresh_cursor_planes();
 }
 
 /* Tells the source how its drag ended and closes the objects held for it */
@@ -442,7 +466,9 @@ void server::end_drag(uint32_t state, uint32_t action) {
         send_window_message(*s.source, find_window(*s.source, s.source_win_id), SWP_MSG_DRAG_STATE, &m, sizeof(m));
     }
 
+    hide_drag();
     m_dnd.reset();
+    refresh_cursor_planes();
 }
 
 /* The pointer goes back to the windows the moment a drag stops following it, so the one under it hears it enter */
@@ -482,7 +508,7 @@ void server::forget_drag_window(const dm_window* w) {
 
     m_dnd->target = nullptr;
     m_dnd->answer = {};
-    m_dnd->action = 0;
+    refresh_drag_action();
 }
 
 /* A drag whose source goes away runs on with the objects stlxdm holds, and nobody hears how it ends */
@@ -541,4 +567,64 @@ void server::send_drop_answers(dm_client& c) {
 
         c.drop_asks.pop_front();
     }
+}
+
+/* Whether a drag follows the pointer, showing its look */
+bool server::drag_shows() const {
+    return m_dnd && m_dnd->phase == dnd_session::stage::dragging;
+}
+
+/* Whole while a release would drop, and faded while nothing under the pointer accepts */
+uint32_t server::drag_opacity() const {
+    return m_dnd->action != 0 ? decor::CHANNEL_MAX : DND_REFUSED_OPACITY;
+}
+
+/* The place of the output under the pointer, whose edges the chip keeps inside */
+damage_list::rect server::drag_output() {
+    int32_t under = m_layout.output_at(m_dnd->x, m_dnd->y);
+    uint32_t output = under >= 0 ? static_cast<uint32_t>(under) : m_layout.main_output();
+
+    return m_layout.find(output)->rect;
+}
+
+/* Marks where the drag's look lies for the next frames to repaint */
+void server::damage_drag() {
+    if (!drag_shows()) {
+        return;
+    }
+
+    damage_list::rect r = m_drag_look.bounds(m_dnd->x, m_dnd->y, drag_output());
+    if (r.w > 0 && r.h > 0) {
+        m_damage.add(r.x, r.y, r.w, r.h);
+    }
+}
+
+/* The look leaves the screen the moment the drag stops following the pointer */
+void server::hide_drag() {
+    damage_drag();
+    m_drag_look = drag_look();
+}
+
+/* A switch of compositors drops the look, which is drawn again for the compositor composing now */
+void server::remake_drag_look() {
+    if (!drag_shows() || m_drag_look.maker() == &frame_maker()) {
+        return;
+    }
+
+    m_drag_look.draw_picture(frame_maker(), *m_dnd);
+    m_drag_look.draw_chip(chip_for(m_dnd->action, m_dnd->answer));
+    damage_drag();
+}
+
+/* While a drag follows the pointer every output draws the pointer into its frames, so it moves with the picture, and
+ * once the drag stops each output takes back its hardware cursor where it can */
+void server::refresh_cursor_planes() {
+    for (dm_output& out : m_outputs) {
+        if (out.pres && out.cursor_overlaps) {
+            out.cursor_in_frames = !show_hardware_cursor(out);
+            out.cursor_move_pending = false;
+        }
+    }
+
+    damage_cursor();
 }

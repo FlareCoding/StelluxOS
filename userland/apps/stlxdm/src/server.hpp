@@ -8,6 +8,7 @@
 #include "decor.hpp"
 #include "display.hpp"
 #include "dnd.hpp"
+#include "drag_look.hpp"
 #include "frame_stats.hpp"
 #include "gpu_compositor.hpp"
 #include "layout.hpp"
@@ -671,6 +672,13 @@ private:
     const clipboard_rep* drop_rep_for(dm_client& c, const dm_drop_ask& ask);
     bool send_drop_answer(dm_client& c);
     void send_drop_answers(dm_client& c);
+    bool drag_shows() const;
+    uint32_t drag_opacity() const;
+    damage_list::rect drag_output();
+    void damage_drag();
+    void hide_drag();
+    void remake_drag_look();
+    void refresh_cursor_planes();
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
@@ -902,8 +910,9 @@ private:
      * while empty */
     clipboard_item m_clipboard;
 
-    /* The running drag, null while none runs */
+    /* The running drag, null while none runs, and what it shows while it follows the pointer */
     std::unique_ptr<dnd_session> m_dnd;
+    drag_look                    m_drag_look;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

@@ -133,10 +133,62 @@ static void check_starts() {
     check(!read_start_drag(five, &reps), "an offer past the most representations is malformed");
 }
 
+static dnd_answer worded(uint32_t actions, uint32_t words_action, const char* words) {
+    dnd_answer answer = answer_of(actions, 0);
+    answer.words_action = words_action;
+    answer.words = words;
+
+    return answer;
+}
+
+static void check_chips() {
+    dnd_chip chip = chip_for(SWP_DND_COPY, worded(SWP_DND_COPY, SWP_DND_COPY, "Paste path"));
+    check(chip.mark == dnd_chip::glyph::copy && chip.words == "Paste path", "words for the chosen action show");
+
+    chip = chip_for(SWP_DND_MOVE, worded(DND_ACTIONS, SWP_DND_COPY, "Copy to wallpapers"));
+    check(chip.mark == dnd_chip::glyph::move && chip.words == "Move",
+          "words for another action give way to the chosen action's name");
+    check(chip_for(SWP_DND_LINK, answer_of(DND_ACTIONS, 0)).words == "Link", "an action without words shows its name");
+
+    chip = chip_for(0, worded(0, 0, "Can't move a folder into itself"));
+    check(chip.mark == dnd_chip::glyph::refusal && chip.words == "Can't move a folder into itself",
+          "a refusal with a reason shows the refusal glyph and the reason");
+    check(chip_for(0, answer_of(0, 0)) == dnd_chip(), "a refusal without a reason shows no chip");
+    check(chip_for(0, worded(SWP_DND_MOVE, SWP_DND_MOVE, "Move here")) == dnd_chip(),
+          "nothing the source allows shows no chip");
+}
+
+static bool is_rect(const damage_list::rect& r, int32_t x, int32_t y, int32_t w, int32_t h) {
+    return r.x == x && r.y == y && r.w == w && r.h == h;
+}
+
+static void check_chip_places() {
+    damage_list::rect output = { 0, 0, 1920, 1080 };
+    damage_list::rect picture = { 90, 90, 200, 40 };
+
+    check(is_rect(place_chip(100, 100, picture, 120, 28, output), 118, 136, 120, 28),
+          "the chip sits right of the pointer and under the picture");
+    check(place_chip(100, 100, { 90, 95, 30, 10 }, 120, 28, output).y == 124,
+          "the chip keeps clear of the pointer under a short picture");
+    check(is_rect(place_chip(100, 100, {}, 120, 28, output), 118, 124, 120, 28),
+          "without a picture the chip rides the pointer alone");
+
+    check(place_chip(100, 1060, { 90, 1050, 200, 40 }, 120, 28, output).y == 1016,
+          "at the bottom edge the chip moves above the picture");
+    check(place_chip(1880, 100, picture, 120, 28, output).x == 1742,
+          "at the right edge the chip moves left of the pointer");
+
+    damage_list::rect second = { 1920, 0, 1280, 1024 };
+    check(place_chip(1930, 100, { 1920, 90, 200, 40 }, 120, 28, second).x == 1948,
+          "an output right of the main one places the chip in its own pixels");
+}
+
 int main() {
     check_actions();
     check_answers();
     check_starts();
+    check_chips();
+    check_chip_places();
 
     if (g_failures != 0) {
         printf("dnd: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),
