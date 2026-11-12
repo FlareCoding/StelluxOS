@@ -115,6 +115,15 @@ static void check_types() {
     check(types.types[2][0] == '\0' && types.types[3][0] == '\0', "the types past the count stay zero");
 }
 
+static void check_png_sizes() {
+    const char header[] = "\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\x02\xf6\0\0\x01\x4a";
+    uint32_t width = 0;
+    uint32_t height = 0;
+    check(png_size(std::string_view(header, 24), &width, &height) && width == 758 && height == 330,
+          "a PNG's header gives its size");
+    check(!png_size("GIF89a not a png header....", &width, &height), "other bytes give no size");
+}
+
 static void check_reads() {
     char path[] = "/tmp/stlxdm-clipboard-XXXXXX";
     int object = mkstemp(path);
@@ -134,6 +143,10 @@ static void check_reads() {
 }
 
 static void check_uri_lists() {
+    std::string list = file_uri_list("/tmp/a b%c") + "# a comment\r\nhttps://example.com/x\r\nfile:///etc/hosts\n";
+    check(uri_list_paths(list) == std::vector<std::string>{ "/tmp/a b%c", "/etc/hosts" },
+          "a uri list's local files read back as paths, its comments and web addresses left out");
+
     check(file_uri_list("/etc/stlxdm/stlxdm.conf") == "file:///etc/stlxdm/stlxdm.conf\r\n",
           "a plain path names its file as it is");
     check(file_uri_list("/tmp/a b%c#d") == "file:///tmp/a%20b%25c%23d\r\n",
@@ -272,6 +285,7 @@ int main() {
     check_types();
     check_reads();
     check_uri_lists();
+    check_png_sizes();
 
     check_history_order();
     check_history_budget();

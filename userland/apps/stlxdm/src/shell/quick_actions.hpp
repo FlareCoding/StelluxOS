@@ -2,6 +2,7 @@
 #define STLXDM_SHELL_QUICK_ACTIONS_HPP
 
 #include "../clipboard.hpp"
+#include "clipboard_pane.hpp"
 #include "file_index.hpp"
 #include "popover.hpp"
 
@@ -118,6 +119,7 @@ private:
     /* The history Clipboard mode lists, when it began, where a paste lands, and the open palette's hooks into
      * Clipboard mode, unset while it is closed */
     const clipboard_history* m_history = nullptr;
+    clipboard_thumbnails     m_thumbnails;
     std::string              m_history_since;
     std::string              m_focused_app;
     bool                     m_opens_clipboard = false;

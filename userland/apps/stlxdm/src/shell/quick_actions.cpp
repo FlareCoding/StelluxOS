@@ -2479,7 +2479,8 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         return entry.kind == row_kind::file ? file_note(entry.file) : std::string();
     };
 
-    view->clipboard = { m_history, &m_conf, &m_launcher_icons, m_text_icon, m_focused_app, m_history_since,
+    view->clipboard = { m_history, &m_thumbnails, &m_conf, &m_launcher_icons, m_text_icon, m_image_icon,
+                        m_folder_icon, m_program_icon, m_focused_app, m_history_since,
                         [this](uint64_t id) { on_clipboard_paste(id); },
                         [this](uint64_t id) { on_clipboard_copy(id); } };
     m_shows_clipboard = [shown]() {

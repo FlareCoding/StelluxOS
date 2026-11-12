@@ -1,10 +1,13 @@
 #include "clipboard_pane.hpp"
 
+#include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <memory>
+#include <sys/stat.h>
 
 constexpr int32_t COLUMN_WIDTH = 304;
 constexpr int32_t COLUMN_PADDING_RIGHT = 4;
@@ -29,6 +32,12 @@ constexpr int32_t META_GAP = 18;
 constexpr float META_SIZE = 11.5f;
 
 constexpr int32_t EMPTY_GAP = 6;
+
+constexpr int32_t FILE_ROW_HEIGHT = 44;
+constexpr int32_t FILE_ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
+constexpr int32_t FILE_TEXT_LEFT = FILE_ICON_SIZE + 12;
+constexpr int32_t MESSAGE_GAP = 10;
+constexpr int32_t THUMBNAIL_SIZE = ENTRY_ICON_SIZE;
 
 /* A preview shows a text's first 64 KB, and a line's first bytes are all the pocket can show */
 constexpr uint64_t PREVIEW_BYTES_MAX = 64 * 1024;
@@ -68,21 +77,42 @@ private:
     ui::box* m_content;
 };
 
-/* The selected entry exactly: its kind, where and when it came from, its text in a pocket, and a line about it */
+/* One file a files entry names, as File Manager's rows show it */
+struct file_line {
+    const stlxgfx_surface_t*      icon;
+    std::unique_ptr<text_picture> name;
+    std::unique_ptr<text_picture> folder;
+    std::unique_ptr<text_picture> size;
+};
+
+/* The selected entry exactly: its kind, where and when it came from, its text, image or files in a pocket, and a line
+ * about it */
 class clip_preview : public ui::widget {
 public:
     clip_preview();
+    ~clip_preview() override;
 
-    void show(const shown_entry& entry, int64_t now_ns);
+    /* Shows `entry`, taking `image`, its decoded picture, when it is an image */
+    void show(const shown_entry& entry, const clipboard_source& source, int64_t now_ns, stlxgfx_surface_t* image);
     void paint(ui::painter& p) override;
 
 private:
+    void drop_pictures();
+    void paint_image(ui::painter& p, const ui::rect& inside);
+    void paint_files(ui::painter& p, const ui::rect& inside) const;
+
     text_picture                               m_kind;
     text_picture                               m_from;
     text_picture                               m_tag;
     bool                                       m_is_current = false;
+    std::vector<std::unique_ptr<text_picture>> m_message;
     std::vector<std::unique_ptr<text_picture>> m_lines;
+    std::vector<file_line>                     m_files;
     std::vector<std::unique_ptr<text_picture>> m_meta;
+
+    /* An image entry's picture, and that picture fitted to the pocket at its last size */
+    stlxgfx_surface_t* m_image = nullptr;
+    stlxgfx_surface_t* m_fitted = nullptr;
 };
 
 /* One entry: its icon, its first line or what it is, and where and when it was copied */
@@ -241,6 +271,36 @@ static const stlxgfx_surface_t* icon_for(const clipboard_source& source, const s
     return source.text_icon;
 }
 
+/* A folder shows the folder icon, a picture the image icon, a program the program icon, and the rest the text icon */
+static const stlxgfx_surface_t* file_icon(const clipboard_source& source, const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+        return source.folder_icon;
+    }
+
+    const char* type = stlxconf_file_type(path.c_str()).mime_type;
+    if (strncmp(type, "image/", strlen("image/")) == 0) {
+        return source.image_icon;
+    }
+
+    return strcmp(type, "application/x-executable") == 0 ? source.program_icon : source.text_icon;
+}
+
+/* One file by its name, and several by their count and names, as "2 files: tar.c, tar.h" */
+static std::string files_title(const std::vector<std::string>& files) {
+    if (files.size() == 1) {
+        return file_name(files.front().c_str());
+    }
+
+    std::string title = std::to_string(files.size()) + " files: ";
+    for (size_t i = 0; i < files.size(); i++) {
+        title += (i > 0 ? ", " : "") + std::string(file_name(files[i].c_str()));
+    }
+
+    return title;
+}
+
+/* An image shows as one and its thumbnail, files as File Manager's rows, and text as itself in its copier's icon */
 static shown_entry show_entry(const clipboard_source& source, const clipboard_entry& entry) {
     shown_entry shown;
     shown.id = entry.id;
@@ -250,6 +310,7 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     shown.is_pinned = entry.pinned;
 
     shown.size = entry.item.size();
+    shown.is_too_large = shown.is_current && shown.size > source.history->byte_limit();
     shown.icon = icon_for(source, entry.label);
     for (const clipboard_rep& rep : entry.item.reps()) {
         shown.types.push_back(rep.mime_type);
@@ -259,6 +320,30 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     if (text) {
         shown.text = read_bytes(*text, PREVIEW_BYTES_MAX);
         shown.text_len = text->len;
+    }
+
+    const clipboard_rep* png = entry.item.find("image/png");
+    if (png) {
+        shown.is_image = true;
+        png_size(read_bytes(*png, 24), &shown.image_w, &shown.image_h);
+        shown.kind = "Image";
+        shown.title = "Image, " + std::to_string(shown.image_w) + " \xC3\x97 " + std::to_string(shown.image_h);
+
+        const stlxgfx_surface_t* thumbnail = source.thumbnails->of(entry);
+        shown.icon = thumbnail ? thumbnail : source.image_icon;
+        return shown;
+    }
+
+    const clipboard_rep* list = entry.item.find("text/uri-list");
+    shown.files = list ? uri_list_paths(read_bytes(*list, PREVIEW_BYTES_MAX)) : std::vector<std::string>();
+    if (!shown.files.empty()) {
+        shown.kind = shown.files.size() == 1 ? "File" : std::to_string(shown.files.size()) + " files";
+        shown.title = files_title(shown.files);
+        shown.icon = file_icon(source, shown.files.front());
+        return shown;
+    }
+
+    if (text) {
         shown.kind = is_link(shown.text) ? "Link" : "Text";
         shown.title = first_line(shown.text);
         shown.is_title_text = true;
@@ -285,11 +370,14 @@ static std::string text_length(const shown_entry& entry) {
     return lines > 1 ? std::to_string(lines) + " lines" : "";
 }
 
-/* Where an entry came from and when, and how long a text of more than one line is */
+/* Where an entry came from and when, and that a copy past the budget is kept only while current, or how long a text
+ * of more than one line is */
 static std::string detail_of(const shown_entry& entry, int64_t now_ns) {
     std::string detail = entry.from + ", " + age_text(now_ns - entry.copied_ns);
     std::string length = text_length(entry);
-    if (!length.empty()) {
+    if (entry.is_too_large) {
+        detail += ", on the clipboard only";
+    } else if (!length.empty()) {
         detail += ", " + length;
     }
 
@@ -333,15 +421,83 @@ clip_preview::clip_preview()
       m_tag("On the clipboard", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {
 }
 
-/* The pocket holds the lines its height fits, and the meta line counts a text's lines and characters */
-void clip_preview::show(const shown_entry& entry, int64_t now_ns) {
+clip_preview::~clip_preview() {
+    drop_pictures();
+}
+
+void clip_preview::drop_pictures() {
+    stlxgfx_destroy_surface(m_image);
+    stlxgfx_destroy_surface(m_fitted);
+    m_image = nullptr;
+    m_fitted = nullptr;
+}
+
+/* What the meta line says: a text's lines and characters, an image's format, size and bytes, or where files paste */
+static std::vector<std::string> meta_parts(const shown_entry& entry) {
+    if (entry.is_image) {
+        return { "PNG", std::to_string(entry.image_w) + " \xC3\x97 " + std::to_string(entry.image_h),
+                 size_text(entry.size) };
+    }
+
+    if (!entry.files.empty()) {
+        return { entry.text_len > 0 ? "files in File Manager, paths in text" : "files in File Manager" };
+    }
+
+    if (entry.is_title_text && entry.text_len <= PREVIEW_BYTES_MAX) {
+        size_t lines = line_count(entry.text);
+        size_t characters = character_count(entry.text);
+        return { std::to_string(lines) + (lines == 1 ? " line" : " lines"),
+                 std::to_string(characters) + (characters == 1 ? " character" : " characters"), "UTF-8" };
+    }
+
+    std::vector<std::string> parts = { size_text(entry.size), entry.types.empty() ? "" : entry.types.front() };
+    if (entry.is_title_text) {
+        parts.push_back("first 64 KB shown");
+    }
+
+    return parts;
+}
+
+/* The pocket holds what its height fits, a copy past the budget saying so above its text */
+void clip_preview::show(const shown_entry& entry, const clipboard_source& source, int64_t now_ns,
+                        stlxgfx_surface_t* image) {
+    drop_pictures();
+    m_image = image;
+
     std::string age = age_text(now_ns - entry.copied_ns);
     m_kind.set_text(entry.kind);
     m_from.set_text("from " + entry.from + ", copied " + (age == "now" ? "just now" : age));
     m_is_current = entry.is_current;
 
+    m_message.clear();
+    if (entry.is_too_large) {
+        std::string limit = std::to_string(source.history->byte_limit() >> 20) + " MB";
+        m_message.push_back(std::make_unique<text_picture>(size_text(entry.size) + " is past the " + limit +
+                                                           " the history keeps.", STLXTHEME_UI_FONT_SEMIBOLD_PATH,
+                                                           STLXTHEME_BODY_SIZE, STLXTHEME_TEXT));
+        m_message.push_back(std::make_unique<text_picture>("It stays while it is on the clipboard, and leaves the "
+                                                           "history when something else is copied.",
+                                                           STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE,
+                                                           STLXTHEME_TEXT_SECONDARY));
+    }
+
+    m_files.clear();
+    for (const std::string& path : entry.files) {
+        struct stat st;
+        bool is_there = stat(path.c_str(), &st) == 0;
+        std::string folder = path.substr(0, path.rfind('/'));
+        std::string size = !is_there ? "gone" : S_ISDIR(st.st_mode) ? "folder" : size_text(st.st_size);
+        m_files.push_back({ file_icon(source, path),
+                            std::make_unique<text_picture>(file_name(path.c_str()), STLXTHEME_UI_FONT_MEDIUM_PATH,
+                                                           STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
+                            std::make_unique<text_picture>(folder.empty() ? "/" : folder, STLXTHEME_MONO_FONT_PATH,
+                                                           META_SIZE, STLXTHEME_TEXT_DIM),
+                            std::make_unique<text_picture>(size, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE,
+                                                           STLXTHEME_TEXT_SECONDARY) });
+    }
+
     m_lines.clear();
-    std::string_view text = entry.text;
+    std::string_view text = entry.is_image || !entry.files.empty() ? std::string_view() : entry.text;
     for (size_t at = 0; at < text.size() && m_lines.size() < 32;) {
         size_t end = std::min(text.find('\n', at), text.size());
         m_lines.push_back(std::make_unique<text_picture>(expanded(text.substr(at, end - at)), STLXTHEME_MONO_FONT_PATH,
@@ -349,26 +505,53 @@ void clip_preview::show(const shown_entry& entry, int64_t now_ns) {
         at = end + 1;
     }
 
-    std::vector<std::string> parts;
-    if (entry.is_title_text && entry.text_len <= PREVIEW_BYTES_MAX) {
-        size_t lines = line_count(entry.text);
-        size_t characters = character_count(entry.text);
-        parts = { std::to_string(lines) + (lines == 1 ? " line" : " lines"),
-                  std::to_string(characters) + (characters == 1 ? " character" : " characters"), "UTF-8" };
-    } else {
-        parts = { size_text(entry.size), entry.types.empty() ? std::string() : entry.types.front() };
-        if (entry.is_title_text) {
-            parts.push_back("first 64 KB shown");
-        }
-    }
-
     m_meta.clear();
-    for (const std::string& part : parts) {
+    for (const std::string& part : meta_parts(entry)) {
         m_meta.push_back(std::make_unique<text_picture>(part, STLXTHEME_MONO_FONT_PATH, META_SIZE,
                                                         STLXTHEME_TEXT_DIM));
     }
 
     invalidate();
+}
+
+/* The image fits the pocket whole and is never shown larger than it is */
+void clip_preview::paint_image(ui::painter& p, const ui::rect& inside) {
+    double scale = std::min({ 1.0, static_cast<double>(inside.w) / m_image->width,
+                              static_cast<double>(inside.h) / m_image->height });
+    uint32_t w = std::max(1u, static_cast<uint32_t>(m_image->width * scale));
+    uint32_t h = std::max(1u, static_cast<uint32_t>(m_image->height * scale));
+    if (!m_fitted || m_fitted->width != w || m_fitted->height != h) {
+        stlxgfx_destroy_surface(m_fitted);
+        m_fitted = stlxgfx_create_surface(w, h, 32, 16, 8, 0);
+        if (!m_fitted) {
+            return;
+        }
+
+        stlxgfx_blit_scaled(m_fitted, 0, 0, w, h, m_image, 0, 0, m_image->width, m_image->height);
+    }
+
+    int32_t x = inside.x + (inside.w - static_cast<int32_t>(w)) / 2;
+    int32_t y = inside.y + (inside.h - static_cast<int32_t>(h)) / 2;
+    p.image({ x, y }, m_fitted, STLXTHEME_INNER_RADIUS);
+}
+
+void clip_preview::paint_files(ui::painter& p, const ui::rect& inside) const {
+    for (size_t i = 0; i < m_files.size(); i++) {
+        int32_t top = inside.y + static_cast<int32_t>(i) * FILE_ROW_HEIGHT;
+        if (top + FILE_ROW_HEIGHT > inside.y + inside.h) {
+            break;
+        }
+
+        const file_line& file = m_files[i];
+        if (file.icon) {
+            p.image({ inside.x, top + (FILE_ROW_HEIGHT - FILE_ICON_SIZE) / 2 }, file.icon);
+        }
+
+        int32_t text_top = top + (FILE_ROW_HEIGHT - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
+        file.name->draw(p, inside.x + FILE_TEXT_LEFT, text_top, ENTRY_TITLE_HEIGHT);
+        file.folder->draw(p, inside.x + FILE_TEXT_LEFT, text_top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+        file.size->draw(p, inside.x + inside.w - file.size->width(), top, FILE_ROW_HEIGHT);
+    }
 }
 
 void clip_preview::paint(ui::painter& p) {
@@ -390,6 +573,23 @@ void clip_preview::paint(ui::painter& p) {
     ui::rect inside = { pocket.x + POCKET_PADDING, pocket.y + POCKET_PADDING, pocket.w - 2 * POCKET_PADDING,
                         pocket.h - 2 * POCKET_PADDING };
     p.push_clip(inside);
+    for (const std::unique_ptr<text_picture>& line : m_message) {
+        line->draw(p, inside.x, inside.y, POCKET_LINE_HEIGHT);
+        inside.y += POCKET_LINE_HEIGHT;
+        inside.h -= POCKET_LINE_HEIGHT;
+    }
+
+    if (!m_message.empty()) {
+        inside.y += MESSAGE_GAP;
+        inside.h -= MESSAGE_GAP;
+    }
+
+    if (m_image) {
+        paint_image(p, inside);
+    } else if (!m_files.empty()) {
+        paint_files(p, inside);
+    }
+
     for (size_t i = 0; i < m_lines.size(); i++) {
         int32_t top = inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT;
         if (top >= inside.y + inside.h) {
@@ -408,6 +608,59 @@ void clip_preview::paint(ui::painter& p) {
     }
 }
 
+/* A thumbnail covers its square with the middle of the picture, as the history's mock crops a wide capture */
+static stlxgfx_surface_t* cover_thumbnail(const clipboard_rep& png) {
+    std::string bytes = read_bytes(png, png.len);
+    stlxgfx_surface_t* picture = stlxgfx_decode_image(bytes.data(), bytes.size());
+    if (!picture) {
+        return nullptr;
+    }
+
+    uint32_t side = std::min(picture->width, picture->height);
+    stlxgfx_surface_t* thumbnail = stlxgfx_create_surface(THUMBNAIL_SIZE, THUMBNAIL_SIZE, 32, 16, 8, 0);
+    if (thumbnail) {
+        stlxgfx_blit_scaled(thumbnail, 0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE, picture,
+                            static_cast<int32_t>((picture->width - side) / 2),
+                            static_cast<int32_t>((picture->height - side) / 2), side, side);
+    }
+
+    stlxgfx_destroy_surface(picture);
+    return thumbnail;
+}
+
+clipboard_thumbnails::~clipboard_thumbnails() {
+    for (const thumbnail& made : m_thumbnails) {
+        stlxgfx_destroy_surface(made.picture);
+    }
+}
+
+/* A picture that cannot be decoded is remembered as none, so it is decoded once */
+const stlxgfx_surface_t* clipboard_thumbnails::of(const clipboard_entry& entry) {
+    for (const thumbnail& made : m_thumbnails) {
+        if (made.id == entry.id) {
+            return made.picture;
+        }
+    }
+
+    const clipboard_rep* png = entry.item.find("image/png");
+    m_thumbnails.push_back({ entry.id, png ? cover_thumbnail(*png) : nullptr });
+    return m_thumbnails.back().picture;
+}
+
+void clipboard_thumbnails::keep(const std::vector<const clipboard_entry*>& entries) {
+    std::erase_if(m_thumbnails, [&entries](const thumbnail& made) {
+        bool is_kept = std::any_of(entries.begin(), entries.end(), [&made](const clipboard_entry* entry) {
+            return entry->id == made.id;
+        });
+
+        if (!is_kept) {
+            stlxgfx_destroy_surface(made.picture);
+        }
+
+        return !is_kept;
+    });
+}
+
 clipboard_pane::clipboard_pane(clipboard_source source)
     : ui::box(ui::axis::row), m_source(std::move(source)) {
     refresh();
@@ -415,8 +668,10 @@ clipboard_pane::clipboard_pane(clipboard_source source)
 
 void clipboard_pane::refresh() {
     uint64_t selected_id = m_selected < m_entries.size() ? m_entries[m_selected].id : 0;
+    std::vector<const clipboard_entry*> entries = m_source.history->entries();
+    m_source.thumbnails->keep(entries);
     m_entries.clear();
-    for (const clipboard_entry* entry : m_source.history->entries()) {
+    for (const clipboard_entry* entry : entries) {
         m_entries.push_back(show_entry(m_source, *entry));
     }
 
@@ -504,7 +759,19 @@ void clipboard_pane::select(size_t index) {
         m_list->scroll_to(row_bottom - view_h);
     }
 
-    m_preview->show(m_entries[index], monotonic_ns());
+    m_preview->show(m_entries[index], m_source, monotonic_ns(), decode_image(m_entries[index]));
+}
+
+/* An image entry's whole picture, decoded for the preview each time it is selected */
+stlxgfx_surface_t* clipboard_pane::decode_image(const shown_entry& shown) const {
+    const clipboard_entry* entry = shown.is_image ? m_source.history->find(shown.id) : nullptr;
+    const clipboard_rep* png = entry ? entry->item.find("image/png") : nullptr;
+    if (!png) {
+        return nullptr;
+    }
+
+    std::string bytes = read_bytes(*png, png->len);
+    return stlxgfx_decode_image(bytes.data(), bytes.size());
 }
 
 void clipboard_pane::move_selection(int32_t rows) {

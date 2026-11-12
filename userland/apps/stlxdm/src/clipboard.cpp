@@ -317,6 +317,71 @@ std::string file_uri_list(std::string_view path) {
     return list;
 }
 
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+
+    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+}
+
+std::vector<std::string> uri_list_paths(std::string_view list) {
+    std::vector<std::string> paths;
+    for (size_t at = 0; at < list.size();) {
+        size_t end = std::min(list.find('\n', at), list.size());
+        std::string_view line = list.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+
+        if (!line.starts_with("file://")) {
+            continue;
+        }
+
+        std::string path;
+        std::string_view encoded = line.substr(strlen("file://"));
+        for (size_t i = 0; i < encoded.size(); i++) {
+            bool is_escape = encoded[i] == '%' && i + 2 < encoded.size() && hex_value(encoded[i + 1]) >= 0 &&
+                             hex_value(encoded[i + 2]) >= 0;
+            if (is_escape) {
+                path += static_cast<char>(hex_value(encoded[i + 1]) * 16 + hex_value(encoded[i + 2]));
+                i += 2;
+            } else {
+                path += encoded[i];
+            }
+        }
+
+        if (path.starts_with('/')) {
+            paths.push_back(std::move(path));
+        }
+    }
+
+    return paths;
+}
+
+bool png_size(std::string_view header, uint32_t* width, uint32_t* height) {
+    static const char SIGNATURE[] = "\x89PNG\r\n\x1a\n";
+    if (header.size() < 24 || header.substr(0, 8) != std::string_view(SIGNATURE, 8) ||
+        header.substr(12, 4) != "IHDR") {
+        return false;
+    }
+
+    auto big_endian = [&header](size_t at) {
+        uint32_t value = 0;
+        for (size_t i = 0; i < 4; i++) {
+            value = value << 8 | static_cast<uint8_t>(header[at + i]);
+        }
+
+        return value;
+    };
+
+    *width = big_endian(16);
+    *height = big_endian(20);
+    return true;
+}
+
 std::string read_bytes(const clipboard_rep& rep, uint64_t max) {
     uint64_t len = std::min(rep.len, max);
     if (len == 0 || rep.object < 0) {

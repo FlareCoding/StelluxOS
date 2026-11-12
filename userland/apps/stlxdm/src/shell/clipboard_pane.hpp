@@ -14,13 +14,40 @@
 #include <string_view>
 #include <vector>
 
+/* The image entries' 32 px thumbnails, each made once and kept across openings while its entry lasts */
+class clipboard_thumbnails {
+public:
+    clipboard_thumbnails() = default;
+    ~clipboard_thumbnails();
+    clipboard_thumbnails(const clipboard_thumbnails&) = delete;
+    clipboard_thumbnails& operator=(const clipboard_thumbnails&) = delete;
+
+    /* The thumbnail of an entry's PNG, made at the first ask, null when it cannot be decoded */
+    const stlxgfx_surface_t* of(const clipboard_entry& entry);
+
+    /* Drops the thumbnails of entries the history no longer keeps */
+    void keep(const std::vector<const clipboard_entry*>& entries);
+
+private:
+    struct thumbnail {
+        uint64_t           id;
+        stlxgfx_surface_t* picture;
+    };
+
+    std::vector<thumbnail> m_thumbnails;
+};
+
 /* What Clipboard mode reads and does: the history, the icons its entries show, where Enter pastes, and the actions
  * the server runs on an entry */
 struct clipboard_source {
     const clipboard_history*               history = nullptr;
+    clipboard_thumbnails*                  thumbnails = nullptr;
     const stlxconf_t*                      conf = nullptr;
     const std::vector<stlxgfx_surface_t*>* launcher_icons = nullptr;
     const stlxgfx_surface_t*               text_icon = nullptr;
+    const stlxgfx_surface_t*               image_icon = nullptr;
+    const stlxgfx_surface_t*               folder_icon = nullptr;
+    const stlxgfx_surface_t*               program_icon = nullptr;
     std::string                            focused_app;  /* empty with no window focused */
     std::string                            since;        /* when the history began, such as 09:58 */
 
@@ -42,8 +69,13 @@ struct shown_entry {
     int64_t                  copied_ns = 0;
     bool                     is_current = false;
     bool                     is_pinned = false;
+    bool                     is_too_large = false;   /* current, and past the whole budget alone */
     std::string              text;                   /* the first 64 KB of its text */
     uint64_t                 text_len = 0;
+    std::vector<std::string> files;
+    bool                     is_image = false;
+    uint32_t                 image_w = 0;
+    uint32_t                 image_h = 0;
     uint64_t                 size = 0;
     std::vector<std::string> types;
     const stlxgfx_surface_t* icon = nullptr;
@@ -67,6 +99,7 @@ public:
 private:
     void build();
     void select(size_t index);
+    stlxgfx_surface_t* decode_image(const shown_entry& shown) const;
     void move_selection(int32_t rows);
     void choose(bool pastes);
 
