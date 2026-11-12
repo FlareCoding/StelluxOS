@@ -310,8 +310,12 @@ static void check_history_budget() {
 
     history.set_pinned(entry_of_size(history, 2)->id, true);
     history.copy(text_item(5, 0, nullptr), "Terminal", 5);
-    check(listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 4 },
-          "a pinned entry stays and the oldest unpinned one leaves instead");
+    check(listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 4, 3 },
+          "a pinned entry stays outside the item limit, which the unpinned ones fill");
+
+    history.copy(text_item(6, 0, nullptr), "Terminal", 6);
+    check(listed_sizes(history) == std::vector<uint64_t>{ 2, 6, 5, 4 },
+          "past the item limit the oldest unpinned entry leaves");
 
     clipboard_history bytes(same_size);
     bytes.set_limits(10, 100);
@@ -329,6 +333,61 @@ static void check_history_budget() {
     bytes.copy(text_item(10, 0, nullptr), "Sheen", 510);
     check(!is_open(huge_object) && listed_sizes(bytes) == std::vector<uint64_t>{ 10, 40, 50 },
           "a copy past the budget leaves once replaced");
+}
+
+/* Pins keep a budget of their own, so pinned entries never push unpinned ones out */
+static void check_history_pins() {
+    clipboard_history bytes(same_size);
+    bytes.set_limits(10, 100);
+    for (uint64_t len : { 30, 31, 32 }) {
+        bytes.copy(text_item(len, 0, nullptr), "Settings", static_cast<int64_t>(len));
+        bytes.set_pinned(entry_of_size(bytes, len)->id, true);
+    }
+
+    for (uint64_t len : { 1, 2, 3, 4, 5 }) {
+        bytes.copy(text_item(len, 0, nullptr), "Terminal", static_cast<int64_t>(100 + len));
+    }
+
+    check(listed_sizes(bytes) == std::vector<uint64_t>{ 32, 31, 30, 5, 4, 3, 2, 1 },
+          "pins holding most of the byte limit leave the unpinned entries a whole budget");
+    check(bytes.kept_bytes() == 10 && bytes.pinned_bytes() == 93 && bytes.pinned_count() == 3,
+          "each budget counts only its own entries");
+
+    clipboard_history count(same_size);
+    count.set_limits(2, 1000);
+    for (uint64_t len : { 10, 11 }) {
+        count.copy(text_item(len, 0, nullptr), "Settings", static_cast<int64_t>(len));
+        count.set_pinned(entry_of_size(count, len)->id, true);
+    }
+
+    for (uint64_t len : { 1, 2, 3 }) {
+        count.copy(text_item(len, 0, nullptr), "Terminal", static_cast<int64_t>(100 + len));
+    }
+
+    check(listed_sizes(count) == std::vector<uint64_t>{ 11, 10, 3, 2, 1 },
+          "pins filling the item limit leave the unpinned entries a whole limit");
+}
+
+/* A pin past the pins' own budget is refused, and an unpin makes room */
+static void check_pin_limits() {
+    clipboard_history history(same_size);
+    history.set_limits(2, 100);
+    history.copy(text_item(60, 0, nullptr), "Sheen", 1);
+    uint64_t sixty = entry_of_size(history, 60)->id;
+    check(history.can_pin(sixty) && history.set_pinned(sixty, true), "a pin within the pins' budget goes through");
+
+    history.copy(text_item(50, 0, nullptr), "Sheen", 2);
+    uint64_t fifty = entry_of_size(history, 50)->id;
+    check(!history.can_pin(fifty) && !history.set_pinned(fifty, true) && !history.find(fifty)->pinned,
+          "a pin past the pins' byte limit is refused");
+    check(history.set_pinned(sixty, false) && history.set_pinned(fifty, true), "an unpin makes room for another pin");
+
+    history.copy(text_item(1, 0, nullptr), "Sheen", 3);
+    history.copy(text_item(2, 0, nullptr), "Sheen", 4);
+    uint64_t one = entry_of_size(history, 1)->id;
+    uint64_t two = entry_of_size(history, 2)->id;
+    check(history.set_pinned(one, true) && !history.set_pinned(two, true), "a pin past the pins' item limit is refused");
+    check(!history.can_pin(12345) && !history.set_pinned(12345, true), "an entry the history lacks cannot be pinned");
 }
 
 static void check_history_actions() {
@@ -369,6 +428,8 @@ int main() {
     check_history_order();
     check_history_recopies();
     check_history_budget();
+    check_history_pins();
+    check_pin_limits();
     check_history_actions();
 
     if (g_failures != 0) {

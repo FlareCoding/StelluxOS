@@ -135,6 +135,7 @@ private:
     bool on_menu_key(const ui::key_event& e);
     bool on_question_key(const ui::key_event& e);
     std::vector<clip_action> actions_of(const shown_entry& entry);
+    void toggle_pin(uint64_t id, bool is_pinned);
     size_t unpinned_count() const;
 
     clipboard_source m_source;
@@ -156,11 +157,13 @@ private:
     std::vector<clip_row*> m_rows;
     std::vector<int32_t>   m_row_tops;
 
-    /* Ctrl K's list in place of the entries, its chosen action, and the question Clear Unpinned asks first */
+    /* Ctrl K's list in place of the entries, its chosen action, the question Clear Unpinned asks first, and the note of
+     * a pin the pins' budget refused */
     bool                     m_is_menu_open = false;
     std::vector<clip_action> m_menu;
     size_t                   m_menu_choice = 0;
     bool                     m_is_asking = false;
+    bool                     m_is_pin_refused = false;
 
     stlxgfx_surface_t* m_pin_glyph = nullptr;
 };

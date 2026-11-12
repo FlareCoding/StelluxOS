@@ -189,13 +189,31 @@ void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
     evict();
 }
 
-void clipboard_history::set_pinned(uint64_t id, bool pinned) {
+bool clipboard_history::can_pin(uint64_t id) const {
     size_t i = index_of(id);
-    if (i < m_entries.size()) {
-        m_entries[i].pinned = pinned;
+    if (i == m_entries.size()) {
+        return false;
     }
 
+    if (m_entries[i].pinned) {
+        return true;
+    }
+
+    uint64_t size = m_entries[i].item.size();
+    bool fits_count = pinned_count() + 1 <= m_item_limit;
+    bool fits_bytes = size <= m_byte_limit && pinned_bytes() <= m_byte_limit - size;
+    return fits_count && fits_bytes;
+}
+
+bool clipboard_history::set_pinned(uint64_t id, bool pinned) {
+    size_t i = index_of(id);
+    if (i == m_entries.size() || (pinned && !can_pin(id))) {
+        return false;
+    }
+
+    m_entries[i].pinned = pinned;
     evict();
+    return true;
 }
 
 void clipboard_history::remove(uint64_t id) {
@@ -231,13 +249,33 @@ void clipboard_history::clear() {
 }
 
 size_t clipboard_history::kept_count() const {
-    return m_entries.size() - (m_front_is_current ? 1 : 0);
+    size_t count = 0;
+    for (size_t i = m_front_is_current ? 1 : 0; i < m_entries.size(); i++) {
+        count += m_entries[i].pinned ? 0 : 1;
+    }
+
+    return count;
 }
 
 uint64_t clipboard_history::kept_bytes() const {
     uint64_t total = 0;
     for (size_t i = m_front_is_current ? 1 : 0; i < m_entries.size(); i++) {
-        total += m_entries[i].item.size();
+        total += m_entries[i].pinned ? 0 : m_entries[i].item.size();
+    }
+
+    return total;
+}
+
+size_t clipboard_history::pinned_count() const {
+    return static_cast<size_t>(std::count_if(m_entries.begin(), m_entries.end(), [](const clipboard_entry& entry) {
+        return entry.pinned;
+    }));
+}
+
+uint64_t clipboard_history::pinned_bytes() const {
+    uint64_t total = 0;
+    for (const clipboard_entry& entry : m_entries) {
+        total += entry.pinned ? entry.item.size() : 0;
     }
 
     return total;
