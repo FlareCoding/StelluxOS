@@ -1,8 +1,10 @@
 #include "palette_parts.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <vector>
 
 size_t fitting_length(const std::string& text, const char* face_path, float em_px, int32_t max_w) {
     stlxgfx_font* font = shell_font(face_path, em_px);
@@ -10,20 +12,20 @@ size_t fitting_length(const std::string& text, const char* face_path, float em_p
         return text.size();
     }
 
-    int32_t ellipsis_w = stlxgfx_text_width(font, ELLIPSIS.data(), ELLIPSIS.size());
-    size_t end = text.size();
-    while (end > 0) {
-        end--;
-        while (end > 0 && (static_cast<uint8_t>(text[end]) & 0xC0) == 0x80) {
-            end--;
-        }
-
-        if (stlxgfx_text_width(font, text.data(), end) + ellipsis_w <= max_w) {
-            break;
+    /* The cut falls on a character's first byte, found by halves, so a long text costs a few measurements */
+    std::vector<size_t> cuts;
+    for (size_t i = 1; i < text.size(); i++) {
+        if ((static_cast<uint8_t>(text[i]) & 0xC0) != 0x80) {
+            cuts.push_back(i);
         }
     }
 
-    return end;
+    int32_t room = max_w - stlxgfx_text_width(font, ELLIPSIS.data(), ELLIPSIS.size());
+    auto first_over = std::partition_point(cuts.begin(), cuts.end(), [&](size_t cut) {
+        return stlxgfx_text_width(font, text.data(), cut) <= room;
+    });
+
+    return first_over == cuts.begin() ? 0 : *(first_over - 1);
 }
 
 std::string fitted(const std::string& text, const char* face_path, float em_px, int32_t max_w) {
