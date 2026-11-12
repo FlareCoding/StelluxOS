@@ -103,9 +103,21 @@ static void check_items() {
     close(list_pipe[1]);
 }
 
+static void check_types() {
+    swp_clipboard_types empty = describe_types(clipboard_item());
+    check(empty.count == 0 && empty.types[0][0] == '\0', "an empty clipboard tells no types");
+
+    clipboard_item item({ { "image/png", 12, -1 }, { SWP_MIME_TEXT, 3, -1 } }, 0);
+    swp_clipboard_types types = describe_types(item);
+    check(types.count == 2 && strcmp(types.types[0], "image/png") == 0 && strcmp(types.types[1], SWP_MIME_TEXT) == 0,
+          "an item tells its types in the offer's order");
+    check(types.types[2][0] == '\0' && types.types[3][0] == '\0', "the types past the count stay zero");
+}
+
 int main() {
     check_offers();
     check_items();
+    check_types();
 
     if (g_failures != 0) {
         printf("clipboard: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

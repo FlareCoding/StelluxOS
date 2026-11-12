@@ -1,5 +1,6 @@
 #include "clipboard.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <unistd.h>
 
@@ -84,4 +85,17 @@ bool read_offer(const swp_offer& offer, std::vector<clipboard_rep>* out) {
 
     *out = std::move(reps);
     return true;
+}
+
+swp_clipboard_types describe_types(const clipboard_item& item) {
+    swp_clipboard_types m = {};
+    for (const clipboard_rep& rep : item.reps()) {
+        if (m.count == SWP_OFFER_TYPES_MAX) {
+            break;
+        }
+
+        snprintf(m.types[m.count++], SWP_MIME_MAX, "%s", rep.mime_type.c_str());
+    }
+
+    return m;
 }
