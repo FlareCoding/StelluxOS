@@ -7,7 +7,12 @@
 #include <QRegion>
 #include <qpa/qplatformwindow.h>
 
+#include <memory>
+
 #include <stlxwin/stlxwin.h>
+
+class QMimeData;
+class QStelluxMimeData;
 
 /**
  * A Qt window shown by stlxdm: a toplevel, or a popup placed relative to the
@@ -22,6 +27,9 @@ public:
     bool shows_glass() const;
     void present(const QImage& image, const QRegion& region);
     void handle_event(const stlxwin_event& event);
+
+    // Lets go of every button, whose release a drag took
+    void forget_buttons();
 
     void setGeometry(const QRect& rect) override;
     void setVisible(bool visible) override;
@@ -42,6 +50,10 @@ private:
     void paste();
     void handle_configure(const stlxwin_event& event);
     void handle_window_output();
+    void handle_drop_motion(const stlxwin_event& event);
+    void handle_drop_leave();
+    void handle_drop(const stlxwin_event& event);
+    const QMimeData* drop_data() const;
     QPointF global_position(const QPointF& local) const;
 
     stlxwin_window* m_handle = nullptr;
@@ -58,6 +70,12 @@ private:
     Qt::MouseButtons m_buttons = Qt::NoButton;
     Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
     bool m_visible = false;
+
+    // The drag over the window: the desktop's item, read once dropped, the actions its source allows, and whether it
+    // comes from this app, whose own QMimeData Qt then reads
+    std::unique_ptr<QStelluxMimeData> m_drop_data;
+    Qt::DropActions m_drop_actions = Qt::IgnoreAction;
+    bool m_drop_is_own = false;
 };
 
 #endif

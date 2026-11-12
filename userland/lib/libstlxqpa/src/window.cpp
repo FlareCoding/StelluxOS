@@ -1,8 +1,13 @@
 #include "window.h"
+#include "clipboard.h"
+#include "drag.h"
 #include "integration.h"
 
+#include <QCoreApplication>
+#include <QDrag>
 #include <QGuiApplication>
 #include <QHash>
+#include <QInputMethodQueryEvent>
 #include <QKeySequence>
 #include <QPalette>
 #include <QVarLengthArray>
@@ -54,6 +59,24 @@ enum hid_usage : uint16_t {
 
 // The key each held HID usage pressed, since stlxdm sends a release without its character
 static QHash<uint16_t, int> s_held_keys;
+
+namespace {
+
+// Remembers the object a drop reaches past its window, the widget under the pointer in a widget app
+class drop_receiver_filter : public QObject {
+public:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Drop && !watched->isWindowType()) {
+            receiver = watched;
+        }
+
+        return false;
+    }
+
+    QPointer<QObject> receiver;
+};
+
+} // namespace
 
 static bool is_printable(uint32_t ch) {
     return ch >= FIRST_PRINTABLE && ch <= LAST_PRINTABLE;
@@ -445,9 +468,23 @@ void QStelluxWindow::handle_event(const stlxwin_event& event) {
         case STLXWIN_EVT_PASTE:
             paste();
             break;
+        case STLXWIN_EVT_DROP_ENTER:
+        case STLXWIN_EVT_DROP_MOTION:
+            handle_drop_motion(event);
+            break;
+        case STLXWIN_EVT_DROP_LEAVE:
+            handle_drop_leave();
+            break;
+        case STLXWIN_EVT_DROP:
+            handle_drop(event);
+            break;
         default:
             break;
     }
+}
+
+void QStelluxWindow::forget_buttons() {
+    m_buttons = Qt::NoButton;
 }
 
 // The desktop's paste reaches the focus object as the theme's Paste key sequence, through shortcuts first, so every
@@ -485,6 +522,7 @@ void QStelluxWindow::handle_pointer(const stlxwin_event& event) {
         case STLXWIN_EVT_POINTER_MOTION: {
             QPointF local(event.motion.x, event.motion.y);
             m_modifiers = to_qt_modifiers(event.motion.modifiers);
+            QStelluxIntegration::instance()->note_pointer(global_position(local).toPoint());
             QWindowSystemInterface::handleMouseEvent(window(), local, global_position(local), m_buttons,
                                                      Qt::NoButton, QEvent::MouseMove, m_modifiers);
             break;
@@ -495,8 +533,14 @@ void QStelluxWindow::handle_pointer(const stlxwin_event& event) {
             Qt::MouseButton button = to_qt_button(event.button.button);
             bool is_press = event.type == STLXWIN_EVT_BUTTON_DOWN;
 
+            // A drag starting from this press names it by its serial
+            if (is_press) {
+                QStelluxIntegration::instance()->stellux_drag()->note_press(window(), event.button.serial);
+            }
+
             m_buttons = is_press ? (m_buttons | button) : (m_buttons & ~button);
             m_modifiers = to_qt_modifiers(event.button.modifiers);
+            QStelluxIntegration::instance()->note_pointer(global_position(local).toPoint());
             QWindowSystemInterface::handleMouseEvent(window(), local, global_position(local), m_buttons, button,
                                                      is_press ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease,
                                                      m_modifiers);
@@ -555,6 +599,77 @@ void QStelluxWindow::handle_window_output() {
     QRect placed(QPoint(x, y), geometry().size());
     QPlatformWindow::setGeometry(placed);
     QWindowSystemInterface::handleGeometryChange(window(), placed);
+}
+
+// Whether the object takes typed text, as a field a drop of text should focus does
+static bool takes_text_input(QObject* object) {
+    if (!object) {
+        return false;
+    }
+
+    QInputMethodQueryEvent query(Qt::ImEnabled);
+    QCoreApplication::sendEvent(object, &query);
+
+    return query.value(Qt::ImEnabled).toBool();
+}
+
+// A drag of this app's reads as Qt's own QMimeData, so formats that never leave the app still drop
+const QMimeData* QStelluxWindow::drop_data() const {
+    QDrag* own = m_drop_is_own ? QStelluxIntegration::instance()->drag()->currentDrag() : nullptr;
+    return own ? own->mimeData() : m_drop_data.get();
+}
+
+// Each move over the window asks Qt where a drop would land and tells stlxdm the action the widget there takes
+void QStelluxWindow::handle_drop_motion(const stlxwin_event& event) {
+    if (event.type == STLXWIN_EVT_DROP_ENTER) {
+        stlxwin_offer_types types = {};
+        stlxwin_drop_types(m_handle, &types);
+
+        stlxwin_window* handle = m_handle;
+        m_drop_data = std::make_unique<QStelluxMimeData>([handle](const char* mime_type, char** out_data) {
+            return stlxwin_drop_read(handle, mime_type, out_data);
+        });
+        m_drop_data->show_types(types);
+        m_drop_actions = to_qt_actions(event.drop.actions);
+        m_drop_is_own = (event.drop.flags & STLXWIN_DROP_OWN) != 0;
+    }
+
+    QPoint local(event.drop.x, event.drop.y);
+    m_modifiers = to_qt_modifiers(event.drop.modifiers);
+    QStelluxIntegration::instance()->note_pointer(global_position(local).toPoint());
+
+    QPlatformDragQtResponse answer = QWindowSystemInterface::handleDrag(window(), drop_data(), local, m_drop_actions,
+                                                                      Qt::LeftButton, m_modifiers);
+    uint32_t action = answer.isAccepted() ? to_stlxwin_actions(answer.acceptedAction()) : 0;
+    stlxwin_drop_status(m_handle, action, action, 0, nullptr);
+}
+
+void QStelluxWindow::handle_drop_leave() {
+    QWindowSystemInterface::handleDrag(window(), nullptr, QPoint(), Qt::IgnoreAction, Qt::NoButton, m_modifiers);
+    m_drop_data.reset();
+}
+
+// Qt drops with only the action stlxdm chose, so the widget takes that one. A drop into a field that takes text gives
+// the field the window's focus and the window the desktop's, as Enter should then reach it.
+void QStelluxWindow::handle_drop(const stlxwin_event& event) {
+    QPoint local(event.drop.x, event.drop.y);
+    m_modifiers = to_qt_modifiers(event.drop.modifiers);
+
+    drop_receiver_filter filter;
+    QCoreApplication::instance()->installEventFilter(&filter);
+    QPlatformDropQtResponse answer = QWindowSystemInterface::handleDrop(window(), drop_data(), local,
+                                                                      to_qt_actions(event.drop.action), Qt::NoButton,
+                                                                      m_modifiers);
+    QCoreApplication::instance()->removeEventFilter(&filter);
+
+    uint32_t action = answer.isAccepted() ? to_stlxwin_actions(answer.acceptedAction()) : 0;
+    bool focuses = action != 0 && takes_text_input(filter.receiver);
+    if (focuses) {
+        QMetaObject::invokeMethod(filter.receiver, "setFocus");
+    }
+
+    stlxwin_drop_finish(m_handle, action, focuses ? STLXWIN_DROP_FOCUS : 0);
+    m_drop_data.reset();
 }
 
 // stlxdm has destroyed a dismissed popup already, so its client side is freed

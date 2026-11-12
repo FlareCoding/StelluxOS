@@ -1,6 +1,7 @@
 #include "integration.h"
 #include "backing_store.h"
 #include "clipboard.h"
+#include "drag.h"
 #include "font_database.h"
 #include "services.h"
 #include "theme.h"
@@ -56,6 +57,10 @@ void QStelluxCursor::changeCursor(QCursor* cursor, QWindow* window) {
 
     Qt::CursorShape shape = cursor ? cursor->shape() : Qt::ArrowCursor;
     stlxwin_window_set_cursor(platform_window->handle(), to_stlxwin_cursor(shape));
+}
+
+QPoint QStelluxCursor::pos() const {
+    return QStelluxIntegration::instance()->pointer();
 }
 
 QStelluxScreen::QStelluxScreen(uint32_t output, const QRect& geometry, const QRect& available_geometry,
@@ -201,6 +206,18 @@ void QStelluxIntegration::schedule_queued_events() {
     QMetaObject::invokeMethod(m_notifier, [this] { dispatch_queued_events(); }, Qt::QueuedConnection);
 }
 
+QStelluxDrag* QStelluxIntegration::stellux_drag() const {
+    return static_cast<QStelluxDrag*>(drag());
+}
+
+void QStelluxIntegration::note_pointer(const QPoint& global) {
+    m_pointer = global;
+}
+
+QPoint QStelluxIntegration::pointer() const {
+    return m_pointer;
+}
+
 void QStelluxIntegration::read_connection() {
     if (stlxwin_dispatch(m_connection) < 0) {
         QCoreApplication::quit();
@@ -225,6 +242,11 @@ void QStelluxIntegration::dispatch_queued_events() {
 
         if (event.type == STLXWIN_EVT_CLIPBOARD) {
             static_cast<QStelluxClipboard*>(m_clipboard.get())->changed();
+            continue;
+        }
+
+        if (event.type == STLXWIN_EVT_DRAG_STATE) {
+            stellux_drag()->handle_state(event);
             continue;
         }
 
@@ -312,6 +334,14 @@ QPlatformClipboard* QStelluxIntegration::clipboard() const {
     }
 
     return m_clipboard.get();
+}
+
+QPlatformDrag* QStelluxIntegration::drag() const {
+    if (!m_drag) {
+        m_drag = std::make_unique<QStelluxDrag>(m_connection);
+    }
+
+    return m_drag.get();
 }
 
 QPlatformServices* QStelluxIntegration::services() const {

@@ -28,6 +28,9 @@ static const QColor TEXT_DISABLED = QColor::fromRgba(STLXTHEME_TEXT_DISABLED);
 
 static const qreal POINTS_PER_INCH = 72;
 
+// Pixels a press moves before it starts a drag
+static const int START_DRAG_DISTANCE = 4;
+
 static const char* FOLDER_ICON = "/etc/res/icons/folder-32.png";
 static const char* PROGRAM_ICON = "/etc/res/icons/doc-exec-32.png";
 static const char* IMAGE_ICON = "/etc/res/icons/doc-image-32.png";
@@ -82,7 +85,7 @@ static QPalette desktop_palette() {
 
 // Built from the family, since a default QFont reads the application font before this theme exists. QFont takes
 // only whole pixel sizes, so a half pixel em size is set as points at the screens' dots per inch.
-static QFont desktop_font(const char* family, float em_px, QFont::Weight weight) {
+QFont desktop_font(const char* family, float em_px, QFont::Weight weight) {
     QFont font(QString::fromLatin1(family));
     font.setPointSizeF(em_px * POINTS_PER_INCH / SCREEN_LOGICAL_DPI);
     font.setWeight(weight);
@@ -146,6 +149,11 @@ QIcon QStelluxTheme::fileIcon(const QFileInfo& info, IconOptions) const {
 QVariant QStelluxTheme::themeHint(ThemeHint hint) const {
     if (hint == StyleNames) {
         return QStringList { QString::fromLatin1(QStelluxStyle::NAME) };
+    }
+
+    // A press moved this far starts a drag, as far as a title drag needs
+    if (hint == StartDragDistance) {
+        return START_DRAG_DISTANCE;
     }
 
     return QPlatformTheme::themeHint(hint);
