@@ -62,6 +62,9 @@ public:
     /* Fired by Quick Actions' calculator: text to put on the clipboard */
     std::function<void(const std::string& text)> on_copy;
 
+    /* Fired by Quick Actions' Copy File: a file to put on the clipboard as a file */
+    std::function<void(const std::string& path)> on_copy_file;
+
     /* Fired by a file Quick Actions opens: a program to run with exactly these args, true when it started */
     std::function<bool(const char* program, const std::vector<std::string>& args)> on_exec;
 

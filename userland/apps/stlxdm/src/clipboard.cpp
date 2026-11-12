@@ -1,5 +1,6 @@
 #include "clipboard.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -98,4 +99,24 @@ swp_clipboard_types describe_types(const clipboard_item& item) {
     }
 
     return m;
+}
+
+/* Bytes outside a URI's unreserved characters are escaped, slashes kept, and each line ends in CR LF */
+std::string file_uri_list(std::string_view path) {
+    static const char HEX[] = "0123456789ABCDEF";
+
+    std::string list = "file://";
+    for (unsigned char byte : path) {
+        bool is_kept = isalnum(byte) || byte == '/' || byte == '-' || byte == '.' || byte == '_' || byte == '~';
+        if (is_kept) {
+            list += static_cast<char>(byte);
+        } else {
+            list += '%';
+            list += HEX[byte >> 4];
+            list += HEX[byte & 0xF];
+        }
+    }
+
+    list += "\r\n";
+    return list;
 }

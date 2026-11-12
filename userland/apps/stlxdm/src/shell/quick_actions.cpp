@@ -2275,7 +2275,8 @@ std::vector<row_action> quick_actions::program_actions(const std::string& path, 
     return { run, show_in_files(path), copy("Copy Path", path) };
 }
 
-/* A file opens as Enter says, then in the handler of each type further up its chain, which is Open With */
+/* A file opens as Enter says, then in the handler of each type further up its chain, which is Open With, and copies
+ * as its path or as a file */
 std::vector<row_action> quick_actions::file_actions(const found_file& file, const std::string& pick) {
     const char* mime_type = file.mime_type ? file.mime_type : "application/octet-stream";
     row_action open = { file_verb(mime_type), "Enter", [this, file, mime_type, pick]() {
@@ -2324,6 +2325,12 @@ std::vector<row_action> quick_actions::file_actions(const found_file& file, cons
     }
 
     actions.push_back(copy("Copy Path", file.path));
+    actions.push_back({ is_folder ? "Copy Folder" : "Copy File", "", [this, file]() {
+        if (is_still_there(file)) {
+            on_copy_file(file.path);
+        }
+    } });
+
     return actions;
 }
 

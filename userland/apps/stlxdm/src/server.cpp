@@ -720,6 +720,10 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         copy_text(text);
     };
 
+    out.panels->on_copy_file = [this](const std::string& path) {
+        copy_file(path);
+    };
+
     out.panels->on_exec = [](const char* path, const std::vector<std::string>& args) {
         return exec_app(path, args);
     };
@@ -2094,6 +2098,24 @@ void server::copy_text(const std::string& text) {
     }
 
     replace_clipboard(clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0));
+}
+
+/* Copies a file as File Manager's copies are, so it pastes as a file where files paste and as its path elsewhere */
+void server::copy_file(const std::string& path) {
+    std::string list = file_uri_list(path);
+    int list_object = make_shared_object(list.data(), list.size());
+    int text_object = list_object >= 0 ? make_shared_object(path.data(), path.size()) : -1;
+    if (text_object < 0) {
+        printf("stlxdm: copying %s failed, errno %d\r\n", path.c_str(), errno);
+        if (list_object >= 0) {
+            close(list_object);
+        }
+
+        return;
+    }
+
+    replace_clipboard(clipboard_item({ { "text/uri-list", list.size(), list_object },
+                                       { SWP_MIME_TEXT, path.size(), text_object } }, 0));
 }
 
 /* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, queueing

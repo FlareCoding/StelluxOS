@@ -618,6 +618,7 @@ private:
     bool take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps);
     void ask_clipboard(dm_client& c, const swp_header& hdr, const uint8_t* payload);
     void copy_text(const std::string& text);
+    void copy_file(const std::string& path);
     bool send_clipboard_answer(dm_client& c);
     void send_clipboard_answers(dm_client& c);
 

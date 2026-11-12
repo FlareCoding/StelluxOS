@@ -217,6 +217,13 @@ int dm_panels::init(
         }
     };
 
+    m_quick->on_copy_file = [this](const std::string& path) {
+        m_popover.close();
+        if (on_copy_file) {
+            on_copy_file(path);
+        }
+    };
+
     m_quick->on_exec = [this](const char* program, const std::vector<std::string>& args) {
         m_popover.close();
         return on_exec && on_exec(program, args);
