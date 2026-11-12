@@ -539,9 +539,13 @@ segmented::segmented(const QStringList& labels, int chosen, mark_painter paint_m
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 }
 
+qreal segmented::mark_room() const {
+    return m_paint_mark ? SEGMENT_MARK_SIZE + SEGMENT_MARK_GAP : 0;
+}
+
 qreal segmented::segment_width(int index) const {
     qreal text_width = QFontMetricsF(ui_font(STLXTHEME_BODY_SIZE, QFont::Medium)).horizontalAdvance(m_labels[index]);
-    return 2 * SEGMENT_PADDING_X + SEGMENT_MARK_SIZE + SEGMENT_MARK_GAP + qCeil(text_width);
+    return 2 * SEGMENT_PADDING_X + mark_room() + qCeil(text_width);
 }
 
 QRectF segmented::segment_rect(int index) const {
@@ -598,10 +602,11 @@ void segmented::paintEvent(QPaintEvent*) {
 
         QColor text = theme_color(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY);
         qreal mark_left = segment.left() + SEGMENT_PADDING_X;
-        qreal text_left = mark_left + SEGMENT_MARK_SIZE + SEGMENT_MARK_GAP;
-        QRectF mark(mark_left, segment.center().y() - SEGMENT_MARK_SIZE / 2.0, SEGMENT_MARK_SIZE, SEGMENT_MARK_SIZE);
-
-        m_paint_mark(painter, mark, i, text);
+        qreal text_left = mark_left + mark_room();
+        if (m_paint_mark) {
+            QRectF mark(mark_left, segment.center().y() - SEGMENT_MARK_SIZE / 2.0, SEGMENT_MARK_SIZE, SEGMENT_MARK_SIZE);
+            m_paint_mark(painter, mark, i, text);
+        }
 
         painter.setPen(text);
         painter.drawText(
