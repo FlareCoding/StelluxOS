@@ -24,9 +24,12 @@ extern "C" {
 /* The folders Quick Actions' file search leaves out: devices, processes, and the programs it lists apart */
 #define STLXCONF_DEFAULT_QUICK_ACTIONS_SKIP "/dev /proc /usr /bin"
 
-/* What the clipboard history keeps besides the current clipboard: entries, and megabytes of their content */
+/* What the clipboard history keeps besides the current clipboard: entries, and megabytes of their content, and the most
+ * either may be set to, since every refresh walks each entry and each megabyte stays in memory */
 #define STLXCONF_DEFAULT_CLIPBOARD_ITEMS 100
 #define STLXCONF_DEFAULT_CLIPBOARD_MB    64
+#define STLXCONF_CLIPBOARD_ITEMS_MAX     1000
+#define STLXCONF_CLIPBOARD_MB_MAX        1024
 
 /* Which compositor composes the desktop: auto the GPU when stlxdm can make
  * its compositor, cpu the CPU */
