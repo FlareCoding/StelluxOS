@@ -2222,7 +2222,7 @@ uint64_t quick_actions::search_texts(const std::string& query, const std::vector
     std::vector<searched_text> texts;
     for (uint64_t id : ids) {
         const clipboard_entry* entry = m_history->find(id);
-        const clipboard_rep* text = entry ? entry->item.find(SWP_MIME_TEXT) : nullptr;
+        const clipboard_rep* text = entry ? entry->item.find_answer(SWP_MIME_TEXT) : nullptr;
         int object = text ? dup(text->object) : -1;
         if (object >= 0) {
             texts.emplace_back(id, object, text->len);

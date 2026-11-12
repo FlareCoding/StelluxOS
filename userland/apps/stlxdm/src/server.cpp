@@ -2635,7 +2635,7 @@ int server::read_only_copy(int object) {
 
 /* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, and nothing for an object its source has shrunk since */
 bool server::send_clipboard_answer(dm_client& c) {
-    const clipboard_rep* found = m_history.current().find(c.clipboard_asks.front());
+    const clipboard_rep* found = m_history.current().find_answer(c.clipboard_asks.front());
     int object = found && holds_length(*found) ? read_only_copy(found->object) : -1;
     swp_clipboard_data m = { object >= 0 ? found->len : 0 };
 
