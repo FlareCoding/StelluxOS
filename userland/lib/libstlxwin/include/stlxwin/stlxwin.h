@@ -250,9 +250,12 @@ typedef struct {
     stlxwin_window*    window;
     union {
         struct { uint16_t usage; uint8_t modifiers; uint32_t ch; } key;
-        struct { int32_t x, y; } motion;
-        struct { int32_t x, y; uint8_t button; } button;
-        struct { int32_t x, y; int16_t dy; } scroll;
+
+        /* Pointer events carry the modifiers held, STLXWIN_MOD_* as keys carry them, and a press its serial */
+        struct { int32_t x, y; uint8_t modifiers; } motion;
+        struct { int32_t x, y; uint8_t button; uint8_t modifiers; uint32_t serial; } button;
+        struct { int32_t x, y; int16_t dy; uint8_t modifiers; } scroll;
+
         struct { uint32_t width, height; } configure;
         struct { uint64_t time_ns; } frame;
         struct { uint32_t output; } modes;

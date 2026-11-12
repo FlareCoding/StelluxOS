@@ -96,7 +96,7 @@ static void feed_panels(dm_panels& panels, int32_t x, int32_t y, uint16_t button
         panels.pointer_move(x, y);
     }
 
-    for (uint8_t btn = 0; btn < 3; btn++) {
+    for (uint8_t btn = 0; btn < DM_BUTTONS; btn++) {
         uint16_t bit = static_cast<uint16_t>(1u << btn);
         if (changed & bit) {
             panels.pointer_button(x, y, btn, (buttons & bit) != 0);
@@ -295,6 +295,8 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     }
 
     bool is_escape_press = down && !repeat && usage == HID_USAGE_ESCAPE;
+    uint8_t mods = cook_modifiers(hid_modifiers);
+    m_modifiers = mods;
 
     /* An active overlay swallows the keyboard, escape backs out */
     if (m_power->active()) {
@@ -305,7 +307,6 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     }
 
     /* Config hotkeys fire on press with exactly their modifiers held, and never reach a popover or the focus */
-    uint8_t mods = cook_modifiers(hid_modifiers);
     if (down && !repeat) {
         for (const dm_hotkey& hk : m_hotkeys) {
             if (usage == hk.usage && mods == hk.mods) {
@@ -636,6 +637,13 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         m_last_press_ns = now_ns();
     }
 
+    for (uint32_t btn = 0; btn < DM_BUTTONS; btn++) {
+        uint16_t bit = static_cast<uint16_t>(1u << btn);
+        if ((changed & bit) != 0 && (buttons & bit) == 0) {
+            m_press_serials[btn] = 0;
+        }
+    }
+
     /* An active overlay owns the pointer entirely. Hover and hold
      * transitions repaint the orb boxes. */
     if (m_power->active()) {
@@ -844,6 +852,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         m_hover = target;
         if (target) {
             rec.kind = SWP_EV_ENTER;
+            rec.modifiers = m_modifiers;
             rec.x = x - target->x;
             rec.y = y - target->y;
             send_event(target, rec);
@@ -866,6 +875,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     swp_event_rec rec;
     memset(&rec, 0, sizeof(rec));
+    rec.modifiers = m_modifiers;
     rec.x = x - target->x;
     rec.y = y - target->y;
 
@@ -881,7 +891,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         send_event(target, rec);
     }
 
-    for (uint8_t btn = 0; btn < 3; btn++) {
+    for (uint8_t btn = 0; btn < DM_BUTTONS; btn++) {
         uint16_t bit = static_cast<uint16_t>(1u << btn);
         if (!(changed & bit)) {
             continue;
@@ -891,11 +901,16 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         rec.kind = down ? SWP_EV_BUTTON_DOWN : SWP_EV_BUTTON_UP;
         rec.button = btn;
         rec.scroll = 0;
+        rec.ch = 0;
 
         if (down) {
             set_focus(target);
             scene_raise(target);
             m_grab = target;
+
+            m_press_serial = m_press_serial == UINT32_MAX ? 1 : m_press_serial + 1;
+            m_press_serials[btn] = m_press_serial;
+            rec.ch = m_press_serial;
         } else if (m_grab && all_released) {
             m_grab = nullptr;
         }
