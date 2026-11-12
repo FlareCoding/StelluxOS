@@ -2,6 +2,7 @@
 #define STLXDM_DND_HPP
 
 #include "clipboard.hpp"
+#include "damage.hpp"
 
 #include <stlxwin/proto.h>
 
@@ -18,12 +19,25 @@ constexpr uint32_t DND_ACTIONS = SWP_DND_COPY | SWP_DND_MOVE | SWP_DND_LINK;
 /* How long a window that took a drop has to finish it, after which it counts as having done nothing */
 constexpr uint64_t DND_FINISH_TIMEOUT_NS = 5000000000ull;
 
+/* The opacity of a drag's picture while nothing under it accepts, 56 percent */
+constexpr uint32_t DND_REFUSED_OPACITY = 143;
+
 /* A target's newest answer to the drag over it, which refuses until the target answers */
 struct dnd_answer {
     uint32_t    actions = 0;
     uint32_t    preferred = 0;
     uint32_t    words_action = 0;
     std::string words;
+};
+
+/* What a drag's chip says: the glyph of the action a release does, or of a refusal, and the words beside it */
+struct dnd_chip {
+    enum class glyph { none, copy, move, link, refusal };
+
+    glyph       mark = glyph::none;
+    std::string words;
+
+    bool operator==(const dnd_chip&) const = default;
 };
 
 /* One running drag, from its START_DRAG until its source hears it finished or cancelled */
@@ -77,5 +91,14 @@ dnd_answer read_drop_status(const swp_drop_status& status);
 /* Reads a START_DRAG's representations, none for a drag only its own client takes, false for no known action or an
  * unknown one, no items, a picture neither 0 by 0 nor within SWP_DRAG_PICTURE_MAX, or an offer read_offer refuses */
 bool read_start_drag(const swp_start_drag& start, std::vector<clipboard_rep>* reps);
+
+/* The chip for `action` under the target's `answer`: the action's glyph with the target's words when they describe it,
+ * else the action's name, the refusal glyph with a refusal's reason, and nothing for a refusal without one */
+dnd_chip chip_for(uint32_t action, const dnd_answer& answer);
+
+/* Where the chip's body of `width` by `height` goes for the pointer at (`x`, `y`) over `picture`, empty for none: right
+ * of the pointer and under the picture, flipped left and above it at the edges of `output` */
+damage_list::rect place_chip(int32_t x, int32_t y, const damage_list::rect& picture, int32_t width, int32_t height,
+                             const damage_list::rect& output);
 
 #endif

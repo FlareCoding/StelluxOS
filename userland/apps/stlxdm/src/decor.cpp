@@ -91,12 +91,6 @@ constexpr control_look CONTROL_DIM = {
     STLXTHEME_WINDOW_CONTROL_GLYPH_DIM
 };
 
-constexpr decor::window_shadow_layer UNFOCUSED_SHADOW[] = {
-    { 0, 0, decor::CONTACT_SPREAD, 72 },
-    { 2, 4, 0, 24 },
-    { 8, 20, 0, 36 }
-};
-
 /* A layer's blur as running sums of its weights out to `reach` either side,
  * and how much less a corner of `radius` blurs out than a square one */
 struct shadow_kernel {
@@ -548,7 +542,7 @@ static int32_t weight_at(const shadow_kernel& kernel, int32_t offset) {
 /* Builds the running weights of the SVG filter spec's three box blurs, the
  * last a pixel wider when the box width is even so the blur stays centered */
 static void prepare_blur(shadow_kernel& kernel, const decor::window_shadow_layer& layer) {
-    int32_t box = std::max(1, (layer.blur * BOX_PER_BLUR_PERCENT + PERCENT / 2) / PERCENT);
+    int32_t box = decor::blur_box(layer.blur);
     int32_t last_box = box % 2 == 0 ? box + 1 : box;
     std::vector<int64_t> weights = convolve_box(convolve_box(convolve_box({ 1 }, box), box), last_box);
     int64_t total = static_cast<int64_t>(box) * box * last_box;
@@ -927,6 +921,10 @@ int init() {
 
 corner_table corner_distances() {
     return { g_dist8, SDF_LUT_N, SDF_Q_MAX * 8 };
+}
+
+int32_t blur_box(int32_t blur) {
+    return std::max(1, (blur * BOX_PER_BLUR_PERCENT + PERCENT / 2) / PERCENT);
 }
 
 int32_t rounded_rect_distance(const damage_list::rect& bounds, int32_t radius, int32_t x, int32_t y) {

@@ -62,6 +62,16 @@ constexpr window_shadow_layer FOCUSED_SHADOW[] = {
     { 28, 72, 0, 40 }
 };
 
+/* The shadow of an unfocused window, which a drag's picture casts too */
+constexpr window_shadow_layer UNFOCUSED_SHADOW[] = {
+    { 0, 0, CONTACT_SPREAD, 72 },
+    { 2, 4, 0, 24 },
+    { 8, 20, 0, 36 }
+};
+
+/* The width of each of the SVG filter spec's three box blurs that blur a shadow layer by `blur` */
+int32_t blur_box(int32_t blur);
+
 /* A pixel holds alpha above red, green and blue, each channel `CHANNEL_BITS` wide, and an alpha or opacity of
  * `CHANNEL_MAX` is opaque */
 constexpr uint32_t CHANNEL_BITS = 8;

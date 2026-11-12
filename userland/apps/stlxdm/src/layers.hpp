@@ -121,6 +121,8 @@ struct layer_scene {
     uint32_t                  content_color = 0;
     layer_piece               popover;        /* the shell's popover, a closing one included */
     layer_piece               lower_top;
+    std::vector<layer_scaled> drag;           /* a drag's shadow and picture */
+    layer_piece               drag_chip;
     bool                      is_dimmed = false;
     uint32_t                  dim_color = 0;
     layer_piece               upper_top;

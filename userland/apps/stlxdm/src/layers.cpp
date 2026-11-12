@@ -1,10 +1,10 @@
 #include "layers.hpp"
 #include "decor.hpp"
 
-/* The backdrop, each window's glass under its frame strips and content or under an animating window's more
- * numerous scaled pieces, and above them the shell's popover and the two top pictures with the dim between */
+/* The backdrop, each window's glass under its frame strips and content or under an animating window's more numerous
+ * scaled pieces, then the popover, the lower top picture, a drag's shadow, picture and chip, the dim and the upper */
 constexpr uint32_t LAYERS_PER_WINDOW = layer_window::SCALED_MAX + 1;  /* the scaled pieces and the glass */
-constexpr uint32_t LAYERS_AROUND_WINDOWS = 5;
+constexpr uint32_t LAYERS_AROUND_WINDOWS = 8;
 static_assert(layer_window::SCALED_MAX >= layer_window::FRAME_STRIPS + 1);
 
 static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
@@ -131,8 +131,8 @@ static void append_content(
 }
 
 /* A piece without a picture the GPU reads shows nothing */
-static void append_scaled(std::vector<layer>& list, const damage_list::rect& r, const layer_window& w) {
-    for (const layer_scaled& piece : w.scaled) {
+static void append_scaled(std::vector<layer>& list, const damage_list::rect& r, const std::vector<layer_scaled>& pieces) {
+    for (const layer_scaled& piece : pieces) {
         if (!overlaps(piece.bounds, r) || piece.source.address == 0) {
             continue;
         }
@@ -175,11 +175,13 @@ uint32_t append_layers(const layer_scene& scene, const damage_list::rect& r, std
         append_glass(list, r, scene.windows[i], scene.frost);
         append_frame(list, r, scene.windows[i]);
         append_content(list, r, scene.windows[i], scene.content_color);
-        append_scaled(list, r, scene.windows[i]);
+        append_scaled(list, r, scene.windows[i].scaled);
     }
 
     append_piece(list, r, scene.popover, layer_op::blend);
     append_piece(list, r, scene.lower_top, layer_op::blend);
+    append_scaled(list, r, scene.drag);
+    append_piece(list, r, scene.drag_chip, layer_op::blend);
 
     if (scene.is_dimmed) {
         layer dim = layer_over(whole, layer_op::dim);
@@ -213,5 +215,10 @@ void append_twinned(const layer_scene& scene, std::vector<twinned_picture*>& pic
 
     append_if_twinned(scene.popover.picture.twinned, pictures);
     append_if_twinned(scene.lower_top.picture.twinned, pictures);
+    for (const layer_scaled& piece : scene.drag) {
+        append_if_twinned(piece.source.twinned, pictures);
+    }
+
+    append_if_twinned(scene.drag_chip.picture.twinned, pictures);
     append_if_twinned(scene.upper_top.picture.twinned, pictures);
 }

@@ -575,6 +575,8 @@ bool server::import_attached_buffers() {
 /* Drops each window's frame picture, which may hold GPU memory, and what composing on the GPU made for windows: each
  * twin, each Vulkan import and each shared memory buffer's GPU_BUFFER_IMPORT handle */
 void server::drop_window_imports() {
+    m_drag_look = drag_look();
+
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             w->frame = frame_picture();
@@ -1519,10 +1521,17 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         decor::draw_outline(canvas, m_outline, r);
     }
 
-    /* Above the windows: the tooltip and overlay on the main output, the
-     * overlay's dim on the others, then the pointer the frames draw */
+    /* Above the windows: the tooltip on the main output, a drag's look, the
+     * overlay there or its dim on the others, then the pointer the frames draw */
     if (is_main) {
         m_panels->compose_top(back, local);
+    }
+
+    if (drag_shows()) {
+        m_drag_look.draw(canvas, m_dnd->x, m_dnd->y, drag_output(), drag_opacity(), r);
+    }
+
+    if (is_main) {
         m_power->draw_overlay(back, local);
     } else {
         m_power->draw_dim(back, local);
@@ -1898,6 +1907,21 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
     draw_top_pictures(out, rects, is_capture);
 
+    scene.drag.clear();
+    scene.drag_chip = {};
+    if (drag_shows() && !is_capture) {
+        m_drag_look.pieces(m_dnd->x, m_dnd->y, drag_output(), drag_opacity(), scene.drag, scene.drag_chip);
+        for (layer_scaled& piece : scene.drag) {
+            piece.bounds.x -= ox;
+            piece.bounds.y -= oy;
+        }
+
+        scene.drag_chip.bounds.x -= ox;
+        scene.drag_chip.bounds.y -= oy;
+        scene.drag_chip.picture.x -= ox;
+        scene.drag_chip.picture.y -= oy;
+    }
+
     bool is_main = &out == &m_outputs[m_layout.main_output()];
     scene.popover = is_main ? popover_layer_piece(m_panels->popover()) : layer_piece();
     scene.lower_top = out.pictures.lower_top->layer();
@@ -2242,6 +2266,7 @@ void server::compose_tick(uint32_t output) {
         }
     }
 
+    remake_drag_look();
     bool composed = t.gpu_buffer ? compose_on_gpu(out, t, effective) : compose_on_cpu(out, t, effective);
     if (!composed) {
         out.damage.clear();
