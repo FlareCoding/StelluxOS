@@ -584,6 +584,19 @@ int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, u
 long stlxwin_clipboard_get_type(stlxwin_conn* conn, const char* mime_type, char** out_data);
 
 /**
+ * @brief Map the clipboard's representation of `mime_type` read-only, copying nothing, waiting at most 5 seconds for
+ * the answer. The caller reads it in place and releases it with stlxwin_clipboard_unmap.
+ * @return Length with *out_data set, 0 when the clipboard holds no such representation, -1 on failure or when no
+ * answer came in time.
+ */
+long stlxwin_clipboard_map_type(stlxwin_conn* conn, const char* mime_type, const void** out_data);
+
+/**
+ * @brief Release a mapping of `len` bytes that stlxwin_clipboard_map_type made.
+ */
+void stlxwin_clipboard_unmap(const void* data, size_t len);
+
+/**
  * @brief Hear of every change of the clipboard. Waits for the clipboard's types, which the display manager sends at
  * once and again after each change, queueing STLXWIN_EVT_CLIPBOARD for each later one.
  * @return 0 once the types arrived, or -1 when the connection dies first or they take more than 5 seconds.

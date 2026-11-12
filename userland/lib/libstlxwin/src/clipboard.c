@@ -92,9 +92,10 @@ int stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value, int timeo
     return *flag == value || conn->dead ? -1 : 0;
 }
 
-/* Asks with an untyped or a typed CLIPBOARD_GET and copies the representation it answers with */
-static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** out_data) {
-    *out_data = NULL;
+/* Asks with an untyped or a typed CLIPBOARD_GET for the representation's length and the object holding it, which the
+ * caller closes */
+static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, int* out_object) {
+    *out_object = -1;
     conn->clip_pending = 1;
     if (stlxwin_send(conn, SWP_MSG_CLIPBOARD_GET, ask, ask_len) != 0) {
         return -1;
@@ -114,22 +115,24 @@ static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** 
         return 0;
     }
 
-    /* Closed once copied, so no reader keeps a replaced clipboard's memory alive */
-    int object = conn->clip_handle;
+    *out_object = conn->clip_handle;
     conn->clip_handle = -1;
-    if (object < 0) {
-        return -1;
+    return *out_object >= 0 ? (long)conn->clip_len : -1;
+}
+
+/* The fetched representation copied into a malloc'd buffer, its object closed once copied, so no reader keeps a
+ * replaced clipboard's memory alive */
+static long fetch_copy(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** out_data) {
+    *out_data = NULL;
+    int object = -1;
+    long len = fetch(conn, ask, ask_len, &object);
+    if (len <= 0) {
+        return len;
     }
 
-    char* data = stlxwin_copy_shared(object, conn->clip_len);
+    *out_data = stlxwin_copy_shared(object, (uint64_t)len);
     close(object);
-    if (!data) {
-        return -1;
-    }
-
-    *out_data = data;
-
-    return (long)conn->clip_len;
+    return *out_data ? len : -1;
 }
 
 int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len) {
@@ -160,7 +163,7 @@ long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text) {
         return -1;
     }
 
-    return fetch(conn, NULL, 0, out_text);
+    return fetch_copy(conn, NULL, 0, out_text);
 }
 
 /* Each representation with bytes goes into a shared memory object of its own, whose handle follows in order */
@@ -220,21 +223,55 @@ int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, u
     return rc;
 }
 
-long stlxwin_clipboard_get_type(stlxwin_conn* conn, const char* mime_type, char** out_data) {
-    if (!conn || conn->dead || !mime_type || !out_data) {
-        return -1;
-    }
-
-    swp_clipboard_get ask;
-    memset(&ask, 0, sizeof(ask));
+/* A typed CLIPBOARD_GET for `mime_type`, false when the type does not fit its field */
+static int typed_ask(const char* mime_type, swp_clipboard_get* ask) {
+    memset(ask, 0, sizeof(*ask));
     size_t type_len = strlen(mime_type);
-    if (type_len == 0 || type_len >= sizeof(ask.mime)) {
+    if (type_len == 0 || type_len >= sizeof(ask->mime)) {
+        return 0;
+    }
+
+    memcpy(ask->mime, mime_type, type_len);
+    return 1;
+}
+
+long stlxwin_clipboard_get_type(stlxwin_conn* conn, const char* mime_type, char** out_data) {
+    swp_clipboard_get ask;
+    if (!conn || conn->dead || !mime_type || !out_data || !typed_ask(mime_type, &ask)) {
         return -1;
     }
 
-    memcpy(ask.mime, mime_type, type_len);
+    return fetch_copy(conn, &ask, sizeof(ask), out_data);
+}
 
-    return fetch(conn, &ask, sizeof(ask), out_data);
+long stlxwin_clipboard_map_type(stlxwin_conn* conn, const char* mime_type, const void** out_data) {
+    swp_clipboard_get ask;
+    if (!conn || conn->dead || !mime_type || !out_data || !typed_ask(mime_type, &ask)) {
+        return -1;
+    }
+
+    *out_data = NULL;
+    int object = -1;
+    long len = fetch(conn, &ask, sizeof(ask), &object);
+    if (len <= 0) {
+        return len;
+    }
+
+    /* The mapping outlives the handle, so the object goes with the last of the two */
+    void* shared = mmap(NULL, (size_t)len, PROT_READ, MAP_SHARED, object, 0);
+    close(object);
+    if (shared == MAP_FAILED) {
+        return -1;
+    }
+
+    *out_data = shared;
+    return len;
+}
+
+void stlxwin_clipboard_unmap(const void* data, size_t len) {
+    if (data && len > 0) {
+        munmap((void*)data, len);
+    }
 }
 
 int stlxwin_clipboard_watch(stlxwin_conn* conn) {
