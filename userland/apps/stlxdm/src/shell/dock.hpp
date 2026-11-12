@@ -71,6 +71,9 @@ public:
 
     void show_running(bool running, bool focused);
 
+    /* Lights the tile as the pointer's hover does, for a drag resting on it, which fires no `on_hover` */
+    void show_drop_hover(bool lit);
+
     ui::size measure(ui::size avail) override;
     void paint(ui::painter& p) override;
     void on_pointer_enter() override;

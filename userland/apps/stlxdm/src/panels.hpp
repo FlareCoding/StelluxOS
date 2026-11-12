@@ -92,6 +92,13 @@ public:
     /* The index of the first launcher that starts the app `app_id`, which must not be null, or -1 when none does */
     int32_t launcher_of(const char* app_id) const;
 
+    /* The index of the launcher whose tile lies under (`x`, `y`) in desktop coordinates, or -1 */
+    int32_t launcher_at(int32_t x, int32_t y) const;
+
+    /* Lights the tile of the launcher at `index` as the pointer's hover does, for a drag that rests on it, without
+     * its tooltip */
+    void light_launcher(int32_t index, bool lit);
+
     /* Ticks each launcher whose bit is set in `running`, the one at `focused` longer. `focused` is the launcher
      * whose app holds the focus, or -1 for none. */
     void show_running_launchers(uint64_t running, int32_t focused);

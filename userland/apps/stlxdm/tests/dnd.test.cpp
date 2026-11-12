@@ -250,6 +250,45 @@ static void check_snap_back() {
           "without an item to return to, the picture fades out where it is");
 }
 
+static dock_file file_of(const char* path, bool is_folder, const char* opener) {
+    dock_file file;
+    file.path = path;
+    file.is_folder = is_folder;
+    file.opener = opener;
+
+    return file;
+}
+
+static void check_launchers() {
+    const char* sheen = "/usr/bin/sheen";
+    std::vector<dock_file> note = { file_of("/tmp/release notes.md", false, sheen) };
+    dnd_answer one = launcher_answer(note, sheen, "Sheen");
+    check(one.actions == SWP_DND_COPY && one.preferred == SWP_DND_COPY && one.words_action == SWP_DND_COPY,
+          "a launcher whose program opens the file takes it as a copy");
+    check(one.words == "Open in Sheen", "and names its program");
+
+    std::vector<dock_file> three = { file_of("/a.c", false, sheen), file_of("/b.h", false, sheen),
+                                     file_of("/c.md", false, sheen) };
+    check(launcher_answer(three, sheen, "Sheen").words == "Open 3 files in Sheen", "several files are counted");
+
+    std::vector<dock_file> mixed = { file_of("/a.c", false, sheen), file_of("/b.png", false, "/bin/viewer") };
+    check(launcher_answer(mixed, sheen, "Sheen").actions == 0, "a file its program does not open refuses them all");
+
+    std::vector<dock_file> folder = { file_of("/tmp/wallpapers", true, "") };
+    dnd_answer terminal = launcher_answer(folder, "/bin/stlxterm", "Terminal");
+    check(terminal.actions == SWP_DND_COPY && terminal.words == "Open Terminal in wallpapers",
+          "a folder opens the terminal in it");
+    check(launcher_answer({ file_of("/", true, "") }, "/bin/stlxterm", "Terminal").words == "Open Terminal in /",
+          "the root keeps its slash as its name");
+    check(launcher_answer(folder, sheen, "Sheen").actions == 0, "a folder refuses a launcher that does not open it");
+
+    std::vector<dock_file> folders = { file_of("/a", true, ""), file_of("/b", true, "") };
+    check(launcher_answer(folders, "/bin/stlxterm", "Terminal").actions == 0, "two folders refuse the terminal");
+    check(launcher_answer(note, "/bin/stlxterm", "Terminal").actions == 0, "a file the terminal does not open refuses");
+    check(launcher_answer(note, "", "Empty").actions == 0 && launcher_answer({}, sheen, "Sheen").actions == 0,
+          "a launcher without a program, and a drag without files, refuse");
+}
+
 int main() {
     check_actions();
     check_answers();
@@ -260,6 +299,7 @@ int main() {
     check_lift();
     check_settle();
     check_snap_back();
+    check_launchers();
 
     if (g_failures != 0) {
         printf("dnd: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

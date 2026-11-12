@@ -288,6 +288,31 @@ bool server::unminimize_app_window(const stlxconf_pin_t& pin) {
     return true;
 }
 
+bool server::app_has_window(const stlxconf_pin_t& pin) const {
+    for (const auto& c : m_clients) {
+        if (launches_app(pin, c->app_id) && !c->windows.empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Brings forward the window of `pin`'s app seen last: its topmost shown window, else the one minimized last, which
+ * grows out of the launcher's tile */
+void server::bring_app_forward(const stlxconf_pin_t& pin) {
+    for (auto it = m_zorder.rbegin(); it != m_zorder.rend(); ++it) {
+        dm_client* owner = window_owner(*it);
+        if (owner && launches_app(pin, owner->app_id)) {
+            set_focus(*it);
+            scene_raise(*it);
+            return;
+        }
+    }
+
+    unminimize_app_window(pin);
+}
+
 /* Unminimizes every window whose app has no launcher, since a minimized window comes back only through one */
 void server::unminimize_windows_without_launcher() {
     for (auto& c : m_clients) {

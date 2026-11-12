@@ -375,6 +375,23 @@ int32_t dm_panels::launcher_of(const char* app_id) const {
     return -1;
 }
 
+int32_t dm_panels::launcher_at(int32_t x, int32_t y) const {
+    for (uint32_t i = 0; i < m_conf->pin_count; i++) {
+        damage_list::rect tile = launcher_tile(i);
+        if (x >= tile.x && x < tile.x + tile.w && y >= tile.y && y < tile.y + tile.h) {
+            return static_cast<int32_t>(i);
+        }
+    }
+
+    return -1;
+}
+
+void dm_panels::light_launcher(int32_t index, bool lit) {
+    if (index >= 0 && static_cast<size_t>(index) < m_tiles.size()) {
+        m_tiles[static_cast<size_t>(index)]->show_drop_hover(lit);
+    }
+}
+
 void dm_panels::show_running_launchers(uint64_t running, int32_t focused) {
     m_quick->show_running(running);
     for (size_t i = 0; i < m_tiles.size(); i++) {
