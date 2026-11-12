@@ -28,15 +28,18 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <ScintillaEditBase.h>
+#include <stlxqpa/drop.h>
 
 #include <algorithm>
 
@@ -88,6 +91,7 @@ static constexpr qint64 ASYNC_LOAD_BYTES = 4 * BYTES_PER_MB;
 static constexpr int INDENT_WIDTHS[] = { 2, 4, 8 };
 static constexpr QChar BULLET(0x2022);
 static const QString NOTE_SEPARATOR = QStringLiteral("   ");
+static const QString DROP_WORDS = QStringLiteral("Open in Sheen");
 
 static const QByteArray UTF_8 = QByteArrayLiteral("UTF-8");
 
@@ -740,6 +744,9 @@ editor_window::editor_window(const sheen_settings& settings, const QStringList& 
     m_empty_state->on_file_chosen = [this](const QString& path) { open_paths({ path }); };
     m_stack->addWidget(m_empty_state);
 
+    // Files dragged over any part of the window open as tabs, where the views take only their own drags of text
+    setAcceptDrops(true);
+
     create_commands();
     connect(tabs(), &QTabBar::currentChanged, this, [this] { show_current_document(); });
     connect(tabs(), &QTabBar::tabCloseRequested, this, [this](int index) { close_document(index); });
@@ -814,6 +821,76 @@ void editor_window::receive_paths(const QStringList& paths) {
     raise();
     activateWindow();
     open_paths(paths);
+}
+
+void editor_window::dragEnterEvent(QDragEnterEvent* event) {
+    if (!take_file_drag(event)) {
+        QMainWindow::dragEnterEvent(event);
+    }
+}
+
+void editor_window::dragMoveEvent(QDragMoveEvent* event) {
+    if (!take_file_drag(event)) {
+        QMainWindow::dragMoveEvent(event);
+    }
+}
+
+void editor_window::dropEvent(QDropEvent* event) {
+    if (!take_file_drag(event)) {
+        QMainWindow::dropEvent(event);
+    }
+}
+
+// Files are taken as a copy whatever the source offers, since a tab never takes a file from where it lies, and text
+// dragged over a view stays the view's to move or copy. True for a drag of files, which the event then answered.
+bool editor_window::take_file_drag(QEvent* event) {
+    bool is_drag = event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove ||
+                   event->type() == QEvent::Drop;
+    auto* drop = is_drag ? static_cast<QDropEvent*>(event) : nullptr;
+    if (!drop || !drop->mimeData()->hasUrls()) {
+        return false;
+    }
+
+    if (!(drop->possibleActions() & Qt::CopyAction)) {
+        drop->ignore();
+        return true;
+    }
+
+    drop->setDropAction(Qt::CopyAction);
+    drop->accept();
+    if (event->type() == QEvent::Drop) {
+        open_dropped(drop->mimeData()->urls());
+    } else {
+        stlxqpa::set_drop_words(windowHandle(), DROP_WORDS);
+    }
+
+    return true;
+}
+
+// Dropped files on this computer open as tabs, and the status bar names those on another computer, which no tab reads
+void editor_window::open_dropped(const QList<QUrl>& urls) {
+    QStringList paths;
+    QString remote_host;
+    int remote_count = 0;
+    for (const QUrl& url : urls) {
+        bool is_here = url.host().isEmpty() || url.host() == QStringLiteral("localhost");
+        if (url.isLocalFile() && is_here) {
+            paths.append(url.path());
+        } else if (url.isLocalFile()) {
+            remote_host = remote_count == 0 ? url.host() : remote_host;
+            remote_count++;
+        }
+    }
+
+    if (!paths.isEmpty()) {
+        open_paths(paths);
+    }
+
+    if (remote_count == 1) {
+        show_status_note(QStringLiteral("This file is on another computer (%1)").arg(remote_host));
+    } else if (remote_count > 1) {
+        show_status_note(QStringLiteral("%1 files are on another computer (%2)").arg(remote_count).arg(remote_host));
+    }
 }
 
 // Quitting asks once about every unsaved tab, and a sheet open in the window keeps it open
@@ -1532,6 +1609,7 @@ document* editor_window::add_document(std::unique_ptr<document> owned, int index
     });
 
     view->installEventFilter(this);
+    view->viewport()->installEventFilter(this);
 
     {
         QSignalBlocker blocker(tabs());
@@ -2310,9 +2388,15 @@ void editor_window::finish_tab_switch(bool opens_lit_tab) {
     }
 }
 
-// Watches each text for Enter, and the whole application while Ctrl Tab is held for Ctrl coming up, Esc or a click
+// Watches each text for Enter and its viewport, which a scroll area's drags reach, for files, and the whole application
+// while Ctrl Tab is held for Ctrl coming up, Esc or a click
 bool editor_window::eventFilter(QObject* watched, QEvent* event) {
     auto* view = qobject_cast<ScintillaEditBase*>(watched);
+    bool is_viewport = !view && qobject_cast<ScintillaEditBase*>(watched->parent());
+    if (is_viewport && take_file_drag(event)) {
+        return true;
+    }
+
     if (view && event->type() == QEvent::KeyPress && type_line_end(view, static_cast<QKeyEvent*>(event))) {
         return true;
     }

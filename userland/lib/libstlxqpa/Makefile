@@ -9,10 +9,12 @@ USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
 include $(USERLAND_ROOT)/mk/toolchain.mk
 
 SRC_DIR     := src
+INCLUDE_DIR := include
 BUILD_DIR   := build/$(ARCH)
 LIB_NAME    := libstlxqpa.a
 TARGET      := $(BUILD_DIR)/$(LIB_NAME)
 SYSROOT_LIB := $(USERLAND_ROOT)/sysroot/$(ARCH)/lib
+SYSROOT_INC := $(USERLAND_ROOT)/sysroot/$(ARCH)/include/stlxqpa
 
 include $(USERLAND_ROOT)/mk/qt.mk
 
@@ -20,9 +22,9 @@ SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
 OBJECTS := $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o) $(QT_MOC_OBJECTS)
 
 # A static platform plugin, built on QtGui's private headers
-QPA_CXXFLAGS := $(CXXFLAGS_COMMON) $(QT_CPPFLAGS) $(QT_PRIVATE_CPPFLAGS) -DQT_STATICPLUGIN
+QPA_CXXFLAGS := $(CXXFLAGS_COMMON) $(QT_CPPFLAGS) $(QT_PRIVATE_CPPFLAGS) -DQT_STATICPLUGIN -I$(INCLUDE_DIR)
 
-all: $(TARGET)
+all: $(TARGET) install-headers
 
 $(TARGET): $(OBJECTS)
 	$(UQ)mkdir -p $(dir $@)
@@ -31,6 +33,10 @@ $(TARGET): $(OBJECTS)
 	$(UQ)$(AR) crs $@ $(OBJECTS)
 	$(UQ)mkdir -p $(SYSROOT_LIB)
 	$(UQ)cp $@ $(SYSROOT_LIB)/
+
+install-headers:
+	$(UQ)mkdir -p $(SYSROOT_INC)
+	$(UQ)cp -p $(INCLUDE_DIR)/stlxqpa/*.h $(SYSROOT_INC)/
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(UQ)mkdir -p $(dir $@)
@@ -46,5 +52,6 @@ $(BUILD_DIR)/moc_%.o: $(BUILD_DIR)/moc_%.cpp
 clean:
 	$(UQ)rm -rf build
 	$(UQ)rm -f $(SYSROOT_LIB)/$(LIB_NAME)
+	$(UQ)rm -rf $(SYSROOT_INC)
 
-.PHONY: all clean
+.PHONY: all install-headers clean
