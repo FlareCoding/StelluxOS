@@ -825,6 +825,9 @@ public:
     void show_clipboard(bool is_home);
     bool shows_clipboard() const { return m_mode == narrow_mode::clipboard; }
 
+    /* Empties the field, since a command found by its query leaves nothing in it to search for */
+    void clear_query() { edit("", 0); }
+
     /* Shows the clipboard history again after it changed */
     void refresh_clipboard();
 
@@ -2362,7 +2365,17 @@ std::vector<row_action> quick_actions::launcher_actions(uint32_t index, const st
 
 std::vector<row_action> quick_actions::action_actions(uint32_t index, const std::string& pick) {
     const stlxconf_action_t& action = m_conf.actions[index];
-    bool runs_program = stlxconf_action_kind(action.action) == STLXCONF_ACTION_EXEC;
+    stlxconf_action_kind_t kind = stlxconf_action_kind(action.action);
+    if (kind == STLXCONF_ACTION_CLIPBOARD) {
+        return { { "Open", "Enter", [this, pick]() {
+            remember_pick(pick);
+            if (m_show_clipboard) {
+                m_show_clipboard(true);
+            }
+        } } };
+    }
+
+    bool runs_program = kind == STLXCONF_ACTION_EXEC;
     std::string label = action.label[0] ? action.label : action.name;
     std::vector<row_action> actions = { { "Run", "Enter", [this, &action, runs_program, label, pick]() {
         if (runs_program && !is_startable("run", label, action.path, "action", action.source_path)) {
@@ -2481,7 +2494,8 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         const stlxconf_action_t& action = m_conf.actions[i];
         stlxconf_action_kind_t kind = stlxconf_action_kind(action.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && action.path[0];
-        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_SCREENSHOT;
+        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_SCREENSHOT ||
+                               kind == STLXCONF_ACTION_CLIPBOARD;
         if (!runs_program && !runs_own_action) {
             continue;
         }
@@ -2577,7 +2591,11 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         return shown->shows_clipboard();
     };
 
-    m_show_clipboard = [shown]() {
+    m_show_clipboard = [shown](bool clears_query) {
+        if (clears_query) {
+            shown->clear_query();
+        }
+
         shown->show_clipboard(false);
     };
 
@@ -2608,7 +2626,7 @@ bool quick_actions::shows_clipboard() const {
 
 void quick_actions::show_clipboard() {
     if (m_show_clipboard) {
-        m_show_clipboard();
+        m_show_clipboard(false);
     }
 }
 
