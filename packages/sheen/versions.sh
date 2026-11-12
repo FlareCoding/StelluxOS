@@ -4,6 +4,10 @@
 # Sheen, built from userland/apps/sheen, raised whenever a change there should reach the package
 SHEEN_VER="1.2"
 
+# The tree a release builds from beyond this recipe, Sheen's source and the libraries it links statically, which the
+# recipe's hash covers, so a change there marks the published archive stale until the release is bumped
+RECIPE_TREE="userland/apps/sheen userland/lib/libstlx userland/lib/libstlxqpa userland/lib/libstlxwin userland/lib/libstlxconf userland/lib/libstlxtheme"
+
 # Scintilla, the editing component, and Lexilla, its lexers, compiled unmodified from their release tarballs
 SCINTILLA_VER="5.6.9"
 SCINTILLA_URL="https://www.scintilla.org/scintilla569.tgz"
