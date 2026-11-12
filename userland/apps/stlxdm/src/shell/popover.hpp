@@ -62,6 +62,9 @@ void blend_popover_layer(stlxgfx_surface_t* back, const damage_list::rect& clip,
 /* The popover as a blend layer of a GPU compose, empty without a picture the GPU reads */
 layer_piece popover_layer_piece(const popover_layer& shown);
 
+/* The glass, rim and shadow of a panel above the windows, which the capture thumbnails share with the popover */
+const panel_style& popover_style();
+
 /* Shows one shell panel at a time above the windows of the main output. Opening a panel draws its shadow and glass
  * into a picture, where the panel's tree then repaints only what changes, so the slide and fade of opening and
  * closing repaint none of the picture, which the compose blends as a layer. */

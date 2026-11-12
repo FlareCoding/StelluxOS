@@ -417,6 +417,26 @@ void server::capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t ch
     }
 }
 
+/* A thumbnail lights what the pointer is on, and a primary release over what its press took acts */
+void server::thumbnail_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed) {
+    uint64_t now = now_ns();
+    if ((changed & 1) == 0) {
+        m_thumbnails.pointer_move(x, y, now, m_damage);
+        return;
+    }
+
+    if ((buttons & 1) != 0) {
+        m_thumbnails.press(x, y, now, m_damage);
+        return;
+    }
+
+    thumbnail_click click = m_thumbnails.release(x, y, now, m_damage);
+    if (click.action == thumbnail_action::discard) {
+        discard_capture(click);
+        m_thumbnails.pointer_move(x, y, now, m_damage);
+    }
+}
+
 static bool rects_overlap(const damage_list::rect& a, const damage_list::rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
@@ -810,6 +830,13 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
+    /* So does a press on a capture's thumbnail */
+    if (m_thumbnails.holds_pointer()) {
+        move_cursor(x, y, SWP_CURSOR_ARROW);
+        thumbnail_pointer(x, y, buttons, changed);
+        return;
+    }
+
     /* A press that `dismisses_popover()` accepts closes the popover and reaches nothing else */
     if (press && m_panels->dismisses_popover(x, y)) {
         m_panels->close_popover();
@@ -828,11 +855,16 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         zone = decor::zone::content;
     }
 
-    /* Over the shell's popover the pointer reaches no window, unless one holds the pointer grab */
+    /* Over the shell's popover or a capture's thumbnail the pointer reaches no window, unless one holds the grab */
     bool is_over_popover = !m_grab && m_panels->popover_contains(x, y);
-    if (is_over_popover) {
+    bool is_over_thumbnail = !m_grab && !is_over_popover && m_thumbnails.contains(x, y);
+    if (is_over_popover || is_over_thumbnail) {
         struck = nullptr;
         zone = decor::zone::none;
+    }
+
+    if (!is_over_thumbnail) {
+        m_thumbnails.pointer_move(-1, -1, now_ns(), m_damage);
     }
 
     /* The shape follows the content window's request, and the frame
@@ -922,6 +954,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     }
 
     if (!target) {
+        if (is_over_thumbnail) {
+            m_panels->pointer_move(-1, -1);
+            thumbnail_pointer(x, y, buttons, changed);
+            return;
+        }
+
         /* Uncovered band area belongs to the panels, and a motion
          * elsewhere clears any panel hover */
         if (!struck && m_panels->contains(x, y)) {

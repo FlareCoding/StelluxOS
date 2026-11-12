@@ -1517,6 +1517,10 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         blend_popover_layer(back, local, m_panels->popover());
     }
 
+    if (!m_composes_freeze) {
+        m_thumbnails.draw(static_cast<uint32_t>(&out - m_outputs), back, ox, oy, r);
+    }
+
     if (m_resize) {
         decor::draw_outline(canvas, m_outline, r);
     }
@@ -2141,6 +2145,17 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
         }
     }
 
+    uint32_t output = static_cast<uint32_t>(&out - m_outputs);
+    bool draws_thumbnails = !m_composes_freeze;
+    std::vector<damage_list::rect> thumbnails;
+    if (draws_thumbnails) {
+        m_thumbnails.bounds(output, thumbnails);
+    }
+
+    for (const damage_list::rect& thumbnail : thumbnails) {
+        lower.add_bounds({ thumbnail.x - ox, thumbnail.y - oy, thumbnail.w, thumbnail.h });
+    }
+
     if (is_main) {
         lower.add_bounds(m_panels->top_bounds());
         upper.add_bounds(m_power->overlay_bounds());
@@ -2155,6 +2170,10 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
     decor::canvas lower_canvas = { lower.surface(), ox, oy };
     for (const damage_list::rect& r : rects) {
         lower.clear(r);
+        if (draws_thumbnails) {
+            m_thumbnails.draw(output, lower.surface(), ox, oy, { r.x + ox, r.y + oy, r.w, r.h });
+        }
+
         if (m_resize) {
             decor::draw_outline(lower_canvas, m_outline, { r.x + ox, r.y + oy, r.w, r.h });
         }

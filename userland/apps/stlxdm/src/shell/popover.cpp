@@ -100,6 +100,10 @@ void blend_popover_layer(stlxgfx_surface_t* back, const damage_list::rect& clip,
     }
 }
 
+const panel_style& popover_style() {
+    return POPOVER_STYLE;
+}
+
 layer_piece popover_layer_piece(const popover_layer& shown) {
     uint64_t address = shown.picture ? shown.picture->address() : 0;
     if (!shown.surface || address == 0) {

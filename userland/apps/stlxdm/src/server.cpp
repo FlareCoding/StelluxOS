@@ -4,6 +4,7 @@
 #include "shared_object.hpp"
 
 #include "shell/chord.hpp"
+#include "shell/keycap.hpp"
 
 #include <stlx/gpu_abi.h>
 #include <stlx/handle.h>
@@ -49,6 +50,9 @@ constexpr const char* QUICK_ACTIONS_LABEL = "Quick Actions";
 constexpr const char* SCREENSHOT_LABEL = "Screenshot";
 
 constexpr const char* PNG_TYPE = "image/png";
+
+/* As many captures may wait to encode as there are cards, each holding a whole output's pixels */
+constexpr size_t CAPTURES_WAITING_MAX = 3;
 
 /* The arguments of its own a file opener's drop-in may give before the paths */
 constexpr size_t OPENER_ARGS_MAX = 16;
@@ -652,9 +656,11 @@ int server::serve() {
         printf("stlxdm: captures stay off the clipboard, since their encoder could not start\r\n");
     }
 
-    m_capture.set_frost_lookup([this](uint32_t output) {
+    frost_lookup frost_of_output = [this](uint32_t output) {
         return m_outputs[output].pres ? frost_of(m_outputs[output]) : nullptr;
-    });
+    };
+    m_thumbnails.set_frost_lookup(frost_of_output);
+    m_capture.set_frost_lookup(frost_of_output);
 
     /* The config's autostart entries, or a lone terminal without any */
     if (m_conf->autostart_count > 0) {
@@ -1264,6 +1270,8 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
         m_capture.close();
     }
 
+    /* Thumbnails sit at corners that moved, and their captures stay on the clipboard */
+    m_thumbnails.clear(m_damage);
     sync_outputs();
 
     dm_wallpaper wallpaper(*m_conf);
@@ -2029,7 +2037,7 @@ void server::capture_window_alone(dm_window& w, bool has_shadow) {
         return;
     }
 
-    m_capture_encoder.encode({ m_next_capture++, pixels, true });
+    encode_capture(pixels, true, capture_kind::window, w.output);
 }
 
 void server::close_capture() {
@@ -2059,7 +2067,7 @@ void server::capture_region(const capture_target& target) {
         return;
     }
 
-    m_capture_encoder.encode({ m_next_capture++, pixels, false });
+    encode_capture(pixels, false, capture_kind::region, target.output);
 }
 
 /* The output under the pointer goes to the encoder at once, composed whole as its next frame shows it */
@@ -2084,21 +2092,71 @@ void server::capture_screen() {
         return;
     }
 
-    m_capture_encoder.encode({ m_next_capture++, pixels, false });
+    encode_capture(pixels, false, capture_kind::screen, output);
 }
 
-/* An encoded capture becomes the clipboard as a copy does, the copy it replaces staying in the history */
+/* A capture's thumbnail shows at once, shrunk from its pixels before the encoder takes them, and goes again when no
+ * encoder runs to take them. While as many captures wait as the cards show, a new one is refused rather than an older
+ * one dropped, so a burst parks no more pixels than the cards show and every card it showed reaches the clipboard. */
+void server::encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output) {
+    if (m_capture_encoder.waiting() >= CAPTURES_WAITING_MAX) {
+        printf("stlxdm: %zu captures still wait to encode, so a new one is not taken\r\n", CAPTURES_WAITING_MAX);
+        stlxgfx_destroy_surface(pixels);
+        return;
+    }
+
+    uint64_t job = m_next_capture++;
+    uint64_t now = static_cast<uint64_t>(monotonic_ns());
+    m_thumbnails.add(job, kind, pixels, keeps_alpha, output, m_outputs[output].place, now, m_damage);
+    if (!m_capture_encoder.encode({ job, pixels, keeps_alpha })) {
+        m_thumbnails.remove(job, m_damage);
+    }
+}
+
+/* An encoded capture becomes the clipboard as a copy does, the copy it replaces staying in the history, which its
+ * thumbnail's Discard puts back. A capture discarded while it encoded stays off. */
 void server::pump_captures() {
     capture_png png;
     while (m_capture_encoder.take(&png)) {
         stlxgfx_destroy_surface(png.pixels);
-        if (png.object < 0) {
-            printf("stlxdm: keeping capture %llu on the clipboard failed, errno %d\r\n",
-                   static_cast<unsigned long long>(png.id), png.error);
+        bool is_dropped = m_thumbnails.take_dropped(png.id);
+        if (png.object < 0 || is_dropped) {
+            if (png.object < 0) {
+                printf("stlxdm: keeping capture %llu on the clipboard failed, errno %d\r\n",
+                       static_cast<unsigned long long>(png.id), png.error);
+            } else {
+                close(png.object);
+            }
+
+            m_thumbnails.remove(png.id, m_damage);
             continue;
         }
 
         replace_clipboard(clipboard_item({ { PNG_TYPE, png.len, png.object } }, 0), SCREENSHOT_LABEL);
+        const char* kind = m_thumbnails.kind_name_of(png.id);
+        m_history.set_name(m_history.current_id(), kind ? kind : "");
+        m_thumbnails.encoded(png.id, m_history.current_id());
+    }
+}
+
+/* Discard takes the capture off the clipboard and out of the history, putting back the copy it replaced, which
+ * changes the current item only when the capture was current. A capture still waiting to encode is dropped. */
+void server::discard_capture(const thumbnail_click& click) {
+    m_thumbnails.remove(click.job, m_damage);
+    if (click.entry == 0) {
+        if (m_capture_encoder.drop(click.job)) {
+            m_thumbnails.take_dropped(click.job);
+        }
+
+        return;
+    }
+
+    bool was_current = m_history.is_current(click.entry);
+    m_history.discard(click.entry);
+    if (was_current) {
+        note_clipboard_change();
+    } else {
+        note_history_change();
     }
 }
 
@@ -2273,15 +2331,19 @@ void server::note_history_change() {
     m_history_changed = true;
 }
 
-/* Each watcher behind the clipboard's generation hears it once and the history's views refresh once, so a client
- * copying in a loop costs every watcher one message per wakeup instead of one per copy */
+/* Each watcher behind the clipboard's generation hears it once, and the history's views and the capture captions
+ * refresh once, so a client copying in a loop costs every watcher one message per wakeup instead of one per copy */
 void server::flush_clipboard() {
     for (auto& c : m_clients) {
         catch_up_watcher(*c);
     }
 
-    if (m_history_changed && m_panels) {
-        m_panels->clipboard_changed();
+    if (m_history_changed) {
+        if (m_panels) {
+            m_panels->clipboard_changed();
+        }
+
+        m_thumbnails.follow_clipboard(m_history, m_damage);
     }
 
     m_history_changed = false;
