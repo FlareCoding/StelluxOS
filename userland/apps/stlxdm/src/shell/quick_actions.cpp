@@ -2128,6 +2128,10 @@ quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_s
     if (!m_clipboard_search.start()) {
         printf("stlxdm: Clipboard mode searches only each text's first 64 KB, since its searcher could not start\r\n");
     }
+
+    if (!m_images.start()) {
+        printf("stlxdm: Clipboard mode shows no images, since its decoder could not start\r\n");
+    }
 }
 
 quick_actions::~quick_actions() {
@@ -2198,6 +2202,11 @@ void quick_actions::pump_files() {
     if (m_show_files) {
         m_show_files(has_answer ? &answer : nullptr, walk);
     }
+}
+
+/* Decoded images show in the open palette's entries and preview */
+bool quick_actions::pump_images() {
+    return m_images.pump();
 }
 
 void quick_actions::pump_clipboard() {
@@ -2526,7 +2535,7 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         return entry.kind == row_kind::file ? file_note(entry.file) : std::string();
     };
 
-    view->clipboard = { m_history, &m_thumbnails, &m_conf, &m_launcher_icons, m_text_icon, m_image_icon,
+    view->clipboard = { m_history, &m_images, &m_conf, &m_launcher_icons, m_text_icon, m_image_icon,
                         m_folder_icon, m_program_icon, m_focused_app, m_history_since,
                         [this](uint64_t id) { on_clipboard_paste(id); },
                         [this](uint64_t id) { on_clipboard_copy(id); },

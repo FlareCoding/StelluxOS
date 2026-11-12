@@ -3,7 +3,6 @@
 #include "keycap.hpp"
 #include "quick_match.hpp"
 
-#include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
@@ -48,7 +47,6 @@ constexpr int32_t FILE_ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t FILE_TEXT_LEFT = FILE_ICON_SIZE + 12;
 constexpr int32_t FILE_SIZE_GAP = 12;
 constexpr int32_t MESSAGE_GAP = 10;
-constexpr int32_t THUMBNAIL_SIZE = ENTRY_ICON_SIZE;
 
 constexpr int32_t CHOICE_HEIGHT = 44;
 constexpr int32_t CHOICE_PADDING_X = 12;
@@ -141,9 +139,9 @@ public:
     clip_preview();
     ~clip_preview() override;
 
-    /* Shows `entry` with what `query` matches marked, taking `image`, its decoded picture, when it is an image */
+    /* Shows `entry` with what `query` matches marked, and an image entry's preview from `image` once decoded */
     void show(const shown_entry& entry, const clipboard_source& source, std::string_view query, int64_t now_ns,
-              stlxgfx_surface_t* image);
+              const clipboard_image& image);
     void paint(ui::painter& p) override;
 
 private:
@@ -172,8 +170,9 @@ private:
     std::vector<std::vector<mark_span>>        m_row_marks;
     std::vector<std::unique_ptr<text_picture>> m_meta;
 
-    /* An image entry's picture, and that picture fitted to the pocket at its last size */
-    stlxgfx_surface_t* m_image = nullptr;
+    /* An image entry's preview, shared with the decoder's cache, and that preview fitted to the pocket at its last
+     * size */
+    shared_picture     m_image;
     stlxgfx_surface_t* m_fitted = nullptr;
 };
 
@@ -215,6 +214,7 @@ public:
     }
 
 private:
+    shared_picture           m_thumbnail;  /* keeps an image's icon while the row paints it */
     const stlxgfx_surface_t* m_icon;
     const stlxgfx_surface_t* m_pin_glyph;
     text_picture             m_title;
@@ -588,8 +588,8 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
         shown.kind = "Image";
         shown.title = "Image, " + std::to_string(shown.image_w) + " \xC3\x97 " + std::to_string(shown.image_h);
 
-        const stlxgfx_surface_t* thumbnail = source.thumbnails->of(entry);
-        shown.icon = thumbnail ? thumbnail : source.image_icon;
+        shown.thumbnail = source.images->of(entry, false).thumbnail;
+        shown.icon = shown.thumbnail ? shown.thumbnail.get() : source.image_icon;
         return shown;
     }
 
@@ -624,6 +624,11 @@ static shown_entry reshow_entry(const clipboard_source& source, const clipboard_
     shown.is_too_large = shown.is_current && entry.item.held() > source.history->byte_limit();
     if (shown.is_title_text) {
         shown.icon = icon_for(source, entry.label);
+    }
+
+    if (shown.is_image) {
+        shown.thumbnail = source.images->of(entry, false).thumbnail;
+        shown.icon = shown.thumbnail ? shown.thumbnail.get() : source.image_icon;
     }
 
     return shown;
@@ -675,7 +680,8 @@ static int32_t title_width(const shown_entry& entry) {
 /* Only the names in "2 files: tar.c, tar.h" are content, so its count is never marked */
 clip_row::clip_row(const shown_entry& entry, const std::string& detail, std::string_view query,
                    const stlxgfx_surface_t* pin_glyph)
-    : m_icon(entry.icon),
+    : m_thumbnail(entry.thumbnail),
+      m_icon(entry.icon),
       m_pin_glyph(entry.is_pinned ? pin_glyph : nullptr),
       m_title("", title_face(entry), title_size(entry), STLXTHEME_TEXT),
       m_detail(fitted(detail, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, ENTRY_TEXT_W), STLXTHEME_UI_FONT_PATH,
@@ -721,9 +727,8 @@ clip_preview::~clip_preview() {
 }
 
 void clip_preview::drop_pictures() {
-    stlxgfx_destroy_surface(m_image);
     stlxgfx_destroy_surface(m_fitted);
-    m_image = nullptr;
+    m_image.reset();
     m_fitted = nullptr;
 }
 
@@ -757,9 +762,9 @@ static std::vector<std::string> meta_parts(const shown_entry& entry, std::string
 
 /* The pocket holds what its height fits, a copy past the budget saying so above its text */
 void clip_preview::show(const shown_entry& entry, const clipboard_source& source, std::string_view query,
-                        int64_t now_ns, stlxgfx_surface_t* image) {
+                        int64_t now_ns, const clipboard_image& image) {
     drop_pictures();
-    m_image = image;
+    m_image = image.preview;
     m_query = query;
     m_wrapped_w = -1;
 
@@ -774,6 +779,12 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
         m_message.push_back(size_text(entry.size) + " is past the " + limit + " the history keeps.");
         m_message.push_back("It stays while it is on the clipboard, and leaves the history when something else is "
                             "copied.");
+    }
+
+    if (image.is_too_large) {
+        std::string pixels = std::to_string(image.width) + " \xC3\x97 " + std::to_string(image.height);
+        m_message.push_back("Too large to preview.");
+        m_message.push_back("Its header gives " + pixels + " pixels, past the 16 megapixels a preview decodes.");
     }
 
     m_files.clear();
@@ -931,7 +942,7 @@ void clip_preview::paint_image(ui::painter& p, const ui::rect& inside) {
             return;
         }
 
-        stlxgfx_blit_scaled(m_fitted, 0, 0, w, h, m_image, 0, 0, m_image->width, m_image->height);
+        stlxgfx_blit_scaled(m_fitted, 0, 0, w, h, m_image.get(), 0, 0, m_image->width, m_image->height);
     }
 
     int32_t x = inside.x + (inside.w - static_cast<int32_t>(w)) / 2;
@@ -1012,59 +1023,6 @@ void clip_preview::paint(ui::painter& p) {
     }
 }
 
-/* A thumbnail covers its square with the middle of the picture, as the history's mock crops a wide capture */
-static stlxgfx_surface_t* cover_thumbnail(const clipboard_rep& png) {
-    std::string bytes = read_bytes(png, png.len);
-    stlxgfx_surface_t* picture = stlxgfx_decode_image(bytes.data(), bytes.size());
-    if (!picture) {
-        return nullptr;
-    }
-
-    uint32_t side = std::min(picture->width, picture->height);
-    stlxgfx_surface_t* thumbnail = stlxgfx_create_surface(THUMBNAIL_SIZE, THUMBNAIL_SIZE, 32, 16, 8, 0);
-    if (thumbnail) {
-        stlxgfx_blit_scaled(thumbnail, 0, 0, THUMBNAIL_SIZE, THUMBNAIL_SIZE, picture,
-                            static_cast<int32_t>((picture->width - side) / 2),
-                            static_cast<int32_t>((picture->height - side) / 2), side, side);
-    }
-
-    stlxgfx_destroy_surface(picture);
-    return thumbnail;
-}
-
-clipboard_thumbnails::~clipboard_thumbnails() {
-    for (const thumbnail& made : m_thumbnails) {
-        stlxgfx_destroy_surface(made.picture);
-    }
-}
-
-/* A picture that cannot be decoded is remembered as none, so it is decoded once */
-const stlxgfx_surface_t* clipboard_thumbnails::of(const clipboard_entry& entry) {
-    for (const thumbnail& made : m_thumbnails) {
-        if (made.id == entry.id) {
-            return made.picture;
-        }
-    }
-
-    const clipboard_rep* png = entry.item.find("image/png");
-    m_thumbnails.push_back({ entry.id, png ? cover_thumbnail(*png) : nullptr });
-    return m_thumbnails.back().picture;
-}
-
-void clipboard_thumbnails::keep(const std::vector<const clipboard_entry*>& entries) {
-    std::erase_if(m_thumbnails, [&entries](const thumbnail& made) {
-        bool is_kept = std::any_of(entries.begin(), entries.end(), [&made](const clipboard_entry* entry) {
-            return entry->id == made.id;
-        });
-
-        if (!is_kept) {
-            stlxgfx_destroy_surface(made.picture);
-        }
-
-        return !is_kept;
-    });
-}
-
 /* A pushpin on the 16 unit grid: its head, its body, the flared base, and the needle */
 static std::vector<std::vector<glyph_point>> pin_contours() {
     return { { { 5, 1.5f }, { 11, 1.5f }, { 11, 3 }, { 10, 3 }, { 10, 8 }, { 12.5f, 8 }, { 12.5f, 9.5f },
@@ -1087,7 +1045,7 @@ clipboard_pane::~clipboard_pane() {
 void clipboard_pane::refresh() {
     uint64_t selected_id = m_selected < m_listed.size() ? listed(m_selected).id : 0;
     std::vector<const clipboard_entry*> entries = m_source.history->entries();
-    m_source.thumbnails->keep(entries);
+    m_source.images->keep(entries);
 
     std::vector<shown_entry> shown;
     for (const clipboard_entry* entry : entries) {
@@ -1282,19 +1240,15 @@ void clipboard_pane::select(size_t index) {
         m_list->scroll_to(row_bottom - view_h);
     }
 
-    m_preview->show(listed(index), m_source, m_query, monotonic_ns(), decode_image(listed(index)));
+    m_preview->show(listed(index), m_source, m_query, monotonic_ns(), image_of(listed(index)));
 }
 
 /* An image entry's whole picture, decoded for the preview each time it is selected */
-stlxgfx_surface_t* clipboard_pane::decode_image(const shown_entry& shown) const {
+/* The selected image's pictures from the decoder's cache, its decode asked for ahead of the rest, so a hover never
+ * decodes anything */
+clipboard_image clipboard_pane::image_of(const shown_entry& shown) const {
     const clipboard_entry* entry = shown.is_image ? m_source.history->find(shown.id) : nullptr;
-    const clipboard_rep* png = entry ? entry->item.find("image/png") : nullptr;
-    if (!png) {
-        return nullptr;
-    }
-
-    std::string bytes = read_bytes(*png, png->len);
-    return stlxgfx_decode_image(bytes.data(), bytes.size());
+    return entry ? m_source.images->of(*entry, true) : clipboard_image();
 }
 
 void clipboard_pane::move_selection(int32_t rows) {
@@ -1339,7 +1293,7 @@ void clipboard_pane::build_menu() {
         m_list->content()->add<clip_choice>(m_menu[i])->set_selected(i == m_menu_choice);
     }
 
-    m_preview->show(entry, m_source, m_query, monotonic_ns(), decode_image(entry));
+    m_preview->show(entry, m_source, m_query, monotonic_ns(), image_of(entry));
 }
 
 /* Enter pastes or copies, then come pinning, removing and clearing, each with the key that runs it outside the list */

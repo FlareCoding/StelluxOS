@@ -291,6 +291,12 @@ int main() {
             fds.push_back({ clipboard_fd, POLLIN, 0 });
         }
 
+        size_t images_slot = fds.size();
+        int images_fd = srv.quick_images_fd();
+        if (images_fd >= 0) {
+            fds.push_back({ images_fd, POLLIN, 0 });
+        }
+
         /* Key repeat, the clock, a trial, a drop's finish, a GPU commit's query, a retired compositor's next timeline
          * read and each output's compose and cursor move deadlines cap the wait */
         uint64_t now = now_ns();
@@ -361,6 +367,10 @@ int main() {
 
         if (clipboard_fd >= 0 && (fds[clipboard_slot].revents & POLLIN)) {
             srv.pump_quick_clipboard();
+        }
+
+        if (images_fd >= 0 && (fds[images_slot].revents & POLLIN)) {
+            srv.pump_quick_images();
         }
 
         srv.pump(fds);

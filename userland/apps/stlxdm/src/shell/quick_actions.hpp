@@ -85,6 +85,10 @@ public:
     int clipboard_fd() const { return m_clipboard_search.wake_fd(); }
     void pump_clipboard();
 
+    /* Readable while Clipboard mode's decoder has images, which `pump_images()` keeps, true when any arrived */
+    int images_fd() const { return m_images.wake_fd(); }
+    bool pump_images();
+
     int32_t width() const override;
     int32_t left(int32_t output_w) const override;
     int32_t top() const override;
@@ -131,7 +135,7 @@ private:
     /* The history Clipboard mode lists, when it began, where a paste lands, its searcher of long texts, and the open
      * palette's hooks into Clipboard mode, unset while it is closed */
     const clipboard_history*                         m_history = nullptr;
-    clipboard_thumbnails                             m_thumbnails;
+    clipboard_images                                 m_images;
     std::string                                      m_history_since;
     std::string                                      m_focused_app;
     bool                                             m_opens_clipboard = false;

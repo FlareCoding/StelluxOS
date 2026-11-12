@@ -122,6 +122,10 @@ static void check_png_sizes() {
     check(png_size(std::string_view(header, 24), &width, &height) && width == 758 && height == 330,
           "a PNG's header gives its size");
     check(!png_size("GIF89a not a png header....", &width, &height), "other bytes give no size");
+
+    check(fits_preview(1920, 1080) && fits_preview(5120, 2880), "a capture of a 5K display or less previews");
+    check(!fits_preview(16384, 16384) && !fits_preview(100000, 1), "a header promising too many pixels never decodes");
+    check(!fits_preview(0, 0) && !fits_preview(640, 0), "a header without pixels never decodes");
 }
 
 static void check_reads() {

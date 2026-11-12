@@ -512,6 +512,15 @@ public:
     int quick_clipboard_fd() const { return m_panels->quick_clipboard_fd(); }
     void pump_quick_clipboard() { m_panels->pump_quick_clipboard(); }
 
+    /* Readable while Clipboard mode's decoder has images, which reach the palette through the clipboard's flush as
+     * changes to the history do, so a closing palette keeps its rows */
+    int quick_images_fd() const { return m_panels->quick_images_fd(); }
+    void pump_quick_images() {
+        if (m_panels->pump_quick_images()) {
+            note_history_change();
+        }
+    }
+
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
      * handled. */

@@ -11,6 +11,8 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 #define STB_IMAGE_IMPLEMENTATION
+/* A header promising more pixels either way is refused before anything is allocated */
+#define STBI_MAX_DIMENSIONS 16384
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
 #define STBI_NO_LINEAR

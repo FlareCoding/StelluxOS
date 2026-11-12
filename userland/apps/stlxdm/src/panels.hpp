@@ -156,6 +156,10 @@ public:
     int quick_clipboard_fd() const { return m_quick ? m_quick->clipboard_fd() : -1; }
     void pump_quick_clipboard() { m_quick->pump_clipboard(); }
 
+    /* Readable while Clipboard mode's decoder has images, which `pump_quick_images()` takes */
+    int quick_images_fd() const { return m_quick ? m_quick->images_fd() : -1; }
+    bool pump_quick_images() { return m_quick->pump_images(); }
+
     /* Whether a press at (`x`, `y`) closes the popover: one outside an open
      * or opening popover that is not pinned, and outside the bar's targets */
     bool dismisses_popover(int32_t x, int32_t y) const;
