@@ -22,6 +22,7 @@ typedef enum {
     SEC_INPUT,
     SEC_QUICK_ACTIONS,
     SEC_CLIPBOARD,
+    SEC_SCREENSHOT,
     SEC_PIN,
     SEC_SHORTCUT,
     SEC_AUTOSTART,
@@ -96,6 +97,9 @@ void stlxconf_defaults(stlxconf_t* conf) {
 
     conf->clipboard_history_items = STLXCONF_DEFAULT_CLIPBOARD_ITEMS;
     conf->clipboard_history_mb    = STLXCONF_DEFAULT_CLIPBOARD_MB;
+
+    conf->screenshot_shadow          = true;
+    conf->screenshot_remember_region = true;
 }
 
 /* A whole number clamped to `max`, or `fallback` for a value that is not one, such as "-1" */
@@ -164,6 +168,8 @@ static void enter_section(stlxconf_t* conf, char* name,
         *sec = SEC_QUICK_ACTIONS;
     } else if (strcmp(name, "clipboard") == 0) {
         *sec = SEC_CLIPBOARD;
+    } else if (strcmp(name, "screenshot") == 0) {
+        *sec = SEC_SCREENSHOT;
     } else if (strncmp(name, "taskbar:", 8) == 0) {
         *sec = SEC_PIN;
         *item_idx = conf->pin_count < STLXCONF_MAX_TASKBAR
@@ -224,6 +230,23 @@ static void enter_section(stlxconf_t* conf, char* name,
         }
     } else {
         *sec = SEC_NONE;
+    }
+}
+
+/* A timer of 0, 5 or 10 seconds, the ones the capture bar offers, and on or off for the switches. Any other value
+ * leaves the key as it was. */
+static void parse_screenshot_key(stlxconf_t* conf, const char* key, const char* val) {
+    int is_on = find_name(SWITCH_NAMES, NAME_COUNT(SWITCH_NAMES), val);
+    if (strcmp(key, "timer") == 0) {
+        unsigned long seconds = strtoul(val, NULL, 10);
+        conf->screenshot_timer = seconds == 0 || seconds == 5 || seconds == 10 ? (uint32_t)seconds
+                                                                               : conf->screenshot_timer;
+    } else if (strcmp(key, "shadow") == 0 && is_on >= 0) {
+        conf->screenshot_shadow = is_on == 1;
+    } else if (strcmp(key, "pointer") == 0 && is_on >= 0) {
+        conf->screenshot_pointer = is_on == 1;
+    } else if (strcmp(key, "remember_region") == 0 && is_on >= 0) {
+        conf->screenshot_remember_region = is_on == 1;
     }
 }
 
@@ -392,6 +415,9 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
         }
 
         return;
+    case SEC_SCREENSHOT:
+        parse_screenshot_key(conf, key, val);
+        return;
     case SEC_NONE:
         return;
     }
@@ -549,6 +575,12 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
     fprintf(f, "\n[clipboard]\n");
     fprintf(f, "history_items=%u\n", conf->clipboard_history_items);
     fprintf(f, "history_mb=%u\n", conf->clipboard_history_mb);
+
+    fprintf(f, "\n[screenshot]\n");
+    fprintf(f, "timer=%u\n", conf->screenshot_timer);
+    fprintf(f, "shadow=%s\n", SWITCH_NAMES[conf->screenshot_shadow ? 1 : 0]);
+    fprintf(f, "pointer=%s\n", SWITCH_NAMES[conf->screenshot_pointer ? 1 : 0]);
+    fprintf(f, "remember_region=%s\n", SWITCH_NAMES[conf->screenshot_remember_region ? 1 : 0]);
 
     for (uint32_t i = 0; i < conf->shortcut_count; i++) {
         const stlxconf_shortcut_t* sc = &conf->shortcuts[i];

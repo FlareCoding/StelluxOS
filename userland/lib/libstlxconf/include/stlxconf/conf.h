@@ -171,6 +171,13 @@ typedef struct {
     uint32_t clipboard_history_items;
     uint32_t clipboard_history_mb;
 
+    /* [screenshot] where the capture bar's options start each session: the seconds its timer counts down, 0, 5 or 10,
+     * and whether a window's capture keeps its shadow, a capture shows the pointer, and the bar keeps the last region */
+    uint32_t screenshot_timer;
+    bool     screenshot_shadow;
+    bool     screenshot_pointer;
+    bool     screenshot_remember_region;
+
     stlxconf_pin_t pins[STLXCONF_MAX_TASKBAR];
     uint32_t pin_count;
 
