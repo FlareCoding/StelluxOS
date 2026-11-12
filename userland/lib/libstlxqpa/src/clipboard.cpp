@@ -70,7 +70,7 @@ QStelluxMimeData::QStelluxMimeData(stlxwin_conn* connection)
     : m_connection(connection) {
 }
 
-void QStelluxMimeData::show_types(const stlxwin_clip_types& types) {
+void QStelluxMimeData::show_types(const stlxwin_offer_types& types) {
     m_types.clear();
     for (uint32_t i = 0; i < types.count; i++) {
         m_types.append(QString::fromUtf8(types.types[i]));
@@ -165,8 +165,8 @@ void QStelluxClipboard::setMimeData(QMimeData* data, QClipboard::Mode mode) {
     delete data;
 
     QByteArray names[STLXWIN_OFFER_TYPES_MAX];
-    stlxwin_clip_rep wire[STLXWIN_OFFER_TYPES_MAX];
-    stlxwin_clip_types offered = {};
+    stlxwin_offer_rep wire[STLXWIN_OFFER_TYPES_MAX];
+    stlxwin_offer_types offered = {};
     for (const representation& rep : reps) {
         uint32_t i = offered.count++;
         names[i] = rep.first.toUtf8();
@@ -193,7 +193,7 @@ void QStelluxClipboard::changed() {
 }
 
 void QStelluxClipboard::read_types() {
-    stlxwin_clip_types types;
+    stlxwin_offer_types types;
     if (stlxwin_clipboard_types(m_connection, &types) == 0) {
         m_item.show_types(types);
     }

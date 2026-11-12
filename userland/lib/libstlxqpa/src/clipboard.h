@@ -14,7 +14,7 @@ public:
     explicit QStelluxMimeData(stlxwin_conn* connection);
 
     // Forgets what was fetched, since the clipboard now holds `types`
-    void show_types(const stlxwin_clip_types& types);
+    void show_types(const stlxwin_offer_types& types);
 
     QStringList formats() const override;
     bool hasFormat(const QString& format) const override;

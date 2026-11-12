@@ -55,7 +55,7 @@ _Static_assert(STLXWIN_LAYOUT_APART == SWP_LAYOUT_APART, "stlxwin.h names proto.
 _Static_assert(STLXWIN_OFFER_TYPES_MAX == SWP_OFFER_TYPES_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_MIME_MAX == SWP_MIME_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_CLIPBOARD_PRIVATE == SWP_CLIPBOARD_PRIVATE, "stlxwin.h names proto.h's flag");
-_Static_assert(sizeof(stlxwin_clip_types) == sizeof(swp_clipboard_types), "the types copy whole");
+_Static_assert(sizeof(stlxwin_offer_types) == sizeof(swp_clipboard_types), "the types copy whole");
 
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
