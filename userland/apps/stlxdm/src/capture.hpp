@@ -1,6 +1,7 @@
 #ifndef STLXDM_CAPTURE_HPP
 #define STLXDM_CAPTURE_HPP
 
+#include "capture_bar.hpp"
 #include "damage.hpp"
 #include "picture.hpp"
 
@@ -53,13 +54,21 @@ struct capture_window {
     damage_list::rect bounds = {};  /* the frame and its shadow, what a capture with the shadow takes */
 };
 
-/* What a capture takes: a rect of one output in that output's pixels, or a window alone, with its shadow or without */
+/* What a capture took, which its thumbnail names */
+enum class capture_kind { screen, region, window };
+
+/* What a capture takes: a rect of one output in that output's pixels, a whole output, or a window alone, with its
+ * shadow or without */
 struct capture_target {
     uint32_t          output = 0;
     damage_list::rect rect = {};
+    capture_kind      kind = capture_kind::region;
     const void*       window = nullptr;
     bool              has_shadow = true;
 };
+
+/* What a release in the capture overlay asks of the server */
+enum class capture_result { none, take, close };
 
 /* The frost an output's glass is drawn from, null for an output not served */
 using frost_lookup = std::function<const stlxgfx_surface_t*(uint32_t output)>;
@@ -91,8 +100,9 @@ struct preview_source {
     uint32_t                 output = 0;
 };
 
-/* The capture overlay: every output frozen and dimmed, and either a region dragged on one undimmed inside an amber
- * hairline or the window under the pointer lit. It takes keys and the pointer, each change damaging what it repaints. */
+/* The capture overlay: every output frozen and dimmed, and a region dragged on one undimmed inside an amber hairline, the
+ * window under the pointer lit, or with the capture bar the output under it. It takes keys and the pointer, each
+ * change damaging what it repaints. */
 class capture_overlay {
 public:
     capture_overlay() = default;
@@ -106,10 +116,19 @@ public:
     void set_frost_lookup(frost_lookup lookup) { m_frost_of = std::move(lookup); }
 
     /* Opens over `frames`, one per output by index and empty for an output not served, aiming at a region, with
-     * `windows` top first and the pointer at (`x`, `y`), its keys hinted at the top of the pointer's output a while */
+     * `windows` top first and the pointer at (`x`, `y`), and the capture bar on output `bar_output`, or at -1 the
+     * region's keys hinted at the top of the pointer's output a while */
     void open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x, int32_t y,
-              uint64_t now_ns);
+              uint64_t now_ns, int32_t bar_output);
     void close();
+
+    bool has_bar() const { return m_bar.shown(); }
+
+    /* Aims at `mode`'s targets, as Space and the bar's modes and keys switch */
+    void choose(capture_mode mode, damage_list& damage);
+
+    /* What the bar's Capture and Enter take: the region kept, the window lit, or the output lit. False with none. */
+    bool take(capture_target* target) const;
 
     /* How long until the hint goes, -1 with none showing, and its going */
     int64_t timeout_ns(uint64_t now_ns) const;
@@ -122,9 +141,10 @@ public:
     /* The primary button went down: a drag starts on the output under it, or Alt marks a window's click shadowless */
     void on_press(int32_t x, int32_t y, uint8_t mods, damage_list& damage);
 
-    /* The primary button came up, true with what to take: a dragged region, or the window clicked. A click that
-     * dragged nothing ends the drag and leaves the overlay open. */
-    bool on_release(capture_target* target, damage_list& damage);
+    /* The primary button came up: take a dragged region, the window or output clicked, or what the bar's Capture
+     * names, or close for the bar's close button. A click that dragged nothing leaves the overlay open, and with the bar
+     * a dragged region stays for Capture. */
+    capture_result on_release(capture_target* target, damage_list& damage);
 
     /* Space moves the region while a drag holds it, and otherwise switches between a region and windows, hinting the
      * new mode's keys a while */
@@ -139,9 +159,10 @@ public:
     const frozen_frame& frame(uint32_t output) const { return m_frames[output]; }
 
 private:
-    enum class mode { region, window };
     enum class axis { none, horizontal, vertical };
 
+    capture_result press_control(capture_bar::control control, capture_target* target, damage_list& damage);
+    bool is_on_bar(int32_t x, int32_t y) const;
     void follow(int32_t x, int32_t y, uint8_t mods);
     void move_region(int32_t x, int32_t y);
     int32_t window_at(int32_t x, int32_t y) const;
@@ -154,6 +175,7 @@ private:
     void damage_everything(damage_list& damage) const;
     void draw_region(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const;
     void draw_window(stlxgfx_surface_t* view, int32_t ox, int32_t oy) const;
+    void draw_screen(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const;
     void draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const;
     void place_hint(uint64_t now_ns);
     void hide_hint(damage_list& damage);
@@ -162,22 +184,35 @@ private:
     std::vector<frozen_frame>   m_frames;
     std::vector<capture_window> m_windows;
     frost_lookup                m_frost_of;
-    mode                        m_mode = mode::region;
+    capture_mode                m_mode = capture_mode::region;
     int32_t                     m_pointer_x = 0;
     int32_t                     m_pointer_y = 0;
     uint8_t                     m_mods = 0;
 
-    /* The window under the pointer, -1 for none, and the one a press began on, with Alt held at the press or not */
+    /* The bar, and the control a press on it began on */
+    capture_bar          m_bar;
+    capture_bar::control m_bar_pressed = capture_bar::control::none;
+
+    /* The window under the pointer, -1 for none, and the one a press began on, with Alt held at the press or not. On
+     * the bar the pointer leaves lit the window and the output it last lit, for Capture. */
     int32_t m_lit = -1;
     int32_t m_pressed = -1;
     bool    m_press_has_shadow = true;
 
-    /* The drag: the output it stays on, where it began, and the region in desktop coordinates */
+    /* The output under the pointer in screen mode, and the one a press began on, past the last output for none */
+    uint32_t m_lit_output = 0;
+    uint32_t m_pressed_output = UINT32_MAX;
+
+    /* The drag: the output it stays on, where it began, and the region in desktop coordinates. With the bar the
+     * region stays once the drag ends, and the one before a press comes back when the press drags nothing. */
     bool              m_is_dragging = false;
     uint32_t          m_output = 0;
     int32_t           m_anchor_x = 0;
     int32_t           m_anchor_y = 0;
     damage_list::rect m_region = {};
+    bool              m_has_region = false;
+    uint32_t          m_previous_output = 0;
+    damage_list::rect m_previous_region = {};
 
     /* Space held moves the region from the pointer's last place, and Shift keeps the region it found, letting only
      * the edge of the axis the pointer moved along first follow it */

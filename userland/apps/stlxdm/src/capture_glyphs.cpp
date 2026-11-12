@@ -5,6 +5,38 @@
 #include <cmath>
 #include <vector>
 
+/* A region on the 16 unit grid: its four corners and the middles of its edges */
+static std::vector<std::vector<glyph_point>> region_contours() {
+    return {
+        { { 2.0f, 2.0f }, { 6.0f, 2.0f }, { 6.0f, 3.5f }, { 3.5f, 3.5f }, { 3.5f, 6.0f }, { 2.0f, 6.0f } },
+        { { 10.0f, 2.0f }, { 14.0f, 2.0f }, { 14.0f, 6.0f }, { 12.5f, 6.0f }, { 12.5f, 3.5f }, { 10.0f, 3.5f } },
+        { { 2.0f, 10.0f }, { 3.5f, 10.0f }, { 3.5f, 12.5f }, { 6.0f, 12.5f }, { 6.0f, 14.0f }, { 2.0f, 14.0f } },
+        { { 12.5f, 10.0f }, { 14.0f, 10.0f }, { 14.0f, 14.0f }, { 10.0f, 14.0f }, { 10.0f, 12.5f }, { 12.5f, 12.5f } },
+        { { 7.25f, 2.0f }, { 8.75f, 2.0f }, { 8.75f, 3.5f }, { 7.25f, 3.5f } },
+        { { 7.25f, 12.5f }, { 8.75f, 12.5f }, { 8.75f, 14.0f }, { 7.25f, 14.0f } },
+        { { 2.0f, 7.25f }, { 3.5f, 7.25f }, { 3.5f, 8.75f }, { 2.0f, 8.75f } },
+        { { 12.5f, 7.25f }, { 14.0f, 7.25f }, { 14.0f, 8.75f }, { 12.5f, 8.75f } },
+    };
+}
+
+/* A window on the 16 unit grid: its frame's outline under a solid title band */
+static std::vector<std::vector<glyph_point>> window_contours() {
+    return {
+        { { 1.5f, 2.5f }, { 14.5f, 2.5f }, { 14.5f, 13.5f }, { 1.5f, 13.5f } },
+        { { 2.75f, 5.75f }, { 13.25f, 5.75f }, { 13.25f, 12.25f }, { 2.75f, 12.25f } },
+    };
+}
+
+/* A display on the 16 unit grid: its screen's outline on a neck and a foot */
+static std::vector<std::vector<glyph_point>> screen_contours() {
+    return {
+        { { 1.5f, 2.0f }, { 14.5f, 2.0f }, { 14.5f, 11.0f }, { 1.5f, 11.0f } },
+        { { 2.75f, 3.25f }, { 13.25f, 3.25f }, { 13.25f, 9.75f }, { 2.75f, 9.75f } },
+        { { 7.25f, 11.0f }, { 8.75f, 11.0f }, { 8.75f, 12.75f }, { 7.25f, 12.75f } },
+        { { 4.5f, 12.75f }, { 11.5f, 12.75f }, { 11.5f, 14.0f }, { 4.5f, 14.0f } },
+    };
+}
+
 /* A trash can on the 16 unit grid: its lid with a handle, and its body open at the top with two ribs */
 static std::vector<std::vector<glyph_point>> discard_contours() {
     return {
@@ -84,6 +116,12 @@ static std::vector<std::vector<glyph_point>> close_contours() {
 
 stlxgfx_surface_t* make_capture_glyph(capture_glyph glyph, int32_t size, uint32_t color) {
     switch (glyph) {
+    case capture_glyph::region:
+        return make_shape_glyph(size, color, region_contours());
+    case capture_glyph::window:
+        return make_shape_glyph(size, color, window_contours());
+    case capture_glyph::screen:
+        return make_shape_glyph(size, color, screen_contours());
     case capture_glyph::preview:
         return make_shape_glyph(size, color, preview_contours());
     case capture_glyph::discard:

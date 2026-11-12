@@ -19,6 +19,11 @@ constexpr uint8_t HID_GUI =
 
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
 constexpr uint16_t HID_USAGE_SPACE = 0x2C;
+constexpr uint16_t HID_USAGE_ENTER = 0x28;
+constexpr uint16_t HID_USAGE_KEYPAD_ENTER = 0x58;
+constexpr uint16_t HID_USAGE_R = 0x15;
+constexpr uint16_t HID_USAGE_S = 0x16;
+constexpr uint16_t HID_USAGE_W = 0x1A;
 constexpr uint16_t HID_USAGE_DELETE = 0x4C;
 
 constexpr char DIGIT_PLAIN[] = "1234567890";
@@ -387,8 +392,26 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     send_event(m_focus, rec);
 }
 
-/* The capture overlay takes every key: Esc cancels it, Space moves the region or switches to windows and back, and
- * Shift and Alt reshape the region and the window's chip at once */
+/* The mode a key chooses in the capture bar: R a region, W a window, S a whole output */
+static bool mode_of_key(uint16_t usage, capture_mode* mode) {
+    switch (usage) {
+    case HID_USAGE_R:
+        *mode = capture_mode::region;
+        return true;
+    case HID_USAGE_W:
+        *mode = capture_mode::window;
+        return true;
+    case HID_USAGE_S:
+        *mode = capture_mode::screen;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The capture overlay takes every key: Esc cancels, Space moves the region or switches between a region and windows,
+ * Shift and Alt reshape the region and the window's chip at once, and with the bar R, W and S choose a mode and Enter
+ * takes what it aims at */
 void server::capture_key(uint16_t usage, bool down, bool repeat) {
     if (repeat) {
         return;
@@ -399,17 +422,28 @@ void server::capture_key(uint16_t usage, bool down, bool repeat) {
         return;
     }
 
-    if (usage == HID_USAGE_SPACE && down) {
+    capture_target target;
+    bool is_enter = usage == HID_USAGE_ENTER || usage == HID_USAGE_KEYPAD_ENTER;
+    if (down && is_enter && m_capture.has_bar() && m_capture.take(&target)) {
+        capture_region(target);
+        return;
+    }
+
+    capture_mode mode = capture_mode::region;
+    if (down && m_capture.has_bar() && mode_of_key(usage, &mode)) {
+        m_capture.choose(mode, m_damage);
+    } else if (usage == HID_USAGE_SPACE && down) {
         m_capture.press_space(now_ns(), m_damage);
-        move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     } else if (usage == HID_USAGE_SPACE) {
         m_capture.release_space();
     }
 
+    move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     m_capture.on_motion(m_cursor_x, m_cursor_y, m_modifiers, m_damage);
 }
 
-/* The capture overlay takes the pointer whole, and a primary release that ends a drag or a click takes its target */
+/* The capture overlay takes the pointer whole, and a primary release takes what a drag, a click or the bar's Capture
+ * names, or closes for the bar's close button */
 void server::capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed) {
     move_cursor(x, y, m_capture.cursor_shape());
     m_capture.on_motion(x, y, m_modifiers, m_damage);
@@ -423,8 +457,11 @@ void server::capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t ch
     }
 
     capture_target target;
-    if (m_capture.on_release(&target, m_damage)) {
+    capture_result result = m_capture.on_release(&target, m_damage);
+    if (result == capture_result::take) {
         capture_region(target);
+    } else if (result == capture_result::close) {
+        close_capture();
     }
 }
 

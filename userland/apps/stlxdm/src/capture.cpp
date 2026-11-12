@@ -305,25 +305,37 @@ capture_overlay::~capture_overlay() {
 }
 
 void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x,
-                           int32_t y, uint64_t now_ns) {
+                           int32_t y, uint64_t now_ns, int32_t bar_output) {
     m_frames = std::move(frames);
     m_windows = std::move(windows);
     m_is_open = true;
-    m_mode = mode::region;
+    m_mode = capture_mode::region;
     m_pointer_x = x;
     m_pointer_y = y;
 
     m_is_dragging = false;
     m_region = {};
+    m_has_region = false;
     m_is_space_held = false;
     m_is_shift_held = false;
     m_kept_axis = axis::none;
 
     m_lit = -1;
     m_pressed = -1;
+    m_lit_output = output_at(x, y);
+    m_pressed_output = UINT32_MAX;
+    m_bar_pressed = capture_bar::control::none;
+
     m_shown_outline = {};
     m_shown_chip = {};
     m_shown_words.clear();
+
+    size_t bar_index = static_cast<size_t>(bar_output);
+    if (bar_output >= 0 && bar_index < m_frames.size() && m_frames[bar_index].surface) {
+        const stlxgfx_surface_t* frost = m_frost_of ? m_frost_of(static_cast<uint32_t>(bar_output)) : nullptr;
+        m_bar.show(m_frames[bar_index].place, frost, capture_mode::region);
+        return;
+    }
 
     place_hint(now_ns);
 }
@@ -331,6 +343,9 @@ void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture
 void capture_overlay::close() {
     m_is_open = false;
     m_is_dragging = false;
+    m_has_region = false;
+    m_bar.hide();
+
     m_frames.clear();
     m_windows.clear();
     stlxgfx_destroy_surface(m_hint);
@@ -360,7 +375,7 @@ void capture_overlay::place_hint(uint64_t now_ns) {
         return;
     }
 
-    std::vector<chip_piece> line = hint_line(m_mode == mode::window);
+    std::vector<chip_piece> line = hint_line(m_mode == capture_mode::window);
     const damage_list::rect& place = m_frames[output].place;
     int32_t x = (place.w - chip_width(line)) / 2;
     m_hint = make_chip_picture(line, m_frost_of ? m_frost_of(output) : nullptr, x, CAPTURE_HINT_TOP);
@@ -381,8 +396,12 @@ void capture_overlay::hide_hint(damage_list& damage) {
 
 void capture_overlay::on_motion(int32_t x, int32_t y, uint8_t mods, damage_list& damage) {
     m_mods = mods;
-    if (m_mode == mode::window) {
+    m_bar.light(m_bar.control_at(x, y), damage);
+    bool is_over_bar = is_on_bar(x, y);
+    if (m_mode == capture_mode::window && !is_over_bar) {
         m_lit = window_at(x, y);
+    } else if (m_mode == capture_mode::screen && !is_over_bar) {
+        m_lit_output = output_at(x, y);
     } else if (m_is_dragging && m_is_space_held) {
         move_region(x, y);
     } else if (m_is_dragging) {
@@ -395,14 +414,28 @@ void capture_overlay::on_motion(int32_t x, int32_t y, uint8_t mods, damage_list&
 }
 
 void capture_overlay::on_press(int32_t x, int32_t y, uint8_t mods, damage_list& damage) {
-    if (m_mode == mode::window) {
+    if (is_on_bar(x, y)) {
+        m_bar_pressed = m_bar.control_at(x, y);
+        return;
+    }
+
+    if (m_mode == capture_mode::window) {
         m_pressed = m_lit;
         m_press_has_shadow = (mods & CHORD_MOD_ALT) == 0;
         return;
     }
 
+    if (m_mode == capture_mode::screen) {
+        m_pressed_output = m_lit_output;
+        return;
+    }
+
     uint32_t output = output_at(x, y);
     if (output < m_frames.size() && m_frames[output].surface && contains(m_frames[output].place, x, y)) {
+        m_previous_output = m_output;
+        m_previous_region = m_has_region ? m_region : damage_list::rect{};
+        m_has_region = false;
+
         m_is_dragging = true;
         m_output = output;
         m_anchor_x = x;
@@ -416,8 +449,15 @@ void capture_overlay::on_press(int32_t x, int32_t y, uint8_t mods, damage_list& 
     damage_changes(damage);
 }
 
-bool capture_overlay::on_release(capture_target* target, damage_list& damage) {
-    if (m_mode == mode::window) {
+capture_result capture_overlay::on_release(capture_target* target, damage_list& damage) {
+    if (m_bar_pressed != capture_bar::control::none) {
+        capture_bar::control pressed = m_bar_pressed;
+        m_bar_pressed = capture_bar::control::none;
+        bool is_click = m_bar.control_at(m_pointer_x, m_pointer_y) == pressed;
+        return is_click ? press_control(pressed, target, damage) : capture_result::none;
+    }
+
+    if (m_mode == capture_mode::window) {
         bool is_click = m_pressed >= 0 && m_pressed == m_lit;
         if (is_click) {
             target->window = m_windows[static_cast<size_t>(m_lit)].id;
@@ -425,43 +465,131 @@ bool capture_overlay::on_release(capture_target* target, damage_list& damage) {
         }
 
         m_pressed = -1;
-        return is_click;
+        return is_click ? capture_result::take : capture_result::none;
+    }
+
+    if (m_mode == capture_mode::screen) {
+        bool is_click = m_pressed_output != UINT32_MAX && m_pressed_output == m_lit_output;
+        m_pressed_output = UINT32_MAX;
+        return is_click && take(target) ? capture_result::take : capture_result::none;
     }
 
     if (!m_is_dragging) {
-        return false;
+        return capture_result::none;
     }
 
+    m_is_dragging = false;
     bool is_drag = std::max(m_region.w, m_region.h) >= MIN_DRAG && std::min(m_region.w, m_region.h) >= 1;
+    if (m_bar.shown()) {
+        m_has_region = is_drag || !is_empty(m_previous_region);
+        m_output = is_drag ? m_output : m_previous_output;
+        m_region = is_drag ? m_region : m_previous_region;
+        damage_changes(damage);
+        return capture_result::none;
+    }
+
     if (is_drag) {
         const damage_list::rect& place = m_frames[m_output].place;
         target->output = m_output;
         target->rect = { m_region.x - place.x, m_region.y - place.y, m_region.w, m_region.h };
     }
 
-    m_is_dragging = false;
     m_region = {};
     damage_changes(damage);
 
-    return is_drag;
+    return is_drag ? capture_result::take : capture_result::none;
+}
+
+/* A mode chooses its targets, Capture takes what they light, and close ends the overlay */
+capture_result capture_overlay::press_control(capture_bar::control control, capture_target* target,
+                                              damage_list& damage) {
+    switch (control) {
+    case capture_bar::control::region:
+        choose(capture_mode::region, damage);
+        return capture_result::none;
+    case capture_bar::control::window:
+        choose(capture_mode::window, damage);
+        return capture_result::none;
+    case capture_bar::control::screen:
+        choose(capture_mode::screen, damage);
+        return capture_result::none;
+    case capture_bar::control::capture:
+        return take(target) ? capture_result::take : capture_result::none;
+    case capture_bar::control::close:
+        return capture_result::close;
+    case capture_bar::control::none:
+        break;
+    }
+
+    return capture_result::none;
+}
+
+void capture_overlay::choose(capture_mode mode, damage_list& damage) {
+    if (mode == m_mode) {
+        return;
+    }
+
+    m_mode = mode;
+    m_lit = mode == capture_mode::window ? window_at(m_pointer_x, m_pointer_y) : -1;
+    m_lit_output = output_at(m_pointer_x, m_pointer_y);
+    m_pressed = -1;
+    m_pressed_output = UINT32_MAX;
+
+    m_bar.choose(mode, damage);
+    damage_everything(damage);
+    damage_changes(damage);
+}
+
+bool capture_overlay::take(capture_target* target) const {
+    if (m_mode == capture_mode::window) {
+        if (m_lit < 0) {
+            return false;
+        }
+
+        target->window = m_windows[static_cast<size_t>(m_lit)].id;
+        target->has_shadow = (m_mods & CHORD_MOD_ALT) == 0;
+        return true;
+    }
+
+    if (m_mode == capture_mode::screen) {
+        if (m_lit_output >= m_frames.size() || !m_frames[m_lit_output].surface) {
+            return false;
+        }
+
+        const damage_list::rect& place = m_frames[m_lit_output].place;
+        target->output = m_lit_output;
+        target->rect = { 0, 0, place.w, place.h };
+        target->kind = capture_kind::screen;
+        return true;
+    }
+
+    if (!m_has_region || is_empty(m_region)) {
+        return false;
+    }
+
+    const damage_list::rect& place = m_frames[m_output].place;
+    target->output = m_output;
+    target->rect = { m_region.x - place.x, m_region.y - place.y, m_region.w, m_region.h };
+    return true;
+}
+
+bool capture_overlay::is_on_bar(int32_t x, int32_t y) const {
+    return m_bar.shown() && contains(m_bar.rect(), x, y);
 }
 
 void capture_overlay::press_space(uint64_t now_ns, damage_list& damage) {
-    if (m_mode == mode::region && m_is_dragging) {
+    if (m_mode == capture_mode::region && m_is_dragging) {
         m_is_space_held = true;
         m_move_x = m_pointer_x;
         m_move_y = m_pointer_y;
         return;
     }
 
-    m_mode = m_mode == mode::region ? mode::window : mode::region;
-    m_lit = m_mode == mode::window ? window_at(m_pointer_x, m_pointer_y) : -1;
-    m_pressed = -1;
-
-    hide_hint(damage);
-    place_hint(now_ns);
-    damage_everything(damage);
-    damage_changes(damage);
+    choose(m_mode == capture_mode::region ? capture_mode::window : capture_mode::region, damage);
+    if (!m_bar.shown()) {
+        hide_hint(damage);
+        place_hint(now_ns);
+    }
 }
 
 void capture_overlay::release_space() {
@@ -469,7 +597,11 @@ void capture_overlay::release_space() {
 }
 
 uint32_t capture_overlay::cursor_shape() const {
-    return m_mode == mode::window ? CURSOR_CAMERA : CURSOR_CROSSHAIR;
+    if (is_on_bar(m_pointer_x, m_pointer_y)) {
+        return SWP_CURSOR_ARROW;
+    }
+
+    return m_mode == capture_mode::region ? CURSOR_CROSSHAIR : CURSOR_CAMERA;
 }
 
 /* The region spans the anchor and the pointer, held to the drag's output, or twice that from the anchor with Alt */
@@ -559,9 +691,9 @@ uint32_t capture_overlay::pointer_output() const {
     return m_is_dragging ? m_output : output_at(m_pointer_x, m_pointer_y);
 }
 
-/* The region's size once a drag has one, and before that where the crosshair points on its output */
+/* The region's size once a drag or the bar has one, and before that where the crosshair points on its output */
 std::string capture_overlay::tag_text() const {
-    if (m_is_dragging && !is_empty(m_region)) {
+    if ((m_is_dragging || m_has_region) && !is_empty(m_region)) {
         return size_label(m_region);
     }
 
@@ -577,7 +709,11 @@ std::string capture_overlay::tag_text() const {
 /* The tag beside the crosshair, turned to its other side where the output ends, or the window's chip at its middle,
  * or the note that no window is open at the middle of the pointer's output */
 damage_list::rect capture_overlay::chip_rect() const {
-    if (m_mode == mode::window) {
+    if (m_mode == capture_mode::screen || is_on_bar(m_pointer_x, m_pointer_y)) {
+        return {};
+    }
+
+    if (m_mode == capture_mode::window) {
         if (m_lit < 0 && !m_windows.empty()) {
             return {};
         }
@@ -639,8 +775,12 @@ damage_list::rect capture_overlay::chip_rect() const {
 
 /* What the chip says, since its words can change where it stays */
 std::string capture_overlay::chip_words() const {
-    if (m_mode == mode::region) {
+    if (m_mode == capture_mode::region) {
         return tag_text();
+    }
+
+    if (m_mode == capture_mode::screen) {
+        return {};
     }
 
     std::string words;
@@ -655,9 +795,11 @@ std::string capture_overlay::chip_words() const {
 /* A change repaints where the outline and the chip were and are, and what they light lies in them */
 void capture_overlay::damage_changes(damage_list& damage) {
     damage_list::rect outline = {};
-    if (m_mode == mode::window && m_lit >= 0) {
+    if (m_mode == capture_mode::window && m_lit >= 0) {
         outline = m_windows[static_cast<size_t>(m_lit)].frame;
-    } else if (m_mode == mode::region && m_is_dragging) {
+    } else if (m_mode == capture_mode::screen && m_lit_output < m_frames.size()) {
+        outline = m_frames[m_lit_output].place;
+    } else if (m_mode == capture_mode::region && (m_is_dragging || m_has_region)) {
         outline = grown(m_region, OUTLINE_WIDTH);
     }
 
@@ -705,8 +847,10 @@ void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damag
         /* The view's first pixel on the desktop */
         int32_t ox = m_frames[output].place.x + clip.x;
         int32_t oy = m_frames[output].place.y + clip.y;
-        if (m_mode == mode::window) {
+        if (m_mode == capture_mode::window) {
             draw_window(view, ox, oy);
+        } else if (m_mode == capture_mode::screen) {
+            draw_screen(view, ox, oy, output);
         } else {
             draw_region(view, ox, oy, output);
         }
@@ -717,6 +861,10 @@ void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damag
             stlxgfx_blit_alpha(view, m_hint_rect.x - ox, m_hint_rect.y - oy, m_hint, 0, 0, m_hint->width,
                                m_hint->height);
         }
+
+        if (m_bar.shown() && !is_empty(damage_list::intersect(m_bar.rect(), m_frames[output].place))) {
+            m_bar.draw(view, ox, oy);
+        }
     }
 
     stlxgfx_destroy_surface(view);
@@ -726,7 +874,7 @@ void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damag
 void capture_overlay::draw_region(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
     int32_t w = static_cast<int32_t>(view->width);
     int32_t h = static_cast<int32_t>(view->height);
-    bool shows_region = m_is_dragging && m_output == output && !is_empty(m_region);
+    bool shows_region = (m_is_dragging || m_has_region) && m_output == output && !is_empty(m_region);
     if (!shows_region) {
         stlxgfx_fill_rect_blend(view, 0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h), DIM_COLOR);
         return;
@@ -791,6 +939,17 @@ void capture_overlay::draw_window(stlxgfx_surface_t* view, int32_t ox, int32_t o
     blend_ring(view, lit, r, STLXTHEME_ACCENT);
 }
 
+/* Every output dims but the one under the pointer, which an amber hairline rings inside its edge */
+void capture_overlay::draw_screen(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
+    if (output != m_lit_output) {
+        stlxgfx_fill_rect_blend(view, 0, 0, view->width, view->height, DIM_COLOR);
+        return;
+    }
+
+    const damage_list::rect& place = m_frames[output].place;
+    blend_ring(view, { place.x - ox, place.y - oy, place.w, place.h }, 0, STLXTHEME_ACCENT);
+}
+
 /* The tag in the crosshair's numbers, or the window's chip, on the glass of the output being drawn */
 void capture_overlay::draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
     damage_list::rect chip = chip_rect();
@@ -801,8 +960,8 @@ void capture_overlay::draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy,
     const damage_list::rect& place = m_frames[output].place;
     const stlxgfx_surface_t* frost = m_frost_of ? m_frost_of(output) : nullptr;
     damage_list::rect box = moved(chip, -ox, -oy);
-    if (m_mode == mode::region) {
-        bool shows_size = m_is_dragging && !is_empty(m_region);
+    if (m_mode == capture_mode::region) {
+        bool shows_size = (m_is_dragging || m_has_region) && !is_empty(m_region);
         std::vector<chip_piece> line = { { tag_text(), STLXTHEME_MONO_FONT_PATH, TAG_TEXT_SIZE,
                                            shows_size ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY } };
         draw_chip_glass(view, ox - place.x, oy - place.y, frost, moved(chip, -place.x, -place.y), TAG_RADIUS);
