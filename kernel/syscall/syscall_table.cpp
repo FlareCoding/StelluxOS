@@ -177,6 +177,8 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(SYS_FUTEX_WAKE,     futex_wake);
     REGISTER_SYSCALL(SYS_FUTEX_WAKE_ALL, futex_wake_all);
 
+    REGISTER_SYSCALL(SYS_HANDLE_RESTRICT, handle_restrict);
+
     register_arch_syscalls();
 }
 

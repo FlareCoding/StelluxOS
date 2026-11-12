@@ -30,6 +30,9 @@ constexpr uint64_t SYS_FUTEX_WAIT     = 1030;
 constexpr uint64_t SYS_FUTEX_WAKE     = 1031;
 constexpr uint64_t SYS_FUTEX_WAKE_ALL = 1032;
 
+// Handles
+constexpr uint64_t SYS_HANDLE_RESTRICT = 1040;
+
 /**
  * Architecture-specific syscall initialization (MSRs on x86, etc.)
  * @note Privilege: **required**

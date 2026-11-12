@@ -151,3 +151,38 @@ DEFINE_SYSCALL3(dup3, u_oldfd, u_newfd, u_flags) {
 
     return dup_to_slot(task, old_h, new_h, (u_flags & fs::O_CLOEXEC) != 0);
 }
+
+// A handle passed to another process keeps its rights, so narrowing it first keeps the receiver from writing
+DEFINE_SYSCALL2(handle_restrict, u_handle, u_rights) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    if (u_rights == 0) {
+        return syscall::EINVAL;
+    }
+
+    resource::resource_object* obj = nullptr;
+    uint32_t held = 0;
+    int32_t rc = resource::get_handle_object(
+        task->handles, static_cast<resource::handle_t>(u_handle), 0, &obj, nullptr, &held);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    // Any bit the handle does not hold is refused, unknown ones included
+    if ((u_rights & ~static_cast<uint64_t>(held)) != 0) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    resource::handle_t new_h = -1;
+    rc = resource::alloc_task_handle(task, obj, obj->type, static_cast<uint32_t>(u_rights), &new_h);
+    resource::resource_release(obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::error_map::map_handle_alloc_error(rc);
+    }
+
+    return static_cast<int64_t>(new_h);
+}

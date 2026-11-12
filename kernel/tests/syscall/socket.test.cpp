@@ -5,7 +5,9 @@
 #include "../net/stub_interface.h"
 #include "syscall/handlers/sys_socket.h"
 #include "syscall/handlers/sys_error_map.h"
+#include "syscall/handlers/sys_dup.h"
 #include "syscall/handlers/sys_fd.h"
+#include "syscall/handlers/sys_memfd.h"
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_shutdown.h"
 #include "syscall/handlers/sys_pipe.h"
@@ -1272,6 +1274,7 @@ TEST(socket_syscall, a_unix_stream_recvmsg_drains_what_a_closed_peer_left) {
 // Handle passing
 
 constexpr size_t PIPE_FDS_AT = 1040;
+constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t CONTROL_ROOM = 64;
 constexpr uint64_t CMSG_ALIGNMENT = 8;
 constexpr uint64_t MAX_CONTROL_BYTES = 20480;
@@ -1381,6 +1384,37 @@ TEST(socket_syscall, sendmsg_passes_a_handle_that_recvmsg_installs) {
 
     (void)resource::close(task, received);
     close_pipe(task, pipe);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_passed_handle_keeps_the_rights_it_was_narrowed_to) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    auto writable = static_cast<int32_t>(sys_memfd_create(0, 0, 0, 0, 0, 0));
+    ASSERT_TRUE(writable >= 0);
+    auto readable = static_cast<int32_t>(
+        sys_handle_restrict(static_cast<uint64_t>(writable), resource::RIGHT_READ, 0, 0, 0, 0));
+    ASSERT_TRUE(readable >= 0);
+
+    EXPECT_EQ(send_with_rights(page, pair.a, &readable, 1), static_cast<int64_t>(1));
+    EXPECT_EQ(receive_with_control(page, pair.b, CONTROL_ROOM, 0), static_cast<int64_t>(1));
+
+    int32_t received = first_received_handle(page);
+    EXPECT_EQ(object_of(task, received), object_of(task, writable));
+    EXPECT_EQ(sys_fcntl(static_cast<uint64_t>(received), F_GETFL, 0, 0, 0, 0), static_cast<int64_t>(fs::O_RDONLY));
+    EXPECT_EQ(resource::write(task, received, "x", 1), static_cast<ssize_t>(resource::ERR_ACCESS));
+    EXPECT_EQ(sys_ftruncate(static_cast<uint64_t>(received), 0, 0, 0, 0, 0), syscall::EACCES);
+
+    (void)resource::close(task, received);
+    (void)resource::close(task, readable);
+    (void)resource::close(task, writable);
     close_unix_pair(task, pair);
 }
 
