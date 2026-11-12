@@ -9,15 +9,23 @@
  * directions. Pictures stay outside it, in shared memory objects the
  * client creates and names in ATTACH_BUFFER, or in GPU buffers whose
  * handles ATTACH_GPU_BUFFER sends over the socket, which the DM takes
- * when the GPU_INFO after HELLO_REPLY says so. The clipboard's text
- * stays outside it too, in a shared memory object whose handle
- * CLIPBOARD_SET and CLIPBOARD_DATA send. Each message is an
- * swp_header followed by header.length payload bytes. All structs are
- * little endian, naturally aligned, padding free, and size asserted so
- * a field edit fails the build instead of corrupting the wire.
+ * when the GPU_INFO after HELLO_REPLY says so. The clipboard's content
+ * stays outside it too, in shared memory objects whose handles
+ * CLIPBOARD_SET, CLIPBOARD_OFFER and CLIPBOARD_DATA send. Each
+ * message is an swp_header followed by header.length payload bytes.
+ * All structs are little endian, naturally aligned, padding free, and
+ * size asserted so a field edit fails the build instead of corrupting
+ * the wire.
  */
 
 #include <stdint.h>
+
+/* C++ spells the assertion static_assert, the only spelling GCC's C++ accepts, so the header builds as either */
+#ifdef __cplusplus
+#define SWP_STATIC_ASSERT(condition, message) static_assert(condition, message)
+#else
+#define SWP_STATIC_ASSERT(condition, message) _Static_assert(condition, message)
+#endif
 
 #define SWP_VERSION          1u
 #define SWP_SOCKET_PATH      "/tmp/stlxdm.sock"
@@ -35,6 +43,12 @@
 #define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
 #define SWP_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
 #define SWP_HANDLES_MAX       4u      /* the most handles one message carries, which both ends read */
+
+#define SWP_MIME_MAX        64u   /* a MIME type's bytes with its NUL */
+#define SWP_OFFER_TYPES_MAX 4u    /* representations one offer carries */
+
+/* The type CLIPBOARD_SET and an untyped CLIPBOARD_GET carry */
+#define SWP_MIME_TEXT "text/plain;charset=utf-8"
 
 /* Client to DM types are 0x01xx, DM to client are 0x02xx */
 enum {
@@ -59,6 +73,8 @@ enum {
 
     SWP_MSG_ACTIVATE_WINDOW = 0x0111,
 
+    SWP_MSG_CLIPBOARD_OFFER = 0x0112,
+
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
     SWP_MSG_RELEASE        = 0x0203,
@@ -78,13 +94,13 @@ typedef struct {
     uint16_t flags;     /* per-message flag bits, zero unless specified */
     uint32_t length;    /* payload bytes following this header */
 } swp_header;
-_Static_assert(sizeof(swp_header) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_header) == 8, "wire layout");
 
 typedef struct {
     int32_t x, y;
     int32_t w, h;
 } swp_rect;
-_Static_assert(sizeof(swp_rect) == 16, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_rect) == 16, "wire layout");
 
 /* A picture size and refresh rate an output can light at */
 typedef struct {
@@ -92,7 +108,7 @@ typedef struct {
     uint32_t height;
     uint64_t refresh_millihertz; /* 0 when unknown */
 } swp_mode;
-_Static_assert(sizeof(swp_mode) == 16, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_mode) == 16, "wire layout");
 
 /* ---- client to DM ---- */
 
@@ -100,7 +116,7 @@ typedef struct {
     uint32_t proto_version;
     char     app_id[SWP_APP_ID_MAX];
 } swp_hello;
-_Static_assert(sizeof(swp_hello) == 68, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_hello) == 68, "wire layout");
 
 /* SWP_WF_GLASS lays the DM's glass material under a borderless window, as the DM does under every decorated window's
  * frame, and premultiplied pixels show it through their alpha. The DM disconnects a client asking for premultiplied
@@ -126,12 +142,12 @@ typedef struct {
     uint32_t popup_flags;   /* SWP_PF_* */
     char     title[SWP_TITLE_MAX];
 } swp_create_window;
-_Static_assert(sizeof(swp_create_window) == 160, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_create_window) == 160, "wire layout");
 
 typedef struct {
     uint32_t win_id;
 } swp_destroy_window;
-_Static_assert(sizeof(swp_destroy_window) == 4, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_destroy_window) == 4, "wire layout");
 
 enum {
     SWP_FIELD_TITLE      = 1,  /* title[] carries the value */
@@ -160,7 +176,7 @@ typedef struct {
     uint32_t a, b;
     char     title[SWP_TITLE_MAX];
 } swp_set_window;
-_Static_assert(sizeof(swp_set_window) == 144, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_set_window) == 144, "wire layout");
 
 typedef struct {
     uint32_t win_id;
@@ -168,7 +184,7 @@ typedef struct {
     uint32_t width, height; /* stride is always width * 4 */
     char     shm_name[SWP_SHM_NAME_MAX];
 } swp_attach_buffer;
-_Static_assert(sizeof(swp_attach_buffer) == 96, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_attach_buffer) == 96, "wire layout");
 
 /* A GPU buffer detached while shown stays the window's picture, which
  * the CPU compositor shows as the content color when the buffer is not
@@ -178,7 +194,7 @@ typedef struct {
     uint32_t win_id;
     uint32_t buf_id;
 } swp_detach_buffer;
-_Static_assert(sizeof(swp_detach_buffer) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_detach_buffer) == 8, "wire layout");
 
 /* The atomic frame submission: content, damage, and resize ack in one
  * message. Zero damage rects means the whole buffer changed. */
@@ -191,26 +207,55 @@ typedef struct {
     uint32_t reserved;      /* keeps damage[] aligned, must be 0 */
     swp_rect damage[SWP_COMMIT_MAX_RECTS];
 } swp_commit;
-_Static_assert(sizeof(swp_commit) == 152, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_commit) == 152, "wire layout");
 
-/* Replaces the clipboard. A nonzero len must go in one sendmsg whose SCM_RIGHTS data holds exactly one handle, of a
- * shared memory object holding the text from its start, which the DM keeps until the next CLIPBOARD_SET. */
+/* Replaces the clipboard with an item of one SWP_MIME_TEXT representation. A nonzero len must go in one sendmsg whose
+ * SCM_RIGHTS data holds exactly one handle, of a shared memory object holding the text from its start. */
 typedef struct {
     uint64_t len;           /* UTF-8 bytes, 0 empties the clipboard and sends no handle */
 } swp_clipboard_set;
-_Static_assert(sizeof(swp_clipboard_set) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_clipboard_set) == 8, "wire layout");
+
+enum {
+    SWP_CLIPBOARD_PRIVATE = 1u << 0,  /* the copy stays out of the clipboard's history, as a password must */
+};
+
+/* One representation: printable ASCII MIME type, NUL-padded, and its bytes from its object's start. Flags are 0,
+ * reserved for representations a source renders later. */
+typedef struct {
+    char     mime[SWP_MIME_MAX];
+    uint64_t len;
+    uint32_t flags;
+    uint32_t reserved;
+} swp_offer_type;
+SWP_STATIC_ASSERT(sizeof(swp_offer_type) == 80, "wire layout");
+
+/* One item in up to SWP_OFFER_TYPES_MAX representations, as CLIPBOARD_OFFER carries it to replace the clipboard,
+ * where a count of 0 empties it. Its handles follow in order, one per representation with a nonzero len. */
+typedef struct {
+    uint32_t       count;
+    uint32_t       flags;  /* the clipboard's SWP_CLIPBOARD_* */
+    swp_offer_type types[SWP_OFFER_TYPES_MAX];
+} swp_offer;
+SWP_STATIC_ASSERT(sizeof(swp_offer) == 328, "wire layout");
+
+/* CLIPBOARD_GET's typed form, which asks for one representation. Without a payload it asks for SWP_MIME_TEXT. */
+typedef struct {
+    char mime[SWP_MIME_MAX];  /* NUL-terminated */
+} swp_clipboard_get;
+SWP_STATIC_ASSERT(sizeof(swp_clipboard_get) == 64, "wire layout");
 
 typedef struct {
     uint32_t buf_id;        /* attached buffer the screen is blitted into */
 } swp_capture;
-_Static_assert(sizeof(swp_capture) == 4, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_capture) == 4, "wire layout");
 
 /* Answered by the output's MODES, and for an output below output_count
  * by MODES again after each change until the client disconnects */
 typedef struct {
     uint32_t output;        /* the display's index of the output */
 } swp_get_modes;
-_Static_assert(sizeof(swp_get_modes) == 4, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_get_modes) == 4, "wire layout");
 
 enum {
     SWP_SET_MODE_TRIAL = 1u << 0,  /* set back after 15 seconds unless kept */
@@ -223,13 +268,13 @@ typedef struct {
     uint32_t flags;         /* SWP_SET_MODE_* */
     swp_mode mode;          /* one the output's MODES lists */
 } swp_set_mode;
-_Static_assert(sizeof(swp_set_mode) == 24, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_set_mode) == 24, "wire layout");
 
 typedef struct {
     uint32_t output;
     uint32_t keep;          /* 1 keeps the trial's mode, 0 sets the previous one back now */
 } swp_keep_mode;
-_Static_assert(sizeof(swp_keep_mode) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_keep_mode) == 8, "wire layout");
 
 /* Attaches a GPU buffer. The message must go in one sendmsg whose
  * SCM_RIGHTS data holds exactly SWP_GPU_HANDLES handles: the buffer and
@@ -243,7 +288,7 @@ typedef struct {
     uint32_t format;        /* SWP_FMT_XRGB8888 */
     uint64_t offset;        /* bytes from the buffer's start to the picture, a multiple of 4 */
 } swp_attach_gpu_buffer;
-_Static_assert(sizeof(swp_attach_gpu_buffer) == 32, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_attach_gpu_buffer) == 32, "wire layout");
 
 /* A COMMIT of a GPU buffer's picture. The DM latches it only once the
  * acquire timeline reaches acquire_point, releasing it unshown if the
@@ -264,13 +309,13 @@ typedef struct {
     uint64_t release_point; /* reached by the DM once it no longer reads the picture */
     swp_rect damage[SWP_COMMIT_MAX_RECTS];
 } swp_commit_gpu;
-_Static_assert(sizeof(swp_commit_gpu) == 176, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_commit_gpu) == 176, "wire layout");
 
 typedef struct {
     uint32_t output;
     int32_t  x, y;          /* the place's top-left */
 } swp_layout_entry;
-_Static_assert(sizeof(swp_layout_entry) == 12, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_layout_entry) == 12, "wire layout");
 
 /* Places each output OUTPUTS lists at a top-left, at its mode's size,
  * and names the main output. Answered by one LAYOUT_RESULT. */
@@ -280,14 +325,14 @@ typedef struct {
     uint32_t         count;                    /* entries, one per output OUTPUTS lists */
     swp_layout_entry entries[SWP_OUTPUTS_MAX]; /* `count` used */
 } swp_set_layout;
-_Static_assert(sizeof(swp_set_layout) == 204, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_set_layout) == 204, "wire layout");
 
 /* Asks the DM to raise and focus a toplevel, or bring it back when minimized. The DM grants it only soon after the
  * user's last key or button press, with no overlay or grabbing popup holding the input, and sends no answer. */
 typedef struct {
     uint32_t win_id;
 } swp_activate_window;
-_Static_assert(sizeof(swp_activate_window) == 4, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_activate_window) == 4, "wire layout");
 
 /* ---- DM to client ---- */
 
@@ -306,7 +351,7 @@ typedef struct {
     uint32_t format;        /* SWP_FMT_* */
     uint32_t screen_w, screen_h;
 } swp_hello_reply;
-_Static_assert(sizeof(swp_hello_reply) == 16, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_hello_reply) == 16, "wire layout");
 
 enum {
     SWP_STATE_FOCUSED    = 1u << 0,
@@ -321,14 +366,14 @@ typedef struct {
     uint32_t serial;
     uint32_t state;         /* SWP_STATE_* */
 } swp_configure;
-_Static_assert(sizeof(swp_configure) == 20, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_configure) == 20, "wire layout");
 
 /* The buffer is no longer read by the DM and may be reused or freed */
 typedef struct {
     uint32_t win_id;
     uint32_t buf_id;
 } swp_release;
-_Static_assert(sizeof(swp_release) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_release) == 8, "wire layout");
 
 /* Sent once per presentation of the window on its toplevel's output,
  * the one holding the largest part of the toplevel and its decorations,
@@ -339,7 +384,7 @@ typedef struct {
     uint32_t reserved;      /* keeps time_ns aligned, must be 0 */
     uint64_t time_ns;       /* CLOCK_MONOTONIC presentation time */
 } swp_frame_done;
-_Static_assert(sizeof(swp_frame_done) == 16, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_frame_done) == 16, "wire layout");
 
 enum {
     SWP_EV_KEY_DOWN = 1,
@@ -369,21 +414,21 @@ typedef struct {
     uint32_t ch;            /* key records, UTF-32 codepoint or 0 */
     int32_t  x, y;          /* pointer records, window content local */
 } swp_event_rec;
-_Static_assert(sizeof(swp_event_rec) == 20, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_event_rec) == 20, "wire layout");
 
 /* EVENT payload: this prefix, then count swp_event_rec records */
 typedef struct {
     uint32_t win_id;
     uint32_t count;
 } swp_event_prefix;
-_Static_assert(sizeof(swp_event_prefix) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_event_prefix) == 8, "wire layout");
 
-/* The answer to a CLIPBOARD_GET. A nonzero len comes with one SCM_RIGHTS handle of the clipboard's shared memory
- * object, which every client reading the clipboard shares, so none may write it. */
+/* The answer to a CLIPBOARD_GET. A nonzero len comes with one SCM_RIGHTS handle of the asked representation's shared
+ * memory object, which every client reading the clipboard shares, so none may write it. */
 typedef struct {
-    uint64_t len;           /* UTF-8 bytes from the object's start, 0 while the clipboard is empty */
+    uint64_t len;           /* bytes from the object's start, 0 while the clipboard holds no such representation */
 } swp_clipboard_data;
-_Static_assert(sizeof(swp_clipboard_data) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_clipboard_data) == 8, "wire layout");
 
 enum {
     SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */
@@ -400,7 +445,7 @@ typedef struct {
     swp_mode current;       /* zero while the output is dark */
     swp_mode modes[SWP_MODES_MAX];
 } swp_modes;
-_Static_assert(sizeof(swp_modes) == 544, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_modes) == 544, "wire layout");
 
 /* What the DM did. A trial's timer answers SET_BACK or DEFAULT
  * unasked, and a trial that an output event ends gets no answer. */
@@ -423,7 +468,7 @@ typedef struct {
     uint32_t reserved;      /* zero */
     swp_mode mode;          /* the mode the output is lit at, zero while it is dark */
 } swp_mode_result;
-_Static_assert(sizeof(swp_mode_result) == 32, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_mode_result) == 32, "wire layout");
 
 enum {
     SWP_GPU_ACCEPTS   = 1u << 0,  /* the DM takes GPU buffers from /dev/gpuN, N being the device field */
@@ -439,7 +484,7 @@ typedef struct {
     uint32_t flags;         /* SWP_GPU_* */
     uint32_t device;        /* N of /dev/gpuN, 0 without SWP_GPU_ACCEPTS */
 } swp_gpu_info;
-_Static_assert(sizeof(swp_gpu_info) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_gpu_info) == 8, "wire layout");
 
 enum {
     SWP_DESKTOP_MAIN = 1u << 0,  /* the main output, carrying the bar and the dock, its top-left at (0, 0) */
@@ -456,7 +501,7 @@ typedef struct {
     swp_rect work;               /* the work area: the main output's place less the bar and the dock, else the place */
     char     monitor[32];        /* "maker name", NUL-terminated, empty when the output reports no identity */
 } swp_desktop_output;
-_Static_assert(sizeof(swp_desktop_output) == 80, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_desktop_output) == 80, "wire layout");
 
 /* The desktop's layout, sent after HELLO_REPLY and at the end of each
  * DM wakeup to every client holding an older generation */
@@ -465,7 +510,7 @@ typedef struct {
     uint32_t           count;                    /* members, the outputs holding a place, at least 1 */
     swp_desktop_output outputs[SWP_OUTPUTS_MAX]; /* ascending output index, `count` used, the rest zero */
 } swp_outputs;
-_Static_assert(sizeof(swp_outputs) == 1288, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_outputs) == 1288, "wire layout");
 
 /* A toplevel's output and position, sent after its first FRAME_DONE and
  * at the end of each DM wakeup that finds either changed since the last
@@ -477,7 +522,7 @@ typedef struct {
     uint32_t output;        /* the member holding the largest part of the window and its decorations */
     int32_t  x, y;          /* the content's top-left in desktop coordinates, inside the decorations */
 } swp_window_output;
-_Static_assert(sizeof(swp_window_output) == 16, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_window_output) == 16, "wire layout");
 
 /* What the DM did with a SET_LAYOUT: a refused request changes nothing
  * and gets the first refusal below that applies */
@@ -494,14 +539,15 @@ typedef struct {
     uint32_t outcome;       /* SWP_LAYOUT_* */
     uint32_t generation;    /* the current one as it is sent: the last OUTPUTS' */
 } swp_layout_result;
-_Static_assert(sizeof(swp_layout_result) == 8, "wire layout");
+SWP_STATIC_ASSERT(sizeof(swp_layout_result) == 8, "wire layout");
 
 /* Read buffer bound for either side of the socket, which every message fits */
 #define SWP_MAX_MSG_SIZE 4096u
-_Static_assert(sizeof(swp_header) + sizeof(swp_outputs) <= SWP_MAX_MSG_SIZE, "an OUTPUTS fits a read");
-_Static_assert(sizeof(swp_header) + sizeof(swp_event_prefix) +
-                   SWP_EVENTS_MAX_BATCH * sizeof(swp_event_rec) <= SWP_MAX_MSG_SIZE,
-               "a full EVENT fits a read");
-_Static_assert(SWP_HANDLES_MAX >= SWP_GPU_HANDLES, "an attach's handles fit one message");
+SWP_STATIC_ASSERT(sizeof(swp_header) + sizeof(swp_outputs) <= SWP_MAX_MSG_SIZE, "an OUTPUTS fits a read");
+SWP_STATIC_ASSERT(sizeof(swp_header) + sizeof(swp_event_prefix) +
+                      SWP_EVENTS_MAX_BATCH * sizeof(swp_event_rec) <= SWP_MAX_MSG_SIZE,
+                  "a full EVENT fits a read");
+SWP_STATIC_ASSERT(SWP_HANDLES_MAX >= SWP_GPU_HANDLES && SWP_HANDLES_MAX >= SWP_OFFER_TYPES_MAX,
+                  "an attach's and an offer's handles fit one message");
 
 #endif /* STLXWIN_PROTO_H */
