@@ -731,7 +731,8 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         const stlxconf_shortcut_t& sc = m_conf->shortcuts[i];
         stlxconf_action_kind_t kind = stlxconf_action_kind(sc.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && sc.path[0];
-        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_QUICK_ACTIONS;
+        bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_QUICK_ACTIONS ||
+                               kind == STLXCONF_ACTION_PASTE;
         if (!runs_program && !runs_own_action) {
             continue;
         }
@@ -1798,7 +1799,24 @@ void server::run_shortcut(const dm_hotkey& hotkey) {
         m_panels->close_popover();
     }
 
+    if (hotkey.kind == STLXCONF_ACTION_PASTE) {
+        paste_into_focus();
+        return;
+    }
+
     spawn_app(hotkey.path, hotkey.args);
+}
+
+/* The focused window pastes the clipboard as its own paste key would, whatever key that is */
+void server::paste_into_focus() {
+    if (!m_focus) {
+        return;
+    }
+
+    swp_event_rec rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.kind = SWP_EV_PASTE;
+    send_event(m_focus, rec);
 }
 
 /* The overlay owns every input while open, so a popover beneath it closes first */
