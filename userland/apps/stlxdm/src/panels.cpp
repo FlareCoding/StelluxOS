@@ -229,7 +229,37 @@ int dm_panels::init(
         return on_exec && on_exec(program, args);
     };
 
+    m_quick->on_clipboard_paste = [this](uint64_t id) {
+        m_popover.close();
+        if (on_clipboard_paste) {
+            on_clipboard_paste(id);
+        }
+    };
+
+    m_quick->on_clipboard_copy = [this](uint64_t id) {
+        m_popover.close();
+        if (on_clipboard_copy) {
+            on_clipboard_copy(id);
+        }
+    };
+
     return 0;
+}
+
+void dm_panels::toggle_quick_actions() {
+    m_quick->open_in_clipboard(false);
+    toggle_popover(*m_quick);
+}
+
+void dm_panels::toggle_clipboard() {
+    if (m_popover.panel() != m_quick.get()) {
+        m_quick->open_in_clipboard(true);
+        m_popover.open(*m_quick, m_frost);
+    } else if (m_quick->shows_clipboard()) {
+        m_popover.close();
+    } else {
+        m_quick->show_clipboard();
+    }
 }
 
 /* The views keep their rows and only follow the pixels, so a rebind cannot fail */
@@ -558,19 +588,17 @@ void dm_panels::clock_tick() {
     }
 }
 
+/* Clipboard mode names the same app as where Enter pastes */
 void dm_panels::show_focused_app(const char* app_id) {
-    if (!app_id || !app_id[0]) {
-        m_bar.show_app_name("");
-        return;
-    }
-
-    for (uint32_t i = 0; i < m_conf->pin_count; i++) {
+    std::string label = app_id ? app_id : "";
+    for (uint32_t i = 0; app_id && i < m_conf->pin_count; i++) {
         const stlxconf_pin_t& pin = m_conf->pins[i];
         if (launches_app(pin, app_id) && pin.label[0]) {
-            m_bar.show_app_name(pin.label);
-            return;
+            label = pin.label;
+            break;
         }
     }
 
-    m_bar.show_app_name(app_id);
+    m_bar.show_app_name(label);
+    m_quick->show_focused_app(label);
 }

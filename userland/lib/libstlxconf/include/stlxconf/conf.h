@@ -65,6 +65,7 @@ typedef enum {
     STLXCONF_ACTION_POWER,
     STLXCONF_ACTION_QUICK_ACTIONS,
     STLXCONF_ACTION_PASTE,
+    STLXCONF_ACTION_CLIPBOARD,
 } stlxconf_action_kind_t;
 
 /* One pinned launcher in the dock, order preserved from the file, args space

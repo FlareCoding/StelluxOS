@@ -1,6 +1,7 @@
 #include "quick_actions.hpp"
 
 #include "chord.hpp"
+#include "clipboard_pane.hpp"
 #include "dock.hpp"
 #include "draw.hpp"
 #include "keycap.hpp"
@@ -134,12 +135,14 @@ constexpr const char* KIND_HEADS[] = { "APPS", "ACTIONS", "PROGRAMS", "FILES", "
 constexpr const char* KIND_NAMES[] = { "Application", "Action", "Program", "File", "Calculation", "", "" };
 constexpr const char* KIND_VERBS[] = { "Open", "Run", "Run in Terminal", "Open", "Copy", "Show Files Only", "Choose" };
 
-/* What the chips narrow the rows to, each on its Ctrl digit, which again shows every kind */
-enum class narrow_mode : uint8_t { all, apps, files, actions };
+/* What the chips narrow the rows to, each on its Ctrl digit, which again shows every kind, and the last opens
+ * Clipboard mode */
+enum class narrow_mode : uint8_t { all, apps, files, actions, clipboard };
 
-constexpr size_t CHIP_COUNT = 3;
-constexpr narrow_mode CHIP_MODES[CHIP_COUNT] = { narrow_mode::apps, narrow_mode::files, narrow_mode::actions };
-constexpr const char* CHIP_NAMES[CHIP_COUNT] = { "Apps", "Files", "Actions" };
+constexpr size_t CHIP_COUNT = 4;
+constexpr narrow_mode CHIP_MODES[CHIP_COUNT] = { narrow_mode::apps, narrow_mode::files, narrow_mode::actions,
+                                                 narrow_mode::clipboard };
+constexpr const char* CHIP_NAMES[CHIP_COUNT] = { "Apps", "Files", "Actions", "Clipboard" };
 
 /* A square of the apps glyph, its corners cut */
 std::vector<glyph_point> glyph_square(float left, float top) {
@@ -151,7 +154,8 @@ std::vector<glyph_point> glyph_square(float left, float top) {
              { left, top + SIDE - CUT }, { left, top + CUT } };
 }
 
-/* The chips' glyphs on the 16 unit grid of the mocks: four squares, a page with two lines cut out, and a bolt */
+/* The chips' glyphs on the 16 unit grid of the mocks: four squares, a page with two lines cut out, a bolt, and a
+ * board with its clip and two lines */
 std::vector<std::vector<glyph_point>> chip_contours(narrow_mode mode) {
     switch (mode) {
     case narrow_mode::apps:
@@ -164,6 +168,12 @@ std::vector<std::vector<glyph_point>> chip_contours(narrow_mode mode) {
                  { { 5, 11 }, { 9.5f, 11 }, { 9.5f, 12.5f }, { 5, 12.5f } } };
     case narrow_mode::actions:
         return { { { 9.6f, 1 }, { 3, 9.2f }, { 7.3f, 9.2f }, { 6.4f, 15 }, { 13, 6.8f }, { 8.7f, 6.8f } } };
+    case narrow_mode::clipboard:
+        return { { { 2.5f, 2.5f }, { 5.5f, 2.5f }, { 5.5f, 1 }, { 10.5f, 1 }, { 10.5f, 2.5f }, { 13.5f, 2.5f },
+                   { 13.5f, 15 }, { 2.5f, 15 } },
+                 { { 4, 4.5f }, { 12, 4.5f }, { 12, 13.5f }, { 4, 13.5f } },
+                 { { 5.5f, 7 }, { 10.5f, 7 }, { 10.5f, 8.5f }, { 5.5f, 8.5f } },
+                 { { 5.5f, 10 }, { 9, 10 }, { 9, 11.5f }, { 5.5f, 11.5f } } };
     case narrow_mode::all:
         break;
     }
@@ -287,6 +297,13 @@ public:
         }
     }
 
+    void show_placeholder(std::string text) {
+        if (text != m_placeholder) {
+            m_placeholder = std::move(text);
+            invalidate();
+        }
+    }
+
     ui::size measure(ui::size avail) override {
         return { avail.w, FIELD_HEIGHT };
     }
@@ -305,6 +322,7 @@ private:
     std::string                                m_text;
     size_t                                     m_cursor = 0;
     narrow_mode                                m_mode = narrow_mode::all;
+    std::string                                m_placeholder = std::string(PLACEHOLDER);
 };
 
 query_field::query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs)
@@ -362,7 +380,7 @@ void query_field::paint(ui::painter& p) {
     }
 
     bool is_empty = m_text.empty();
-    std::string_view shown = is_empty ? PLACEHOLDER : std::string_view(m_text);
+    std::string_view shown = is_empty ? std::string_view(m_placeholder) : std::string_view(m_text);
     ui::size line = p.measure_text(shown, QUERY_SIZE);
     int32_t top = (m_frame.h - line.h) / 2;
     ui::size before_caret = p.measure_text(std::string_view(m_text).substr(0, m_cursor), QUERY_SIZE);
@@ -778,6 +796,16 @@ public:
     /* Shows File Manager with a configuration file selected. Must be set before the first key. */
     std::function<void(const std::string& path)> reveal;
 
+    /* What Clipboard mode shows and does. Must be set before the first key. */
+    clipboard_source clipboard;
+
+    /* Switches to Clipboard mode, which Esc then closes along with the palette when the palette opened there */
+    void show_clipboard(bool is_home);
+    bool shows_clipboard() const { return m_mode == narrow_mode::clipboard; }
+
+    /* Shows the clipboard history again after it changed */
+    void refresh_clipboard();
+
     /* Shows the rows the query matches, first once the callbacks are set, then after each change */
     void show_rows();
 
@@ -792,6 +820,10 @@ public:
     bool on_key_down(const ui::key_event& e) override;
 
 private:
+    bool edit_key(const ui::key_event& e);
+    bool on_clipboard_key(const ui::key_event& e);
+    void enter_clipboard();
+    void leave_clipboard();
     void edit(std::string query, size_t cursor);
     void move_caret(size_t cursor);
     void open_menu();
@@ -868,8 +900,13 @@ private:
     size_t                     m_files_shown = 0;
 
     query_field*    m_field;
+    ui::box*        m_body;
     result_list*    m_list;
     palette_footer* m_footer;
+
+    /* Clipboard mode's body while it shows, in place of the list, and whether the palette opened in it */
+    clipboard_pane* m_clipboard_pane = nullptr;
+    bool            m_is_clipboard_home = false;
 
     /* The shown rows in order, their entries, and the content row from which revealing each shows it, its section's
      * head included when it is the section's first row */
@@ -884,16 +921,16 @@ private:
 palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
                            const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note)
     : ui::box(ui::axis::column), m_entries(std::move(entries)), m_no_match_note(std::move(no_match_note)) {
-    ui::box* body = add<ui::box>(ui::axis::column);
-    body->s().padding = ui::edge_insets::all(PALETTE_PADDING);
-    body->s().gap = LIST_GAP;
+    m_body = add<ui::box>(ui::axis::column);
+    m_body->s().padding = ui::edge_insets::all(PALETTE_PADDING);
+    m_body->s().gap = LIST_GAP;
 
-    m_field = body->add<query_field>(glyph, chip_glyphs);
+    m_field = m_body->add<query_field>(glyph, chip_glyphs);
     m_field->on_chip = [this](narrow_mode mode) {
         narrow(mode);
     };
 
-    m_list = body->add<result_list>();
+    m_list = m_body->add<result_list>();
     m_list->s().main = ui::length::fixed(LIST_HEIGHT);
     m_footer = add<palette_footer>();
 }
@@ -901,7 +938,10 @@ palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_sur
 /* Esc backs out one level, Ctrl K's list, then a narrowed list, then the palette, and Backspace in an empty field
  * backs out of narrowing too. Typing leaves Ctrl K's list for the rows. */
 bool palette_view::on_key_down(const ui::key_event& e) {
-    bool is_command = (e.modifiers & COMMAND_MODS) != 0;
+    if (m_mode == narrow_mode::clipboard) {
+        return on_clipboard_key(e);
+    }
+
     bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
     if (is_ctrl && e.usage == HID_USAGE_K) {
         if (m_is_menu_open) {
@@ -967,6 +1007,20 @@ bool palette_view::on_key_down(const ui::key_event& e) {
     case HID_USAGE_PAGE_DOWN:
         move_selection(PAGE_ROWS);
         return true;
+    case HID_USAGE_ENTER:
+        choose(m_selected);
+        return true;
+    case HID_USAGE_TAB:
+        complete();
+        return true;
+    default:
+        return edit_key(e);
+    }
+}
+
+/* The keys that edit the query and move its caret, and typing */
+bool palette_view::edit_key(const ui::key_event& e) {
+    switch (e.usage) {
     case HID_USAGE_LEFT:
         move_caret(m_caret > 0 ? m_caret - 1 : 0);
         return true;
@@ -978,12 +1032,6 @@ bool palette_view::on_key_down(const ui::key_event& e) {
         return true;
     case HID_USAGE_END:
         move_caret(m_query.size());
-        return true;
-    case HID_USAGE_ENTER:
-        choose(m_selected);
-        return true;
-    case HID_USAGE_TAB:
-        complete();
         return true;
     case HID_USAGE_DELETE:
         if (m_caret < m_query.size()) {
@@ -1003,7 +1051,7 @@ bool palette_view::on_key_down(const ui::key_event& e) {
         break;
     }
 
-    bool is_typed = !is_command && e.ch >= ' ' && e.ch < 0x7F;
+    bool is_typed = (e.modifiers & COMMAND_MODS) == 0 && e.ch >= ' ' && e.ch < 0x7F;
     if (!is_typed) {
         return false;
     }
@@ -1015,11 +1063,84 @@ bool palette_view::on_key_down(const ui::key_event& e) {
     return true;
 }
 
+/* Clipboard mode's keys go to the pane first, then to the chips and Esc, then to the query. Esc closes a palette
+ * that opened in Clipboard mode, and otherwise goes back to every kind. */
+bool palette_view::on_clipboard_key(const ui::key_event& e) {
+    bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
+    bool is_chip_key = is_ctrl && e.usage >= HID_USAGE_1 && e.usage < HID_USAGE_1 + CHIP_COUNT;
+    if (is_chip_key) {
+        narrow(CHIP_MODES[e.usage - HID_USAGE_1]);
+        return true;
+    }
+
+    if (e.usage == HID_USAGE_ESCAPE && m_is_clipboard_home) {
+        return false;
+    }
+
+    bool backs_out = e.usage == HID_USAGE_ESCAPE || (e.usage == HID_USAGE_BACKSPACE && m_query.empty());
+    if (backs_out) {
+        narrow(narrow_mode::all);
+        return true;
+    }
+
+    if (m_clipboard_pane->on_key(e)) {
+        update_footer();
+        return true;
+    }
+
+    return edit_key(e);
+}
+
+void palette_view::show_clipboard(bool is_home) {
+    if (m_mode != narrow_mode::clipboard) {
+        narrow(narrow_mode::clipboard);
+    }
+
+    m_is_clipboard_home = is_home;
+}
+
+void palette_view::refresh_clipboard() {
+    if (m_clipboard_pane) {
+        m_clipboard_pane->refresh();
+        m_field->show_placeholder(m_clipboard_pane->placeholder());
+        update_footer();
+    }
+}
+
+/* Clipboard mode's pane takes the list's place under the field */
+void palette_view::enter_clipboard() {
+    m_is_menu_open = false;
+    m_rows.clear();
+    m_row_entries.clear();
+    m_row_reveal_tops.clear();
+    m_files_head = nullptr;
+
+    m_body->remove(m_list);
+    m_list = nullptr;
+    m_clipboard_pane = m_body->add<clipboard_pane>(clipboard);
+    m_clipboard_pane->s().main = ui::length::fixed(LIST_HEIGHT);
+    m_field->show_placeholder(m_clipboard_pane->placeholder());
+}
+
+void palette_view::leave_clipboard() {
+    m_body->remove(m_clipboard_pane);
+    m_clipboard_pane = nullptr;
+    m_is_clipboard_home = false;
+
+    m_list = m_body->add<result_list>();
+    m_list->s().main = ui::length::fixed(LIST_HEIGHT);
+    m_field->show_placeholder(std::string(PLACEHOLDER));
+}
+
 void palette_view::edit(std::string query, size_t cursor) {
     m_query = std::move(query);
     m_caret = cursor;
     m_failure = {};
     m_field->show(m_query, m_caret);
+    if (m_mode == narrow_mode::clipboard) {
+        show_rows();
+        return;
+    }
 
     std::string_view searched = trimmed(m_query);
     typed_path path = parse_path(searched);
@@ -1118,6 +1239,11 @@ void palette_view::erase_word() {
 /* Typing ranks every row by how well it matches, then by kind, then by this session's picks, and the best heads the
  * list as the top hit */
 void palette_view::show_rows() {
+    if (m_mode == narrow_mode::clipboard) {
+        update_footer();
+        return;
+    }
+
     m_list->clear();
     m_rows.clear();
     m_row_entries.clear();
@@ -1214,7 +1340,14 @@ void palette_view::show_menu() {
 
 /* A chip's key or click narrows the rows to its kind, and again, or narrowing to all, shows every kind */
 void palette_view::narrow(narrow_mode mode) {
-    m_mode = mode == m_mode ? narrow_mode::all : mode;
+    narrow_mode next = mode == m_mode ? narrow_mode::all : mode;
+    if (next == narrow_mode::clipboard && m_mode != narrow_mode::clipboard) {
+        enter_clipboard();
+    } else if (next != narrow_mode::clipboard && m_mode == narrow_mode::clipboard) {
+        leave_clipboard();
+    }
+
+    m_mode = next;
     m_field->show_mode(m_mode);
     show_rows();
 }
@@ -1227,6 +1360,8 @@ bool palette_view::is_shown_kind(row_kind kind) const {
         return kind == row_kind::file;
     case narrow_mode::actions:
         return kind == row_kind::action;
+    case narrow_mode::clipboard:
+        return false;
     case narrow_mode::all:
         break;
     }
@@ -1504,6 +1639,11 @@ bool palette_view::go_up() {
 /* Enter's action for the selected row, and for a typed path how to complete a name and go up. The right side names
  * the chips' keys, or Esc while they narrow the rows. */
 void palette_view::update_footer() {
+    if (m_clipboard_pane) {
+        m_footer->show(m_clipboard_pane->footer_actions(), { { m_clipboard_pane->footer_end(), "" } });
+        return;
+    }
+
     if (m_is_menu_open) {
         m_footer->show({ { "Choose", "Enter" } }, { { "Back", "Esc" } });
         return;
@@ -1544,7 +1684,7 @@ void palette_view::update_footer() {
         end.push_back({ "All kinds", "Esc" });
     } else if (!is_path) {
         end.push_back({ "Narrow", "Ctrl 1" });
-        end.push_back({ "to", "Ctrl 3" });
+        end.push_back({ "to", "Ctrl 4" });
     }
 
     m_footer->show(items, end);
@@ -2022,6 +2162,9 @@ void quick_actions::remember_file(const found_file& file) {
 void quick_actions::closed() {
     m_show_files = nullptr;
     m_show_failure = nullptr;
+    m_shows_clipboard = nullptr;
+    m_show_clipboard = nullptr;
+    m_refresh_clipboard = nullptr;
 }
 
 void quick_actions::pump_files() {
@@ -2336,8 +2479,48 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         return entry.kind == row_kind::file ? file_note(entry.file) : std::string();
     };
 
+    view->clipboard = { m_history, &m_conf, &m_launcher_icons, m_text_icon, m_focused_app, m_history_since,
+                        [this](uint64_t id) { on_clipboard_paste(id); },
+                        [this](uint64_t id) { on_clipboard_copy(id); } };
+    m_shows_clipboard = [shown]() {
+        return shown->shows_clipboard();
+    };
+
+    m_show_clipboard = [shown]() {
+        shown->show_clipboard(false);
+    };
+
+    m_refresh_clipboard = [shown]() {
+        shown->refresh_clipboard();
+    };
+
     view->show_rows();
+    if (m_opens_clipboard) {
+        view->show_clipboard(true);
+    }
+
     return view;
+}
+
+void quick_actions::use_clipboard(const clipboard_history* history, std::string since) {
+    m_history = history;
+    m_history_since = std::move(since);
+}
+
+bool quick_actions::shows_clipboard() const {
+    return m_shows_clipboard && m_shows_clipboard();
+}
+
+void quick_actions::show_clipboard() {
+    if (m_show_clipboard) {
+        m_show_clipboard();
+    }
+}
+
+void quick_actions::clipboard_changed() {
+    if (m_refresh_clipboard) {
+        m_refresh_clipboard();
+    }
 }
 
 /* Why a file opens where Enter opens it: the handler of its own type, of the nearest type it derives from, or none */

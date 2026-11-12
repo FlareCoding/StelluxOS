@@ -1,6 +1,7 @@
 #ifndef STLXDM_SHELL_QUICK_ACTIONS_HPP
 #define STLXDM_SHELL_QUICK_ACTIONS_HPP
 
+#include "../clipboard.hpp"
 #include "file_index.hpp"
 #include "popover.hpp"
 
@@ -22,8 +23,8 @@ struct row_action {
     std::function<void()> run;
 };
 
-/* The palette Super Space opens over the windows: a field that ranks launchers, actions, programs no launcher names
- * and the files the index found by what is typed, and works out arithmetic, where Enter starts a row */
+/* The palette Super Space opens over the windows, ranking launchers, actions, programs and files by what is typed and
+ * working out arithmetic, and Super V opens in Clipboard mode over the clipboard history */
 class quick_actions : public popover_panel {
 public:
     /* Lists the launchers and actions of `conf`, the launchers with `launcher_icons`, one per launcher and null
@@ -45,8 +46,26 @@ public:
     /* Fired by a chosen file or folder: a program to run with exactly these args, its handler or File Manager */
     std::function<bool(const char* program, const std::vector<std::string>& args)> on_exec;
 
+    /* Fired by a chosen clipboard entry: one to paste into the focused window, or one to make current */
+    std::function<void(uint64_t id)> on_clipboard_paste;
+    std::function<void(uint64_t id)> on_clipboard_copy;
+
     /* Ticks the rows of the launchers whose bit is set in `running`, from the next opening on */
     void show_running(uint64_t running) { m_running = running; }
+
+    /* The history Clipboard mode lists, which must outlive the palette, and when it began, such as 09:58 */
+    void use_clipboard(const clipboard_history* history, std::string since);
+
+    /* The label of the app a paste lands in, empty with no window focused */
+    void show_focused_app(std::string label) { m_focused_app = std::move(label); }
+
+    /* Opens the palette in Clipboard mode from the next opening on, or in Quick Actions */
+    void open_in_clipboard(bool is_clipboard) { m_opens_clipboard = is_clipboard; }
+
+    /* Whether the open palette shows Clipboard mode, switching it there, and showing the history again */
+    bool shows_clipboard() const;
+    void show_clipboard();
+    void clipboard_changed();
 
     /* Readable while the file index has an answer or news of its walk */
     int files_fd() const { return m_files.wake_fd(); }
@@ -95,6 +114,16 @@ private:
     std::function<void(const file_answer* answer, const walk_state& walk)> m_show_files;
     std::function<void(const std::string& message, const std::string& source_path, const std::string& gone_path)>
         m_show_failure;
+
+    /* The history Clipboard mode lists, when it began, where a paste lands, and the open palette's hooks into
+     * Clipboard mode, unset while it is closed */
+    const clipboard_history* m_history = nullptr;
+    std::string              m_history_since;
+    std::string              m_focused_app;
+    bool                     m_opens_clipboard = false;
+    std::function<bool()>    m_shows_clipboard;
+    std::function<void()>    m_show_clipboard;
+    std::function<void()>    m_refresh_clipboard;
 
     /* Each chip's glyph at rest, then each chip's when chosen */
     std::vector<stlxgfx_surface_t*> m_chip_glyphs;

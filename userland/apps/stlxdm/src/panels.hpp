@@ -68,6 +68,10 @@ public:
     /* Fired by a file Quick Actions opens: a program to run with exactly these args, true when it started */
     std::function<bool(const char* program, const std::vector<std::string>& args)> on_exec;
 
+    /* Fired by a clipboard entry Clipboard mode chose: one to paste into the focused window, or one to make current */
+    std::function<void(uint64_t id)> on_clipboard_paste;
+    std::function<void(uint64_t id)> on_clipboard_copy;
+
     bool dirty() const {
         return m_host.dirty() || m_dock_host.dirty() || m_popover.dirty();
     }
@@ -113,7 +117,17 @@ public:
     void close_popover_now() { m_popover.close_now(); }
 
     /* Opens Quick Actions in place of any popover, or closes it when it is open */
-    void toggle_quick_actions() { toggle_popover(*m_quick); }
+    void toggle_quick_actions();
+
+    /* Opens the palette in Clipboard mode, switches the open palette to it, or closes the palette showing it */
+    void toggle_clipboard();
+
+    /* The history Clipboard mode lists, which must outlive the panels, when it began, and its changes */
+    void use_clipboard(const clipboard_history* history, std::string since) {
+        m_quick->use_clipboard(history, std::move(since));
+    }
+
+    void clipboard_changed() { m_quick->clipboard_changed(); }
 
     /* Readable while Quick Actions' file index has news, which `pump_quick_files()` takes */
     int quick_files_fd() const { return m_quick ? m_quick->files_fd() : -1; }
