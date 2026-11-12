@@ -1,5 +1,6 @@
 #include "server.hpp"
 #include "material.hpp"
+#include "offer_intake.hpp"
 
 #include "shell/chord.hpp"
 
@@ -52,6 +53,11 @@ static int64_t monotonic_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<int64_t>(ts.tv_sec) * 1000000000ll + ts.tv_nsec;
+}
+
+/* A client's received handles as offers take them */
+static handle_queue handles_of(dm_client& c) {
+    return { c.queued_handles, dm_client::QUEUED_HANDLES_MAX, &c.queued_handle_count };
 }
 
 /* Spawns a detached app. args is an optional space-separated argument
@@ -148,51 +154,6 @@ static bool is_gpu_failed(int gpu_fd) {
     }
 
     return errno == EIO;
-}
-
-/* Queues the handles of a read's one SCM_RIGHTS message, closing any
- * past the queue's room. Returns false when some were dropped. */
-static bool queue_received_handles(dm_client& c, const msghdr& msg) {
-    bool kept_all = (msg.msg_flags & MSG_CTRUNC) == 0;
-
-    const cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
-        cmsg->cmsg_len < CMSG_LEN(0)) {
-        return kept_all;
-    }
-
-    size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-    for (size_t i = 0; i < count; i++) {
-        int handle;
-        memcpy(&handle, CMSG_DATA(cmsg) + i * sizeof(int), sizeof(handle));
-        if (c.queued_handle_count == dm_client::QUEUED_HANDLES_MAX) {
-            close(handle);
-            kept_all = false;
-            continue;
-        }
-
-        c.queued_handles[c.queued_handle_count++] = handle;
-    }
-
-    return kept_all;
-}
-
-/* Whether the unhandled bytes may begin the message that queued
- * handles wait for. A lone byte, short of a type, may. */
-static bool may_begin_handle_message(const dm_client& c) {
-    if (c.rd_have == 0) {
-        return false;
-    }
-
-    if (c.rd_have < sizeof(uint16_t)) {
-        return true;
-    }
-
-    uint16_t type;
-    memcpy(&type, c.rd_buf, sizeof(type));
-
-    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET || type == SWP_MSG_CLIPBOARD_OFFER ||
-           type == SWP_MSG_START_DRAG;
 }
 
 /* The configured wallpaper decoded, or null when there is none or it
@@ -1623,7 +1584,7 @@ void server::pump_client(dm_client& c) {
             return;
         }
 
-        if (!queue_received_handles(c, msg)) {
+        if (!queue_received_handles(handles_of(c), msg)) {
             c.dead = true;
             return;
         }
@@ -1657,7 +1618,7 @@ void server::pump_client(dm_client& c) {
 
         /* Handles sent with a message that takes none, or more than a
          * message takes, are left over here */
-        if (c.queued_handle_count > 0 && !may_begin_handle_message(c)) {
+        if (c.queued_handle_count > 0 && !may_begin_handle_message(c.rd_buf, c.rd_have)) {
             c.dead = true;
             return;
         }
@@ -2136,28 +2097,40 @@ std::string server::client_label(const dm_client& c) const {
     return c.app_id;
 }
 
-/* Takes the oldest queued handles in order, one per representation with
- * bytes, and a client that sent too few ends */
-bool server::take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps) {
-    uint32_t needed = 0;
-    for (const clipboard_rep& rep : reps) {
-        needed += rep.len > 0 ? 1 : 0;
+/* A shared memory object holding `len` bytes of `data`, or -1 with errno set */
+static int make_shared_object(const void* data, size_t len) {
+    int object = memfd_create("stlxdm-clipboard", MFD_CLOEXEC);
+    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(len)) == 0;
+    void* shared = is_sized ? mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
+    if (shared == MAP_FAILED) {
+        int error = errno;
+        if (object >= 0) {
+            close(object);
+        }
+
+        errno = error;
+        return -1;
     }
 
-    if (c.queued_handle_count < needed) {
+    memcpy(shared, data, len);
+    munmap(shared, len);
+
+    return object;
+}
+
+/* Takes an offer's objects and checks them as they arrive, ending a client whose objects do not hold up, and copies a
+ * small clipboard item into objects of stlxdm's own */
+bool server::take_offer(dm_client& c, std::vector<clipboard_rep>& reps, bool owns_small) {
+    intake_error error = take_offer_objects(reps, handles_of(c));
+    if (error != intake_error::none) {
+        printf("stlxdm: ending %s, whose offered objects %s\r\n", c.app_id, intake_error_text(error));
         c.dead = true;
         return false;
     }
 
-    uint32_t taken = 0;
-    for (clipboard_rep& rep : reps) {
-        if (rep.len > 0) {
-            rep.object = c.queued_handles[taken++];
-        }
+    if (owns_small) {
+        own_small_item(reps, make_shared_object);
     }
-
-    c.queued_handle_count -= taken;
-    memmove(c.queued_handles, c.queued_handles + taken, c.queued_handle_count * sizeof(int));
 
     return true;
 }
@@ -2172,7 +2145,7 @@ void server::set_clipboard(dm_client& c, const uint8_t* payload) {
         reps.push_back({ SWP_MIME_TEXT, m.len, -1 });
     }
 
-    if (take_queued_handles(c, reps)) {
+    if (take_offer(c, reps, true)) {
         replace_clipboard(clipboard_item(std::move(reps), 0), client_label(c));
     }
 }
@@ -2188,7 +2161,7 @@ void server::offer_clipboard(dm_client& c, const uint8_t* payload) {
         return;
     }
 
-    if (take_queued_handles(c, reps)) {
+    if (take_offer(c, reps, true)) {
         replace_clipboard(clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE), client_label(c));
     }
 }
@@ -2209,27 +2182,6 @@ void server::ask_clipboard(dm_client& c, const swp_header& hdr, const uint8_t* p
 
     c.clipboard_asks.push_back(std::move(mime_type));
     send_clipboard_answers(c);
-}
-
-/* A shared memory object holding `len` bytes of `data`, or -1 with errno set */
-static int make_shared_object(const void* data, size_t len) {
-    int object = memfd_create("stlxdm-clipboard", MFD_CLOEXEC);
-    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(len)) == 0;
-    void* shared = is_sized ? mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
-    if (shared == MAP_FAILED) {
-        int error = errno;
-        if (object >= 0) {
-            close(object);
-        }
-
-        errno = error;
-        return -1;
-    }
-
-    memcpy(shared, data, len);
-    munmap(shared, len);
-
-    return object;
 }
 
 /* Makes `text` the clipboard, as a client's CLIPBOARD_SET does, keeping the old clipboard when memory runs out */
@@ -2307,10 +2259,10 @@ int server::read_only_copy(int object) {
     return object >= 0 ? stlx_handle_restrict(object, STLX_RIGHT_READ) : -1;
 }
 
-/* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q */
+/* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, and nothing for an object its source has shrunk since */
 bool server::send_clipboard_answer(dm_client& c) {
     const clipboard_rep* found = m_history.current().find(c.clipboard_asks.front());
-    int object = found ? read_only_copy(found->object) : -1;
+    int object = found && holds_length(*found) ? read_only_copy(found->object) : -1;
     swp_clipboard_data m = { object >= 0 ? found->len : 0 };
 
     bool is_sent = send_with_handle(c, SWP_MSG_CLIPBOARD_DATA, &m, sizeof(m), object);

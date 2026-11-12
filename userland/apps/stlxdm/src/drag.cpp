@@ -57,19 +57,6 @@ static int take_queued_handle(dm_client& c) {
     return handle;
 }
 
-/* Whether each representation's object holds the bytes its length promises */
-static bool holds_lengths(const clipboard_item& item) {
-    for (const clipboard_rep& rep : item.reps()) {
-        struct stat st;
-        bool is_short = rep.object >= 0 && (fstat(rep.object, &st) != 0 || static_cast<uint64_t>(st.st_size) < rep.len);
-        if (is_short) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 /* Copies a START_DRAG's picture out of its object, which must hold every row, its hotspot kept inside it */
 static bool copy_drag_picture(int object, const swp_start_drag& m, dnd_session& session) {
     size_t count = static_cast<size_t>(m.picture_w) * m.picture_h;
@@ -117,7 +104,7 @@ void server::handle_start_drag(dm_client& c, const uint8_t* payload) {
         }
     }
 
-    if (!take_queued_handles(c, reps)) {
+    if (!take_offer(c, reps, false)) {
         if (picture >= 0) {
             close(picture);
         }
@@ -132,7 +119,7 @@ void server::handle_start_drag(dm_client& c, const uint8_t* payload) {
         close(picture);
     }
 
-    if (!has_picture || !holds_lengths(session->item)) {
+    if (!has_picture) {
         c.dead = true;
         return;
     }

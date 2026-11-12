@@ -45,6 +45,15 @@ uint64_t clipboard_item::size() const {
     return total;
 }
 
+uint64_t clipboard_item::held() const {
+    uint64_t total = 0;
+    for (const clipboard_rep& rep : m_reps) {
+        total += std::max(rep.len, rep.held);
+    }
+
+    return total;
+}
+
 const clipboard_rep* clipboard_item::find(std::string_view mime_type) const {
     for (const clipboard_rep& rep : m_reps) {
         if (rep.mime_type == mime_type) {
@@ -199,7 +208,7 @@ bool clipboard_history::can_pin(uint64_t id) const {
         return true;
     }
 
-    uint64_t size = m_entries[i].item.size();
+    uint64_t size = m_entries[i].item.held();
     bool fits_count = pinned_count() + 1 <= m_item_limit;
     bool fits_bytes = size <= m_byte_limit && pinned_bytes() <= m_byte_limit - size;
     return fits_count && fits_bytes;
@@ -260,7 +269,7 @@ size_t clipboard_history::kept_count() const {
 uint64_t clipboard_history::kept_bytes() const {
     uint64_t total = 0;
     for (size_t i = m_front_is_current ? 1 : 0; i < m_entries.size(); i++) {
-        total += m_entries[i].pinned ? 0 : m_entries[i].item.size();
+        total += m_entries[i].pinned ? 0 : m_entries[i].item.held();
     }
 
     return total;
@@ -275,7 +284,7 @@ size_t clipboard_history::pinned_count() const {
 uint64_t clipboard_history::pinned_bytes() const {
     uint64_t total = 0;
     for (const clipboard_entry& entry : m_entries) {
-        total += entry.pinned ? entry.item.size() : 0;
+        total += entry.pinned ? entry.item.held() : 0;
     }
 
     return total;
@@ -289,7 +298,7 @@ void clipboard_history::retire_current() {
     }
 
     m_front_is_current = false;
-    if (m_entries.front().item.size() > m_byte_limit && !m_entries.front().pinned) {
+    if (m_entries.front().item.held() > m_byte_limit && !m_entries.front().pinned) {
         m_entries.erase(m_entries.begin());
     }
 }

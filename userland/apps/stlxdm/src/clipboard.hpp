@@ -14,6 +14,7 @@ struct clipboard_rep {
     std::string mime_type;
     uint64_t    len = 0;
     int         object = -1;
+    uint64_t    held = 0;  /* the bytes its object held when it arrived, 0 when only its length is known */
 };
 
 /* One copy, the same content in up to SWP_OFFER_TYPES_MAX MIME types, closing its objects when it goes */
@@ -37,6 +38,10 @@ public:
 
     /* The bytes its representations hold together */
     uint64_t size() const;
+
+    /* The bytes its objects hold together, which the budgets count, so a length shorter than its object counts the
+     * object */
+    uint64_t held() const;
 
 private:
     void close_objects();
