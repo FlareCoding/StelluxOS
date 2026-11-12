@@ -51,7 +51,7 @@ enum class gpu_import {
     REFUSED,    /* a GPU_BUFFER_IMPORT met another error, or a buffer the GPU compositor cannot read */
 };
 
-static dm_window* find_window(dm_client& c, uint32_t win_id) {
+dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
         if (w->win_id == win_id) {
             return w.get();

@@ -7,6 +7,7 @@
 #include "damage.hpp"
 #include "decor.hpp"
 #include "display.hpp"
+#include "dnd.hpp"
 #include "frame_stats.hpp"
 #include "gpu_compositor.hpp"
 #include "layout.hpp"
@@ -250,6 +251,13 @@ struct dm_dismissed_buffer {
     dm_buffer buffer;
 };
 
+/* A DROP_GET waiting for its answer, which decides what the asking window may read when it leaves */
+struct dm_drop_ask {
+    uint32_t    win_id = 0;
+    uint32_t    drag = 0;
+    std::string mime_type;
+};
+
 /* One connected application. Owns the socket, the partial-message
  * assembly buffer, and its windows. */
 struct dm_client {
@@ -262,8 +270,8 @@ struct dm_client {
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
     uint32_t rd_have = 0;
 
-    /* Handles received for ATTACH_GPU_BUFFER, CLIPBOARD_SET and CLIPBOARD_OFFER messages not yet handled, oldest first.
-     * One read reaches into at most two of them. */
+    /* Handles received for ATTACH_GPU_BUFFER, CLIPBOARD_SET, CLIPBOARD_OFFER and START_DRAG messages not yet handled,
+     * oldest first. One read reaches into at most two of them. */
     static constexpr uint32_t QUEUED_HANDLES_MAX = 2 * SWP_HANDLES_MAX;
     int      queued_handles[QUEUED_HANDLES_MAX] = {};
     uint32_t queued_handle_count = 0;
@@ -278,6 +286,9 @@ struct dm_client {
      * answers go out only once out_q is empty. */
     std::deque<std::string> clipboard_asks;
     bool watches_clipboard = false;  /* sent CLIPBOARD_WATCH, so it hears of every change */
+
+    /* The unanswered DROP_GETs, oldest first, which leave as clipboard answers do */
+    std::deque<dm_drop_ask> drop_asks;
 
     std::vector<std::unique_ptr<dm_window>> windows;
 
@@ -294,6 +305,9 @@ struct dm_client {
 
     explicit dm_client(int sock) : fd(sock) {}
 };
+
+/* The window `c` created as `win_id`, or null */
+dm_window* find_window(dm_client& c, uint32_t win_id);
 
 /* A client's SET_MODE or KEEP_MODE, kept until the main loop has read
  * the wakeup's messages, since a request waits for a relight */
@@ -508,6 +522,11 @@ public:
     int64_t mode_timeout_ns(uint64_t now) const;
     void mode_tick(uint64_t now);
 
+    /* The poll bound until a dropped drag's target must have finished it, -1 while no drop waits, and its tick, which
+     * counts a target past the bound as having done nothing */
+    int64_t drag_timeout_ns(uint64_t now) const;
+    void drag_tick(uint64_t now);
+
     /* Input routing entry points, fed by the input layer and, for the
      * pointer, by `adopt_layout()`. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
@@ -624,6 +643,34 @@ private:
     void copy_file(const std::string& path);
     bool send_clipboard_answer(dm_client& c);
     void send_clipboard_answers(dm_client& c);
+    bool send_with_handle(dm_client& c, uint16_t type, const void* payload, uint32_t length, int handle);
+    void send_window_message(dm_client& c, dm_window* w, uint16_t type, const void* payload, uint32_t length);
+
+    /* drag.cpp */
+    void handle_start_drag(dm_client& c, const uint8_t* payload);
+    void handle_cancel_drag(dm_client& c, const uint8_t* payload);
+    void handle_drop_status(dm_client& c, const uint8_t* payload);
+    void handle_drop_get(dm_client& c, const uint8_t* payload);
+    void handle_drop_finish(dm_client& c, const uint8_t* payload);
+    bool may_start_drag(const dm_window* w, uint32_t serial, uint32_t* out_button);
+    void start_drag(dm_client& c, dm_window* w, std::unique_ptr<dnd_session> session);
+    bool route_drag_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed, int16_t wheel);
+    bool route_drag_key(uint16_t usage, bool down, bool repeat);
+    dm_window* drag_target_at(int32_t x, int32_t y);
+    void update_drag_target();
+    void refresh_drag_action();
+    void scroll_under_drag(int32_t x, int32_t y, int16_t wheel);
+    void send_drop_enter(dm_window* w);
+    void send_drop_leave(dm_window* w);
+    void drop_drag();
+    void end_drag(uint32_t state, uint32_t action);
+    void resume_pointer(uint16_t buttons);
+    void flush_drag();
+    void forget_drag_window(const dm_window* w);
+    void forget_drag_client(const dm_client& c);
+    const clipboard_rep* drop_rep_for(dm_client& c, const dm_drop_ask& ask);
+    bool send_drop_answer(dm_client& c);
+    void send_drop_answers(dm_client& c);
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
@@ -632,6 +679,7 @@ private:
     void send_event(dm_window* w, const swp_event_rec& rec);
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
+    void dismiss_grab_popup();
 
     /* scene.cpp */
     void scene_map(dm_window* w);
@@ -853,6 +901,9 @@ private:
     /* One shared clipboard item, last writer wins, without representations
      * while empty */
     clipboard_item m_clipboard;
+
+    /* The running drag, null while none runs */
+    std::unique_ptr<dnd_session> m_dnd;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */
