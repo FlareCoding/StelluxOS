@@ -139,6 +139,10 @@ public:
     int quick_files_fd() const { return m_quick ? m_quick->files_fd() : -1; }
     void pump_quick_files() { m_quick->pump_files(); }
 
+    /* Readable while Clipboard mode's searcher has an answer, which `pump_quick_clipboard()` takes */
+    int quick_clipboard_fd() const { return m_quick ? m_quick->clipboard_fd() : -1; }
+    void pump_quick_clipboard() { m_quick->pump_clipboard(); }
+
     /* Whether a press at (`x`, `y`) closes the popover: one outside an open
      * or opening popover that is not pinned, and outside the bar's targets */
     bool dismisses_popover(int32_t x, int32_t y) const;

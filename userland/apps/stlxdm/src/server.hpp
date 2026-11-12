@@ -483,6 +483,10 @@ public:
     int quick_files_fd() const { return m_panels->quick_files_fd(); }
     void pump_quick_files() { m_panels->pump_quick_files(); }
 
+    /* Readable while Clipboard mode's searcher has an answer, which `pump_quick_clipboard()` hands to the palette */
+    int quick_clipboard_fd() const { return m_panels->quick_clipboard_fd(); }
+    void pump_quick_clipboard() { m_panels->pump_quick_clipboard(); }
+
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
      * handled. */

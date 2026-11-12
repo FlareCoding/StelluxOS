@@ -285,6 +285,12 @@ int main() {
             fds.push_back({ files_fd, POLLIN, 0 });
         }
 
+        size_t clipboard_slot = fds.size();
+        int clipboard_fd = srv.quick_clipboard_fd();
+        if (clipboard_fd >= 0) {
+            fds.push_back({ clipboard_fd, POLLIN, 0 });
+        }
+
         /* Key repeat, the clock, a trial, a drop's finish, a GPU commit's query, a retired compositor's next timeline
          * read and each output's compose and cursor move deadlines cap the wait */
         uint64_t now = now_ns();
@@ -351,6 +357,10 @@ int main() {
 
         if (files_fd >= 0 && (fds[files_slot].revents & POLLIN)) {
             srv.pump_quick_files();
+        }
+
+        if (clipboard_fd >= 0 && (fds[clipboard_slot].revents & POLLIN)) {
+            srv.pump_quick_clipboard();
         }
 
         srv.pump(fds);

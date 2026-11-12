@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 
 constexpr int32_t PALETTE_WIDTH = 800;
@@ -805,6 +806,9 @@ public:
     /* Shows the clipboard history again after it changed */
     void refresh_clipboard();
 
+    /* Lists the long texts the clipboard searcher found holding the query, while Clipboard mode shows */
+    void show_text_matches(const text_matches& matches);
+
     /* Shows the rows the query matches, first once the callbacks are set, then after each change */
     void show_rows();
 
@@ -1102,6 +1106,13 @@ void palette_view::refresh_clipboard() {
     if (m_clipboard_pane) {
         m_clipboard_pane->refresh();
         m_field->show_placeholder(m_clipboard_pane->placeholder());
+        update_footer();
+    }
+}
+
+void palette_view::show_text_matches(const text_matches& matches) {
+    if (m_clipboard_pane) {
+        m_clipboard_pane->show_text_matches(matches);
         update_footer();
     }
 }
@@ -2113,6 +2124,10 @@ quick_actions::quick_actions(const stlxconf_t& conf, const std::vector<stlxgfx_s
     if (!is_started) {
         printf("stlxdm: Quick Actions finds no files, since its file index could not start\r\n");
     }
+
+    if (!m_clipboard_search.start()) {
+        printf("stlxdm: Clipboard mode searches only each text's first 64 KB, since its searcher could not start\r\n");
+    }
 }
 
 quick_actions::~quick_actions() {
@@ -2173,6 +2188,7 @@ void quick_actions::closed() {
     m_shows_clipboard = nullptr;
     m_show_clipboard = nullptr;
     m_refresh_clipboard = nullptr;
+    m_show_text_matches = nullptr;
 }
 
 void quick_actions::pump_files() {
@@ -2182,6 +2198,29 @@ void quick_actions::pump_files() {
     if (m_show_files) {
         m_show_files(has_answer ? &answer : nullptr, walk);
     }
+}
+
+void quick_actions::pump_clipboard() {
+    text_matches matches;
+    if (m_clipboard_search.take(&matches) && m_show_text_matches) {
+        m_show_text_matches(matches);
+    }
+}
+
+/* The searcher reads each text through a duplicate of its object, so an entry removed meanwhile leaves the search its
+ * own reference */
+uint64_t quick_actions::search_texts(const std::string& query, const std::vector<uint64_t>& ids) {
+    std::vector<searched_text> texts;
+    for (uint64_t id : ids) {
+        const clipboard_entry* entry = m_history->find(id);
+        const clipboard_rep* text = entry ? entry->item.find(SWP_MIME_TEXT) : nullptr;
+        int object = text ? dup(text->object) : -1;
+        if (object >= 0) {
+            texts.emplace_back(id, object, text->len);
+        }
+    }
+
+    return m_clipboard_search.search(query, std::move(texts));
 }
 
 /* A folder opens in File Manager, and a file in the handler of its type or the nearest it derives from, else File
@@ -2493,7 +2532,10 @@ std::unique_ptr<ui::widget> quick_actions::build() {
                         [this](uint64_t id) { on_clipboard_copy(id); },
                         [this](uint64_t id, bool pinned) { on_clipboard_pin(id, pinned); },
                         [this](uint64_t id) { on_clipboard_remove(id); },
-                        [this]() { on_clipboard_clear(); } };
+                        [this]() { on_clipboard_clear(); },
+                        [this](const std::string& query, const std::vector<uint64_t>& ids) {
+                            return search_texts(query, ids);
+                        } };
     m_shows_clipboard = [shown]() {
         return shown->shows_clipboard();
     };
@@ -2504,6 +2546,10 @@ std::unique_ptr<ui::widget> quick_actions::build() {
 
     m_refresh_clipboard = [shown]() {
         shown->refresh_clipboard();
+    };
+
+    m_show_text_matches = [shown](const text_matches& matches) {
+        shown->show_text_matches(matches);
     };
 
     view->show_rows();

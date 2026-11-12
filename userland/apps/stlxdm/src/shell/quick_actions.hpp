@@ -3,6 +3,7 @@
 
 #include "../clipboard.hpp"
 #include "clipboard_pane.hpp"
+#include "clipboard_search.hpp"
 #include "file_index.hpp"
 #include "popover.hpp"
 
@@ -80,6 +81,10 @@ public:
     /* Hands the file index's newest answer and its walk to the open palette */
     void pump_files();
 
+    /* Readable while Clipboard mode's searcher has an answer, which `pump_clipboard()` hands to the open palette */
+    int clipboard_fd() const { return m_clipboard_search.wake_fd(); }
+    void pump_clipboard();
+
     int32_t width() const override;
     int32_t left(int32_t output_w) const override;
     int32_t top() const override;
@@ -103,6 +108,7 @@ private:
     bool is_startable(const char* verb, const std::string& label, const char* path, const char* owner,
                       const char* source_path);
     bool is_still_there(const found_file& file);
+    uint64_t search_texts(const std::string& query, const std::vector<uint64_t>& ids);
 
     const stlxconf_t&                      m_conf;
     const std::vector<stlxgfx_surface_t*>& m_launcher_icons;
@@ -122,16 +128,18 @@ private:
     std::function<void(const std::string& message, const std::string& source_path, const std::string& gone_path)>
         m_show_failure;
 
-    /* The history Clipboard mode lists, when it began, where a paste lands, and the open palette's hooks into
-     * Clipboard mode, unset while it is closed */
-    const clipboard_history* m_history = nullptr;
-    clipboard_thumbnails     m_thumbnails;
-    std::string              m_history_since;
-    std::string              m_focused_app;
-    bool                     m_opens_clipboard = false;
-    std::function<bool()>    m_shows_clipboard;
-    std::function<void()>    m_show_clipboard;
-    std::function<void()>    m_refresh_clipboard;
+    /* The history Clipboard mode lists, when it began, where a paste lands, its searcher of long texts, and the open
+     * palette's hooks into Clipboard mode, unset while it is closed */
+    const clipboard_history*                         m_history = nullptr;
+    clipboard_thumbnails                             m_thumbnails;
+    std::string                                      m_history_since;
+    std::string                                      m_focused_app;
+    bool                                             m_opens_clipboard = false;
+    clipboard_search                                 m_clipboard_search;
+    std::function<bool()>                            m_shows_clipboard;
+    std::function<void()>                            m_show_clipboard;
+    std::function<void()>                            m_refresh_clipboard;
+    std::function<void(const text_matches& matches)> m_show_text_matches;
 
     /* Each chip's glyph at rest, then each chip's when chosen */
     std::vector<stlxgfx_surface_t*> m_chip_glyphs;
