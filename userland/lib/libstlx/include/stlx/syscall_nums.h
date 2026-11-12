@@ -15,4 +15,6 @@
 #define SYS_FUTEX_WAKE          1031
 #define SYS_FUTEX_WAKE_ALL      1032
 
+#define SYS_HANDLE_RESTRICT     1040
+
 #endif /* STLX_SYSCALL_NUMS_H */

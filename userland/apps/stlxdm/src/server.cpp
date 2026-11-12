@@ -4,6 +4,7 @@
 #include "shell/chord.hpp"
 
 #include <stlx/gpu_abi.h>
+#include <stlx/handle.h>
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
 
@@ -2311,14 +2312,24 @@ bool server::send_with_handle(dm_client& c, uint16_t type, const void* payload, 
     return true;
 }
 
+/* A handle to `object` that its receiver can only read, so no reader can change what other readers get, or -1 when
+ * `object` is -1 or no handle can be made. The caller closes it once sent. */
+int server::read_only_copy(int object) {
+    return object >= 0 ? stlx_handle_restrict(object, STLX_RIGHT_READ) : -1;
+}
+
 /* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q */
 bool server::send_clipboard_answer(dm_client& c) {
     const clipboard_rep* found = m_history.current().find(c.clipboard_asks.front());
-    const clipboard_rep* rep = found && found->object >= 0 ? found : nullptr;
+    int object = found ? read_only_copy(found->object) : -1;
+    swp_clipboard_data m = { object >= 0 ? found->len : 0 };
 
-    swp_clipboard_data m = { rep ? rep->len : 0 };
+    bool is_sent = send_with_handle(c, SWP_MSG_CLIPBOARD_DATA, &m, sizeof(m), object);
+    if (object >= 0) {
+        close(object);
+    }
 
-    return send_with_handle(c, SWP_MSG_CLIPBOARD_DATA, &m, sizeof(m), rep ? rep->object : -1);
+    return is_sent;
 }
 
 /* Sends a message to `c` behind the events `w` staged, so the client reads them in the order they happened */
