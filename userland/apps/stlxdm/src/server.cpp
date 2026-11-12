@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "free_memory.hpp"
 #include "material.hpp"
 #include "offer_intake.hpp"
 #include "shared_object.hpp"
@@ -1987,7 +1988,7 @@ void server::take_screenshot(const char* mode) {
  * window is aimed */
 void server::open_capture() {
     std::vector<frozen_frame> frames;
-    if (freezes() || m_power->active() || !freeze_outputs(frames)) {
+    if (freezes() || m_power->active() || !has_memory_to_capture() || !freeze_outputs(frames)) {
         return;
     }
 
@@ -2059,7 +2060,7 @@ void server::discard_preview() {
 
 /* Alt Print takes the focused window at once, alone with its shadow */
 void server::capture_focused_window() {
-    if (!m_focus || freezes() || m_power->active()) {
+    if (!m_focus || freezes() || m_power->active() || !has_memory_to_capture()) {
         return;
     }
 
@@ -2112,12 +2113,32 @@ void server::capture_region(const capture_target& target) {
     encode_capture(pixels, false, capture_kind::region, target.output);
 }
 
+/* A capture touches every served output's frozen frame, then its copy and the encoder's buffers, about three of the
+ * largest frame more. Short of that much free memory it says so instead of starting, which narrows PT-6's exhaustion
+ * rather than closing it. */
+bool server::has_memory_to_capture() {
+    uint64_t frames = 0;
+    uint64_t largest = 0;
+    for (const dm_output& out : m_outputs) {
+        uint64_t bytes = out.pres ? static_cast<uint64_t>(out.pres->width()) * out.pres->height() * 4 : 0;
+        frames += bytes;
+        largest = std::max(largest, bytes);
+    }
+
+    if (has_memory_for(frames + 3 * largest)) {
+        return true;
+    }
+
+    show_capture_notice("Not enough memory to capture", "close something and try again");
+    return false;
+}
+
 /* The output under the pointer goes to the encoder at once, composed whole as its next frame shows it */
 void server::capture_screen() {
     int32_t under = m_layout.output_at(m_cursor_x, m_cursor_y);
     uint32_t output = under >= 0 ? static_cast<uint32_t>(under) : m_layout.main_output();
     dm_output& out = m_outputs[output];
-    if (!out.pres) {
+    if (!out.pres || !has_memory_to_capture()) {
         return;
     }
 
@@ -2171,22 +2192,27 @@ void server::encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture
     }
 }
 
-/* An encoded capture becomes the clipboard as a copy does, and its thumbnail keeps its pixels for its preview. A
- * capture discarded while it encoded stays off. */
+/* An encoded capture becomes the clipboard as a copy does, and its thumbnail keeps its pixels for its preview, or for
+ * Try Again when the clipboard found no memory for it. A capture discarded while it encoded stays off. */
 void server::pump_captures() {
     capture_png png;
     while (m_capture_encoder.take(&png)) {
-        bool is_dropped = m_thumbnails.take_dropped(png.id);
-        if (png.object < 0 || is_dropped) {
-            if (png.object < 0) {
-                printf("stlxdm: keeping capture %llu on the clipboard failed, errno %d\r\n",
-                       static_cast<unsigned long long>(png.id), png.error);
-            } else {
+        if (m_thumbnails.take_dropped(png.id)) {
+            if (png.object >= 0) {
                 close(png.object);
             }
 
-            m_thumbnails.remove(png.id, m_damage);
             stlxgfx_destroy_surface(png.pixels);
+            continue;
+        }
+
+        if (png.object < 0) {
+            printf("stlxdm: keeping capture %llu on the clipboard failed, errno %d\r\n",
+                   static_cast<unsigned long long>(png.id), png.error);
+            if (!m_thumbnails.failed(png.id, png.pixels, m_damage)) {
+                stlxgfx_destroy_surface(png.pixels);
+            }
+
             continue;
         }
 
@@ -2196,6 +2222,16 @@ void server::pump_captures() {
         if (!m_thumbnails.encoded(png.id, m_history.current_id(), png.pixels)) {
             stlxgfx_destroy_surface(png.pixels);
         }
+    }
+}
+
+/* Try Again hands a capture's kept pixels back to the encoder, its card waiting for the clipboard again, or going
+ * when no encoder runs to take them */
+void server::retry_capture(uint64_t job) {
+    bool keeps_alpha = false;
+    stlxgfx_surface_t* pixels = m_thumbnails.retry(job, &keeps_alpha, static_cast<uint64_t>(monotonic_ns()), m_damage);
+    if (pixels && !m_capture_encoder.encode({ job, pixels, keeps_alpha })) {
+        m_thumbnails.remove(job, m_damage);
     }
 }
 

@@ -444,6 +444,8 @@ void server::thumbnail_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t 
     thumbnail_click click = m_thumbnails.release(x, y, now, m_damage);
     if (click.action == thumbnail_action::preview) {
         open_preview(click.job);
+    } else if (click.action == thumbnail_action::retry) {
+        retry_capture(click.job);
     } else if (click.action == thumbnail_action::discard) {
         discard_capture(click);
         m_thumbnails.pointer_move(x, y, now, m_damage);

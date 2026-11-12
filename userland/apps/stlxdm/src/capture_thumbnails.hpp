@@ -16,7 +16,7 @@
 /* What a capture took, which its thumbnail names */
 enum class capture_kind { screen, region, window };
 
-enum class thumbnail_action { none, preview, discard };
+enum class thumbnail_action { none, preview, discard, retry };
 
 /* What a click on a thumbnail asks of the server, and the capture it names */
 struct thumbnail_click {
@@ -58,6 +58,14 @@ public:
     /* The kind the card of `job` names, such as "Region", or null without the card */
     const char* kind_name_of(uint64_t job) const;
 
+    /* The capture `job` found no memory on the clipboard, and its card keeps `pixels` and offers Try Again until it
+     * closes. False when no card waits for it, the pixels left to the caller. */
+    bool failed(uint64_t job, stlxgfx_surface_t* pixels, damage_list& damage);
+
+    /* Try Again on the card of `job`: its pixels go back to the encoder, which the card reads again meanwhile. Null
+     * without a failed card. */
+    stlxgfx_surface_t* retry(uint64_t job, bool* keeps_alpha, uint64_t now_ns, damage_list& damage);
+
     /* Whether a Discard took the card of `job` before it encoded, which keeps the capture off the clipboard */
     bool take_dropped(uint64_t job);
 
@@ -89,7 +97,7 @@ public:
     void draw(uint32_t output, stlxgfx_surface_t* back, int32_t ox, int32_t oy, const damage_list::rect& clip) const;
 
 private:
-    enum class part { none, image, preview, discard, close };
+    enum class part { none, image, preview, discard, close, retry };
 
     void lay_out(damage_list& damage);
     bool make_picture(thumbnail_card& card);
@@ -116,6 +124,7 @@ private:
     stlxgfx_surface_t* m_discard_glyph_lit = nullptr;
     stlxgfx_surface_t* m_close_glyph = nullptr;
     stlxgfx_surface_t* m_close_glyph_lit = nullptr;
+    stlxgfx_surface_t* m_warning_glyph = nullptr;
     stlxgfx_surface_t* m_tip = nullptr;
     damage_list::rect  m_tip_rect = {};
     uint32_t           m_tip_output = 0;

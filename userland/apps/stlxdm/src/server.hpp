@@ -690,8 +690,10 @@ private:
     void capture_focused_window();
     void capture_window_alone(dm_window& w, bool has_shadow);
     void show_capture_notice(const char* title, const char* detail);
+    bool has_memory_to_capture();
     void encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output);
     void discard_capture(const thumbnail_click& click);
+    void retry_capture(uint64_t job);
     bool freeze_outputs(std::vector<frozen_frame>& frames);
     void open_preview(uint64_t job);
     void close_preview();
