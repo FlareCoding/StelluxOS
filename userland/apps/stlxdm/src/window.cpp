@@ -1766,6 +1766,92 @@ void server::draw_capture_rect(dm_output& out, stlxgfx_surface_t* back, const da
     }
 }
 
+/* Composes `w` alone over the opaque `ground` into `back`, whose first pixel shows the desktop point (`x`, `y`), as
+ * `compose_rect` composes a window: its glass beside its content, its frame with its shadow, then its content */
+void server::compose_window_over(dm_window& w, stlxgfx_surface_t* back, int32_t x, int32_t y, uint32_t ground) {
+    stlxgfx_clear(back, ground);
+    damage_list::rect area = { x, y, static_cast<int32_t>(back->width), static_cast<int32_t>(back->height) };
+    decor::canvas canvas = { back, x, y };
+    dm_output& out = m_outputs[w.output];
+    const stlxgfx_surface_t* frost = out.pres ? frost_of(out) : nullptr;
+    if (frost) {
+        bool is_premultiplied = w.buffers[static_cast<size_t>(w.current)].is_premultiplied;
+        std::vector<damage_list::rect> pieces = { area };
+        if (!is_premultiplied && !subtract_rounded(pieces, content_rect(w), content_radius(w))) {
+            pieces = { area };
+        }
+
+        material::surface glass = glass_under(w, out.place.x, out.place.y);
+        for (const damage_list::rect& p : pieces) {
+            material::draw(back, x - out.place.x, y - out.place.y, frost, glass,
+                           { p.x - out.place.x, p.y - out.place.y, p.w, p.h });
+        }
+    }
+
+    if (decor::decorated(w) && w.frame.update(frame_maker(), w, chrome_of(w))) {
+        w.frame.blend(canvas, w, area);
+    }
+
+    decor::blit_content(canvas, w, area);
+}
+
+/* `w` alone over transparency, composed over black and over white so each pixel's alpha is how far the two differ,
+ * kept to the frame's rounded rect without its shadow. A straight alpha surface the caller destroys, or null */
+stlxgfx_surface_t* server::compose_window_alone(dm_window& w, bool has_shadow) {
+    const dm_buffer& b = w.buffers[static_cast<size_t>(w.current)];
+    bool is_decorated = decor::decorated(w);
+    damage_list::rect frame = is_decorated ? decor::frame_rect(w, w.x, w.y, static_cast<int32_t>(b.width),
+                                                               static_cast<int32_t>(b.height))
+                                           : content_rect(w);
+    damage_list::rect area = has_shadow && is_decorated ? decor::bounds(w, chrome_of(w).focused) : frame;
+
+    uint32_t width = static_cast<uint32_t>(area.w);
+    uint32_t height = static_cast<uint32_t>(area.h);
+    stlxgfx_surface_t* on_black = stlxgfx_create_surface(width, height, 32, 16, 8, 0);
+    stlxgfx_surface_t* on_white = stlxgfx_create_surface(width, height, 32, 16, 8, 0);
+    if (!on_black || !on_white) {
+        stlxgfx_destroy_surface(on_black);
+        stlxgfx_destroy_surface(on_white);
+        return nullptr;
+    }
+
+    compose_window_over(w, on_black, area.x, area.y, 0xFF000000u);
+    compose_window_over(w, on_white, area.x, area.y, 0xFFFFFFFFu);
+
+    int32_t radius = is_decorated && !has_shadow ? decor::CORNER_R : 0;
+    for (int32_t y = 0; y < area.h; y++) {
+        uint32_t* dark = reinterpret_cast<uint32_t*>(on_black->pixels + static_cast<size_t>(y) * on_black->pitch);
+        const uint32_t* light =
+            reinterpret_cast<const uint32_t*>(on_white->pixels + static_cast<size_t>(y) * on_white->pitch);
+        for (int32_t x = 0; x < area.w; x++) {
+            uint32_t spread = 0;
+            for (uint32_t shift = 0; shift < 24; shift += 8) {
+                uint32_t dark_channel = (dark[x] >> shift) & 0xFF;
+                uint32_t light_channel = (light[x] >> shift) & 0xFF;
+                spread += light_channel > dark_channel ? light_channel - dark_channel : 0;
+            }
+
+            uint32_t alpha = 255 - std::min(255u, (spread + 1) / 3);
+            if (radius > 0) {
+                alpha = alpha * decor::rounded_coverage(frame, radius, area.x + x, area.y + y) / 255;
+            }
+
+            uint32_t pixel = alpha << 24;
+            for (uint32_t shift = 0; alpha > 0 && shift < 24; shift += 8) {
+                uint32_t channel = ((dark[x] >> shift) & 0xFF) * 255;
+                pixel |= std::min(255u, (channel + alpha / 2) / alpha) << shift;
+            }
+
+            dark[x] = pixel;
+        }
+    }
+
+    stlxgfx_destroy_surface(on_white);
+    on_black->flags = STLXGFX_SURFACE_STRAIGHT_ALPHA;
+
+    return on_black;
+}
+
 /* Composes capture overlay frames into the output buffer `t` names, drawn into the upper top picture, which covers the
  * scene opaquely. False when it took every output's composes off the GPU */
 bool server::capture_on_gpu(dm_output& out, const presenter::target& t, const std::vector<damage_list::rect>& rects) {

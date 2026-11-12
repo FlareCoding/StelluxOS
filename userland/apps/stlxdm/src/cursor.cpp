@@ -33,6 +33,25 @@ constexpr const char* ARROW_SHAPE[ARROW_H] = {
     "            ",
 };
 
+/* A camera, its lens ringed in the outline color */
+constexpr int32_t CAMERA_W = CURSOR_CAMERA_WIDTH;
+constexpr int32_t CAMERA_H = CURSOR_CAMERA_HEIGHT;
+constexpr const char* CAMERA_SHAPE[CAMERA_H] = {
+    "     XXXXXX      ",
+    "XXXXXX....XXXXXX ",
+    "X..............X ",
+    "X.....XXXX.....X ",
+    "X....X....X....X ",
+    "X...X......X...X ",
+    "X...X......X...X ",
+    "X...X......X...X ",
+    "X....X....X....X ",
+    "X.....XXXX.....X ",
+    "X..............X ",
+    "XXXXXXXXXXXXXXXX ",
+    "                 ",
+};
+
 static stlxgfx_surface_t* build_from_shape(const char* const* shape,
                                            int32_t w, int32_t h) {
     stlxgfx_surface_t* s = stlxgfx_create_surface(
@@ -273,8 +292,12 @@ int cursor::init() {
     m_crosshair.hot_x = 10;
     m_crosshair.hot_y = 10;
 
+    m_camera.image = build_from_shape(CAMERA_SHAPE, CAMERA_W, CAMERA_H);
+    m_camera.hot_x = CAMERA_W / 2;
+    m_camera.hot_y = CAMERA_H / 2;
+
     cursor_sprite* all[] = { &m_arrow, &m_ibeam, &m_resize_h, &m_resize_v,
-                             &m_resize_nwse, &m_resize_nesw, &m_crosshair };
+                             &m_resize_nwse, &m_resize_nesw, &m_crosshair, &m_camera };
     for (cursor_sprite* s : all) {
         if (s->image) {
             s->shadow = build_shadow(s->image);
@@ -289,6 +312,7 @@ void cursor::shutdown() {
     destroy_sprite(&m_arrow);
     destroy_sprite(&m_ibeam);
     destroy_sprite(&m_crosshair);
+    destroy_sprite(&m_camera);
 
     destroy_sprite(&m_resize_h);
     destroy_sprite(&m_resize_v);
@@ -306,6 +330,7 @@ const cursor_sprite* cursor::sprite_for(uint32_t shape) const {
     case SWP_CURSOR_RESIZE_NESW: return &m_resize_nesw;
     case SWP_CURSOR_NONE:        return nullptr;
     case CURSOR_CROSSHAIR:       return &m_crosshair;
+    case CURSOR_CAMERA:          return &m_camera;
     default:                     return &m_arrow;
     }
 }

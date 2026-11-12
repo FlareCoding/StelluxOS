@@ -376,8 +376,8 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     send_event(m_focus, rec);
 }
 
-/* The capture overlay takes every key: Esc cancels it, Space held moves the region, and Shift and Alt reshape the
- * region at once */
+/* The capture overlay takes every key: Esc cancels it, Space moves the region or switches to windows and back, and
+ * Shift and Alt reshape the region and the window's chip at once */
 void server::capture_key(uint16_t usage, bool down, bool repeat) {
     if (repeat) {
         return;
@@ -388,23 +388,26 @@ void server::capture_key(uint16_t usage, bool down, bool repeat) {
         return;
     }
 
-    if (usage == HID_USAGE_SPACE) {
-        m_capture.hold_space(down);
+    if (usage == HID_USAGE_SPACE && down) {
+        m_capture.press_space(m_damage);
+        move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
+    } else if (usage == HID_USAGE_SPACE) {
+        m_capture.release_space();
     }
 
     m_capture.on_motion(m_cursor_x, m_cursor_y, m_modifiers, m_damage);
 }
 
-/* The capture overlay takes the pointer whole, and a primary release that ends a drag takes its region */
+/* The capture overlay takes the pointer whole, and a primary release that ends a drag or a click takes its target */
 void server::capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed) {
-    move_cursor(x, y, CURSOR_CROSSHAIR);
+    move_cursor(x, y, m_capture.cursor_shape());
     m_capture.on_motion(x, y, m_modifiers, m_damage);
     if ((changed & 1) == 0) {
         return;
     }
 
     if ((buttons & 1) != 0) {
-        m_capture.on_press(x, y, m_damage);
+        m_capture.on_press(x, y, m_modifiers, m_damage);
         return;
     }
 

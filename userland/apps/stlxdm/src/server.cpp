@@ -1960,11 +1960,16 @@ void server::take_screenshot(const char* mode) {
         return;
     }
 
+    if (strcmp(mode, "window") == 0) {
+        capture_focused_window();
+        return;
+    }
+
     printf("stlxdm: a screenshot shortcut names no capture stlxdm takes: '%s'\r\n", mode);
 }
 
-/* Every served output freezes before anything else draws, so menus and hover states hold still while a region is
- * aimed */
+/* Every served output freezes before anything else draws, so menus and hover states hold still while a region or a
+ * window is aimed */
 void server::open_capture() {
     if (m_capture.active() || m_power->active()) {
         return;
@@ -1978,9 +1983,53 @@ void server::open_capture() {
         }
     }
 
-    m_capture.open(std::move(frames), m_cursor_x, m_cursor_y);
-    move_cursor(m_cursor_x, m_cursor_y, CURSOR_CROSSHAIR);
+    /* The shown toplevels, top first, which window mode lights under the pointer */
+    std::vector<capture_window> windows;
+    for (size_t i = m_zorder.size(); i-- > 0;) {
+        dm_window* w = m_zorder[i];
+        if (w->parent_id != 0 || w->current < 0 || is_hidden(*w)) {
+            continue;
+        }
+
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        int32_t bw = static_cast<int32_t>(b.width);
+        int32_t bh = static_cast<int32_t>(b.height);
+        bool is_decorated = decor::decorated(*w);
+        damage_list::rect frame = is_decorated ? decor::frame_rect(*w, w->x, w->y, bw, bh)
+                                               : damage_list::rect{ w->x, w->y, bw, bh };
+
+        damage_list::rect bounds = is_decorated ? decor::bounds(*w, chrome_of(*w).focused) : frame;
+        windows.push_back({ w, frame, is_decorated ? decor::CORNER_R : 0, w->title, bounds });
+    }
+
+    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y);
+    move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     m_damage.add_full();
+}
+
+/* Alt Print takes the focused window at once, alone with its shadow */
+void server::capture_focused_window() {
+    if (!m_focus || m_capture.active() || m_power->active()) {
+        return;
+    }
+
+    dm_client* owner = window_owner(m_focus);
+    const dm_window* top = owner ? &toplevel_of(*owner, *m_focus) : nullptr;
+    for (dm_window* w : m_zorder) {
+        if (w == top && w->current >= 0) {
+            capture_window_alone(*w, true);
+        }
+    }
+}
+
+void server::capture_window_alone(dm_window& w, bool has_shadow) {
+    stlxgfx_surface_t* pixels = compose_window_alone(w, has_shadow);
+    if (!pixels) {
+        printf("stlxdm: composing a window alone for a capture failed\r\n");
+        return;
+    }
+
+    m_capture_encoder.encode({ m_next_capture++, pixels, true });
 }
 
 void server::close_capture() {
@@ -1989,8 +2038,20 @@ void server::close_capture() {
     m_damage.add_full();
 }
 
-/* The region's frozen pixels go to the encoder, and the live desktop comes back */
+/* A region's frozen pixels go to the encoder, or a clicked window composed alone if it is still shown, and the live
+ * desktop comes back */
 void server::capture_region(const capture_target& target) {
+    if (target.window) {
+        close_capture();
+        for (dm_window* w : m_zorder) {
+            if (w == target.window && w->current >= 0) {
+                capture_window_alone(*w, target.has_shadow);
+            }
+        }
+
+        return;
+    }
+
     stlxgfx_surface_t* pixels = copy_frozen_rect(m_capture.frame(target.output), target.rect);
     close_capture();
     if (!pixels) {
