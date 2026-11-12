@@ -635,6 +635,8 @@ private:
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
     void replace_clipboard(clipboard_item item, std::string label);
+    void tell_clipboard_watchers();
+    void choose_clipboard_entry(uint64_t id, bool pastes);
     std::string client_label(const dm_client& c) const;
     static bool same_content(const clipboard_item& a, const clipboard_item& b);
     void send_clipboard_types(dm_client& c);
@@ -908,8 +910,9 @@ private:
     void update_resize(int32_t px, int32_t py);
     void damage_outline();
 
-    /* The shared clipboard, last writer wins, and the copies it replaced */
+    /* The shared clipboard, last writer wins, the copies it replaced, and when stlxdm began keeping them */
     clipboard_history m_history{ same_content };
+    std::string       m_clipboard_since;
 
     /* The running drag, null while none runs, and what it shows while it follows the pointer */
     std::unique_ptr<dnd_session> m_dnd;

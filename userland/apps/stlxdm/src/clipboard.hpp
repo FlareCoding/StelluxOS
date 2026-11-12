@@ -116,4 +116,7 @@ swp_clipboard_types describe_types(const clipboard_item& item);
 /* The `text/uri-list` naming one file by its absolute path, which File Manager's copies carry */
 std::string file_uri_list(std::string_view path);
 
+/* A representation's first `max` bytes, empty when the kernel refuses to map its object */
+std::string read_bytes(const clipboard_rep& rep, uint64_t max);
+
 #endif

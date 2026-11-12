@@ -1,9 +1,11 @@
 #include "clipboard.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <sys/mman.h>
 #include <unistd.h>
 
 clipboard_item::clipboard_item(std::vector<clipboard_rep> reps, uint32_t flags)
@@ -313,4 +315,21 @@ std::string file_uri_list(std::string_view path) {
 
     list += "\r\n";
     return list;
+}
+
+std::string read_bytes(const clipboard_rep& rep, uint64_t max) {
+    uint64_t len = std::min(rep.len, max);
+    if (len == 0 || rep.object < 0) {
+        return {};
+    }
+
+    void* shared = mmap(nullptr, len, PROT_READ, MAP_SHARED, rep.object, 0);
+    if (shared == MAP_FAILED) {
+        return {};
+    }
+
+    std::string bytes(static_cast<const char*>(shared), len);
+    munmap(shared, len);
+
+    return bytes;
 }

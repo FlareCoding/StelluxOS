@@ -115,6 +115,24 @@ static void check_types() {
     check(types.types[2][0] == '\0' && types.types[3][0] == '\0', "the types past the count stay zero");
 }
 
+static void check_reads() {
+    char path[] = "/tmp/stlxdm-clipboard-XXXXXX";
+    int object = mkstemp(path);
+    const char text[] = "first line\nsecond line";
+    bool is_written = object >= 0 && write(object, text, sizeof(text) - 1) == static_cast<ssize_t>(sizeof(text) - 1);
+    check(is_written, "the test writes its object");
+
+    clipboard_rep rep = { SWP_MIME_TEXT, sizeof(text) - 1, object };
+    check(read_bytes(rep, 1024) == text, "a read takes the whole representation");
+    check(read_bytes(rep, 5) == "first", "a read stops at its limit");
+
+    clipboard_rep closed = { SWP_MIME_TEXT, 4, -1 };
+    check(read_bytes(closed, 1024).empty(), "a representation without an object reads as empty");
+
+    close(object);
+    unlink(path);
+}
+
 static void check_uri_lists() {
     check(file_uri_list("/etc/stlxdm/stlxdm.conf") == "file:///etc/stlxdm/stlxdm.conf\r\n",
           "a plain path names its file as it is");
@@ -252,6 +270,7 @@ int main() {
     check_offers();
     check_items();
     check_types();
+    check_reads();
     check_uri_lists();
 
     check_history_order();

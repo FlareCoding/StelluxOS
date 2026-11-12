@@ -291,6 +291,12 @@ int server::init(display* disp, const stlxconf_t* conf) {
     m_compose_fault = conf->compose_fault;
     m_compositor = conf->compositor;
 
+    /* The clipboard history begins with stlxdm, at the bar's clock */
+    time_t started = time(nullptr);
+    char since[8] = "";
+    strftime(since, sizeof(since), "%H:%M", gmtime(&started));
+    m_clipboard_since = since;
+
     m_store.read(LAYOUTS_PATH);
 
     layout::member members[layout::MEMBERS_MAX];
@@ -751,6 +757,15 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         copy_file(path);
     };
 
+    out.panels->use_clipboard(&m_history, m_clipboard_since);
+    out.panels->on_clipboard_paste = [this](uint64_t id) {
+        choose_clipboard_entry(id, true);
+    };
+
+    out.panels->on_clipboard_copy = [this](uint64_t id) {
+        choose_clipboard_entry(id, false);
+    };
+
     out.panels->on_exec = [](const char* path, const std::vector<std::string>& args) {
         return exec_app(path, args);
     };
@@ -763,7 +778,7 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         stlxconf_action_kind_t kind = stlxconf_action_kind(sc.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && sc.path[0];
         bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_QUICK_ACTIONS ||
-                               kind == STLXCONF_ACTION_PASTE;
+                               kind == STLXCONF_ACTION_PASTE || kind == STLXCONF_ACTION_CLIPBOARD;
         if (!runs_program && !runs_own_action) {
             continue;
         }
@@ -1864,6 +1879,11 @@ void server::run_shortcut(const dm_hotkey& hotkey) {
         return;
     }
 
+    if (hotkey.kind == STLXCONF_ACTION_CLIPBOARD) {
+        m_panels->toggle_clipboard();
+        return;
+    }
+
     if (m_panels->popover_takes_keys()) {
         m_panels->close_popover();
     }
@@ -2048,10 +2068,28 @@ void server::flush_client(dm_client& c) {
 /* Every copy comes through here, so the history keeps it and each watching client hears of it */
 void server::replace_clipboard(clipboard_item item, std::string label) {
     m_history.copy(std::move(item), std::move(label), monotonic_ns());
+    tell_clipboard_watchers();
+}
+
+/* Each watching client hears of a new current item, and an open Clipboard mode shows it */
+void server::tell_clipboard_watchers() {
     for (auto& c : m_clients) {
         if (c->watches_clipboard) {
             send_clipboard_types(*c);
         }
+    }
+
+    if (m_panels) {
+        m_panels->clipboard_changed();
+    }
+}
+
+/* A chosen entry becomes current, and pasting sends the focused window the paste event after its types */
+void server::choose_clipboard_entry(uint64_t id, bool pastes) {
+    m_history.make_current(id, monotonic_ns());
+    tell_clipboard_watchers();
+    if (pastes) {
+        paste_into_focus();
     }
 }
 
