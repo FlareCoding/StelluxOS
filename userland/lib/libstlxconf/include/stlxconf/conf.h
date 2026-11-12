@@ -24,6 +24,10 @@ extern "C" {
 /* The folders Quick Actions' file search leaves out: devices, processes, and the programs it lists apart */
 #define STLXCONF_DEFAULT_QUICK_ACTIONS_SKIP "/dev /proc /usr /bin"
 
+/* What the clipboard history keeps besides the current clipboard: entries, and megabytes of their content */
+#define STLXCONF_DEFAULT_CLIPBOARD_ITEMS 100
+#define STLXCONF_DEFAULT_CLIPBOARD_MB    64
+
 /* Which compositor composes the desktop: auto the GPU when stlxdm can make
  * its compositor, cpu the CPU */
 typedef enum {
@@ -157,6 +161,10 @@ typedef struct {
 
     /* [quick_actions] skip: the folders Quick Actions' file search leaves out, space separated */
     char quick_actions_skip[256];
+
+    /* [clipboard] history_items and history_mb: what the clipboard history keeps besides the current clipboard */
+    uint32_t clipboard_history_items;
+    uint32_t clipboard_history_mb;
 
     stlxconf_pin_t pins[STLXCONF_MAX_TASKBAR];
     uint32_t pin_count;

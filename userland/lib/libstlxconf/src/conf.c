@@ -21,6 +21,7 @@ typedef enum {
     SEC_THEME,
     SEC_INPUT,
     SEC_QUICK_ACTIONS,
+    SEC_CLIPBOARD,
     SEC_PIN,
     SEC_SHORTCUT,
     SEC_AUTOSTART,
@@ -88,6 +89,9 @@ void stlxconf_defaults(stlxconf_t* conf) {
     conf->key_repeat_interval_ms = STLXCONF_DEFAULT_KEY_REPEAT_INTERVAL_MS;
 
     strcpy(conf->quick_actions_skip, STLXCONF_DEFAULT_QUICK_ACTIONS_SKIP);
+
+    conf->clipboard_history_items = STLXCONF_DEFAULT_CLIPBOARD_ITEMS;
+    conf->clipboard_history_mb    = STLXCONF_DEFAULT_CLIPBOARD_MB;
 }
 
 static char* trim(char* s) {
@@ -142,6 +146,8 @@ static void enter_section(stlxconf_t* conf, char* name,
         *sec = SEC_INPUT;
     } else if (strcmp(name, "quick_actions") == 0) {
         *sec = SEC_QUICK_ACTIONS;
+    } else if (strcmp(name, "clipboard") == 0) {
+        *sec = SEC_CLIPBOARD;
     } else if (strncmp(name, "taskbar:", 8) == 0) {
         *sec = SEC_PIN;
         *item_idx = conf->pin_count < STLXCONF_MAX_TASKBAR
@@ -361,6 +367,14 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
         }
 
         return;
+    case SEC_CLIPBOARD:
+        if (strcmp(key, "history_items") == 0) {
+            conf->clipboard_history_items = (uint32_t)strtoul(val, NULL, 10);
+        } else if (strcmp(key, "history_mb") == 0) {
+            conf->clipboard_history_mb = (uint32_t)strtoul(val, NULL, 10);
+        }
+
+        return;
     case SEC_NONE:
         return;
     }
@@ -514,6 +528,10 @@ int stlxconf_save(const stlxconf_t* conf, const char* path) {
 
     fprintf(f, "\n[quick_actions]\n");
     fprintf(f, "skip=%s\n", conf->quick_actions_skip);
+
+    fprintf(f, "\n[clipboard]\n");
+    fprintf(f, "history_items=%u\n", conf->clipboard_history_items);
+    fprintf(f, "history_mb=%u\n", conf->clipboard_history_mb);
 
     for (uint32_t i = 0; i < conf->shortcut_count; i++) {
         const stlxconf_shortcut_t* sc = &conf->shortcuts[i];

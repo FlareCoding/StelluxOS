@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <unistd.h>
 #include <utility>
+#include <vector>
 
 constexpr uint32_t MAX_REPORTS = 8;
 
@@ -123,11 +124,139 @@ static void check_uri_lists() {
           "UTF-8 bytes are escaped one by one");
 }
 
+/* A copy of `len` bytes of text, its object a pipe's end, which tells when it closes */
+static clipboard_item text_item(uint64_t len, uint32_t flags, int* object) {
+    int ends[2];
+    if (pipe(ends) != 0) {
+        return clipboard_item();
+    }
+
+    close(ends[1]);
+    if (object) {
+        *object = ends[0];
+    }
+
+    return clipboard_item({ { SWP_MIME_TEXT, len, ends[0] } }, flags);
+}
+
+/* Copies of one size count as the same content here */
+static bool same_size(const clipboard_item& a, const clipboard_item& b) {
+    return a.size() == b.size();
+}
+
+static std::vector<uint64_t> listed_sizes(const clipboard_history& history) {
+    std::vector<uint64_t> sizes;
+    for (const clipboard_entry* entry : history.entries()) {
+        sizes.push_back(entry->item.size());
+    }
+
+    return sizes;
+}
+
+static const clipboard_entry* entry_of_size(const clipboard_history& history, uint64_t size) {
+    for (const clipboard_entry* entry : history.entries()) {
+        if (entry->item.size() == size) {
+            return entry;
+        }
+    }
+
+    return nullptr;
+}
+
+static void check_history_order() {
+    clipboard_history history(same_size);
+    history.set_limits(10, 1000);
+    for (uint64_t len : { 1, 2, 3 }) {
+        history.copy(text_item(len, 0, nullptr), "Terminal", static_cast<int64_t>(len));
+    }
+
+    check(history.current().size() == 3, "the newest copy is current");
+    check(listed_sizes(history) == std::vector<uint64_t>{ 3, 2, 1 }, "entries list newest first");
+    check(history.kept_count() == 2 && history.kept_bytes() == 3, "the budget counts every entry but the current one");
+
+    int private_object = -1;
+    history.copy(text_item(4, SWP_CLIPBOARD_PRIVATE, &private_object), "Passwords", 4);
+    check(history.current().size() == 4 && listed_sizes(history) == std::vector<uint64_t>{ 3, 2, 1 },
+          "a private copy is current but unlisted");
+
+    history.copy(text_item(5, 0, nullptr), "Terminal", 5);
+    check(!is_open(private_object) && listed_sizes(history) == std::vector<uint64_t>{ 5, 3, 2, 1 },
+          "a private copy leaves no entry once replaced");
+
+    int repeated_object = entry_of_size(history, 2)->item.reps()[0].object;
+    history.copy(text_item(2, 0, nullptr), "Settings", 6);
+    check(!is_open(repeated_object) && listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 3, 1 },
+          "the same content copied again moves its entry up");
+}
+
+static void check_history_budget() {
+    clipboard_history history(same_size);
+    history.set_limits(2, 1000);
+    int oldest_object = -1;
+    history.copy(text_item(1, 0, &oldest_object), "Terminal", 1);
+    for (uint64_t len : { 2, 3, 4 }) {
+        history.copy(text_item(len, 0, nullptr), "Terminal", static_cast<int64_t>(len));
+    }
+
+    check(!is_open(oldest_object) && listed_sizes(history) == std::vector<uint64_t>{ 4, 3, 2 },
+          "past the item limit the oldest entry leaves");
+
+    history.set_pinned(entry_of_size(history, 2)->id, true);
+    history.copy(text_item(5, 0, nullptr), "Terminal", 5);
+    check(listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 4 },
+          "a pinned entry stays and the oldest unpinned one leaves instead");
+
+    clipboard_history bytes(same_size);
+    bytes.set_limits(10, 100);
+    for (uint64_t len : { 60, 50, 40 }) {
+        bytes.copy(text_item(len, 0, nullptr), "Sheen", static_cast<int64_t>(len));
+    }
+
+    check(listed_sizes(bytes) == std::vector<uint64_t>{ 40, 50 }, "past the byte limit the oldest entry leaves");
+
+    int huge_object = -1;
+    bytes.copy(text_item(500, 0, &huge_object), "Sheen", 500);
+    check(bytes.current().size() == 500 && listed_sizes(bytes) == std::vector<uint64_t>{ 500, 40, 50 },
+          "a copy past the budget stays while it is current");
+
+    bytes.copy(text_item(10, 0, nullptr), "Sheen", 510);
+    check(!is_open(huge_object) && listed_sizes(bytes) == std::vector<uint64_t>{ 10, 40, 50 },
+          "a copy past the budget leaves once replaced");
+}
+
+static void check_history_actions() {
+    clipboard_history history(same_size);
+    history.set_limits(10, 1000);
+    for (uint64_t len : { 1, 2, 3 }) {
+        history.copy(text_item(len, 0, nullptr), "Terminal", static_cast<int64_t>(len));
+    }
+
+    uint64_t two = entry_of_size(history, 2)->id;
+    history.make_current(two, 9);
+    check(history.current().size() == 2 && history.is_current(two) && history.find(two)->copied_ns == 9 &&
+          listed_sizes(history) == std::vector<uint64_t>{ 2, 3, 1 },
+          "an entry made current moves up as a fresh copy");
+
+    history.remove(two);
+    check(history.current().empty() && listed_sizes(history) == std::vector<uint64_t>{ 3, 1 },
+          "removing the current entry empties the clipboard");
+
+    history.set_pinned(entry_of_size(history, 1)->id, true);
+    history.copy(text_item(4, 0, nullptr), "Terminal", 10);
+    size_t cleared = history.clear_unpinned();
+    check(cleared == 2 && history.current().empty() && listed_sizes(history) == std::vector<uint64_t>{ 1 },
+          "clearing keeps the pinned entries and empties an unpinned clipboard");
+}
+
 int main() {
     check_offers();
     check_items();
     check_types();
     check_uri_lists();
+
+    check_history_order();
+    check_history_budget();
+    check_history_actions();
 
     if (g_failures != 0) {
         printf("clipboard: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

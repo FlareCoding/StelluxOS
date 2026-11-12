@@ -658,7 +658,9 @@ private:
                  uint16_t header_flags = 0);
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
-    void replace_clipboard(clipboard_item item);
+    void replace_clipboard(clipboard_item item, std::string label);
+    std::string client_label(const dm_client& c) const;
+    static bool same_content(const clipboard_item& a, const clipboard_item& b);
     void send_clipboard_types(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
     void offer_clipboard(dm_client& c, const uint8_t* payload);
@@ -946,9 +948,8 @@ private:
     void update_resize(int32_t px, int32_t py);
     void damage_outline();
 
-    /* One shared clipboard item, last writer wins, without representations
-     * while empty */
-    clipboard_item m_clipboard;
+    /* The shared clipboard, last writer wins, and the copies it replaced */
+    clipboard_history m_history{ same_content };
 
     /* The running drag, null while none runs, and what it shows from its start until its picture settles or snaps
      * back: the look, how its picture moves apart from the pointer, and where it shows */
