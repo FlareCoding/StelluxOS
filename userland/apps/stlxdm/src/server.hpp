@@ -184,6 +184,7 @@ struct dm_sent_conf {
  * geometry, pending holds the newest unlatched commit. */
 struct dm_window {
     uint32_t win_id = 0;
+    uint64_t serial = 0;        /* stlxdm's own name for it, never reused, unlike its address or a client's win_id */
     uint32_t parent_id = 0;
     int32_t  x = 0, y = 0;
     uint32_t output = 0;        /* a toplevel's: the member holding the largest part of its frame */
@@ -540,13 +541,9 @@ public:
         }
     }
 
-    /* The poll bound and tick of the capture overlay's hint */
-    int64_t capture_timeout_ns(uint64_t now_ns) const { return m_capture.active() ? m_capture.timeout_ns(now_ns) : -1; }
-    void capture_tick(uint64_t now_ns) {
-        if (m_capture.active()) {
-            m_capture.tick(now_ns, m_damage);
-        }
-    }
+    /* The poll bound and tick of the capture overlay's hint and of a capture counting down */
+    int64_t capture_timeout_ns(uint64_t now_ns) const;
+    void capture_tick(uint64_t now_ns);
 
     /* Whether a capture overlay or a preview shows frozen frames in place of the scene */
     bool freezes() const { return m_capture.active() || m_preview.active(); }
@@ -689,6 +686,12 @@ private:
     void open_capture(bool has_bar);
     void close_capture();
     void capture_region(const capture_target& target);
+    void start_countdown(const capture_target& target, const capture_options& options);
+    void show_countdown(uint64_t now_ns);
+    void finish_countdown();
+    void cancel_countdown();
+    bool capture_frame_of(uint64_t window, damage_list::rect* frame) const;
+    void draw_pointer(stlxgfx_surface_t* pixels, const capture_target& target);
     void capture_focused_window();
     void capture_window_alone(dm_window& w, bool has_shadow);
     void show_capture_notice(const char* title, const std::string& detail, uint64_t shown_ns = NOTICE_SHOWN_NS);
@@ -1057,6 +1060,22 @@ private:
     capture_overlay m_capture;
     capture_encoder m_capture_encoder;
     uint64_t        m_next_capture = 1;
+    uint64_t        m_next_window_serial = 1;
+
+    /* The capture bar's options for the session, from the [screenshot] keys, and the last region it kept */
+    capture_options   m_capture_options;
+    bool              m_has_bar_region = false;
+    uint32_t          m_bar_region_output = 0;
+    damage_list::rect m_bar_region = {};
+
+    /* A capture counting down: what it takes and when, the seconds its notice last showed, and whether the capture
+     * shows the pointer */
+    bool           m_counts_down = false;
+    capture_target m_countdown_target;
+    uint64_t       m_countdown_window = 0;  /* the serial of the window a timed capture takes, 0 for none */
+    uint64_t       m_countdown_at_ns = 0;
+    int64_t        m_countdown_shown = -1;
+    bool           m_countdown_shows_pointer = false;
     bool            m_composes_freeze = false;
 
     /* The cards of the latest captures, which a freeze leaves out, and a capture's preview */

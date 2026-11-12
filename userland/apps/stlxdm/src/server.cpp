@@ -846,6 +846,9 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     m_history.set_limits(m_conf->clipboard_history_items, static_cast<uint64_t>(m_conf->clipboard_history_mb) << 20);
     note_history_change();
 
+    m_capture_options = { m_conf->screenshot_timer, m_conf->screenshot_shadow, m_conf->screenshot_pointer,
+                          m_conf->screenshot_remember_region };
+
     m_backdrop = next.backdrop;
     m_gpu_backdrop = std::move(next.gpu_backdrop);
     m_frost = next.frost;
@@ -1287,6 +1290,15 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
         m_preview.close();
     }
 
+    /* A timed capture's target and the bar's kept region were measured on the old layout */
+    bool was_counting = m_counts_down;
+    if (was_counting) {
+        printf("stlxdm: the outputs changed during a capture's timer, which ends\r\n");
+        cancel_countdown();
+    }
+
+    m_has_bar_region = false;
+
     /* Thumbnails sit at corners that moved, and their captures stay on the clipboard */
     m_thumbnails.clear(m_damage);
     sync_outputs();
@@ -1328,7 +1340,7 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
         refit_placed_windows();
     }
 
-    if (was_frozen) {
+    if (was_frozen || was_counting) {
         show_capture_notice("Capture cancelled", "the displays changed");
     }
 
@@ -2001,7 +2013,7 @@ void server::take_screenshot(const char* mode) {
  * window is aimed, with the capture bar on the main output when `has_bar` */
 void server::open_capture(bool has_bar) {
     std::vector<frozen_frame> frames;
-    if (freezes() || m_power->active() || !has_memory_to_capture() || !freeze_outputs(frames)) {
+    if (freezes() || m_counts_down || m_power->active() || !has_memory_to_capture() || !freeze_outputs(frames)) {
         return;
     }
 
@@ -2024,9 +2036,15 @@ void server::open_capture(bool has_bar) {
         windows.push_back({ w, frame, is_decorated ? decor::CORNER_R : 0, w->title, bounds });
     }
 
-    int32_t bar_output = has_bar ? static_cast<int32_t>(m_layout.main_output()) : -1;
+    capture_bar_start bar;
+    bar.output = has_bar ? static_cast<int32_t>(m_layout.main_output()) : -1;
+    bar.options = m_capture_options;
+    bar.has_region = m_has_bar_region;
+    bar.region_output = m_bar_region_output;
+    bar.region = m_bar_region;
+
     uint64_t now = static_cast<uint64_t>(monotonic_ns());
-    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y, now, bar_output);
+    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y, now, bar);
     move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     m_damage.add_full();
 }
@@ -2098,7 +2116,12 @@ void server::capture_window_alone(dm_window& w, bool has_shadow) {
     encode_capture(pixels, true, capture_kind::window, w.output);
 }
 
+/* The bar's options last for the session, so they outlive the overlay that changed them */
 void server::close_capture() {
+    if (m_capture.has_bar()) {
+        m_capture_options = m_capture.options();
+    }
+
     m_capture.close();
     move_cursor(m_cursor_x, m_cursor_y, SWP_CURSOR_ARROW);
     m_damage.add_full();
@@ -2107,6 +2130,21 @@ void server::close_capture() {
 /* A region's frozen pixels go to the encoder, or a clicked window composed alone if it is still shown, and the live
  * desktop comes back */
 void server::capture_region(const capture_target& target) {
+    bool is_from_bar = m_capture.has_bar();
+    capture_options options = is_from_bar ? m_capture.options() : capture_options{};
+    if (is_from_bar && !target.window && target.kind == capture_kind::region) {
+        const damage_list::rect& place = m_outputs[target.output].place;
+        m_has_bar_region = true;
+        m_bar_region_output = target.output;
+        m_bar_region = { place.x + target.rect.x, place.y + target.rect.y, target.rect.w, target.rect.h };
+    }
+
+    if (is_from_bar && options.timer > 0) {
+        close_capture();
+        start_countdown(target, options);
+        return;
+    }
+
     if (target.window) {
         close_capture();
         for (dm_window* w : m_zorder) {
@@ -2123,6 +2161,10 @@ void server::capture_region(const capture_target& target) {
     if (!pixels) {
         printf("stlxdm: copying a %d by %d region for a capture failed\r\n", target.rect.w, target.rect.h);
         return;
+    }
+
+    if (options.pointer) {
+        draw_pointer(pixels, target);
     }
 
     encode_capture(pixels, false, target.kind, target.output);
@@ -2145,6 +2187,158 @@ bool server::has_memory_to_capture() {
     }
 
     show_capture_notice("Not enough memory to capture", "close something and try again");
+    return false;
+}
+
+/* The arrow drawn into a capture's pixels where the pointer is, as the screen showed it before the capture began */
+void server::draw_pointer(stlxgfx_surface_t* pixels, const capture_target& target) {
+    const damage_list::rect& place = m_outputs[target.output].place;
+    int32_t x = m_cursor_x - place.x - target.rect.x;
+    int32_t y = m_cursor_y - place.y - target.rect.y;
+    damage_list::rect whole = { 0, 0, static_cast<int32_t>(pixels->width), static_cast<int32_t>(pixels->height) };
+    m_cursor.draw(pixels, SWP_CURSOR_ARROW, x, y, whole);
+}
+
+int64_t server::capture_timeout_ns(uint64_t now_ns) const {
+    if (m_counts_down) {
+        uint64_t left = m_countdown_at_ns > now_ns ? m_countdown_at_ns - now_ns : 0;
+        uint64_t to_second = left % 1000000000ull;
+        return static_cast<int64_t>(to_second == 0 ? std::min<uint64_t>(left, 1000000000ull) : to_second);
+    }
+
+    return m_capture.active() ? m_capture.timeout_ns(now_ns) : -1;
+}
+
+void server::capture_tick(uint64_t now_ns) {
+    if (m_capture.active()) {
+        m_capture.tick(now_ns, m_damage);
+    }
+
+    if (m_counts_down && now_ns >= m_countdown_at_ns) {
+        finish_countdown();
+    } else if (m_counts_down) {
+        show_countdown(now_ns);
+    }
+}
+
+/* A timed capture lets go of the freeze: its outline stays on the live screen with the seconds left at the top of its
+ * output, and the capture is taken live at zero */
+void server::start_countdown(const capture_target& target, const capture_options& options) {
+    uint64_t window = 0;
+    for (dm_window* w : m_zorder) {
+        if (w == target.window) {
+            window = w->serial;
+        }
+    }
+
+    damage_list::rect ring = {};
+    if (target.window && !capture_frame_of(window, &ring)) {
+        return;
+    }
+
+    if (!target.window) {
+        const damage_list::rect& place = m_outputs[target.output].place;
+        damage_list::rect r = { place.x + target.rect.x, place.y + target.rect.y, target.rect.w, target.rect.h };
+        bool is_whole = target.kind == capture_kind::screen;
+        ring = is_whole ? r : damage_list::rect{ r.x - 1, r.y - 1, r.w + 2, r.h + 2 };
+    }
+
+    uint64_t now = static_cast<uint64_t>(monotonic_ns());
+
+    m_counts_down = true;
+    m_countdown_target = target;
+    m_countdown_window = window;
+    m_countdown_at_ns = now + static_cast<uint64_t>(options.timer) * 1000000000ull;
+    m_countdown_shown = -1;
+    m_countdown_shows_pointer = options.pointer;
+
+    uint32_t output = target.window ? static_cast<uint32_t>(m_layout.main_output()) : target.output;
+    m_thumbnails.mark(ring, output, m_damage);
+    show_countdown(now);
+}
+
+/* The seconds left at the top of the capture's output, remade only as the count changes */
+void server::show_countdown(uint64_t now_ns) {
+    uint64_t left = m_countdown_at_ns > now_ns ? m_countdown_at_ns - now_ns : 0;
+    int64_t seconds = static_cast<int64_t>((left + 999999999ull) / 1000000000ull);
+    if (seconds == m_countdown_shown) {
+        return;
+    }
+
+    m_countdown_shown = seconds;
+    uint32_t output = m_countdown_target.window ? m_layout.main_output() : m_countdown_target.output;
+    dm_output& shown_on = m_outputs[output];
+    std::vector<chip_piece> line = {
+        { "Capturing in " + std::to_string(seconds), STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT,
+          CHIP_GROUP_GAP },
+        { "Esc" },
+        { "cancels", STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT_SECONDARY },
+    };
+
+    int32_t x = (shown_on.place.w - chip_width(line)) / 2;
+    const stlxgfx_surface_t* frost = shown_on.pres ? frost_of(shown_on) : nullptr;
+    m_thumbnails.notify(make_chip_picture(line, frost, x, CAPTURE_HINT_TOP), output, shown_on.place, now_ns, m_damage);
+}
+
+/* At zero the ring and the count go, and the capture is taken from the live screen as its next frame shows it */
+void server::finish_countdown() {
+    m_counts_down = false;
+    m_thumbnails.mark({}, 0, m_damage);
+    m_thumbnails.notify(nullptr, 0, {}, 0, m_damage);
+
+    /* Free memory was last asked for when the timer started, seconds ago */
+    if (!has_memory_to_capture()) {
+        return;
+    }
+
+    /* A window is found again by its serial, since a window opened during the count may reuse a closed one's address */
+    const capture_target& target = m_countdown_target;
+    if (target.window) {
+        for (dm_window* w : m_zorder) {
+            if (w->serial == m_countdown_window && w->current >= 0) {
+                capture_window_alone(*w, target.has_shadow);
+            }
+        }
+
+        return;
+    }
+
+    dm_output& out = m_outputs[target.output];
+    frozen_frame frozen;
+    stlxgfx_surface_t* pixels = out.pres && freeze_output(out, frozen) ? copy_frozen_rect(frozen, target.rect) : nullptr;
+    if (!pixels) {
+        printf("stlxdm: capturing a %d by %d region at the end of its timer failed\r\n", target.rect.w, target.rect.h);
+        return;
+    }
+
+    if (m_countdown_shows_pointer) {
+        draw_pointer(pixels, target);
+    }
+
+    encode_capture(pixels, false, target.kind, target.output);
+}
+
+void server::cancel_countdown() {
+    m_counts_down = false;
+    m_thumbnails.mark({}, 0, m_damage);
+    m_thumbnails.notify(nullptr, 0, {}, 0, m_damage);
+}
+
+/* The frame of the window with serial `window` on the desktop, false once it is no longer shown */
+bool server::capture_frame_of(uint64_t window, damage_list::rect* frame) const {
+    for (dm_window* w : m_zorder) {
+        if (w->serial != window || w->current < 0) {
+            continue;
+        }
+
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        int32_t bw = static_cast<int32_t>(b.width);
+        int32_t bh = static_cast<int32_t>(b.height);
+        *frame = decor::decorated(*w) ? decor::frame_rect(*w, w->x, w->y, bw, bh)
+                                      : damage_list::rect{ w->x, w->y, bw, bh };
+        return true;
+    }
+
     return false;
 }
 

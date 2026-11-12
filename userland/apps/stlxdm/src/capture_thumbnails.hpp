@@ -76,6 +76,10 @@ public:
     void notify(stlxgfx_surface_t* chip, uint32_t output, const damage_list::rect& place, uint64_t now_ns,
                 damage_list& damage, uint64_t shown_ns = NOTICE_SHOWN_NS);
 
+    /* Rings the inside of `ring`, on output `output`, in an amber hairline on the live screen, as a capture counting
+     * down will take it, until an empty rect takes the ring away */
+    void mark(const damage_list::rect& ring, uint32_t output, damage_list& damage);
+
     /* Each card says whether its capture is still the clipboard, and goes once its entry leaves the history */
     void follow_clipboard(const clipboard_history& history, damage_list& damage);
 
@@ -133,6 +137,10 @@ private:
     damage_list::rect  m_notice_rect = {};
     uint32_t           m_notice_output = 0;
     uint64_t           m_notice_until_ns = 0;
+
+    /* The ring of a capture counting down, by its four edges on the desktop */
+    damage_list::rect m_mark_edges[4] = {};
+    uint32_t          m_mark_output = 0;
 };
 
 #endif
