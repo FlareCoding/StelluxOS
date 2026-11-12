@@ -396,6 +396,7 @@ void server::show_cursor() {
                out.cursor_in_frames ? "drawn into frames" : "on the display's hardware cursor", output);
     }
 
+    set_drag_carrier(drag_carrier_shown());
     damage_cursor();
 }
 
@@ -411,6 +412,7 @@ void server::flush_cursor(uint32_t output) {
         out.pres->hide_cursor();
         out.cursor_picture = nullptr;
         out.cursor_in_frames = true;
+        set_drag_carrier(drag_carrier_shown());
         damage_cursor();
     }
 }
@@ -459,12 +461,10 @@ void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
 }
 
 /* Shows the pointer's shape on `out`'s hardware cursor, sending its picture unless it shows already, or hides the
- * cursor and returns false, as it does while a drag's picture follows the pointer in the frames */
+ * cursor and returns false. While a drag's picture follows the pointer, the cursor shows both or neither. */
 bool server::show_hardware_cursor(dm_output& out) {
     if (drag_follows_pointer()) {
-        out.pres->hide_cursor();
-        out.cursor_picture = nullptr;
-        return false;
+        return show_drag_cursor(out);
     }
 
     presenter::cursor_picture picture;

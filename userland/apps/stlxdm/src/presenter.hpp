@@ -94,6 +94,10 @@ public:
      * may differ from the one the frame was composed for. */
     virtual void present(const damage_list& damage) = 0;
 
+    /* Whether the output's hardware cursor holds a picture of `width` by
+     * `height` pixels. */
+    virtual bool holds_cursor(uint32_t width, uint32_t height) const = 0;
+
     /* Shows a copy of `picture` on the output's hardware cursor, its
      * hotspot at the last `move_cursor()` position. Returns whether the
      * display took it, false without a cursor that holds the picture. The
@@ -148,6 +152,7 @@ public:
 
     /* The boot display has no hardware cursor, and a cursor call on another
      * display would take control of its buffers, so these refuse. */
+    bool holds_cursor(uint32_t, uint32_t) const override { return false; }
     bool set_cursor(const cursor_picture&) override { return false; }
     void hide_cursor() override {}
     bool move_cursor(int32_t, int32_t) override { return false; }
@@ -236,6 +241,7 @@ public:
     void abandon_present();
 
     int64_t missed_frames() const override { return static_cast<int64_t>(m_missed_frames); }
+    bool holds_cursor(uint32_t width, uint32_t height) const override;
     bool set_cursor(const cursor_picture& picture) override;
     void hide_cursor() override;
     bool move_cursor(int32_t x, int32_t y) override;

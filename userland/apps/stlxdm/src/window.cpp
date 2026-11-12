@@ -1527,7 +1527,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         m_panels->compose_top(back, local);
     }
 
-    if (drag_shows()) {
+    if (drag_shows() && m_drag_carrier < 0) {
         m_drag_look.draw(canvas, m_drag_pose, r);
     }
 
@@ -1909,7 +1909,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
 
     scene.drag.clear();
     scene.drag_chip = {};
-    if (drag_shows() && !is_capture) {
+    if (drag_shows() && m_drag_carrier < 0 && !is_capture) {
         m_drag_look.pieces(m_drag_pose, scene.drag, scene.drag_chip);
         for (layer_scaled& piece : scene.drag) {
             piece.bounds.x -= ox;
@@ -2175,6 +2175,7 @@ void server::advance_power() {
     if (power_active != m_power_was_active) {
         m_damage.add_full();
         m_power_was_active = power_active;
+        refresh_drag_carry();
     } else if (m_power->transitioning()) {
         m_damage.add(main.x, main.y, main.w, main.h);
     } else if (m_power->animating()) {

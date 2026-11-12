@@ -149,6 +149,51 @@ static uint32_t blend_onto_premultiplied(uint32_t below, uint32_t source) {
     return blended;
 }
 
+/* The premultiplied `source` faded to `opacity` over the premultiplied `below` */
+static uint32_t blend_faded_onto_premultiplied(uint32_t below, uint32_t source, uint32_t opacity) {
+    uint32_t alpha = stlxgfx_div255((source >> decor::PIXEL_ALPHA_SHIFT) * opacity);
+    uint32_t inverse = decor::CHANNEL_MAX - alpha;
+    uint32_t blended = (alpha + stlxgfx_div255((below >> decor::PIXEL_ALPHA_SHIFT) * inverse)) << decor::PIXEL_ALPHA_SHIFT;
+    for (uint32_t shift = 0; shift < decor::PIXEL_ALPHA_SHIFT; shift += decor::CHANNEL_BITS) {
+        uint32_t channel = stlxgfx_div255(((source >> shift) & decor::CHANNEL_MAX) * opacity) +
+                           stlxgfx_div255(((below >> shift) & decor::CHANNEL_MAX) * inverse);
+        blended |= std::min(channel, decor::CHANNEL_MAX) << shift;
+    }
+
+    return blended;
+}
+
+/* A premultiplied pixel in straight alpha, as a hardware cursor takes it */
+static uint32_t to_straight(uint32_t pixel) {
+    uint32_t alpha = pixel >> decor::PIXEL_ALPHA_SHIFT;
+    if (alpha == 0) {
+        return 0;
+    }
+
+    uint32_t straight = alpha << decor::PIXEL_ALPHA_SHIFT;
+    for (uint32_t shift = 0; shift < decor::PIXEL_ALPHA_SHIFT; shift += decor::CHANNEL_BITS) {
+        uint32_t channel = (((pixel >> shift) & decor::CHANNEL_MAX) * decor::CHANNEL_MAX + alpha / 2) / alpha;
+        straight |= std::min(channel, decor::CHANNEL_MAX) << shift;
+    }
+
+    return straight;
+}
+
+/* Blends the pixels lying at `at`, rows `stride` pixels apart from `first`, into the premultiplied `pixels` that cover
+ * `area`, each through `blend` */
+template <typename Blend>
+static void blend_into(std::vector<uint32_t>& pixels, const damage_list::rect& area, const uint32_t* first,
+                       size_t stride, const damage_list::rect& at, Blend blend) {
+    damage_list::rect span = damage_list::intersect(at, area);
+    for (int32_t y = span.y; y < span.y + span.h; y++) {
+        const uint32_t* source = first + static_cast<size_t>(y - at.y) * stride;
+        uint32_t* target = pixels.data() + static_cast<size_t>(y - area.y) * area.w;
+        for (int32_t x = span.x; x < span.x + span.w; x++) {
+            target[x - area.x] = blend(target[x - area.x], source[x - at.x]);
+        }
+    }
+}
+
 /* The count's pill in straight alpha, which the caller destroys, or null when memory runs out */
 static stlxgfx_surface_t* make_badge(uint32_t item_count) {
     std::string count = std::to_string(item_count);
@@ -250,7 +295,9 @@ static int32_t blur_reach(const decor::window_shadow_layer& layer) {
 }
 
 bool drag_look::draw_picture(picture_maker& maker, const dnd_session& session) {
+    m_generation++;
     m_maker = &maker;
+
     m_picture.reset();
     m_shadow.reset();
     m_chip_picture.reset();
@@ -367,6 +414,7 @@ bool drag_look::draw_shadow(picture_maker& maker) {
 }
 
 bool drag_look::draw_chip(const dnd_chip& chip) {
+    m_generation++;
     m_chip = chip;
     m_chip_picture.reset();
     if (chip.mark == dnd_chip::glyph::none || !m_maker) {
@@ -467,7 +515,7 @@ damage_list::rect drag_look::shadow_rect(const damage_list::rect& picture) const
 }
 
 /* The chip keeps to the pointer and the picture's place there, wherever a motion shows the picture */
-damage_list::rect drag_look::chip_rect(const drag_pose& pose) const {
+damage_list::rect drag_look::chip_at(const drag_pose& pose) const {
     if (!m_chip_picture || !pose.has_chip) {
         return {};
     }
@@ -483,7 +531,7 @@ damage_list::rect drag_look::chip_rect(const drag_pose& pose) const {
 damage_list::rect drag_look::bounds(const drag_pose& pose) const {
     damage_list::rect picture = m_picture ? pose.picture : damage_list::rect{};
     damage_list::rect covered = damage_list::union_of(picture, shadow_rect(pose.picture));
-    return damage_list::union_of(covered, chip_rect(pose));
+    return damage_list::union_of(covered, chip_at(pose));
 }
 
 void drag_look::pieces(const drag_pose& pose, std::vector<layer_scaled>& scaled, layer_piece& chip) const {
@@ -508,7 +556,7 @@ void drag_look::pieces(const drag_pose& pose, std::vector<layer_scaled>& scaled,
 
     chip = {};
     if (m_chip_picture && pose.has_chip) {
-        chip.bounds = chip_rect(pose);
+        chip.bounds = chip_at(pose);
         chip.picture = { m_chip_picture->address(), m_chip_picture->pitch(), chip.bounds.x, chip.bounds.y,
                          m_chip_picture.get() };
     }
@@ -536,4 +584,51 @@ void drag_look::draw(const decor::canvas& canvas, const drag_pose& pose, const d
             target[px - canvas.x] = decor::blend_over(target[px - canvas.x], pixel, pixel >> decor::PIXEL_ALPHA_SHIFT);
         }
     }
+}
+
+static damage_list::rect sprite_rect(const drag_pose& pose, const presenter::cursor_picture& pointer) {
+    return { pose.pointer_x - static_cast<int32_t>(pointer.hot_x), pose.pointer_y - static_cast<int32_t>(pointer.hot_y),
+             static_cast<int32_t>(pointer.width), static_cast<int32_t>(pointer.height) };
+}
+
+damage_list::rect drag_look::cursor_bounds(const drag_pose& pose, const presenter::cursor_picture& pointer) const {
+    return damage_list::union_of(bounds(pose), sprite_rect(pose, pointer));
+}
+
+/* The parts stack as the frames compose them, the shadow, the picture, the chip and the pointer, over nothing */
+void drag_look::cursor_picture(const drag_pose& pose, const presenter::cursor_picture& pointer,
+                               std::vector<uint32_t>& pixels, presenter::cursor_picture& out) const {
+    damage_list::rect area = cursor_bounds(pose, pointer);
+    pixels.assign(static_cast<size_t>(area.w) * static_cast<size_t>(area.h), 0u);
+    if (m_shadow && pose.shadow_opacity > 0) {
+        auto faded_ink = [&pose](uint32_t below, uint32_t ink) {
+            uint32_t alpha = stlxgfx_div255((ink >> decor::PIXEL_ALPHA_SHIFT) * pose.shadow_opacity);
+            return blend_onto_premultiplied(below, (ink & 0x00FFFFFFu) | alpha << decor::PIXEL_ALPHA_SHIFT);
+        };
+
+        blend_into(pixels, area, row_of(*m_shadow, 0), m_shadow->pitch() / sizeof(uint32_t), shadow_rect(pose.picture),
+                   faded_ink);
+    }
+
+    if (m_picture && pose.opacity > 0) {
+        auto faded = [&pose](uint32_t below, uint32_t pixel) {
+            return blend_faded_onto_premultiplied(below, pixel, pose.opacity);
+        };
+
+        blend_into(pixels, area, row_of(*m_picture, 0), m_picture->pitch() / sizeof(uint32_t), pose.picture, faded);
+    }
+
+    damage_list::rect chip = chip_at(pose);
+    if (chip.w > 0 && chip.h > 0) {
+        blend_into(pixels, area, row_of(*m_chip_picture, 0), m_chip_picture->pitch() / sizeof(uint32_t), chip,
+                   blend_onto_premultiplied);
+    }
+
+    blend_into(pixels, area, pointer.pixels, pointer.width, sprite_rect(pose, pointer), blend_onto_premultiplied);
+    for (uint32_t& pixel : pixels) {
+        pixel = to_straight(pixel);
+    }
+
+    out = { pixels.data(), static_cast<uint32_t>(area.w), static_cast<uint32_t>(area.h),
+            static_cast<uint32_t>(pose.pointer_x - area.x), static_cast<uint32_t>(pose.pointer_y - area.y) };
 }

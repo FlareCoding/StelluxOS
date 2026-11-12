@@ -259,6 +259,30 @@ struct dm_drop_ask {
     std::string mime_type;
 };
 
+/* What a drag's cursor picture shows: the look as drawn at `generation`, the places of its picture and chip from the
+ * pointer, 0 for a part it lacks, and the opacities */
+struct dm_drag_cursor_key {
+    uint32_t generation = 0;
+    int32_t  picture_dx = 0;
+    int32_t  picture_dy = 0;
+    int32_t  chip_dx = 0;
+    int32_t  chip_dy = 0;
+    uint32_t opacity = 0;
+    uint32_t shadow_opacity = 0;
+
+    bool operator==(const dm_drag_cursor_key&) const = default;
+};
+
+/* A drag's look with the pointer over it as one hardware cursor picture in straight alpha, what it shows, and what
+ * the last look at whether a cursor should carry the drag saw: the output it wanted, -1 for none, and the key */
+struct dm_drag_cursor {
+    std::vector<uint32_t>     pixels;
+    presenter::cursor_picture picture;
+    dm_drag_cursor_key        key;
+    int32_t                   tried_carrier = -1;
+    dm_drag_cursor_key        tried_key;
+};
+
 /* One connected application. Owns the socket, the partial-message
  * assembly buffer, and its windows. */
 struct dm_client {
@@ -680,11 +704,19 @@ private:
     damage_list::rect drag_output() const;
     drag_pose pose_drag(uint64_t now) const;
     void damage_drag();
+    void damage_drag_place();
     void repose_drag();
     void advance_drag_motion();
     void hide_drag();
     void remake_drag_look();
     void refresh_cursor_planes();
+    dm_drag_cursor_key drag_cursor_key() const;
+    int32_t drag_carrier_wanted() const;
+    bool may_carry_drag(const dm_output& out, const damage_list::rect& area) const;
+    bool show_drag_cursor(dm_output& out);
+    int32_t drag_carrier_shown() const;
+    void set_drag_carrier(int32_t carrier);
+    void refresh_drag_carry();
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
@@ -919,12 +951,16 @@ private:
     clipboard_item m_clipboard;
 
     /* The running drag, null while none runs, and what it shows from its start until its picture settles or snaps
-     * back: the look, how its picture moves apart from the pointer, and where the frames show it */
+     * back: the look, how its picture moves apart from the pointer, and where it shows */
     std::unique_ptr<dnd_session> m_dnd;
     drag_look                    m_drag_look;
     dnd_motion                   m_drag_motion;
     drag_pose                    m_drag_pose;
     bool                         m_drag_shown = false;
+
+    /* The output whose hardware cursor carries the drag's look with the pointer, -1 while the frames draw both */
+    int32_t        m_drag_carrier = -1;
+    dm_drag_cursor m_drag_cursor;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

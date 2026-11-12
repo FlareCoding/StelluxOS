@@ -27,6 +27,11 @@ static dnd_frame frame_of(const drag_pose& pose) {
     return { pose.picture, pose.opacity, pose.shadow_opacity };
 }
 
+static bool overlaps(const damage_list::rect& a, const damage_list::rect& b) {
+    damage_list::rect common = damage_list::intersect(a, b);
+    return common.w > 0 && common.h > 0;
+}
+
 /* The oldest queued handle, -1 when none is queued */
 static int take_queued_handle(dm_client& c) {
     if (c.queued_handle_count == 0) {
@@ -287,6 +292,7 @@ bool server::route_drag_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t
     move_cursor(x, y, SWP_CURSOR_ARROW);
     update_drag_target();
     repose_drag();
+    refresh_drag_carry();
 
     if (wheel != 0) {
         scroll_under_drag(x, y, wheel);
@@ -392,6 +398,7 @@ void server::refresh_drag_action() {
     }
 
     repose_drag();
+    refresh_drag_carry();
 }
 
 void server::scroll_under_drag(int32_t x, int32_t y, int16_t wheel) {
@@ -653,8 +660,14 @@ drag_pose server::pose_drag(uint64_t now) const {
     return pose;
 }
 
-/* Marks where the drag's look lies for the next frames to repaint */
+/* Marks where the drag's look lies for the next frames to repaint, unless a hardware cursor carries it */
 void server::damage_drag() {
+    if (m_drag_carrier < 0) {
+        damage_drag_place();
+    }
+}
+
+void server::damage_drag_place() {
     if (!m_drag_shown) {
         return;
     }
@@ -694,6 +707,7 @@ void server::advance_drag_motion() {
     }
 
     repose_drag();
+    refresh_drag_carry();
 }
 
 void server::hide_drag() {
@@ -718,10 +732,11 @@ void server::remake_drag_look() {
     m_drag_look.draw_picture(frame_maker(), *m_dnd);
     m_drag_look.draw_chip(chip_for(m_dnd->action, m_dnd->answer));
     repose_drag();
+    refresh_drag_carry();
 }
 
-/* While a drag follows the pointer every output draws the pointer into its frames, so it moves with the picture, and
- * once the drag stops each output takes back its hardware cursor where it can */
+/* While a drag follows the pointer each output draws the pointer into its frames, so it moves with the picture, unless
+ * its hardware cursor carries both, and once the drag stops each output takes back its hardware cursor where it can */
 void server::refresh_cursor_planes() {
     for (dm_output& out : m_outputs) {
         if (out.pres && out.cursor_overlaps) {
@@ -730,5 +745,144 @@ void server::refresh_cursor_planes() {
         }
     }
 
+    set_drag_carrier(drag_carrier_shown());
     damage_cursor();
+}
+
+/* What the drag's cursor picture shows in the pose the frames would show */
+dm_drag_cursor_key server::drag_cursor_key() const {
+    const drag_pose& pose = m_drag_pose;
+    dm_drag_cursor_key key;
+    key.generation = m_drag_look.generation();
+    if (pose.picture.w > 0 && pose.picture.h > 0) {
+        key.picture_dx = pose.picture.x - pose.pointer_x;
+        key.picture_dy = pose.picture.y - pose.pointer_y;
+    }
+
+    damage_list::rect chip = m_drag_look.chip_at(pose);
+    if (chip.w > 0 && chip.h > 0) {
+        key.chip_dx = chip.x - pose.pointer_x;
+        key.chip_dy = chip.y - pose.pointer_y;
+    }
+
+    key.opacity = pose.opacity;
+    key.shadow_opacity = pose.shadow_opacity;
+    return key;
+}
+
+/* Whether `out`'s hardware cursor may carry the drag's look and the pointer, which cover `area`: the picture rides the
+ * pointer after its lift, no overlay dims the frames, the look lies on no other output, and the cursor holds it */
+bool server::may_carry_drag(const dm_output& out, const damage_list::rect& area) const {
+    bool rides = drag_follows_pointer() && m_drag_motion.type == dnd_motion::kind::none && !m_power->active();
+    bool holds = out.pres && overlaps(area, out.place) &&
+                 out.pres->holds_cursor(static_cast<uint32_t>(area.w), static_cast<uint32_t>(area.h));
+    if (!rides || !holds) {
+        return false;
+    }
+
+    for (const dm_output& other : m_outputs) {
+        if (&other != &out && other.pres && overlaps(area, other.place)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* The output whose hardware cursor should carry the drag's look and the pointer now, -1 for none */
+int32_t server::drag_carrier_wanted() const {
+    presenter::cursor_picture pointer;
+    if (!m_drag_shown || !m_cursor.picture(m_cursor_shape, pointer)) {
+        return -1;
+    }
+
+    damage_list::rect area = m_drag_look.cursor_bounds(m_drag_pose, pointer);
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (may_carry_drag(m_outputs[output], area)) {
+            return static_cast<int32_t>(output);
+        }
+    }
+
+    return -1;
+}
+
+/* Shows the drag's look with the pointer on `out`'s hardware cursor where it may carry them, building the picture
+ * again once what it shows changed, or hides the cursor and returns false, so the frames draw both */
+bool server::show_drag_cursor(dm_output& out) {
+    presenter::cursor_picture pointer;
+    bool has_pointer = m_drag_shown && m_cursor.picture(m_cursor_shape, pointer);
+    damage_list::rect area = has_pointer ? m_drag_look.cursor_bounds(m_drag_pose, pointer) : damage_list::rect{};
+    bool shown = has_pointer && may_carry_drag(out, area);
+
+    dm_drag_cursor_key key = drag_cursor_key();
+    bool is_stale = m_drag_cursor.pixels.empty() || !(key == m_drag_cursor.key);
+    if (shown && is_stale) {
+        for (dm_output& showing : m_outputs) {
+            if (!m_drag_cursor.pixels.empty() && showing.cursor_picture == m_drag_cursor.pixels.data()) {
+                showing.cursor_picture = nullptr;
+            }
+        }
+
+        m_drag_look.cursor_picture(m_drag_pose, pointer, m_drag_cursor.pixels, m_drag_cursor.picture);
+        m_drag_cursor.key = key;
+    }
+
+    shown = shown && out.pres->move_cursor(m_cursor_x - out.place.x, m_cursor_y - out.place.y);
+    if (shown && out.cursor_picture != m_drag_cursor.pixels.data()) {
+        shown = out.pres->set_cursor(m_drag_cursor.picture);
+    }
+
+    if (!shown) {
+        out.pres->hide_cursor();
+    }
+
+    out.cursor_picture = shown ? m_drag_cursor.pixels.data() : nullptr;
+    return shown;
+}
+
+/* The output whose hardware cursor shows the drag's picture while the drag rides the pointer, -1 for none */
+int32_t server::drag_carrier_shown() const {
+    if (!drag_follows_pointer() || m_drag_cursor.pixels.empty()) {
+        return -1;
+    }
+
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        const dm_output& out = m_outputs[output];
+        if (out.pres && out.cursor_picture == m_drag_cursor.pixels.data()) {
+            return static_cast<int32_t>(output);
+        }
+    }
+
+    return -1;
+}
+
+/* Notes which output carries the drag's look, repainting its place as it moves between the frames and a cursor, and
+ * lets the cursor picture go once the drag no longer rides the pointer */
+void server::set_drag_carrier(int32_t carrier) {
+    bool was_carried = m_drag_carrier >= 0;
+    m_drag_carrier = carrier;
+    if (was_carried != (carrier >= 0)) {
+        damage_drag_place();
+    }
+
+    if (!drag_follows_pointer()) {
+        m_drag_cursor = {};
+    }
+}
+
+/* Moves the drag's look between the frames and a hardware cursor once the cursor that should carry it, or what that
+ * cursor would show, changed, so a motion that changes neither composes nothing and calls no cursor */
+void server::refresh_drag_carry() {
+    int32_t wanted = drag_carrier_wanted();
+    dm_drag_cursor_key key = drag_cursor_key();
+    bool is_unchanged = wanted == m_drag_cursor.tried_carrier && key == m_drag_cursor.tried_key;
+    if (is_unchanged) {
+        return;
+    }
+
+    m_drag_cursor.tried_carrier = wanted;
+    m_drag_cursor.tried_key = key;
+    if (wanted >= 0 || m_drag_carrier >= 0) {
+        refresh_cursor_planes();
+    }
 }
