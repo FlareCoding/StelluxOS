@@ -459,9 +459,9 @@ void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
 }
 
 /* Shows the pointer's shape on `out`'s hardware cursor, sending its picture unless it shows already, or hides the
- * cursor and returns false, as it does while a drag's picture moves in the frames */
+ * cursor and returns false, as it does while a drag's picture follows the pointer in the frames */
 bool server::show_hardware_cursor(dm_output& out) {
-    if (drag_shows()) {
+    if (drag_follows_pointer()) {
         out.pres->hide_cursor();
         out.cursor_picture = nullptr;
         return false;
@@ -920,6 +920,8 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
             m_press_serial = m_press_serial == UINT32_MAX ? 1 : m_press_serial + 1;
             m_press_serials[btn] = m_press_serial;
+            m_press_x[btn] = x;
+            m_press_y[btn] = y;
             rec.ch = m_press_serial;
         } else if (m_grab && all_released) {
             m_grab = nullptr;

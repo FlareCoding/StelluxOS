@@ -672,10 +672,16 @@ private:
     const clipboard_rep* drop_rep_for(dm_client& c, const dm_drop_ask& ask);
     bool send_drop_answer(dm_client& c);
     void send_drop_answers(dm_client& c);
+    void return_drag();
     bool drag_shows() const;
+    bool drag_follows_pointer() const;
+    bool drag_moves() const;
     uint32_t drag_opacity() const;
-    damage_list::rect drag_output();
+    damage_list::rect drag_output() const;
+    drag_pose pose_drag(uint64_t now) const;
     void damage_drag();
+    void repose_drag();
+    void advance_drag_motion();
     void hide_drag();
     void remake_drag_look();
     void refresh_cursor_planes();
@@ -846,9 +852,11 @@ private:
     uint8_t m_modifiers = 0;
 
     /* The serial the newest press routed to a window took, and each button's press serial while the button is held
-     * after a press routed to a window, else 0 */
+     * after a press routed to a window, else 0, with where that press landed */
     uint32_t m_press_serial = 0;
     uint32_t m_press_serials[DM_BUTTONS] = {};
+    int32_t  m_press_x[DM_BUTTONS] = {};
+    int32_t  m_press_y[DM_BUTTONS] = {};
 
     /* The system figures the shell shows, kept across rebuilds of the panels */
     stats_sampler m_stats;
@@ -910,9 +918,13 @@ private:
      * while empty */
     clipboard_item m_clipboard;
 
-    /* The running drag, null while none runs, and what it shows while it follows the pointer */
+    /* The running drag, null while none runs, and what it shows from its start until its picture settles or snaps
+     * back: the look, how its picture moves apart from the pointer, and where the frames show it */
     std::unique_ptr<dnd_session> m_dnd;
     drag_look                    m_drag_look;
+    dnd_motion                   m_drag_motion;
+    drag_pose                    m_drag_pose;
+    bool                         m_drag_shown = false;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

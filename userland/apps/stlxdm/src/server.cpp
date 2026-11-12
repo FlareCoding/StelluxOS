@@ -1050,7 +1050,7 @@ bool server::compose_pending(uint32_t output) const {
 
     bool is_main = output == m_layout.main_output();
     bool shell_pending = is_main && (m_panels->dirty() || m_power->animating());
-    bool animates = !m_animations.empty();
+    bool animates = !m_animations.empty() || drag_moves();
     return !out.damage.empty() || has_latch_work(output) || has_configure_work() || shell_pending || animates;
 }
 

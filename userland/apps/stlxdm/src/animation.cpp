@@ -1,4 +1,5 @@
 #include "animation.hpp"
+#include "easing.hpp"
 #include "server.hpp"
 
 #include <stlxgfx/blend.h>
@@ -8,10 +9,6 @@
 /* Maximize and restore ease over this, a move to or from the dock over this */
 constexpr uint64_t RESIZE_NS = 180000000ull;
 constexpr uint64_t DOCK_NS = 220000000ull;
-
-/* Eased progress runs from 0 to this */
-constexpr int64_t PROGRESS_ONE = 1 << 16;
-constexpr uint32_t PROGRESS_BITS = 16;
 
 /* As in compose.comp, a step counts 65536ths of a source pixel per output pixel, a position 256ths of a source
  * pixel, and an output pixel's four bilinear weights sum to 65536 */
@@ -67,20 +64,6 @@ struct axis_map {
 };
 
 } // namespace
-
-/* Cubic ease out of the elapsed share of `duration`, in `PROGRESS_ONE` units */
-static int64_t ease_out(uint64_t elapsed, uint64_t duration) {
-    if (elapsed >= duration) {
-        return PROGRESS_ONE;
-    }
-
-    int64_t remaining = PROGRESS_ONE - static_cast<int64_t>(elapsed * PROGRESS_ONE / duration);
-    return PROGRESS_ONE - ((remaining * remaining >> PROGRESS_BITS) * remaining >> PROGRESS_BITS);
-}
-
-static int32_t interpolate(int32_t from, int32_t to, int64_t progress) {
-    return from + static_cast<int32_t>(static_cast<int64_t>(to - from) * progress >> PROGRESS_BITS);
-}
 
 /* compose.comp's `scale_position` split into two source pixels and a weight as its `scale` splits it: where pixel
  * `offset` of `length` output pixels samples a span of `source_length` pixels */

@@ -1,7 +1,9 @@
 #include "dnd.hpp"
+#include "easing.hpp"
 #include "shell/chord.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 /* The control characters a target's words lose */
@@ -15,6 +17,20 @@ constexpr uint32_t FALLBACK_ORDER[] = { SWP_DND_MOVE, SWP_DND_COPY, SWP_DND_LINK
 constexpr int32_t CHIP_RIGHT_OF_POINTER = 18;
 constexpr int32_t CHIP_UNDER_PICTURE = 6;
 constexpr int32_t CHIP_BELOW_POINTER = 24;
+
+/* A lift, a settle and a fade take this, and a snap-back the base plus 1 ms per `SNAP_BACK_PX_PER_MS` pixels it
+ * travels, at most its most, with its shadow fading over its last `SNAP_BACK_SHADOW_NS` */
+constexpr uint64_t LIFT_NS = 120000000ull;
+constexpr uint64_t SETTLE_NS = 120000000ull;
+constexpr uint64_t SNAP_BACK_BASE_NS = 160000000ull;
+constexpr uint64_t SNAP_BACK_MAX_NS = 320000000ull;
+constexpr uint64_t SNAP_BACK_SHADOW_NS = 60000000ull;
+constexpr uint64_t NS_PER_MS = 1000000ull;
+constexpr double SNAP_BACK_PX_PER_MS = 12.0;
+
+/* A settle shrinks the picture by 4 percent, in `PROGRESS_ONE` units */
+constexpr int64_t SETTLE_SHRINK = PROGRESS_ONE * 4 / 100;
+constexpr int32_t FULL_OPACITY = 255;
 
 bool is_one_dnd_action(uint32_t action) {
     return action != 0 && (action & (action - 1)) == 0 && (action & ~DND_ACTIONS) == 0;
@@ -149,4 +165,109 @@ damage_list::rect place_chip(int32_t x, int32_t y, const damage_list::rect& pict
     }
 
     return chip;
+}
+
+dnd_motion lift_motion(const damage_list::rect& item, uint64_t now_ns) {
+    dnd_motion motion;
+    motion.type = dnd_motion::kind::lift;
+    motion.start_ns = now_ns;
+    motion.duration_ns = LIFT_NS;
+    motion.from = item;
+
+    return motion;
+}
+
+dnd_motion settle_motion(const dnd_frame& shown, int32_t x, int32_t y, uint64_t now_ns) {
+    dnd_motion motion;
+    motion.type = dnd_motion::kind::settle;
+    motion.start_ns = now_ns;
+    motion.duration_ns = SETTLE_NS;
+    motion.from = shown.picture;
+
+    motion.from_opacity = shown.opacity;
+    motion.pointer_x = x;
+    motion.pointer_y = y;
+    return motion;
+}
+
+dnd_motion snap_back_motion(const dnd_frame& shown, const damage_list::rect& item, uint64_t now_ns) {
+    dnd_motion motion;
+    motion.start_ns = now_ns;
+    motion.from = shown.picture;
+    motion.from_opacity = shown.opacity;
+    if (item.w <= 0 || item.h <= 0) {
+        motion.type = dnd_motion::kind::fade;
+        motion.duration_ns = SETTLE_NS;
+        return motion;
+    }
+
+    double dx = static_cast<double>(item.x - shown.picture.x);
+    double dy = static_cast<double>(item.y - shown.picture.y);
+    uint64_t travel_ns = static_cast<uint64_t>(std::lround(std::hypot(dx, dy) / SNAP_BACK_PX_PER_MS * NS_PER_MS));
+
+    motion.type = dnd_motion::kind::snap_back;
+    motion.duration_ns = std::min(SNAP_BACK_BASE_NS + travel_ns, SNAP_BACK_MAX_NS);
+    motion.to = item;
+    return motion;
+}
+
+bool has_dnd_motion_ended(const dnd_motion& motion, uint64_t now_ns) {
+    return motion.type == dnd_motion::kind::none || now_ns >= motion.start_ns + motion.duration_ns;
+}
+
+static uint32_t scale_opacity(uint32_t opacity, int64_t share) {
+    return static_cast<uint32_t>(static_cast<int64_t>(opacity) * share >> PROGRESS_BITS);
+}
+
+static int32_t scale_length(int32_t length, int64_t scale) {
+    return static_cast<int32_t>((length * scale + PROGRESS_ONE / 2) >> PROGRESS_BITS);
+}
+
+/* `r` scaled by `scale` in `PROGRESS_ONE` units about the point (`x`, `y`), which stays where it is */
+static damage_list::rect scaled_about(const damage_list::rect& r, int32_t x, int32_t y, int64_t scale) {
+    return { x + scale_length(r.x - x, scale), y + scale_length(r.y - y, scale), scale_length(r.w, scale),
+             scale_length(r.h, scale) };
+}
+
+static damage_list::rect interpolate_rect(const damage_list::rect& from, const damage_list::rect& to, int64_t progress) {
+    return { interpolate(from.x, to.x, progress), interpolate(from.y, to.y, progress),
+             interpolate(from.w, to.w, progress), interpolate(from.h, to.h, progress) };
+}
+
+/* A lift and a snap-back ease their place, a settle and a fade keep (1 - t)^3 of their opacity, the eased curve's
+ * remainder, and a snap-back's shadow fades out linearly over its last stretch so the picture lands as its item */
+dnd_frame step_dnd_motion(const dnd_motion& motion, uint64_t now_ns, const damage_list::rect& at_pointer,
+                          uint32_t opacity) {
+    uint64_t elapsed = now_ns > motion.start_ns ? std::min(now_ns - motion.start_ns, motion.duration_ns) : 0;
+    int64_t progress = motion.type == dnd_motion::kind::none ? PROGRESS_ONE : ease_out(elapsed, motion.duration_ns);
+    dnd_frame frame = { at_pointer, opacity, opacity };
+    switch (motion.type) {
+    case dnd_motion::kind::none:
+        break;
+    case dnd_motion::kind::lift:
+        frame.picture = interpolate_rect(motion.from, at_pointer, progress);
+        frame.shadow_opacity = scale_opacity(opacity, progress);
+        break;
+    case dnd_motion::kind::settle:
+    case dnd_motion::kind::fade: {
+        bool shrinks = motion.type == dnd_motion::kind::settle;
+        int64_t scale = PROGRESS_ONE - (shrinks ? SETTLE_SHRINK * progress >> PROGRESS_BITS : 0);
+        frame.picture = scaled_about(motion.from, motion.pointer_x, motion.pointer_y, scale);
+        frame.opacity = scale_opacity(motion.from_opacity, PROGRESS_ONE - progress);
+        frame.shadow_opacity = frame.opacity;
+        break;
+    }
+    case dnd_motion::kind::snap_back: {
+        frame.picture = interpolate_rect(motion.from, motion.to, progress);
+        frame.opacity = static_cast<uint32_t>(interpolate(static_cast<int32_t>(motion.from_opacity), FULL_OPACITY,
+                                                          progress));
+        uint64_t left = motion.duration_ns - elapsed;
+        int64_t shadow_share = left >= SNAP_BACK_SHADOW_NS ? PROGRESS_ONE
+                                                           : static_cast<int64_t>(left * PROGRESS_ONE / SNAP_BACK_SHADOW_NS);
+        frame.shadow_opacity = scale_opacity(frame.opacity, shadow_share);
+        break;
+    }
+    }
+
+    return frame;
 }
