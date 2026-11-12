@@ -403,6 +403,7 @@ enum {
     SWP_EV_FOCUS_OUT,
     SWP_EV_CLOSE,
     SWP_EV_POPUP_DISMISSED,
+    SWP_EV_PASTE,           /* paste the clipboard as the toolkit's own paste key would */
 };
 
 /* One fixed shape for every event kind keeps parsing a loop. Key
