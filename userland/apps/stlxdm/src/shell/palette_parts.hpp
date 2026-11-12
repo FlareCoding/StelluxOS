@@ -15,6 +15,7 @@ constexpr int32_t HEAD_HEIGHT = 28;
 constexpr int32_t HEAD_PADDING_X = 10;
 constexpr int32_t HEAD_PADDING_BOTTOM = 5;
 constexpr int32_t SUBTITLE_LINE_HEIGHT = 16;
+constexpr int32_t MARK_RADIUS = 2;
 
 constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
 

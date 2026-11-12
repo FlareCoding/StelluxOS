@@ -142,6 +142,18 @@ static void check_reads() {
     unlink(path);
 }
 
+static void check_folded_finds() {
+    const std::string_view text = "git Pull origin, then PULL again \xC3\x89t\xC3\xA9";
+    check(find_folded(text, "pull") == 4, "a query finds its first occurrence in any ASCII case");
+    check(find_folded(text, "pull", 5) == 22, "a search from past the first occurrence finds the next");
+    check(find_folded(text, "push") == std::string_view::npos, "a query the text lacks is not found");
+
+    check(find_folded(text, "") == std::string_view::npos, "an empty query is never found");
+    check(find_folded("pul", "pull") == std::string_view::npos, "a query longer than the text is not found");
+    check(find_folded(text, "\xC3\x89t\xC3\xA9") == 33, "bytes past ASCII match exactly");
+    check(find_folded(text, "\xC3\xA9t\xC3\xA9") == std::string_view::npos, "bytes past ASCII match in no other case");
+}
+
 static void check_uri_lists() {
     std::string list = file_uri_list("/tmp/a b%c") + "# a comment\r\nhttps://example.com/x\r\nfile:///etc/hosts\n";
     check(uri_list_paths(list) == std::vector<std::string>{ "/tmp/a b%c", "/etc/hosts" },
@@ -284,6 +296,8 @@ int main() {
     check_items();
     check_types();
     check_reads();
+
+    check_folded_finds();
     check_uri_lists();
     check_png_sizes();
 

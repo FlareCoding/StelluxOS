@@ -125,4 +125,7 @@ bool png_size(std::string_view header, uint32_t* width, uint32_t* height);
 /* A representation's first `max` bytes, empty when the kernel refuses to map its object */
 std::string read_bytes(const clipboard_rep& rep, uint64_t max);
 
+/* Where `query` first occurs in `text` at or after `from`, ignoring ASCII case, npos when it does not or is empty */
+size_t find_folded(std::string_view text, std::string_view query, size_t from = 0);
+
 #endif

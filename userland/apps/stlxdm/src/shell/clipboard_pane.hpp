@@ -97,8 +97,13 @@ public:
     explicit clipboard_pane(clipboard_source source);
     ~clipboard_pane() override;
 
-    /* Reads the history again, keeping the selected entry selected while it is still listed */
+    /* Reads the history again, keeping the selected entry selected while it is still listed, else the one in its
+     * place */
     void refresh();
+
+    /* Lists only the entries whose text or file paths hold `query` in any case, the first selected, and every entry
+     * while it is empty */
+    void search(std::string query);
 
     /* The clipboard's own keys: moving through the entries, Enter, Ctrl Enter, Ctrl P, Delete, Ctrl Shift Delete,
      * Ctrl K, and Esc while Ctrl K's list or the clear question is open. False for any other key. */
@@ -109,6 +114,9 @@ public:
     std::string placeholder() const;
 
 private:
+    void list(uint64_t selected_id);
+    bool matches(const shown_entry& entry) const;
+    const shown_entry& listed(size_t index) const { return m_entries[m_listed[index]]; }
     void build();
     void build_menu();
     void select(size_t index);
@@ -120,8 +128,12 @@ private:
     std::vector<clip_action> actions_of(const shown_entry& entry);
     size_t unpinned_count() const;
 
-    clipboard_source         m_source;
+    clipboard_source m_source;
+
+    /* Every entry, the query, and the entries it lists as indexes into them, the selected one by its place there */
     std::vector<shown_entry> m_entries;
+    std::string              m_query;
+    std::vector<size_t>      m_listed;
     size_t                   m_selected = 0;
     clip_list*               m_list = nullptr;
     clip_preview*            m_preview = nullptr;
