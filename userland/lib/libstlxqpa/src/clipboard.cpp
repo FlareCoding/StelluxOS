@@ -165,12 +165,8 @@ QByteArray QStelluxMimeData::fetch(const QString& mime_type) const {
     }
 
     // The fetch waits for stlxdm's answer, queueing whatever events arrive meanwhile
-    char* bytes = nullptr;
-    long length = m_read(mime_type.toUtf8().constData(), &bytes);
+    QByteArray data = m_read(mime_type.toUtf8().constData());
     QStelluxIntegration::instance()->schedule_queued_events();
-
-    QByteArray data = length > 0 ? QByteArray(bytes, length) : QByteArray();
-    std::free(bytes);
     m_fetched.insert(mime_type, data);
 
     return data;
@@ -178,8 +174,13 @@ QByteArray QStelluxMimeData::fetch(const QString& mime_type) const {
 
 QStelluxClipboard::QStelluxClipboard(stlxwin_conn* connection)
     : m_connection(connection)
-    , m_item([connection](const char* mime_type, char** out_data) {
-        return stlxwin_clipboard_get_type(connection, mime_type, out_data);
+    , m_item([connection](const char* mime_type) {
+        // Read in place and copied once, into the bytes Qt keeps
+        const void* bytes = nullptr;
+        long length = stlxwin_clipboard_map_type(connection, mime_type, &bytes);
+        QByteArray data = length > 0 ? QByteArray(static_cast<const char*>(bytes), length) : QByteArray();
+        stlxwin_clipboard_unmap(bytes, length > 0 ? static_cast<size_t>(length) : 0);
+        return data;
     }) {
     // The watch waits for the clipboard's types, queueing whatever events arrive meanwhile
     if (stlxwin_clipboard_watch(m_connection) == 0) {
