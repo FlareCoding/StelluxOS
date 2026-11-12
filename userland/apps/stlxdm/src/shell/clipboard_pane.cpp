@@ -50,11 +50,11 @@ constexpr int32_t CHOICE_HEIGHT = 44;
 constexpr int32_t CHOICE_PADDING_X = 12;
 constexpr int32_t PIN_GLYPH_SIZE = 16;
 
-/* The question Clear Unpinned asks in place, on cream at .03 inside a faint ring */
-constexpr int32_t QUESTION_HEIGHT = 58;
-constexpr int32_t QUESTION_MARGIN = 4;
-constexpr int32_t QUESTION_PADDING_X = 12;
-constexpr uint32_t QUESTION_FILL = 0x08FFF0D7;
+/* Clear Unpinned's question and a refused pin's note, said in place on cream at .03 inside a faint ring */
+constexpr int32_t STRIP_HEIGHT = 58;
+constexpr int32_t STRIP_MARGIN = 4;
+constexpr int32_t STRIP_PADDING_X = 12;
+constexpr uint32_t STRIP_FILL = 0x08FFF0D7;
 
 /* A preview shows a text's first 64 KB, and a row names a text by its first line's first bytes */
 constexpr uint64_t PREVIEW_BYTES_MAX = 64 * 1024;
@@ -264,30 +264,30 @@ private:
     bool                                 m_is_selected = false;
 };
 
-/* Clear Unpinned's question, asked above the entries before anything goes */
-class clip_question : public ui::widget {
+/* A question or a refusal above the entries: Clear Unpinned asking before anything goes, or a pin the pins' budget
+ * refused */
+class clip_strip : public ui::widget {
 public:
-    explicit clip_question(size_t count)
-        : m_ask("Clear " + std::to_string(count) + (count == 1 ? " unpinned item?" : " unpinned items?"),
-                STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
-          m_note("Pinned items stay.", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {}
+    clip_strip(const std::string& title, const std::string& note)
+        : m_title(title, STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
+          m_note(note, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {}
 
     ui::size measure(ui::size avail) override {
-        return { avail.w, QUESTION_HEIGHT };
+        return { avail.w, STRIP_HEIGHT };
     }
 
     void paint(ui::painter& p) override {
-        ui::rect strip = { 0, QUESTION_MARGIN, m_frame.w, QUESTION_HEIGHT - 2 * QUESTION_MARGIN };
-        p.rounded_rect(strip, STLXTHEME_CONTROL_RADIUS, QUESTION_FILL);
+        ui::rect strip = { 0, STRIP_MARGIN, m_frame.w, STRIP_HEIGHT - 2 * STRIP_MARGIN };
+        p.rounded_rect(strip, STLXTHEME_CONTROL_RADIUS, STRIP_FILL);
         p.rounded_stroke(strip, STLXTHEME_CONTROL_RADIUS, STLXTHEME_LINE_SUBTLE);
 
         int32_t top = strip.y + (strip.h - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
-        m_ask.draw(p, QUESTION_PADDING_X, top, ENTRY_TITLE_HEIGHT);
-        m_note.draw(p, QUESTION_PADDING_X, top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+        m_title.draw(p, STRIP_PADDING_X, top, ENTRY_TITLE_HEIGHT);
+        m_note.draw(p, STRIP_PADDING_X, top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
     }
 
 private:
-    text_picture m_ask;
+    text_picture m_title;
     text_picture m_note;
 };
 
@@ -1177,8 +1177,15 @@ void clipboard_pane::build() {
     int64_t now_ns = monotonic_ns();
     int32_t top = 0;
     if (m_is_asking) {
-        m_list->content()->add<clip_question>(unpinned_count());
-        top += QUESTION_HEIGHT;
+        size_t count = unpinned_count();
+        std::string ask = "Clear " + std::to_string(count) + (count == 1 ? " unpinned item?" : " unpinned items?");
+        m_list->content()->add<clip_strip>(ask, "Pinned items stay.");
+        top += STRIP_HEIGHT;
+    } else if (m_is_pin_refused) {
+        std::string limits = std::to_string(m_source.history->item_limit()) + " items and " +
+                             std::to_string(m_source.history->byte_limit() >> 20) + " MB";
+        m_list->content()->add<clip_strip>("Pinned items are full", "Up to " + limits + ". Unpin one first.");
+        top += STRIP_HEIGHT;
     }
 
     for (size_t i = 0; i < m_listed.size(); i++) {
@@ -1302,7 +1309,7 @@ std::vector<clip_action> clipboard_pane::actions_of(const shown_entry& entry) {
 
     actions.push_back({ "Copy", actions.empty() ? "Enter" : "Ctrl Enter", [this]() { choose(false); } });
     actions.push_back({ entry.is_pinned ? "Unpin" : "Pin", "Ctrl P", [this, id, pinned = entry.is_pinned]() {
-        m_source.pin(id, !pinned);
+        toggle_pin(id, pinned);
     } });
     actions.push_back({ "Delete", "Delete", [this, id]() { m_source.remove(id); } });
     if (unpinned_count() > 0) {
@@ -1313,6 +1320,17 @@ std::vector<clip_action> clipboard_pane::actions_of(const shown_entry& entry) {
     }
 
     return actions;
+}
+
+/* A pin the pins' budget refuses says so above the entries until the next key, and an unpin always goes through */
+void clipboard_pane::toggle_pin(uint64_t id, bool is_pinned) {
+    if (!is_pinned && !m_source.history->can_pin(id)) {
+        m_is_pin_refused = true;
+        build();
+        return;
+    }
+
+    m_source.pin(id, !is_pinned);
 }
 
 size_t clipboard_pane::unpinned_count() const {
@@ -1378,6 +1396,11 @@ bool clipboard_pane::on_key(const ui::key_event& e) {
         return on_question_key(e);
     }
 
+    if (m_is_pin_refused) {
+        m_is_pin_refused = false;
+        build();
+    }
+
     bool is_ctrl = (e.modifiers & MOD_CTRL) != 0;
     bool is_shift = (e.modifiers & MOD_SHIFT) != 0;
     const shown_entry& entry = listed(m_selected);
@@ -1411,7 +1434,7 @@ bool clipboard_pane::on_key(const ui::key_event& e) {
     }
 
     if (is_ctrl && e.usage == HID_USAGE_P) {
-        m_source.pin(entry.id, !entry.is_pinned);
+        toggle_pin(entry.id, entry.is_pinned);
         return true;
     }
 
@@ -1452,8 +1475,8 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
     return items;
 }
 
-/* The count of entries and the bytes the budget counts against its limit, or how many of them a search lists while
- * the searcher may find more */
+/* The count of entries and the bytes the history's budget counts against its limit, then what the pins hold against
+ * theirs, or how many entries a search lists while the searcher may find more */
 std::string clipboard_pane::footer_end() const {
     if (!m_query.empty()) {
         std::string listed = std::to_string(m_listed.size()) + " of " + std::to_string(m_entries.size());
@@ -1466,8 +1489,10 @@ std::string clipboard_pane::footer_end() const {
         return items;
     }
 
-    uint64_t limit_mb = m_source.history->byte_limit() >> 20;
-    return items + ", " + size_text(m_source.history->kept_bytes()) + " of " + std::to_string(limit_mb) + " MB";
+    const clipboard_history& history = *m_source.history;
+    std::string limit = " of " + std::to_string(history.byte_limit() >> 20) + " MB";
+    std::string kept = items + ", " + size_text(history.kept_bytes()) + limit;
+    return history.pinned_count() == 0 ? kept : kept + ", pins " + size_text(history.pinned_bytes()) + limit;
 }
 
 std::string clipboard_pane::placeholder() const {

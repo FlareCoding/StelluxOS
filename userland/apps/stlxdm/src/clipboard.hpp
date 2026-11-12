@@ -61,9 +61,9 @@ using clipboard_matcher = std::function<bool(const clipboard_item& a, const clip
  * refused mapping counting as different */
 bool same_content(const clipboard_item& a, const clipboard_item& b);
 
-/* The clipboard and the copies it replaced, newest first, within a budget of entries and bytes besides the current
- * one. A private copy stays out, the same content copied again moves its entry up under its id, and pinned entries
- * stay. */
+/* The clipboard and the copies it replaced, newest first. Unpinned entries besides the current one stay within a budget
+ * of entries and bytes, and pinned entries stay within a budget of the same size of their own, so pins never starve the
+ * history. A private copy stays out, and the same content copied again moves its entry up under its id. */
 class clipboard_history {
 public:
     explicit clipboard_history(clipboard_matcher matches);
@@ -86,16 +86,23 @@ public:
 
     /* Makes a kept entry current again as a fresh copy */
     void make_current(uint64_t id, int64_t now_ns);
-    void set_pinned(uint64_t id, bool pinned);
+
+    /* Whether pinning entry `id` keeps the pins within their budget, and the pin or unpin, false when it is refused */
+    bool can_pin(uint64_t id) const;
+    bool set_pinned(uint64_t id, bool pinned);
 
     /* Removing the current entry empties the clipboard, so a deleted copy leaves it too */
     void remove(uint64_t id);
     size_t clear_unpinned();
     void clear();
 
-    /* What the budget counts: every listed entry but the current one */
+    /* What the history's budget counts: every unpinned entry but the current one */
     size_t kept_count() const;
     uint64_t kept_bytes() const;
+
+    /* What the pins' budget counts: every pinned entry, the current one included */
+    size_t pinned_count() const;
+    uint64_t pinned_bytes() const;
 
 private:
     void retire_current();
