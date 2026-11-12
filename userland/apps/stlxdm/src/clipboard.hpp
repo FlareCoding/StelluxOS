@@ -16,7 +16,8 @@ struct clipboard_rep {
     std::string mime_type;
     uint64_t    len = 0;
     int         object = -1;
-    uint64_t    held = 0;  /* the bytes its object held when it arrived, 0 when only its length is known */
+    uint64_t    held = 0;         /* the bytes its object held when it arrived, 0 when only its length is known */
+    uint64_t    fingerprint = 0;  /* its length and sampled bytes hashed, 0 until its item takes fingerprints */
 
     clipboard_rep() = default;
     clipboard_rep(std::string type, uint64_t length, int handle, uint64_t held_bytes = 0);
@@ -69,6 +70,10 @@ public:
      * object */
     uint64_t held() const;
 
+    /* Hashes each representation's length and sampled bytes once, so telling most unlike copies apart reads nothing
+     * more of either */
+    void take_fingerprints();
+
 private:
     std::vector<clipboard_rep> m_reps;
     uint32_t                   m_flags = 0;
@@ -87,8 +92,11 @@ struct clipboard_entry {
 /* Whether two items hold the same content, which the server reads from their objects */
 using clipboard_matcher = std::function<bool(const clipboard_item& a, const clipboard_item& b)>;
 
-/* The server's matcher: the same types and lengths in order, and the same bytes read through read-only mappings, a
- * refused mapping counting as different */
+/* A hash of `len` and of up to 16 blocks of 4 KB spread across the object, which covers all of one up to 64 KB */
+uint64_t sampled_fingerprint(int object, uint64_t len);
+
+/* The server's matcher: the same types and lengths in order, fingerprints that do not differ, and the same bytes read
+ * through read-only mappings, a refused mapping counting as different */
 bool same_content(const clipboard_item& a, const clipboard_item& b);
 
 /* The clipboard and the copies it replaced, newest first. Unpinned entries besides the current one stay within a budget

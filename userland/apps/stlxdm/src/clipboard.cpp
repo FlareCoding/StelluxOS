@@ -11,6 +11,10 @@
 /* How many changes of the current item an undo can reach back through */
 constexpr size_t BECAME_CURRENT_MAX = 1024;
 
+/* A fingerprint hashes up to this many blocks of this many bytes, spread across a representation */
+constexpr uint64_t FINGERPRINT_BLOCKS = 16;
+constexpr uint64_t FINGERPRINT_BLOCK = 4096;
+
 clipboard_rep::clipboard_rep(std::string type, uint64_t length, int handle, uint64_t held_bytes)
     : mime_type(std::move(type)), len(length), object(handle), held(held_bytes) {
 }
@@ -22,7 +26,8 @@ clipboard_rep::~clipboard_rep() {
 }
 
 clipboard_rep::clipboard_rep(clipboard_rep&& other) noexcept
-    : mime_type(std::move(other.mime_type)), len(other.len), object(other.object), held(other.held) {
+    : mime_type(std::move(other.mime_type)), len(other.len), object(other.object), held(other.held),
+      fingerprint(other.fingerprint) {
     other.object = -1;
 }
 
@@ -37,8 +42,10 @@ clipboard_rep& clipboard_rep::operator=(clipboard_rep&& other) noexcept {
 
     mime_type = std::move(other.mime_type);
     len = other.len;
-    object = other.object;
     held = other.held;
+    fingerprint = other.fingerprint;
+
+    object = other.object;
     other.object = -1;
     return *this;
 }
@@ -93,6 +100,12 @@ uint64_t clipboard_item::held() const {
     return total;
 }
 
+void clipboard_item::take_fingerprints() {
+    for (clipboard_rep& rep : m_reps) {
+        rep.fingerprint = sampled_fingerprint(rep.object, rep.len);
+    }
+}
+
 const clipboard_rep* clipboard_item::find(std::string_view mime_type) const {
     for (const clipboard_rep& rep : m_reps) {
         if (rep.mime_type == mime_type) {
@@ -116,6 +129,40 @@ const clipboard_rep* clipboard_item::find_answer(std::string_view mime_type) con
     }
 
     return nullptr;
+}
+
+static uint64_t fnv1a(uint64_t hash, const uint8_t* bytes, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        hash = (hash ^ bytes[i]) * 0x100000001B3ull;
+    }
+
+    return hash;
+}
+
+/* Each block maps only the pages it touches, since mapping a whole object installs every page of it */
+uint64_t sampled_fingerprint(int object, uint64_t len) {
+    uint64_t hash = fnv1a(0xCBF29CE484222325ull, reinterpret_cast<const uint8_t*>(&len), sizeof(len));
+    if (object < 0 || len == 0) {
+        return hash;
+    }
+
+    uint64_t page = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
+    uint64_t block = std::min(len, FINGERPRINT_BLOCK);
+    uint64_t blocks = std::min(FINGERPRINT_BLOCKS, (len + FINGERPRINT_BLOCK - 1) / FINGERPRINT_BLOCK);
+    for (uint64_t i = 0; i < blocks; i++) {
+        uint64_t start = blocks == 1 ? 0 : (len - block) * i / (blocks - 1);
+        uint64_t mapped_from = start / page * page;
+        size_t mapped_len = static_cast<size_t>(start - mapped_from + block);
+        void* mapped = mmap(nullptr, mapped_len, PROT_READ, MAP_SHARED, object, static_cast<off_t>(mapped_from));
+        if (mapped == MAP_FAILED) {
+            return 0;
+        }
+
+        hash = fnv1a(hash, static_cast<const uint8_t*>(mapped) + (start - mapped_from), static_cast<size_t>(block));
+        munmap(mapped, mapped_len);
+    }
+
+    return hash == 0 ? 1 : hash;
 }
 
 /* Compares two objects' first `len` bytes through read-only mappings, a refused mapping counting as different */
@@ -147,7 +194,8 @@ bool same_content(const clipboard_item& a, const clipboard_item& b) {
             return false;
         }
 
-        if (x.len > 0 && !same_bytes(x.object, y.object, x.len)) {
+        bool are_unlike = x.fingerprint != 0 && y.fingerprint != 0 && x.fingerprint != y.fingerprint;
+        if (are_unlike || (x.len > 0 && !same_bytes(x.object, y.object, x.len))) {
             return false;
         }
     }

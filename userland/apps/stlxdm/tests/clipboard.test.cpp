@@ -313,6 +313,50 @@ static void check_same_content() {
     check(!same_content(hello, piped), "an object that refuses its mapping counts as different");
 }
 
+static clipboard_item fingerprinted(const std::string& text) {
+    clipboard_item item = item_holding(text);
+    item.take_fingerprints();
+    return item;
+}
+
+/* A fingerprint covers a short text whole and a long one by spread samples, and only tells unlike items apart, so a
+ * difference between samples still reaches the bytes */
+static void check_fingerprints() {
+    std::string sample(1 << 20, 'a');
+    int first = object_holding(sample);
+    int second = object_holding(sample);
+
+    check(sampled_fingerprint(first, sample.size()) == sampled_fingerprint(second, sample.size()),
+          "the same bytes give the same fingerprint");
+    check(sampled_fingerprint(first, sample.size()) != sampled_fingerprint(first, sample.size() - 1),
+          "a different length gives a different fingerprint");
+    close(first);
+    close(second);
+
+    std::string short_text(10000, 'b');
+    std::string short_changed = short_text;
+    short_changed[5000] = 'c';
+
+    int whole = object_holding(short_text);
+    int changed = object_holding(short_changed);
+    check(sampled_fingerprint(whole, short_text.size()) != sampled_fingerprint(changed, short_changed.size()),
+          "a text up to 64 KB is fingerprinted whole");
+    close(whole);
+    close(changed);
+
+    std::string at_start = sample;
+    at_start[0] = 'z';
+    check(!same_content(fingerprinted(sample), fingerprinted(at_start)), "items whose samples differ are unlike");
+
+    std::string between = sample;
+    between[100 * 1024 + 2048] = 'z';
+    clipboard_item kept = fingerprinted(sample);
+    clipboard_item recopy = fingerprinted(between);
+    check(kept.reps()[0].fingerprint == recopy.reps()[0].fingerprint && !same_content(kept, recopy),
+          "items alike in their samples are still compared byte by byte");
+    check(same_content(kept, fingerprinted(sample)), "fingerprinted items holding the same bytes match");
+}
+
 /* The server's own matcher, so only the same bytes merge entries */
 static void check_history_recopies() {
     clipboard_history history(same_content);
@@ -615,6 +659,7 @@ int main() {
     check_uri_lists();
     check_png_sizes();
     check_same_content();
+    check_fingerprints();
 
     check_history_order();
     check_history_recopies();
