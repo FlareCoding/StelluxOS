@@ -1650,9 +1650,9 @@ bool server::compose_on_cpu(dm_output& out, const presenter::target& t, const da
         return false;
     }
 
-    /* A capture overlay shows the frozen frames in place of the scene */
+    /* A capture overlay or a preview shows the frozen frames in place of the scene */
     auto compose_local = [&](const damage_list::rect& r) {
-        if (m_capture.active()) {
+        if (freezes()) {
             draw_capture_rect(out, back, r);
         } else {
             compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
@@ -1698,7 +1698,7 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
         }
     }
 
-    if (m_capture.active()) {
+    if (freezes()) {
         return capture_on_gpu(out, t, rects);
     }
 
@@ -1762,9 +1762,15 @@ bool server::compose_capture(dm_output& out) {
     return true;
 }
 
-/* Draws the capture overlay over `r` of `out`, in its pixels, then the pointer when the frames draw it */
+/* Draws the capture overlay or the preview over `r` of `out`, in its pixels, then the pointer when the frames draw it */
 void server::draw_capture_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r) {
-    m_capture.draw(static_cast<uint32_t>(&out - m_outputs), back, r);
+    uint32_t output = static_cast<uint32_t>(&out - m_outputs);
+    if (m_preview.active()) {
+        m_preview.draw(output, back, r);
+    } else {
+        m_capture.draw(output, back, r);
+    }
+
     if (out.cursor_in_frames) {
         m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, r);
     }
@@ -2315,8 +2321,8 @@ void server::compare_with_cpu(dm_output& out, uint32_t pitch, bool is_collapse) 
     if (is_collapse) {
         /* The faded collapse backdrop covers every pixel opaquely, so no pixel may round apart */
         draw_collapse_frame(out, frame);
-    } else if (m_capture.active()) {
-        /* The capture overlay draws every pixel opaquely too */
+    } else if (freezes()) {
+        /* The capture overlay and the preview draw every pixel opaquely too */
         for (const damage_list::rect& r : pictures.rects) {
             draw_capture_rect(out, frame, r);
         }

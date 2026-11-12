@@ -498,10 +498,10 @@ public:
     /* The bar clock's poll bound and tick, frozen while an overlay
      * dims the desktop. */
     int64_t clock_timeout_ns(uint64_t now_ns) const {
-        return m_power->active() || m_capture.active() ? -1 : m_panels->clock_timeout_ns(now_ns);
+        return m_power->active() || freezes() ? -1 : m_panels->clock_timeout_ns(now_ns);
     }
     void clock_tick() {
-        if (!m_power->active() && !m_capture.active()) {
+        if (!m_power->active() && !freezes()) {
             m_panels->clock_tick();
         }
     }
@@ -527,9 +527,19 @@ public:
     int capture_fd() const { return m_capture_encoder.wake_fd(); }
     void pump_captures();
 
-    /* The poll bound and tick of the capture thumbnails' time */
-    int64_t thumbnail_timeout_ns(uint64_t now_ns) const { return m_thumbnails.timeout_ns(now_ns); }
-    void thumbnail_tick(uint64_t now_ns) { m_thumbnails.tick(now_ns, m_damage); }
+    /* The poll bound and tick of the capture thumbnails' time, held while a preview shows one */
+    int64_t thumbnail_timeout_ns(uint64_t now_ns) const {
+        return m_preview.active() ? -1 : m_thumbnails.timeout_ns(now_ns);
+    }
+
+    void thumbnail_tick(uint64_t now_ns) {
+        if (!m_preview.active()) {
+            m_thumbnails.tick(now_ns, m_damage);
+        }
+    }
+
+    /* Whether a capture overlay or a preview shows frozen frames in place of the scene */
+    bool freezes() const { return m_capture.active() || m_preview.active(); }
 
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
@@ -673,6 +683,10 @@ private:
     void capture_window_alone(dm_window& w, bool has_shadow);
     void encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output);
     void discard_capture(const thumbnail_click& click);
+    bool freeze_outputs(std::vector<frozen_frame>& frames);
+    void open_preview(uint64_t job);
+    void close_preview();
+    void discard_preview();
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
@@ -1031,8 +1045,10 @@ private:
     uint64_t        m_next_capture = 1;
     bool            m_composes_freeze = false;
 
-    /* The cards of the latest captures, which a freeze leaves out */
+    /* The cards of the latest captures, which a freeze leaves out, and a capture's preview */
     capture_thumbnails m_thumbnails;
+    capture_preview    m_preview;
+    uint64_t           m_preview_job = 0;  /* the capture the open preview shows */
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

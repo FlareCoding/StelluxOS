@@ -19,6 +19,7 @@ constexpr uint8_t HID_GUI =
 
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
 constexpr uint16_t HID_USAGE_SPACE = 0x2C;
+constexpr uint16_t HID_USAGE_DELETE = 0x4C;
 
 constexpr char DIGIT_PLAIN[] = "1234567890";
 constexpr char DIGIT_SHIFT[] = "!@#$%^&*()";
@@ -333,6 +334,16 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
+    if (m_preview.active()) {
+        if (is_escape_press) {
+            close_preview();
+        } else if (down && !repeat && usage == HID_USAGE_DELETE) {
+            discard_preview();
+        }
+
+        return;
+    }
+
     if (route_drag_key(usage, down, repeat)) {
         return;
     }
@@ -431,7 +442,9 @@ void server::thumbnail_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t 
     }
 
     thumbnail_click click = m_thumbnails.release(x, y, now, m_damage);
-    if (click.action == thumbnail_action::discard) {
+    if (click.action == thumbnail_action::preview) {
+        open_preview(click.job);
+    } else if (click.action == thumbnail_action::discard) {
         discard_capture(click);
         m_thumbnails.pointer_move(x, y, now, m_damage);
     }
@@ -768,6 +781,16 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     if (m_capture.active()) {
         capture_pointer(x, y, buttons, changed);
+        return;
+    }
+
+    /* A preview takes the pointer whole, and the release of a click closes it, so nothing beneath hears either half */
+    if (m_preview.active()) {
+        move_cursor(x, y, SWP_CURSOR_ARROW);
+        if (changed != 0 && !press) {
+            close_preview();
+        }
+
         return;
     }
 

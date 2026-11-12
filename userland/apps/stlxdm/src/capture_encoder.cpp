@@ -128,17 +128,11 @@ void capture_encoder::encode_loop() {
         size_t len = 0;
         unsigned char* bytes = stlxgfx_encode_png(job.pixels, job.keeps_alpha ? 1 : 0, &len);
 
-        capture_png png = { job.id, -1, len, ENOMEM, nullptr, job.keeps_alpha };
+        capture_png png = { job.id, -1, len, ENOMEM, job.pixels, job.keeps_alpha };
         if (bytes) {
             png.object = make_shared_object(bytes, len);
             png.error = png.object >= 0 ? 0 : errno;
             free(bytes);
-        }
-
-        if (png.object >= 0) {
-            stlxgfx_destroy_surface(job.pixels);
-        } else {
-            png.pixels = job.pixels;
         }
 
         lock.lock();

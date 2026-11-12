@@ -16,7 +16,7 @@
 /* What a capture took, which its thumbnail names */
 enum class capture_kind { screen, region, window };
 
-enum class thumbnail_action { none, discard };
+enum class thumbnail_action { none, preview, discard };
 
 /* What a click on a thumbnail asks of the server, and the capture it names */
 struct thumbnail_click {
@@ -27,8 +27,8 @@ struct thumbnail_click {
 
 struct thumbnail_card;
 
-/* The cards of the latest captures at the bottom right of the outputs they came from, the newest lowest and three at
- * most. A card stays 6 seconds, all held while the pointer is on one, and shows Discard and a close button under it. */
+/* The cards of the latest captures at the bottom right of their outputs, the newest lowest and three at most. Each
+ * stays 6 seconds, all held while the pointer is on one, and shows Preview, Discard and close under it. */
 class capture_thumbnails {
 public:
     capture_thumbnails();
@@ -39,12 +39,21 @@ public:
 
     void set_frost_lookup(frost_lookup lookup) { m_frost_of = std::move(lookup); }
 
-    /* Shows a card for the capture `job` encodes, shrunk at once from `pixels`, which stay the encoder's */
+    /* Shows a card for the capture `job` encodes, shrunk at once from `pixels`, which the card reads but the encoder
+     * keeps until it hands them back */
     void add(uint64_t job, capture_kind kind, const stlxgfx_surface_t* pixels, bool keeps_alpha, uint32_t output,
              const damage_list::rect& place, uint64_t now_ns, damage_list& damage);
 
-    /* The capture `job` reached the clipboard as `entry` */
-    void encoded(uint64_t job, uint64_t entry);
+    /* The capture `job` reached the clipboard as `entry`, and its card keeps `pixels` for its preview. False when no
+     * card waits for it, the pixels left to the caller. */
+    bool encoded(uint64_t job, uint64_t entry, stlxgfx_surface_t* pixels);
+
+    /* What the card of `job` previews, its pixels valid until the card goes. False without the card. */
+    bool preview_of(uint64_t job, preview_source* out) const;
+
+    /* The Discard of the card of `job`, as its own button asks it, which keeps a capture still encoding off the
+     * clipboard. No action without the card. */
+    thumbnail_click discard_of(uint64_t job);
 
     /* The kind the card of `job` names, such as "Region", or null without the card */
     const char* kind_name_of(uint64_t job) const;
@@ -76,7 +85,7 @@ public:
     void draw(uint32_t output, stlxgfx_surface_t* back, int32_t ox, int32_t oy, const damage_list::rect& clip) const;
 
 private:
-    enum class part { none, image, discard, close };
+    enum class part { none, image, preview, discard, close };
 
     void lay_out(damage_list& damage);
     bool make_picture(thumbnail_card& card);
@@ -97,6 +106,8 @@ private:
     int32_t m_pressed = -1;
     part    m_pressed_part = part::none;
 
+    stlxgfx_surface_t* m_preview_glyph = nullptr;
+    stlxgfx_surface_t* m_preview_glyph_lit = nullptr;
     stlxgfx_surface_t* m_discard_glyph = nullptr;
     stlxgfx_surface_t* m_discard_glyph_lit = nullptr;
     stlxgfx_surface_t* m_close_glyph = nullptr;

@@ -16,8 +16,8 @@ struct capture_job {
     bool               keeps_alpha = false;
 };
 
-/* An encoded capture: the shared memory object holding its PNG, or the errno that kept one from being made, with the
- * job's pixels handed back then so a retry needs no new capture */
+/* An encoded capture: the shared memory object holding its PNG, or the errno that kept one from being made, and the
+ * job's pixels handed back either way, for its thumbnail's preview or a retry that needs no new capture */
 struct capture_png {
     uint64_t           id = 0;
     int                object = -1;
