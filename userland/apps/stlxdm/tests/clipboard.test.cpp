@@ -115,6 +115,26 @@ static void check_types() {
     check(types.types[2][0] == '\0' && types.types[3][0] == '\0', "the types past the count stay zero");
 }
 
+/* Text answers to any of text's names and is told by one, so a client asking for UTF-8 text reads a bare text/plain */
+static void check_text_aliases() {
+    check(is_text_type("text/plain") && is_text_type(SWP_MIME_TEXT) && is_text_type("Text/Plain; charset=UTF-8"),
+          "text/plain with or without its UTF-8 charset names text, in any case and spacing");
+    check(!is_text_type("text/html") && !is_text_type("text/plain;charset=latin1"), "other types are not text");
+
+    clipboard_item bare({ { "text/plain", 5, -1 } }, 0);
+    swp_clipboard_types told = describe_types(bare);
+    check(told.count == 1 && strcmp(told.types[0], SWP_MIME_TEXT) == 0, "a bare text/plain is told as UTF-8 text");
+    check(bare.find_answer(SWP_MIME_TEXT) == &bare.reps()[0], "an ask for UTF-8 text reads a bare text/plain");
+    check(!bare.find_answer("text/html"), "an ask for another type finds no text");
+
+    clipboard_item both({ { "text/html", 9, -1 }, { SWP_MIME_TEXT, 3, -1 }, { "text/plain", 3, -1 } }, 0);
+    told = describe_types(both);
+    check(told.count == 2 && strcmp(told.types[0], "text/html") == 0 && strcmp(told.types[1], SWP_MIME_TEXT) == 0,
+          "text under two names is told once");
+    check(both.find_answer("text/plain") == &both.reps()[2] && both.find_answer(SWP_MIME_TEXT) == &both.reps()[1],
+          "an ask for a name the item has reads that representation");
+}
+
 static void check_png_sizes() {
     const char header[] = "\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\x02\xf6\0\0\x01\x4a";
     uint32_t width = 0;
@@ -579,6 +599,7 @@ int main() {
     check_offers();
     check_items();
     check_types();
+    check_text_aliases();
     check_reads();
 
     check_folded_finds();

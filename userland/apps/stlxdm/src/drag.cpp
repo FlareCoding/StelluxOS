@@ -720,7 +720,7 @@ const clipboard_rep* server::drop_rep_for(dm_client& c, const dm_drop_ask& ask) 
         return nullptr;
     }
 
-    const clipboard_rep* rep = m_dnd->item.find(ask.mime_type);
+    const clipboard_rep* rep = m_dnd->item.find_answer(ask.mime_type);
 
     return rep && rep->object >= 0 ? rep : nullptr;
 }

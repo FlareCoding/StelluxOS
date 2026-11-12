@@ -67,6 +67,21 @@ const clipboard_rep* clipboard_item::find(std::string_view mime_type) const {
     return nullptr;
 }
 
+const clipboard_rep* clipboard_item::find_answer(std::string_view mime_type) const {
+    const clipboard_rep* exact = find(mime_type);
+    if (exact || !is_text_type(mime_type)) {
+        return exact;
+    }
+
+    for (const clipboard_rep& rep : m_reps) {
+        if (is_text_type(rep.mime_type)) {
+            return &rep;
+        }
+    }
+
+    return nullptr;
+}
+
 void clipboard_item::close_objects() {
     for (clipboard_rep& rep : m_reps) {
         if (rep.object >= 0) {
@@ -458,14 +473,28 @@ bool read_offer(const swp_offer& offer, std::vector<clipboard_rep>* out) {
     return true;
 }
 
+bool is_text_type(std::string_view mime_type) {
+    std::string squeezed;
+    for (char c : mime_type) {
+        if (c != ' ') {
+            squeezed += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        }
+    }
+
+    return squeezed == "text/plain" || squeezed == SWP_MIME_TEXT;
+}
+
 swp_clipboard_types describe_types(const clipboard_item& item) {
     swp_clipboard_types m = {};
+    bool has_text = false;
     for (const clipboard_rep& rep : item.reps()) {
-        if (m.count == SWP_OFFER_TYPES_MAX) {
-            break;
+        bool is_text = is_text_type(rep.mime_type);
+        if (m.count == SWP_OFFER_TYPES_MAX || (is_text && has_text)) {
+            continue;
         }
 
-        snprintf(m.types[m.count++], SWP_MIME_MAX, "%s", rep.mime_type.c_str());
+        snprintf(m.types[m.count++], SWP_MIME_MAX, "%s", is_text ? SWP_MIME_TEXT : rep.mime_type.c_str());
+        has_text = has_text || is_text;
     }
 
     return m;

@@ -577,7 +577,7 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
         shown.types.push_back(rep.mime_type);
     }
 
-    const clipboard_rep* text = entry.item.find(SWP_MIME_TEXT);
+    const clipboard_rep* text = entry.item.find_answer(SWP_MIME_TEXT);
     if (text) {
         shown.text = read_bytes(*text, PREVIEW_BYTES_MAX);
         shown.text_len = text->len;

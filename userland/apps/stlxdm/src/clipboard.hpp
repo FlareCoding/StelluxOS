@@ -32,6 +32,10 @@ public:
     /* The representation of exactly `mime_type`, or null */
     const clipboard_rep* find(std::string_view mime_type) const;
 
+    /* The representation an ask for `mime_type` gets: its own, or for text the item's text under any of text's names,
+     * or null */
+    const clipboard_rep* find_answer(std::string_view mime_type) const;
+
     const std::vector<clipboard_rep>& reps() const { return m_reps; }
     uint32_t flags() const { return m_flags; }
     bool empty() const { return m_reps.empty(); }
@@ -146,7 +150,11 @@ private:
  * type is not printable ASCII or sets its flags or reserved field. */
 bool read_offer(const swp_offer& offer, std::vector<clipboard_rep>* out);
 
-/* The CLIPBOARD_TYPES that tells a watching client what `item` holds */
+/* Whether `mime_type` names text: text/plain with or without its UTF-8 charset, in any case and spacing */
+bool is_text_type(std::string_view mime_type);
+
+/* The CLIPBOARD_TYPES that tells a watching client what `item` holds, its text named SWP_MIME_TEXT once whatever its
+ * copier called it, so clients ask for text by one name and stlxdm alone knows the others */
 swp_clipboard_types describe_types(const clipboard_item& item);
 
 /* The `text/uri-list` naming one file by its absolute path, which File Manager's copies carry */
