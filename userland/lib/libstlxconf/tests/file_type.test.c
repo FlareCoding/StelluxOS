@@ -3,6 +3,7 @@
 
 #include <stlxconf/conf.h>
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,6 +112,31 @@ static void check_types(void) {
     }
 }
 
+static void blocked(int signal_number) {
+    (void)signal_number;
+    static const char message[] = "  FAIL: typing a pipe opened it and blocked\n";
+    ssize_t written = write(STDOUT_FILENO, message, sizeof(message) - 1);
+    (void)written;
+    _exit(1);
+}
+
+/* A pipe without a writer blocks whoever opens it to read, as a device's ring blocks its reader, so typing one must
+ * never open it */
+static void check_special_files(void) {
+    char fifo[512];
+    sample_path(fifo, sizeof(fifo), "fifo");
+    if (mkfifo(fifo, 0600) != 0) {
+        check(false, "the test makes its pipe", fifo);
+        return;
+    }
+
+    signal(SIGALRM, blocked);
+    alarm(5);
+    stlxconf_file_type_t type = stlxconf_file_type(fifo);
+    alarm(0);
+    check(strcmp(type.mime_type, "application/octet-stream") == 0, "a pipe types as data, unread", "fifo");
+}
+
 static void check_parents(void) {
     const char* type = HPP_CHAIN[0];
     for (size_t i = 1; i < sizeof(HPP_CHAIN) / sizeof(HPP_CHAIN[0]); i++) {
@@ -165,6 +191,7 @@ int main(void) {
     }
 
     check_types();
+    check_special_files();
     check_parents();
     check_openers();
 
