@@ -68,6 +68,44 @@ __PRIVILEGED_CODE int32_t copy_to_user(
 );
 
 /**
+ * @brief Copy to a user buffer without faulting any page in, for a caller
+ * holding a lock that the page fault path takes after it. The copy stops at
+ * the first page that is missing or read-only.
+ * @return Bytes copied.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t copy_to_user_without_fault_in(
+    void* udst,
+    const void* ksrc,
+    size_t len
+);
+
+/**
+ * @brief Copy from a user buffer without faulting any page in, as
+ * `copy_to_user_without_fault_in` does. The copy stops at the first missing page.
+ * @return Bytes copied.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t copy_from_user_without_fault_in(
+    void* kdst,
+    const void* usrc,
+    size_t len
+);
+
+/**
+ * @brief Fault in the missing pages of a user range, so a copy that stopped at
+ * one can continue. The caller must hold no lock the fault path takes.
+ * @param prot The access the range must allow, `MM_PROT_READ` or `MM_PROT_WRITE`.
+ * @return OK, or ERR_FAULT when part of the range is unmapped or lacks `prot`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t fault_in_user_range(
+    const void* uaddr,
+    size_t len,
+    uint32_t prot
+);
+
+/**
  * @brief Copy a NUL-terminated string from user buffer with cap.
  * @param kdst Destination kernel buffer.
  * @param cap Destination capacity including terminator.
@@ -100,8 +138,9 @@ __PRIVILEGED_CODE int32_t copy_to_user_irqs_masked(
 
 /**
  * @brief Resolve a kernel-mode page fault raised by a user copy. A missing
- * page is faulted in when the context may sleep, otherwise the copy is
- * resumed at its fixup, where it reports the failure to its caller.
+ * page is faulted in when the context may sleep and the task has not disabled
+ * fault-in, otherwise the copy is resumed at its fixup, where it reports the
+ * failure to its caller.
  * @param mm_ctx Address space of the faulting task.
  * @param pc Faulting program counter, moved to the fixup on failure.
  * @param fault_addr Faulting virtual address.

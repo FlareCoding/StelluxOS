@@ -21,6 +21,7 @@ constexpr uint32_t TASK_FLAG_IN_IRQ      = (1 << 6);  // Currently in interrupt 
 constexpr uint32_t TASK_FLAG_PREEMPTIBLE = (1 << 7);  // Can be preempted
 constexpr uint32_t TASK_FLAG_POSIX_THREAD = (1 << 8); // Created through clone
 constexpr uint32_t TASK_FLAG_EXITING     = (1 << 9);  // Running exit, never sent into it again
+constexpr uint32_t TASK_FLAG_FAULT_IN_DISABLED = (1 << 10); // User copies stop at a missing page
 
 struct task_exec_core {
     uint32_t  flags;

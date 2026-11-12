@@ -492,3 +492,79 @@ TEST(uaccess, cmpxchg_u32_never_faults_a_page_in_while_masked) {
 
     mm::mm_context_release(ctx);
 }
+
+TEST(uaccess, copy_without_fault_in_stops_at_a_lazy_page) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 2, PROT_RW, LAZY_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    {
+        user_space_scope scope(ctx);
+        alignas(8) uint8_t pattern[64];
+        string::memset(pattern, 0xC7, sizeof(pattern));
+        EXPECT_EQ(mm::uaccess::copy_to_user(reinterpret_cast<void*>(addr), pattern, 1), mm::uaccess::OK);
+
+        void* across = reinterpret_cast<void*>(addr + PAGE - 16);
+        EXPECT_EQ(mm::uaccess::copy_to_user_without_fault_in(across, pattern, sizeof(pattern)),
+                  static_cast<size_t>(16));
+        EXPECT_EQ(mm::uaccess::copy_from_user_without_fault_in(pattern, across, sizeof(pattern)),
+                  static_cast<size_t>(16));
+        EXPECT_NULL(page_bytes(ctx, addr + PAGE));
+    }
+
+    mm::mm_context_release(ctx);
+}
+
+TEST(uaccess, copy_after_a_stopped_copy_faults_pages_in) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, PROT_RW, LAZY_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    {
+        user_space_scope scope(ctx);
+        uint8_t byte = 0x3C;
+        EXPECT_EQ(mm::uaccess::copy_to_user_without_fault_in(reinterpret_cast<void*>(addr), &byte, 1),
+                  static_cast<size_t>(0));
+        EXPECT_NULL(page_bytes(ctx, addr));
+
+        EXPECT_EQ(mm::uaccess::copy_to_user(reinterpret_cast<void*>(addr), &byte, 1), mm::uaccess::OK);
+        uint8_t* landed = page_bytes(ctx, addr);
+        EXPECT_NOT_NULL(landed);
+        if (landed) {
+            EXPECT_EQ(*landed, byte);
+        }
+    }
+
+    mm::mm_context_release(ctx);
+}
+
+TEST(uaccess, fault_in_user_range_maps_lazy_pages_and_refuses_bad_ranges) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    uintptr_t writable = map_user(ctx, 2, PROT_RW, LAZY_ANON);
+    ASSERT_NE(writable, static_cast<uintptr_t>(0));
+    uintptr_t read_only = map_user(ctx, 1, mm::MM_PROT_READ, LAZY_ANON);
+    ASSERT_NE(read_only, static_cast<uintptr_t>(0));
+
+    uint8_t kernel_byte = 0;
+    {
+        user_space_scope scope(ctx);
+        EXPECT_EQ(mm::uaccess::fault_in_user_range(reinterpret_cast<void*>(writable + 8), PAGE, mm::MM_PROT_WRITE),
+                  mm::uaccess::OK);
+        EXPECT_NOT_NULL(page_bytes(ctx, writable));
+        EXPECT_NOT_NULL(page_bytes(ctx, writable + PAGE));
+
+        void* read_only_page = reinterpret_cast<void*>(read_only);
+        EXPECT_EQ(mm::uaccess::fault_in_user_range(read_only_page, 1, mm::MM_PROT_READ), mm::uaccess::OK);
+        EXPECT_EQ(mm::uaccess::fault_in_user_range(read_only_page, 1, mm::MM_PROT_WRITE), mm::uaccess::ERR_FAULT);
+
+        void* hole = reinterpret_cast<void*>(writable + 4 * PAGE);
+        EXPECT_EQ(mm::uaccess::fault_in_user_range(hole, 1, mm::MM_PROT_READ), mm::uaccess::ERR_FAULT);
+        EXPECT_EQ(mm::uaccess::fault_in_user_range(&kernel_byte, 1, mm::MM_PROT_READ), mm::uaccess::ERR_FAULT);
+    }
+
+    mm::mm_context_release(ctx);
+}
