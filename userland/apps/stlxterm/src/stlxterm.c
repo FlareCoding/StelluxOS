@@ -150,10 +150,12 @@ static term_config_t g_config;
 static struct stat g_config_stat;
 static const char* g_program_name = "shell";
 
-/* A paste a question holds back, the pill at the bottom, which confirms a copy or says what a drop left out, and when
- * it leaves, 0 while none shows, and whether the last frame drew any overlay */
-static char* g_held_paste = NULL;
+/* A paste a question holds back, a malloc'd copy or the clipboard's own mapping, the pill at the bottom, which confirms
+ * a copy or says what a drop left out, and when it leaves, 0 while none shows, and whether the last frame drew any
+ * overlay */
+static const char* g_held_paste = NULL;
 static size_t g_held_paste_len = 0;
+static int g_is_held_mapped = 0;
 static overlay_question_t g_question;
 static char g_pill_text[OVERLAY_TEXT_MAX];
 static int g_is_copied_pill = 0;
@@ -721,8 +723,17 @@ static void fill_preview(overlay_question_t* q, const char* text, size_t len, si
     }
 }
 
+/* A paste's text, which a malloc'd copy frees and the clipboard's mapping unmaps */
+static void release_paste(const char* text, size_t len, int is_mapped) {
+    if (is_mapped) {
+        stlxwin_clipboard_unmap(text, len);
+    } else {
+        free((char*)text);
+    }
+}
+
 /* Holds a paste behind its question, which takes ownership of text */
-static void ask_before_paste(paste_check_t check, char* text, size_t len) {
+static void ask_before_paste(paste_check_t check, const char* text, size_t len, int is_mapped) {
     overlay_question_t* q = &g_question;
     memset(q, 0, sizeof(*q));
 
@@ -750,6 +761,7 @@ static void ask_before_paste(paste_check_t check, char* text, size_t len) {
     q->is_accept_focused = 1;
     g_held_paste = text;
     g_held_paste_len = len;
+    g_is_held_mapped = is_mapped;
 
     /* The question takes the pointer, so a drag under way stops where it is */
     g_selecting = 0;
@@ -761,7 +773,7 @@ static int answer_question(int master_fd, int accepts) {
         queue_paste(master_fd, g_held_paste, g_held_paste_len);
     }
 
-    free(g_held_paste);
+    release_paste(g_held_paste, g_held_paste_len, g_is_held_mapped);
     g_held_paste = NULL;
     g_held_paste_len = 0;
     return accepts;
@@ -809,15 +821,15 @@ static int handle_question_pointer(int master_fd, const stlxwin_event* ev) {
 
 /* Pasted text goes to the program, or waits behind a question about its lines or its size, and is taken either way.
  * Returns 1 when it went straight to the program. */
-static int paste_text(int master_fd, char* text, size_t len) {
+static int paste_text(int master_fd, const char* text, size_t len, int is_mapped) {
     paste_check_t check = paste_check(text, len, g_term.bracketed_paste, g_config.paste_protection);
     if (check != PASTE_SEND) {
-        ask_before_paste(check, text, len);
+        ask_before_paste(check, text, len, is_mapped);
         return 0;
     }
 
     queue_paste(master_fd, text, len);
-    free(text);
+    release_paste(text, len, is_mapped);
     return 1;
 }
 
@@ -874,10 +886,11 @@ static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
     }
 
     free(paste.text);
-    char* text = NULL;
-    long len = stlxwin_clipboard_get(conn, &text);
+
+    /* The text is read in place, so a paste large enough to ask about costs nothing until it is sent */
+    const void* text = NULL;
+    long len = stlxwin_clipboard_map_type(conn, STLXWIN_MIME_TEXT, &text);
     if (len <= 0) {
-        free(text);
         if (len == 0) {
             note_textless_paste(conn);
         }
@@ -885,7 +898,7 @@ static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
         return 0;
     }
 
-    return paste_text(master_fd, text, (size_t)len);
+    return paste_text(master_fd, text, (size_t)len, 1);
 }
 
 /* The terminal pastes a drag's files or text as a copy, and refuses anything else and any drag while a question holds
@@ -921,7 +934,7 @@ static uint32_t paste_drop(stlxwin_window* win, int master_fd) {
     }
 
     if (g_drop_kind == DROP_TEXT) {
-        paste_text(master_fd, data, (size_t)len);
+        paste_text(master_fd, data, (size_t)len, 0);
         return STLXWIN_DND_COPY;
     }
 
