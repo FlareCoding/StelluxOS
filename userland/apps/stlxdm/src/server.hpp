@@ -538,6 +538,14 @@ public:
         }
     }
 
+    /* The poll bound and tick of the capture overlay's hint */
+    int64_t capture_timeout_ns(uint64_t now_ns) const { return m_capture.active() ? m_capture.timeout_ns(now_ns) : -1; }
+    void capture_tick(uint64_t now_ns) {
+        if (m_capture.active()) {
+            m_capture.tick(now_ns, m_damage);
+        }
+    }
+
     /* Whether a capture overlay or a preview shows frozen frames in place of the scene */
     bool freezes() const { return m_capture.active() || m_preview.active(); }
 
@@ -681,6 +689,7 @@ private:
     void capture_region(const capture_target& target);
     void capture_focused_window();
     void capture_window_alone(dm_window& w, bool has_shadow);
+    void show_capture_notice(const char* title, const char* detail);
     void encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output);
     void discard_capture(const thumbnail_click& click);
     bool freeze_outputs(std::vector<frozen_frame>& frames);

@@ -68,6 +68,9 @@ using frost_lookup = std::function<const stlxgfx_surface_t*(uint32_t output)>;
 constexpr int32_t PIECE_GAP = 6;
 constexpr int32_t CHIP_GROUP_GAP = 18;
 
+/* How far below an output's top edge the capture overlay's hint and a capture's notices sit */
+constexpr int32_t CAPTURE_HINT_TOP = 46;
+
 /* One piece of a chip's line: words in a face, size and color, or with no face a key's name drawn as a keycap, and the
  * room after it */
 struct chip_piece {
@@ -92,14 +95,25 @@ struct preview_source {
  * hairline or the window under the pointer lit. It takes keys and the pointer, each change damaging what it repaints. */
 class capture_overlay {
 public:
+    capture_overlay() = default;
+    ~capture_overlay();
+
+    capture_overlay(const capture_overlay&) = delete;
+    capture_overlay& operator=(const capture_overlay&) = delete;
+
     bool active() const { return m_is_open; }
 
     void set_frost_lookup(frost_lookup lookup) { m_frost_of = std::move(lookup); }
 
     /* Opens over `frames`, one per output by index and empty for an output not served, aiming at a region, with
-     * `windows` top first and the pointer at (`x`, `y`) */
-    void open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x, int32_t y);
+     * `windows` top first and the pointer at (`x`, `y`), its keys hinted at the top of the pointer's output a while */
+    void open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x, int32_t y,
+              uint64_t now_ns);
     void close();
+
+    /* How long until the hint goes, -1 with none showing, and its going */
+    int64_t timeout_ns(uint64_t now_ns) const;
+    void tick(uint64_t now_ns, damage_list& damage);
 
     /* The pointer moved with the CHORD_MOD_* bits `mods` held: Shift keeps one side of the region, Alt grows it from
      * the center, and a held Space moves it */
@@ -112,8 +126,9 @@ public:
      * dragged nothing ends the drag and leaves the overlay open. */
     bool on_release(capture_target* target, damage_list& damage);
 
-    /* Space moves the region while a drag holds it, and otherwise switches between a region and windows */
-    void press_space(damage_list& damage);
+    /* Space moves the region while a drag holds it, and otherwise switches between a region and windows, hinting the
+     * new mode's keys a while */
+    void press_space(uint64_t now_ns, damage_list& damage);
     void release_space();
 
     uint32_t cursor_shape() const;
@@ -140,6 +155,8 @@ private:
     void draw_region(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const;
     void draw_window(stlxgfx_surface_t* view, int32_t ox, int32_t oy) const;
     void draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const;
+    void place_hint(uint64_t now_ns);
+    void hide_hint(damage_list& damage);
 
     bool                        m_is_open = false;
     std::vector<frozen_frame>   m_frames;
@@ -177,6 +194,11 @@ private:
     damage_list::rect m_shown_outline = {};
     damage_list::rect m_shown_chip = {};
     std::string m_shown_words;
+
+    /* The hint of the mode's keys, its place on the desktop, and when it goes */
+    stlxgfx_surface_t* m_hint = nullptr;
+    damage_list::rect  m_hint_rect = {};
+    uint64_t           m_hint_until_ns = 0;
 };
 
 /* A capture at full size over a dim on the output it came from, every output frozen beneath, drawn into the frames
@@ -210,5 +232,13 @@ stlxgfx_surface_t* shrink_capture(const stlxgfx_surface_t* pixels, bool keeps_al
  * a straight alpha picture as into a frame. */
 void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
                      const damage_list::rect& box, int32_t radius);
+
+/* How wide a chip of `line` is */
+int32_t chip_width(const std::vector<chip_piece>& line);
+
+/* A chip of `line` on the glass an output's `frost` shows at (`x`, `y`), where the chip's top-left pixel goes, in
+ * straight alpha the caller destroys. Null without memory or fonts. */
+stlxgfx_surface_t* make_chip_picture(const std::vector<chip_piece>& line, const stlxgfx_surface_t* frost, int32_t x,
+                                     int32_t y);
 
 #endif

@@ -15,6 +15,7 @@ constexpr uint64_t SHOWN_NS = 6000000000ull;
 constexpr uint64_t AFTER_HOVER_NS = 2000000000ull;
 constexpr uint64_t SLIDE_NS = 200000000ull;
 constexpr uint64_t SLIDE_FRAME_NS = 4000000ull;
+constexpr uint64_t NOTICE_SHOWN_NS = 3000000000ull;
 
 /* A card is its capture fitted inside 240 by 160, never grown, over one caption line, so a wide capture makes a short
  * card and three screens stack to under half a 1080 px display */
@@ -225,6 +226,17 @@ static damage_list::rect preview_rect(const thumbnail_card& card) {
     return action_rect(card, 2);
 }
 
+/* Blends `picture`, which lies at `rect` on the desktop, into `back`, whose first pixel shows (`ox`, `oy`), inside
+ * `clip` */
+static void blend_clipped(stlxgfx_surface_t* back, int32_t ox, int32_t oy, const stlxgfx_surface_t* picture,
+                          const damage_list::rect& rect, const damage_list::rect& clip) {
+    damage_list::rect area = damage_list::intersect(rect, clip);
+    if (picture && area.w > 0 && area.h > 0) {
+        stlxgfx_blit_alpha(back, area.x - ox, area.y - oy, picture, area.x - rect.x, area.y - rect.y,
+                           static_cast<uint32_t>(area.w), static_cast<uint32_t>(area.h));
+    }
+}
+
 static void draw_glyph(stlxgfx_surface_t* target, const stlxgfx_surface_t* glyph, const damage_list::rect& r) {
     if (glyph) {
         stlxgfx_blit_alpha(target, r.x + (r.w - static_cast<int32_t>(glyph->width)) / 2,
@@ -253,9 +265,9 @@ capture_thumbnails::capture_thumbnails()
 }
 
 capture_thumbnails::~capture_thumbnails() {
-    for (stlxgfx_surface_t* glyph : { m_preview_glyph, m_preview_glyph_lit, m_discard_glyph, m_discard_glyph_lit,
-                                      m_close_glyph, m_close_glyph_lit, m_tip }) {
-        stlxgfx_destroy_surface(glyph);
+    for (stlxgfx_surface_t* picture : { m_preview_glyph, m_preview_glyph_lit, m_discard_glyph, m_discard_glyph_lit,
+                                        m_close_glyph, m_close_glyph_lit, m_tip, m_notice }) {
+        stlxgfx_destroy_surface(picture);
     }
 }
 
@@ -363,6 +375,25 @@ void capture_thumbnails::clear(damage_list& damage) {
     }
 }
 
+void capture_thumbnails::notify(stlxgfx_surface_t* chip, uint32_t output, const damage_list::rect& place,
+                                uint64_t now_ns, damage_list& damage) {
+    if (m_notice) {
+        damage.add(m_notice_rect.x, m_notice_rect.y, m_notice_rect.w, m_notice_rect.h);
+        stlxgfx_destroy_surface(m_notice);
+    }
+
+    m_notice = chip;
+    if (!chip) {
+        return;
+    }
+
+    int32_t w = static_cast<int32_t>(chip->width);
+    m_notice_rect = { place.x + (place.w - w) / 2, place.y + CAPTURE_HINT_TOP, w, static_cast<int32_t>(chip->height) };
+    m_notice_output = output;
+    m_notice_until_ns = now_ns + NOTICE_SHOWN_NS;
+    damage.add(m_notice_rect.x, m_notice_rect.y, m_notice_rect.w, m_notice_rect.h);
+}
+
 /* An entry deleted, cleared or evicted leaves nothing of its capture to discard or describe */
 void capture_thumbnails::follow_clipboard(const clipboard_history& history, damage_list& damage) {
     bool is_any_gone = false;
@@ -459,6 +490,10 @@ thumbnail_click capture_thumbnails::release(int32_t x, int32_t y, uint64_t now_n
 int64_t capture_thumbnails::timeout_ns(uint64_t now_ns) const {
     bool is_held = m_hover >= 0 || m_pressed >= 0;
     int64_t soonest = -1;
+    if (m_notice) {
+        soonest = m_notice_until_ns > now_ns ? static_cast<int64_t>(m_notice_until_ns - now_ns) : 0;
+    }
+
     for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
         int64_t left = card->deadline_ns > now_ns ? static_cast<int64_t>(card->deadline_ns - now_ns) : 0;
         left = card->slide > 0 ? static_cast<int64_t>(SLIDE_FRAME_NS) : is_held ? -1 : left;
@@ -469,6 +504,10 @@ int64_t capture_thumbnails::timeout_ns(uint64_t now_ns) const {
 }
 
 void capture_thumbnails::tick(uint64_t now_ns, damage_list& damage) {
+    if (m_notice && now_ns >= m_notice_until_ns) {
+        notify(nullptr, 0, {}, now_ns, damage);
+    }
+
     for (std::unique_ptr<thumbnail_card>& card : m_cards) {
         int32_t slide = slide_at(now_ns > card->shown_ns ? now_ns - card->shown_ns : 0);
         if (slide != card->slide) {
@@ -505,27 +544,26 @@ void capture_thumbnails::bounds(uint32_t output, std::vector<damage_list::rect>&
     if (m_tip && m_tip_output == output) {
         out.push_back(m_tip_rect);
     }
+
+    if (m_notice && m_notice_output == output) {
+        out.push_back(m_notice_rect);
+    }
 }
 
 void capture_thumbnails::draw(uint32_t output, stlxgfx_surface_t* back, int32_t ox, int32_t oy,
                               const damage_list::rect& clip) const {
     for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
-        if (card->output != output || !card->picture) {
-            continue;
-        }
-
-        damage_list::rect at = picture_rect(*card);
-        damage_list::rect area = damage_list::intersect(at, clip);
-        if (area.w > 0 && area.h > 0) {
-            stlxgfx_blit_alpha(back, area.x - ox, area.y - oy, card->picture->surface(), area.x - at.x,
-                               area.y - at.y, static_cast<uint32_t>(area.w), static_cast<uint32_t>(area.h));
+        if (card->output == output && card->picture) {
+            blend_clipped(back, ox, oy, card->picture->surface(), picture_rect(*card), clip);
         }
     }
 
-    damage_list::rect tip = damage_list::intersect(m_tip_rect, clip);
-    if (m_tip && m_tip_output == output && tip.w > 0 && tip.h > 0) {
-        stlxgfx_blit_alpha(back, tip.x - ox, tip.y - oy, m_tip, tip.x - m_tip_rect.x, tip.y - m_tip_rect.y,
-                           static_cast<uint32_t>(tip.w), static_cast<uint32_t>(tip.h));
+    if (m_tip_output == output) {
+        blend_clipped(back, ox, oy, m_tip, m_tip_rect, clip);
+    }
+
+    if (m_notice_output == output) {
+        blend_clipped(back, ox, oy, m_notice, m_notice_rect, clip);
     }
 }
 

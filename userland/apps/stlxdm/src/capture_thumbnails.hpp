@@ -27,8 +27,8 @@ struct thumbnail_click {
 
 struct thumbnail_card;
 
-/* The cards of the latest captures at the bottom right of their outputs, the newest lowest and three at most. Each
- * stays 6 seconds, all held while the pointer is on one, and shows Preview, Discard and close under it. */
+/* The cards of the latest captures at the bottom right of their outputs, the newest lowest and three at most, and a
+ * notice about captures. Each card stays 6 seconds, all held under the pointer, which shows its actions. */
 class capture_thumbnails {
 public:
     capture_thumbnails();
@@ -63,6 +63,10 @@ public:
 
     void remove(uint64_t job, damage_list& damage);
     void clear(damage_list& damage);
+
+    /* Shows `chip`, which it takes, at the top middle of output `output` at `place` on the desktop a few seconds */
+    void notify(stlxgfx_surface_t* chip, uint32_t output, const damage_list::rect& place, uint64_t now_ns,
+                damage_list& damage);
 
     /* Each card says whether its capture is still the clipboard, and goes once its entry leaves the history */
     void follow_clipboard(const clipboard_history& history, damage_list& damage);
@@ -115,6 +119,11 @@ private:
     stlxgfx_surface_t* m_tip = nullptr;
     damage_list::rect  m_tip_rect = {};
     uint32_t           m_tip_output = 0;
+
+    stlxgfx_surface_t* m_notice = nullptr;
+    damage_list::rect  m_notice_rect = {};
+    uint32_t           m_notice_output = 0;
+    uint64_t           m_notice_until_ns = 0;
 };
 
 #endif
