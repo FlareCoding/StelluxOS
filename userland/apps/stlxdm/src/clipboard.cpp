@@ -11,12 +11,49 @@
 /* How many changes of the current item an undo can reach back through */
 constexpr size_t BECAME_CURRENT_MAX = 1024;
 
-clipboard_item::clipboard_item(std::vector<clipboard_rep> reps, uint32_t flags)
-    : m_reps(std::move(reps)), m_flags(flags) {
+clipboard_rep::clipboard_rep(std::string type, uint64_t length, int handle, uint64_t held_bytes)
+    : mime_type(std::move(type)), len(length), object(handle), held(held_bytes) {
 }
 
-clipboard_item::~clipboard_item() {
-    close_objects();
+clipboard_rep::~clipboard_rep() {
+    if (object >= 0) {
+        close(object);
+    }
+}
+
+clipboard_rep::clipboard_rep(clipboard_rep&& other) noexcept
+    : mime_type(std::move(other.mime_type)), len(other.len), object(other.object), held(other.held) {
+    other.object = -1;
+}
+
+clipboard_rep& clipboard_rep::operator=(clipboard_rep&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    if (object >= 0) {
+        close(object);
+    }
+
+    mime_type = std::move(other.mime_type);
+    len = other.len;
+    object = other.object;
+    held = other.held;
+    other.object = -1;
+    return *this;
+}
+
+std::vector<clipboard_rep> make_reps(std::initializer_list<rep_source> sources) {
+    std::vector<clipboard_rep> reps;
+    for (const rep_source& source : sources) {
+        reps.emplace_back(source.mime_type, source.len, source.object, source.held);
+    }
+
+    return reps;
+}
+
+clipboard_item::clipboard_item(std::vector<clipboard_rep> reps, uint32_t flags)
+    : m_reps(std::move(reps)), m_flags(flags) {
 }
 
 clipboard_item::clipboard_item(clipboard_item&& other) noexcept
@@ -30,7 +67,6 @@ clipboard_item& clipboard_item::operator=(clipboard_item&& other) noexcept {
         return *this;
     }
 
-    close_objects();
     m_reps = std::move(other.m_reps);
     m_flags = other.m_flags;
     other.m_reps.clear();
@@ -80,15 +116,6 @@ const clipboard_rep* clipboard_item::find_answer(std::string_view mime_type) con
     }
 
     return nullptr;
-}
-
-void clipboard_item::close_objects() {
-    for (clipboard_rep& rep : m_reps) {
-        if (rep.object >= 0) {
-            close(rep.object);
-            rep.object = -1;
-        }
-    }
 }
 
 /* Compares two objects' first `len` bytes through read-only mappings, a refused mapping counting as different */

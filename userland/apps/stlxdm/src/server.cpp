@@ -2223,7 +2223,7 @@ void server::pump_captures() {
             continue;
         }
 
-        replace_clipboard(clipboard_item({ { PNG_TYPE, png.len, png.object } }, 0), SCREENSHOT_LABEL);
+        replace_clipboard(clipboard_item(make_reps({ { PNG_TYPE, png.len, png.object } }), 0), SCREENSHOT_LABEL);
         const char* kind = m_thumbnails.kind_name_of(png.id);
         m_history.set_name(m_history.current_id(), kind ? kind : "");
         if (!m_thumbnails.encoded(png.id, m_history.current_id(), png.pixels)) {
@@ -2566,7 +2566,7 @@ void server::copy_text(const std::string& text) {
         return;
     }
 
-    replace_clipboard(clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0), QUICK_ACTIONS_LABEL);
+    replace_clipboard(clipboard_item(make_reps({ { SWP_MIME_TEXT, text.size(), object } }), 0), QUICK_ACTIONS_LABEL);
 }
 
 /* Copies a file as File Manager's copies are, so it pastes as a file where files paste and as its path elsewhere */
@@ -2583,8 +2583,9 @@ void server::copy_file(const std::string& path) {
         return;
     }
 
-    replace_clipboard(clipboard_item({ { "text/uri-list", list.size(), list_object },
-                                       { SWP_MIME_TEXT, path.size(), text_object } }, 0), QUICK_ACTIONS_LABEL);
+    std::vector<clipboard_rep> reps = make_reps({ { "text/uri-list", list.size(), list_object },
+                                                  { SWP_MIME_TEXT, path.size(), text_object } });
+    replace_clipboard(clipboard_item(std::move(reps), 0), QUICK_ACTIONS_LABEL);
 }
 
 /* Sends a message whose one handle, unless `handle` is -1, rides its first byte, so it leaves only from an empty out_q,

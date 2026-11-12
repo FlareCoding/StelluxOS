@@ -5,24 +5,46 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <vector>
 
-/* One representation of a clipboard item: its MIME type and the shared memory object holding its bytes, -1 for none */
+/* One representation of a clipboard item: its MIME type and the shared memory object holding its bytes, -1 for none.
+ * It owns its object and closes it when it goes, and it only moves, so no two representations ever close one handle. */
 struct clipboard_rep {
     std::string mime_type;
     uint64_t    len = 0;
     int         object = -1;
     uint64_t    held = 0;  /* the bytes its object held when it arrived, 0 when only its length is known */
+
+    clipboard_rep() = default;
+    clipboard_rep(std::string type, uint64_t length, int handle, uint64_t held_bytes = 0);
+    ~clipboard_rep();
+
+    clipboard_rep(clipboard_rep&& other) noexcept;
+    clipboard_rep& operator=(clipboard_rep&& other) noexcept;
+    clipboard_rep(const clipboard_rep&) = delete;
+    clipboard_rep& operator=(const clipboard_rep&) = delete;
 };
 
-/* One copy, the same content in up to SWP_OFFER_TYPES_MAX MIME types, closing its objects when it goes */
+/* What a representation is made from, its object not yet owned by anything */
+struct rep_source {
+    std::string mime_type;
+    uint64_t    len = 0;
+    int         object = -1;
+    uint64_t    held = 0;
+};
+
+/* The representations `sources` describe, each taking its object */
+std::vector<clipboard_rep> make_reps(std::initializer_list<rep_source> sources);
+
+/* One copy, the same content in up to SWP_OFFER_TYPES_MAX MIME types, whose representations close their objects */
 class clipboard_item {
 public:
     clipboard_item() = default;
     clipboard_item(std::vector<clipboard_rep> reps, uint32_t flags);
-    ~clipboard_item();
+    ~clipboard_item() = default;
 
     clipboard_item(clipboard_item&& other) noexcept;
     clipboard_item& operator=(clipboard_item&& other) noexcept;
@@ -48,8 +70,6 @@ public:
     uint64_t held() const;
 
 private:
-    void close_objects();
-
     std::vector<clipboard_rep> m_reps;
     uint32_t                   m_flags = 0;
 };
