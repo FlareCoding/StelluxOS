@@ -1183,6 +1183,18 @@ int main(int argc, char* argv[]) {
             case STLXWIN_EVT_KEY_UP:
                 g_modifiers = ev.key.modifiers;
                 break;
+            case STLXWIN_EVT_PASTE:
+                /* The desktop's paste goes as Ctrl Shift V's does, unless a question already holds one */
+                if (g_held_paste) {
+                    break;
+                }
+
+                if (paste_clipboard(conn, master_fd) && g_select.active) {
+                    select_clear(&g_select);
+                }
+
+                dirty = 1;
+                break;
             case STLXWIN_EVT_BUTTON_DOWN:
             case STLXWIN_EVT_BUTTON_UP:
             case STLXWIN_EVT_POINTER_MOTION: {
