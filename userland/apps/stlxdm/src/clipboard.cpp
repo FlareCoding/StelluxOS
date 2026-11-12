@@ -282,10 +282,10 @@ uint64_t clipboard_history::current_id() const {
     return m_front_is_current ? m_entries.front().id : 0;
 }
 
-void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
+bool clipboard_history::make_current(uint64_t id, int64_t now_ns) {
     size_t i = index_of(id);
     if (i == m_entries.size() || is_current(id)) {
-        return;
+        return false;
     }
 
     clipboard_entry entry = std::move(m_entries[i]);
@@ -297,6 +297,7 @@ void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
     m_entries.insert(m_entries.begin(), std::move(entry));
     m_front_is_current = true;
     evict();
+    return true;
 }
 
 void clipboard_history::set_name(uint64_t id, std::string name) {

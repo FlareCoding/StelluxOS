@@ -125,8 +125,9 @@ public:
     /* The current entry's id, 0 while the clipboard is empty or holds a private copy */
     uint64_t current_id() const;
 
-    /* Makes a kept entry current again as a fresh copy */
-    void make_current(uint64_t id, int64_t now_ns);
+    /* Makes a kept entry current again as a fresh copy. False when it already was, or is not kept, which changes
+     * nothing. */
+    bool make_current(uint64_t id, int64_t now_ns);
 
     /* Whether pinning entry `id` keeps the pins within their budget, and the pin or unpin, false when it is refused */
     bool can_pin(uint64_t id) const;
