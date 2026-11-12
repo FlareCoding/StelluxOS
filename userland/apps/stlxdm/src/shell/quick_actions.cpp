@@ -4,6 +4,7 @@
 #include "dock.hpp"
 #include "draw.hpp"
 #include "keycap.hpp"
+#include "palette_parts.hpp"
 #include "programs.hpp"
 #include "quick_calc.hpp"
 #include "quick_match.hpp"
@@ -40,10 +41,6 @@ constexpr int32_t CHIP_NAME_GAP = 7;
 constexpr int32_t CHIP_GAP = 2;
 constexpr int32_t CHIP_GLYPH_SIZE = 16;
 
-constexpr int32_t HEAD_HEIGHT = 28;
-constexpr int32_t HEAD_PADDING_X = 10;
-constexpr int32_t HEAD_PADDING_BOTTOM = 5;
-
 constexpr int32_t ROW_HEIGHT = 44;
 constexpr int32_t ROW_WIDTH = PALETTE_WIDTH - 2 * PALETTE_PADDING;
 constexpr int32_t ROW_PADDING_LEFT = 8;
@@ -53,7 +50,6 @@ constexpr int32_t ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t TEXT_LEFT = ROW_PADDING_LEFT + ICON_SIZE + ROW_GAP;
 constexpr int32_t CHOICE_TEXT_LEFT = 14;
 constexpr int32_t LABEL_LINE_HEIGHT = 18;
-constexpr int32_t SUBTITLE_LINE_HEIGHT = 16;
 constexpr int32_t MARK_RADIUS = 2;
 
 /* A running app's tick, the dock's, under the row's icon */
@@ -109,7 +105,6 @@ constexpr uint16_t HID_USAGE_UP = 0x52;
 constexpr uint8_t COMMAND_MODS = CHORD_MOD_CTRL | CHORD_MOD_ALT | CHORD_MOD_SUPER;
 
 constexpr std::string_view PLACEHOLDER = "Search apps, files and actions";
-constexpr std::string_view ELLIPSIS = "\xE2\x80\xA6";
 
 constexpr const char* PROGRAM_DIRS[] = { "/bin", "/usr/bin" };
 constexpr const char* PROGRAM_ICON_PATH = "/etc/res/icons/doc-exec-32.png";
@@ -222,51 +217,6 @@ std::string pick_key(const palette_entry& entry) {
     }
 
     return {};
-}
-
-/* The bytes of `text` that fit `max_w` pixels in the face, cut at a character boundary with room left for an
- * ellipsis when the whole does not fit */
-size_t fitting_length(const std::string& text, const char* face_path, float em_px, int32_t max_w) {
-    stlxgfx_font* font = shell_font(face_path, em_px);
-    if (!font || stlxgfx_text_width(font, text.data(), text.size()) <= max_w) {
-        return text.size();
-    }
-
-    int32_t ellipsis_w = stlxgfx_text_width(font, ELLIPSIS.data(), ELLIPSIS.size());
-    size_t end = text.size();
-    while (end > 0) {
-        end--;
-        while (end > 0 && (static_cast<uint8_t>(text[end]) & 0xC0) == 0x80) {
-            end--;
-        }
-
-        if (stlxgfx_text_width(font, text.data(), end) + ellipsis_w <= max_w) {
-            break;
-        }
-    }
-
-    return end;
-}
-
-/* `text` as it fits `max_w` pixels in the face, ending in an ellipsis when cut */
-std::string fitted(const std::string& text, const char* face_path, float em_px, int32_t max_w) {
-    size_t length = fitting_length(text, face_path, em_px, max_w);
-    return length == text.size() ? text : text.substr(0, length) + std::string(ELLIPSIS);
-}
-
-std::string_view trimmed(std::string_view text) {
-    size_t first = text.find_first_not_of(' ');
-    if (first == std::string_view::npos) {
-        return {};
-    }
-
-    size_t last = text.find_last_not_of(' ');
-    return text.substr(first, last - first + 1);
-}
-
-const char* file_name(const char* path) {
-    const char* slash = strrchr(path, '/');
-    return slash ? slash + 1 : path;
 }
 
 const char* subtitle_face(const palette_entry& entry) {
@@ -437,34 +387,6 @@ bool query_field::on_pointer_up(const ui::pointer_event& e) {
 
     return false;
 }
-
-/* A section's title in caps, and at the right a count or a state in sentence case */
-class section_head : public ui::widget {
-public:
-    explicit section_head(const char* title)
-        : m_title(title, STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM),
-          m_end("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM) {}
-
-    void set_end(const std::string& text) {
-        if (m_end.set_text(text)) {
-            invalidate();
-        }
-    }
-
-    ui::size measure(ui::size avail) override {
-        return { avail.w, HEAD_HEIGHT };
-    }
-
-    void paint(ui::painter& p) override {
-        int32_t top = HEAD_HEIGHT - HEAD_PADDING_BOTTOM - SUBTITLE_LINE_HEIGHT;
-        m_title.draw(p, HEAD_PADDING_X, top, SUBTITLE_LINE_HEIGHT);
-        m_end.draw(p, m_frame.w - HEAD_PADDING_X - m_end.width(), top, SUBTITLE_LINE_HEIGHT);
-    }
-
-private:
-    text_picture m_title;
-    text_picture m_end;
-};
 
 /* One row: the icon, the label with what the query matched marked, the subtitle under it, and at the right the
  * keycaps of a shortcut that runs the same, else what the entry shows there or the kind the palette names */
@@ -704,14 +626,6 @@ public:
 private:
     text_picture m_text;
     text_picture m_note;
-};
-
-/* One action the footer names, and the keys that run it, space separated */
-struct footer_item {
-    std::string label;
-    std::string keys;
-
-    bool operator==(const footer_item& other) const = default;
 };
 
 /* Footer items drawn as labels each followed by their keycaps */
@@ -1923,26 +1837,6 @@ std::string program_label(const stlxconf_t& conf, const char* path) {
     }
 
     return file_name(path);
-}
-
-/* Bytes as people read them, to one decimal past a thousand */
-std::string size_text(uint64_t bytes) {
-    static const char* const UNITS[] = { "KB", "MB", "GB", "TB" };
-    if (bytes < 1024) {
-        return std::to_string(bytes) + " B";
-    }
-
-    double size = static_cast<double>(bytes) / 1024;
-    size_t unit = 0;
-    while (size >= 1024 && unit + 1 < std::size(UNITS)) {
-        size /= 1024;
-        unit++;
-    }
-
-    char text[32];
-    snprintf(text, sizeof(text), "%.1f %s", size, UNITS[unit]);
-
-    return text;
 }
 
 std::string items_text(uint64_t count) {
