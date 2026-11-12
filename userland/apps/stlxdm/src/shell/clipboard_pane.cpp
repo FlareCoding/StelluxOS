@@ -58,7 +58,8 @@ constexpr int32_t STRIP_MARGIN = 4;
 constexpr int32_t STRIP_PADDING_X = 12;
 constexpr uint32_t STRIP_FILL = 0x08FFF0D7;
 
-/* A preview shows a text's first 64 KB, and a row names a text by its first line's first bytes */
+/* A preview shows a text's first 64 KB, and a row names a text by its first line's first bytes and files by as many
+ * names as those bytes hold */
 constexpr uint64_t PREVIEW_BYTES_MAX = 64 * 1024;
 constexpr size_t TITLE_BYTES_MAX = 256;
 constexpr size_t TAB_WIDTH = 4;
@@ -545,14 +546,15 @@ static const stlxgfx_surface_t* file_icon(const clipboard_source& source, const 
     return strcmp(type, "application/x-executable") == 0 ? source.program_icon : source.text_icon;
 }
 
-/* One file by its name, and several by their count and names, as "2 files: tar.c, tar.h" */
+/* One file by its name, and several by their count and names, as "2 files: tar.c, tar.h", the names stopping once the
+ * title passes what a row shows */
 static std::string files_title(const std::vector<std::string>& files) {
     if (files.size() == 1) {
         return file_name(files.front().c_str());
     }
 
     std::string title = std::to_string(files.size()) + " files: ";
-    for (size_t i = 0; i < files.size(); i++) {
+    for (size_t i = 0; i < files.size() && title.size() < TITLE_BYTES_MAX; i++) {
         title += (i > 0 ? ", " : "") + std::string(file_name(files[i].c_str()));
     }
 
