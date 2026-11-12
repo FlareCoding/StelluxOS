@@ -51,7 +51,6 @@ constexpr int32_t ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t TEXT_LEFT = ROW_PADDING_LEFT + ICON_SIZE + ROW_GAP;
 constexpr int32_t CHOICE_TEXT_LEFT = 14;
 constexpr int32_t LABEL_LINE_HEIGHT = 18;
-constexpr int32_t MARK_RADIUS = 2;
 
 /* A running app's tick, the dock's, under the row's icon */
 constexpr int32_t TICK_LEFT = 12;
@@ -1119,6 +1118,7 @@ void palette_view::enter_clipboard() {
     m_list = nullptr;
     m_clipboard_pane = m_body->add<clipboard_pane>(clipboard);
     m_clipboard_pane->s().main = ui::length::fixed(LIST_HEIGHT);
+    m_clipboard_pane->search(std::string(trimmed(m_query)));
     m_field->show_placeholder(m_clipboard_pane->placeholder());
 }
 
@@ -1138,6 +1138,7 @@ void palette_view::edit(std::string query, size_t cursor) {
     m_failure = {};
     m_field->show(m_query, m_caret);
     if (m_mode == narrow_mode::clipboard) {
+        m_clipboard_pane->search(std::string(trimmed(m_query)));
         show_rows();
         return;
     }
@@ -1338,17 +1339,24 @@ void palette_view::show_menu() {
     }
 }
 
-/* A chip's key or click narrows the rows to its kind, and again, or narrowing to all, shows every kind */
+/* A chip's key or click narrows the rows to its kind, and again, or narrowing to all, shows every kind. Clipboard
+ * mode searched only the history, so leaving it asks for the files the query matches. */
 void palette_view::narrow(narrow_mode mode) {
     narrow_mode next = mode == m_mode ? narrow_mode::all : mode;
+    bool leaves_clipboard = next != narrow_mode::clipboard && m_mode == narrow_mode::clipboard;
     if (next == narrow_mode::clipboard && m_mode != narrow_mode::clipboard) {
         enter_clipboard();
-    } else if (next != narrow_mode::clipboard && m_mode == narrow_mode::clipboard) {
+    } else if (leaves_clipboard) {
         leave_clipboard();
     }
 
     m_mode = next;
     m_field->show_mode(m_mode);
+    if (leaves_clipboard) {
+        edit(m_query, m_caret);
+        return;
+    }
+
     show_rows();
 }
 

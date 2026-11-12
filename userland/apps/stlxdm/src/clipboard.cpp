@@ -398,3 +398,26 @@ std::string read_bytes(const clipboard_rep& rep, uint64_t max) {
 
     return bytes;
 }
+
+static char folded(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+size_t find_folded(std::string_view text, std::string_view query, size_t from) {
+    if (query.empty()) {
+        return std::string_view::npos;
+    }
+
+    for (size_t at = from; at + query.size() <= text.size(); at++) {
+        size_t matched = 0;
+        while (matched < query.size() && folded(text[at + matched]) == folded(query[matched])) {
+            matched++;
+        }
+
+        if (matched == query.size()) {
+            return at;
+        }
+    }
+
+    return std::string_view::npos;
+}

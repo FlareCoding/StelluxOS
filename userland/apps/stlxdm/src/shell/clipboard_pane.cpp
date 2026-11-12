@@ -1,6 +1,7 @@
 #include "clipboard_pane.hpp"
 
 #include "keycap.hpp"
+#include "quick_match.hpp"
 
 #include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
@@ -30,11 +31,13 @@ constexpr int32_t TAG_HEIGHT = 20;
 constexpr int32_t TAG_PADDING_X = 8;
 constexpr int32_t POCKET_PADDING = 14;
 constexpr int32_t POCKET_LINE_HEIGHT = 20;
+constexpr int32_t POCKET_MARK_INSET = 1;
 constexpr int32_t META_HEIGHT = 30;
 constexpr int32_t META_GAP = 18;
 constexpr float META_SIZE = 11.5f;
 
 constexpr int32_t EMPTY_GAP = 6;
+constexpr int32_t EMPTY_PADDING_X = 24;
 
 constexpr int32_t FILE_ROW_HEIGHT = 44;
 constexpr int32_t FILE_ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
@@ -95,7 +98,14 @@ private:
     ui::box* m_content;
 };
 
-/* One file a files entry names, as File Manager's rows show it, its name and folder fitted to the pocket */
+/* Where a match sits under drawn text, from the text's pen */
+struct mark_span {
+    int32_t x;
+    int32_t w;
+};
+
+/* One file a files entry names, as File Manager's rows show it, its name and folder fitted to the pocket with the
+ * query's matches marked */
 struct file_line {
     const stlxgfx_surface_t*      icon;
     std::string                   name_text;
@@ -103,6 +113,8 @@ struct file_line {
     std::unique_ptr<text_picture> name;
     std::unique_ptr<text_picture> folder;
     std::unique_ptr<text_picture> size;
+    std::vector<mark_span>        name_marks;
+    std::vector<mark_span>        folder_marks;
 };
 
 /* One row of the pocket's text, bytes `start` to `end` of one of its lines */
@@ -112,6 +124,12 @@ struct text_row {
     size_t end;
 };
 
+/* Where a row of the pocket's text starts */
+struct row_spot {
+    size_t line;
+    size_t start;
+};
+
 /* The selected entry exactly: its kind, where and when it came from, its text, image or files in a pocket, and a line
  * about it */
 class clip_preview : public ui::widget {
@@ -119,13 +137,15 @@ public:
     clip_preview();
     ~clip_preview() override;
 
-    /* Shows `entry`, taking `image`, its decoded picture, when it is an image */
-    void show(const shown_entry& entry, const clipboard_source& source, int64_t now_ns, stlxgfx_surface_t* image);
+    /* Shows `entry` with what `query` matches marked, taking `image`, its decoded picture, when it is an image */
+    void show(const shown_entry& entry, const clipboard_source& source, std::string_view query, int64_t now_ns,
+              stlxgfx_surface_t* image);
     void paint(ui::painter& p) override;
 
 private:
     void drop_pictures();
     void wrap(const ui::rect& inside);
+    row_spot window_start(size_t row_chars) const;
     int32_t message_height() const;
     void paint_image(ui::painter& p, const ui::rect& inside);
     void paint_files(ui::painter& p, const ui::rect& inside) const;
@@ -134,16 +154,18 @@ private:
     text_picture                               m_from;
     text_picture                               m_tag;
     bool                                       m_is_current = false;
+    std::string                                m_query;
     std::vector<file_line>                     m_files;
 
     /* The paragraphs above a copy past the budget, the first in semibold, the text's lines with their tabs widened,
-     * and the meta line's parts, laid out at the pocket's width once a paint knows it */
+     * and the meta line's parts, laid out once a paint knows the pocket's width, with the query's matches marked */
     std::vector<std::string>                   m_message;
     std::vector<std::string>                   m_text_lines;
     std::vector<std::string>                   m_meta_parts;
     int32_t                                    m_wrapped_w = -1;
     std::vector<std::unique_ptr<text_picture>> m_message_lines;
     std::vector<std::unique_ptr<text_picture>> m_rows;
+    std::vector<std::vector<mark_span>>        m_row_marks;
     std::vector<std::unique_ptr<text_picture>> m_meta;
 
     /* An image entry's picture, and that picture fitted to the pocket at its last size */
@@ -151,10 +173,12 @@ private:
     stlxgfx_surface_t* m_fitted = nullptr;
 };
 
-/* One entry: its icon, its first line or what it is, where and when it was copied, and a pin when pinned */
+/* One entry: its icon, its first line or what it is with the query's matches marked, where and when it was copied,
+ * and a pin when pinned */
 class clip_row : public ui::widget {
 public:
-    clip_row(const shown_entry& entry, const std::string& detail, const stlxgfx_surface_t* pin_glyph);
+    clip_row(const shown_entry& entry, const std::string& detail, std::string_view query,
+             const stlxgfx_surface_t* pin_glyph);
 
     std::function<void()> on_hover;
     std::function<void()> on_choose;
@@ -190,6 +214,7 @@ private:
     const stlxgfx_surface_t* m_icon;
     const stlxgfx_surface_t* m_pin_glyph;
     text_picture             m_title;
+    std::vector<mark_span>   m_title_marks;
     text_picture             m_detail;
     bool                     m_is_selected = false;
 };
@@ -266,22 +291,27 @@ private:
     text_picture m_note;
 };
 
-/* What shows while nothing is listed, and what pins are for */
+/* What shows while nothing is listed, a title and a note under it, both fitted to the pane */
 class clip_empty : public ui::widget {
 public:
-    clip_empty()
-        : m_title("Nothing copied since Stellux started", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
-                  STLXTHEME_TEXT),
-          m_note("Copies appear here as you make them, newest first. Pinned items stay until you unpin them, or until "
-                 "Stellux restarts.", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {}
+    clip_empty(std::string title, std::string note)
+        : m_title_text(std::move(title)), m_note_text(std::move(note)),
+          m_title("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
+          m_note("", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {}
 
     void paint(ui::painter& p) override {
+        int32_t max_w = m_frame.w - 2 * EMPTY_PADDING_X;
+        m_title.set_text(fitted(m_title_text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, max_w));
+        m_note.set_text(fitted(m_note_text, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, max_w));
+
         int32_t top = (m_frame.h - 2 * ENTRY_TITLE_HEIGHT - EMPTY_GAP) / 2;
         m_title.draw(p, (m_frame.w - m_title.width()) / 2, top, ENTRY_TITLE_HEIGHT);
         m_note.draw(p, (m_frame.w - m_note.width()) / 2, top + ENTRY_TITLE_HEIGHT + EMPTY_GAP, ENTRY_TITLE_HEIGHT);
     }
 
 private:
+    std::string  m_title_text;
+    std::string  m_note_text;
     text_picture m_title;
     text_picture m_note;
 };
@@ -360,20 +390,66 @@ static size_t row_end(std::string_view line, size_t start, size_t row_chars) {
     return after_break > start ? after_break : end;
 }
 
-/* The first `max_rows` rows of `lines` from `first_line` on, a blank line taking a row of its own */
-static std::vector<text_row> wrap_rows(const std::vector<std::string>& lines, size_t first_line, size_t row_chars,
+/* Where each row of one line starts */
+static std::vector<size_t> row_starts(std::string_view line, size_t row_chars) {
+    std::vector<size_t> starts = { 0 };
+    for (size_t at = row_end(line, 0, row_chars); at < line.size(); at = row_end(line, at, row_chars)) {
+        starts.push_back(at);
+    }
+
+    return starts;
+}
+
+/* The first `max_rows` rows of `lines` from the row starting at `first`, a blank line taking a row of its own */
+static std::vector<text_row> wrap_rows(const std::vector<std::string>& lines, row_spot first, size_t row_chars,
                                        size_t max_rows) {
     std::vector<text_row> rows;
-    for (size_t i = first_line; i < lines.size() && rows.size() < max_rows; i++) {
-        size_t start = 0;
+    size_t start = first.start;
+    for (size_t i = first.line; i < lines.size() && rows.size() < max_rows; i++) {
         do {
             size_t end = row_end(lines[i], start, row_chars);
             rows.push_back({ i, start, end });
             start = end;
         } while (start < lines[i].size() && rows.size() < max_rows);
+
+        start = 0;
     }
 
     return rows;
+}
+
+/* Each run of `text` that holds `query` in any case */
+static std::vector<match_run> query_runs(std::string_view text, std::string_view query) {
+    std::vector<match_run> runs;
+    for (size_t at = find_folded(text, query); at != std::string_view::npos;
+         at = find_folded(text, query, at + query.size())) {
+        runs.push_back({ static_cast<uint32_t>(at), static_cast<uint32_t>(query.size()) });
+    }
+
+    return runs;
+}
+
+/* Where each of `runs` sits under `text` drawn in the face */
+static std::vector<mark_span> spans_of(std::string_view text, const std::vector<match_run>& runs,
+                                       const char* face_path, float em_px) {
+    stlxgfx_font* font = shell_font(face_path, em_px);
+    std::vector<mark_span> spans;
+    if (!font) {
+        return spans;
+    }
+
+    for (const match_run& run : runs) {
+        spans.push_back({ stlxgfx_text_width(font, text.data(), run.start),
+                          stlxgfx_text_width(font, text.data() + run.start, run.length) });
+    }
+
+    return spans;
+}
+
+static void paint_spans(ui::painter& p, const std::vector<mark_span>& spans, int32_t x, int32_t top, int32_t h) {
+    for (const mark_span& span : spans) {
+        p.rounded_rect({ x + span.x, top, span.w, h }, MARK_RADIUS, STLXTHEME_MATCH_MARK);
+    }
 }
 
 /* Prose broken at its spaces into lines that fit `max_w` pixels in the face, a word wider than a line kept whole */
@@ -577,13 +653,23 @@ static int32_t title_width(const shown_entry& entry) {
     return ENTRY_TEXT_W - (entry.is_pinned ? PIN_GLYPH_SIZE + ENTRY_PADDING_RIGHT : 0);
 }
 
-clip_row::clip_row(const shown_entry& entry, const std::string& detail, const stlxgfx_surface_t* pin_glyph)
+/* Only the names in "2 files: tar.c, tar.h" are content, so its count is never marked */
+clip_row::clip_row(const shown_entry& entry, const std::string& detail, std::string_view query,
+                   const stlxgfx_surface_t* pin_glyph)
     : m_icon(entry.icon),
       m_pin_glyph(entry.is_pinned ? pin_glyph : nullptr),
-      m_title(fitted(entry.title, title_face(entry), title_size(entry), title_width(entry)), title_face(entry),
-              title_size(entry), STLXTHEME_TEXT),
+      m_title("", title_face(entry), title_size(entry), STLXTHEME_TEXT),
       m_detail(fitted(detail, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, ENTRY_TEXT_W), STLXTHEME_UI_FONT_PATH,
                STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {
+    std::string title = fitted(entry.title, title_face(entry), title_size(entry), title_width(entry));
+    size_t content_start = entry.files.size() > 1 ? entry.title.find(": ") + 2 : 0;
+    std::vector<match_run> runs = query_runs(title, query);
+    std::erase_if(runs, [content_start](const match_run& run) {
+        return run.start < content_start;
+    });
+
+    m_title_marks = spans_of(title, runs, title_face(entry), title_size(entry));
+    m_title.set_text(std::move(title));
 }
 
 void clip_row::paint(ui::painter& p) {
@@ -596,6 +682,7 @@ void clip_row::paint(ui::painter& p) {
     }
 
     int32_t top = (m_frame.h - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
+    paint_spans(p, m_title_marks, ENTRY_TEXT_LEFT, top, ENTRY_TITLE_HEIGHT);
     m_title.draw(p, ENTRY_TEXT_LEFT, top, ENTRY_TITLE_HEIGHT);
     m_detail.draw(p, ENTRY_TEXT_LEFT, top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
     if (m_pin_glyph) {
@@ -648,10 +735,11 @@ static std::vector<std::string> meta_parts(const shown_entry& entry) {
 }
 
 /* The pocket holds what its height fits, a copy past the budget saying so above its text */
-void clip_preview::show(const shown_entry& entry, const clipboard_source& source, int64_t now_ns,
-                        stlxgfx_surface_t* image) {
+void clip_preview::show(const shown_entry& entry, const clipboard_source& source, std::string_view query,
+                        int64_t now_ns, stlxgfx_surface_t* image) {
     drop_pictures();
     m_image = image;
+    m_query = query;
     m_wrapped_w = -1;
 
     std::string age = age_text(now_ns - entry.copied_ns);
@@ -679,7 +767,8 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
                             std::make_unique<text_picture>("", STLXTHEME_MONO_FONT_PATH, META_SIZE,
                                                            STLXTHEME_TEXT_DIM),
                             std::make_unique<text_picture>(size, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE,
-                                                           STLXTHEME_TEXT_SECONDARY) });
+                                                           STLXTHEME_TEXT_SECONDARY),
+                            {}, {} });
     }
 
     m_text_lines.clear();
@@ -715,17 +804,41 @@ void clip_preview::wrap(const ui::rect& inside) {
     int32_t rows_h = std::max(0, inside.h - message_height());
     size_t rows_fit = static_cast<size_t>((rows_h + POCKET_LINE_HEIGHT - 1) / POCKET_LINE_HEIGHT);
 
+    /* A match split across two rows is marked in both */
     m_rows.clear();
-    for (const text_row& row : wrap_rows(m_text_lines, 0, row_chars, rows_fit)) {
+    m_row_marks.clear();
+    size_t runs_line = SIZE_MAX;
+    std::vector<match_run> line_runs;
+    for (const text_row& row : wrap_rows(m_text_lines, window_start(row_chars), row_chars, rows_fit)) {
+        if (row.line != runs_line) {
+            runs_line = row.line;
+            line_runs = query_runs(m_text_lines[row.line], m_query);
+        }
+
+        std::vector<match_run> runs;
+        for (const match_run& run : line_runs) {
+            size_t from = std::max<size_t>(run.start, row.start);
+            size_t to = std::min<size_t>(run.start + run.length, row.end);
+            if (from < to) {
+                runs.push_back({ static_cast<uint32_t>(from - row.start), static_cast<uint32_t>(to - from) });
+            }
+        }
+
         std::string shown = m_text_lines[row.line].substr(row.start, row.end - row.start);
+        m_row_marks.push_back(spans_of(shown, runs, STLXTHEME_MONO_FONT_PATH, ENTRY_TEXT_SIZE));
         m_rows.push_back(std::make_unique<text_picture>(std::move(shown), STLXTHEME_MONO_FONT_PATH, ENTRY_TEXT_SIZE,
                                                         STLXTHEME_TERMINAL_TEXT));
     }
 
     for (file_line& file : m_files) {
         int32_t text_w = inside.w - FILE_TEXT_LEFT - file.size->width() - FILE_SIZE_GAP;
-        file.name->set_text(fitted(file.name_text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, text_w));
-        file.folder->set_text(fitted(file.folder_text, STLXTHEME_MONO_FONT_PATH, META_SIZE, text_w));
+        std::string name = fitted(file.name_text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, text_w);
+        std::string folder = fitted(file.folder_text, STLXTHEME_MONO_FONT_PATH, META_SIZE, text_w);
+
+        file.name_marks = spans_of(name, query_runs(name, m_query), STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE);
+        file.folder_marks = spans_of(folder, query_runs(folder, m_query), STLXTHEME_MONO_FONT_PATH, META_SIZE);
+        file.name->set_text(std::move(name));
+        file.folder->set_text(std::move(folder));
     }
 
     /* The meta line keeps its parts whole while they fit, and the first that does not ends in an ellipsis */
@@ -741,6 +854,27 @@ void clip_preview::wrap(const ui::rect& inside) {
             break;
         }
     }
+}
+
+/* A search shows the text from one row above its first match, so the match lands near the top with a row of what
+ * leads up to it */
+row_spot clip_preview::window_start(size_t row_chars) const {
+    for (size_t i = 0; i < m_text_lines.size() && !m_query.empty(); i++) {
+        size_t at = find_folded(m_text_lines[i], m_query);
+        if (at == std::string_view::npos) {
+            continue;
+        }
+
+        std::vector<size_t> starts = row_starts(m_text_lines[i], row_chars);
+        size_t row = static_cast<size_t>(std::upper_bound(starts.begin(), starts.end(), at) - starts.begin()) - 1;
+        if (row > 0) {
+            return { i, starts[row - 1] };
+        }
+
+        return i > 0 ? row_spot{ i - 1, row_starts(m_text_lines[i - 1], row_chars).back() } : row_spot{ 0, 0 };
+    }
+
+    return { 0, 0 };
 }
 
 int32_t clip_preview::message_height() const {
@@ -782,6 +916,9 @@ void clip_preview::paint_files(ui::painter& p, const ui::rect& inside) const {
         }
 
         int32_t text_top = top + (FILE_ROW_HEIGHT - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
+        paint_spans(p, file.name_marks, inside.x + FILE_TEXT_LEFT, text_top, ENTRY_TITLE_HEIGHT);
+        paint_spans(p, file.folder_marks, inside.x + FILE_TEXT_LEFT, text_top + ENTRY_TITLE_HEIGHT,
+                    SUBTITLE_LINE_HEIGHT);
         file.name->draw(p, inside.x + FILE_TEXT_LEFT, text_top, ENTRY_TITLE_HEIGHT);
         file.folder->draw(p, inside.x + FILE_TEXT_LEFT, text_top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
         file.size->draw(p, inside.x + inside.w - file.size->width(), top, FILE_ROW_HEIGHT);
@@ -825,7 +962,9 @@ void clip_preview::paint(ui::painter& p) {
     }
 
     for (size_t i = 0; i < m_rows.size(); i++) {
-        m_rows[i]->draw(p, inside.x, inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT, POCKET_LINE_HEIGHT);
+        int32_t top = inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT;
+        paint_spans(p, m_row_marks[i], inside.x, top + POCKET_MARK_INSET, POCKET_LINE_HEIGHT - 2 * POCKET_MARK_INSET);
+        m_rows[i]->draw(p, inside.x, top, POCKET_LINE_HEIGHT);
     }
 
     p.pop_clip();
@@ -908,7 +1047,7 @@ clipboard_pane::~clipboard_pane() {
 }
 
 void clipboard_pane::refresh() {
-    uint64_t selected_id = m_selected < m_entries.size() ? m_entries[m_selected].id : 0;
+    uint64_t selected_id = m_selected < m_listed.size() ? listed(m_selected).id : 0;
     std::vector<const clipboard_entry*> entries = m_source.history->entries();
     m_source.thumbnails->keep(entries);
     m_entries.clear();
@@ -916,17 +1055,57 @@ void clipboard_pane::refresh() {
         m_entries.push_back(show_entry(m_source, *entry));
     }
 
-    m_selected = 0;
-    for (size_t i = 0; i < m_entries.size(); i++) {
-        if (m_entries[i].id == selected_id) {
-            m_selected = i;
-        }
+    list(selected_id);
+}
+
+void clipboard_pane::search(std::string query) {
+    if (query == m_query) {
+        return;
     }
 
+    m_query = std::move(query);
+    m_is_menu_open = false;
+    m_is_asking = false;
+    list(0);
+}
+
+/* Lists the entries the query matches, keeping `selected_id` selected while it is listed, else the entry that took
+ * its place, and the first without one */
+void clipboard_pane::list(uint64_t selected_id) {
+    size_t place = selected_id == 0 ? 0 : m_selected;
+    m_listed.clear();
+    for (size_t i = 0; i < m_entries.size(); i++) {
+        if (!matches(m_entries[i])) {
+            continue;
+        }
+
+        if (m_entries[i].id == selected_id) {
+            place = m_listed.size();
+        }
+
+        m_listed.push_back(i);
+    }
+
+    m_selected = m_listed.empty() ? 0 : std::min(place, m_listed.size() - 1);
     build();
 }
 
-/* The pinned entries head the column, then the rest since the history began, and an empty history says so */
+/* Text matches by its first 64 KB and files by their paths, and an image never matches */
+bool clipboard_pane::matches(const shown_entry& entry) const {
+    if (m_query.empty()) {
+        return true;
+    }
+
+    if (!entry.files.empty()) {
+        return std::any_of(entry.files.begin(), entry.files.end(), [this](const std::string& path) {
+            return find_folded(path, m_query) != std::string_view::npos;
+        });
+    }
+
+    return entry.is_title_text && find_folded(entry.text, m_query) != std::string_view::npos;
+}
+
+/* The pinned entries head the column, then the rest since the history began, and a search lists its matches alone */
 void clipboard_pane::build() {
     while (!m_children.empty()) {
         remove(m_children.back().get());
@@ -937,7 +1116,15 @@ void clipboard_pane::build() {
     m_rows.clear();
     m_row_tops.clear();
     if (m_entries.empty()) {
-        add<clip_empty>()->s().main = ui::length::flex();
+        add<clip_empty>("Nothing copied since Stellux started", "Copies appear here as you make them, newest first. "
+                        "Pinned items stay until you unpin them, or until Stellux restarts.")->s().main =
+            ui::length::flex();
+        return;
+    }
+
+    if (m_listed.empty()) {
+        add<clip_empty>("No clipboard items match " + m_query, "Only text and file paths are searched.")->s().main =
+            ui::length::flex();
         return;
     }
 
@@ -960,19 +1147,20 @@ void clipboard_pane::build() {
         top += QUESTION_HEIGHT;
     }
 
-    for (size_t i = 0; i < m_entries.size(); i++) {
-        bool starts_recent = !m_entries[i].is_pinned && (i == 0 || m_entries[i - 1].is_pinned);
-        if (i == 0 && m_entries[i].is_pinned) {
+    for (size_t i = 0; i < m_listed.size(); i++) {
+        const shown_entry& entry = listed(i);
+        bool has_heads = m_query.empty();
+        if (has_heads && i == 0 && entry.is_pinned) {
             m_list->content()->add<section_head>("PINNED");
             top += HEAD_HEIGHT;
         }
 
-        if (starts_recent) {
+        if (has_heads && !entry.is_pinned && (i == 0 || listed(i - 1).is_pinned)) {
             m_list->content()->add<section_head>("RECENT")->set_end("since " + m_source.since);
             top += HEAD_HEIGHT;
         }
 
-        clip_row* row = m_list->content()->add<clip_row>(m_entries[i], detail_of(m_entries[i], now_ns), m_pin_glyph);
+        clip_row* row = m_list->content()->add<clip_row>(entry, detail_of(entry, now_ns), m_query, m_pin_glyph);
         m_rows.push_back(row);
         m_row_tops.push_back(top);
         top += ENTRY_HEIGHT;
@@ -1010,7 +1198,7 @@ void clipboard_pane::select(size_t index) {
         m_list->scroll_to(row_bottom - view_h);
     }
 
-    m_preview->show(m_entries[index], m_source, monotonic_ns(), decode_image(m_entries[index]));
+    m_preview->show(listed(index), m_source, m_query, monotonic_ns(), decode_image(listed(index)));
 }
 
 /* An image entry's whole picture, decoded for the preview each time it is selected */
@@ -1026,21 +1214,21 @@ stlxgfx_surface_t* clipboard_pane::decode_image(const shown_entry& shown) const 
 }
 
 void clipboard_pane::move_selection(int32_t rows) {
-    if (m_entries.empty()) {
+    if (m_listed.empty()) {
         return;
     }
 
-    int32_t last = static_cast<int32_t>(m_entries.size()) - 1;
+    int32_t last = static_cast<int32_t>(m_listed.size()) - 1;
     select(static_cast<size_t>(std::clamp(static_cast<int32_t>(m_selected) + rows, 0, last)));
 }
 
 /* Enter pastes into the focused window when there is one, and otherwise copies, as Ctrl Enter always does */
 void clipboard_pane::choose(bool pastes) {
-    if (m_selected >= m_entries.size()) {
+    if (m_selected >= m_listed.size()) {
         return;
     }
 
-    uint64_t id = m_entries[m_selected].id;
+    uint64_t id = listed(m_selected).id;
     if (pastes && !m_source.focused_app.empty()) {
         m_source.paste(id);
     } else {
@@ -1051,7 +1239,7 @@ void clipboard_pane::choose(bool pastes) {
 /* Ctrl K's list names the entry it acts on, as "TEXT FROM SHEEN, 9 LINES", and replaces the entries until a choice
  * or Esc */
 void clipboard_pane::build_menu() {
-    const shown_entry& entry = m_entries[m_selected];
+    const shown_entry& entry = listed(m_selected);
     std::string head = entry.kind + " from " + entry.from;
     std::string length = text_length(entry);
     if (!length.empty()) {
@@ -1067,7 +1255,7 @@ void clipboard_pane::build_menu() {
         m_list->content()->add<clip_choice>(m_menu[i])->set_selected(i == m_menu_choice);
     }
 
-    m_preview->show(entry, m_source, monotonic_ns(), decode_image(entry));
+    m_preview->show(entry, m_source, m_query, monotonic_ns(), decode_image(entry));
 }
 
 /* Enter pastes or copies, then come pinning, removing and clearing, each with the key that runs it outside the list */
@@ -1144,7 +1332,7 @@ bool clipboard_pane::on_question_key(const ui::key_event& e) {
 }
 
 bool clipboard_pane::on_key(const ui::key_event& e) {
-    if (m_entries.empty()) {
+    if (m_listed.empty()) {
         return false;
     }
 
@@ -1158,7 +1346,7 @@ bool clipboard_pane::on_key(const ui::key_event& e) {
 
     bool is_ctrl = (e.modifiers & MOD_CTRL) != 0;
     bool is_shift = (e.modifiers & MOD_SHIFT) != 0;
-    const shown_entry& entry = m_entries[m_selected];
+    const shown_entry& entry = listed(m_selected);
     switch (e.usage) {
     case HID_USAGE_UP:
         move_selection(-1);
@@ -1205,7 +1393,7 @@ bool clipboard_pane::on_key(const ui::key_event& e) {
 }
 
 std::vector<footer_item> clipboard_pane::footer_actions() const {
-    if (m_entries.empty()) {
+    if (m_listed.empty()) {
         return {};
     }
 
@@ -1225,13 +1413,17 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
         items.push_back({ "Copy", "Ctrl Enter" });
     }
 
-    items.push_back({ m_entries[m_selected].is_pinned ? "Unpin" : "Pin", "Ctrl P" });
+    items.push_back({ listed(m_selected).is_pinned ? "Unpin" : "Pin", "Ctrl P" });
     items.push_back({ "Actions", "Ctrl K" });
     return items;
 }
 
-/* The count of entries, and the bytes the budget counts against its limit */
+/* The count of entries and the bytes the budget counts against its limit, or how many of them a search lists */
 std::string clipboard_pane::footer_end() const {
+    if (!m_query.empty()) {
+        return std::to_string(m_listed.size()) + " of " + std::to_string(m_entries.size());
+    }
+
     size_t count = m_entries.size();
     std::string items = count == 1 ? "1 item" : std::to_string(count) + " items";
     if (count == 0) {
