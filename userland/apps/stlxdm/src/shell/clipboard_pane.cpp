@@ -1106,9 +1106,12 @@ void clipboard_pane::show_text_matches(const text_matches& matches) {
 }
 
 /* Lists the entries the query matches, keeping `selected_id` selected while it is listed, else the entry that took
- * its place, and the first without one */
+ * its place. Without one a search starts at its best match, and the history at the copy on the clipboard wherever it
+ * is listed, else at its newest copy below the pins. */
 void clipboard_pane::list(uint64_t selected_id) {
     size_t place = selected_id == 0 ? 0 : m_selected;
+    size_t pinned = 0;
+    size_t current = SIZE_MAX;
     m_listed.clear();
     for (size_t i = 0; i < m_entries.size(); i++) {
         if (!matches(m_entries[i])) {
@@ -1119,7 +1122,15 @@ void clipboard_pane::list(uint64_t selected_id) {
             place = m_listed.size();
         }
 
+        current = m_entries[i].is_current ? m_listed.size() : current;
+        pinned += m_entries[i].is_pinned ? 1 : 0;
         m_listed.push_back(i);
+    }
+
+    if (selected_id == 0 && m_query.empty() && current != SIZE_MAX) {
+        place = current;
+    } else if (selected_id == 0 && m_query.empty() && pinned < m_listed.size()) {
+        place = pinned;
     }
 
     m_selected = m_listed.empty() ? 0 : std::min(place, m_listed.size() - 1);
