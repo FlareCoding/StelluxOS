@@ -108,7 +108,31 @@ typedef enum {
     STLXWIN_EVT_OUTPUTS,         /* what stlxwin_outputs_get gives changed, read it again */
     STLXWIN_EVT_LAYOUT_RESULT,   /* the display manager's answer to a layout request */
     STLXWIN_EVT_WINDOW_OUTPUT,   /* a toplevel's output or position changed, see stlxwin_window_get_output */
+    STLXWIN_EVT_CLIPBOARD,       /* the watched clipboard changed, read its types with stlxwin_clipboard_types */
 } stlxwin_event_type;
+
+#define STLXWIN_MIME_MAX        64u  /* a MIME type's bytes with its NUL */
+#define STLXWIN_OFFER_TYPES_MAX 4u   /* representations one offer carries */
+
+/* The type of text on the clipboard, which stlxwin_clipboard_set and stlxwin_clipboard_get carry */
+#define STLXWIN_MIME_TEXT "text/plain;charset=utf-8"
+
+enum {
+    STLXWIN_CLIPBOARD_PRIVATE = 1u << 0,  /* the copy stays out of the clipboard's history, as a password must */
+};
+
+/* One representation of a clipboard item: the item's content as one MIME type */
+typedef struct {
+    const char* mime_type;  /* printable ASCII shorter than STLXWIN_MIME_MAX, text as STLXWIN_MIME_TEXT */
+    const void* data;
+    size_t      len;        /* 0 for an empty representation, which takes no shared memory object */
+} stlxwin_clip_rep;
+
+/* The clipboard item's MIME types in the offer's order, empty while the clipboard is */
+typedef struct {
+    uint32_t count;
+    char     types[STLXWIN_OFFER_TYPES_MAX][STLXWIN_MIME_MAX];
+} stlxwin_clip_types;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
 #define STLXWIN_OUTPUTS_MAX 16u  /* the most outputs a display drives */
@@ -221,7 +245,8 @@ typedef struct {
  * window content local. */
 typedef struct {
     stlxwin_event_type type;
-    stlxwin_window*    window;   /* NULL for DISCONNECTED, MODES, MODE_RESULT, GPU_INFO, OUTPUTS and LAYOUT_RESULT */
+    /* NULL for DISCONNECTED, MODES, MODE_RESULT, GPU_INFO, OUTPUTS, LAYOUT_RESULT and CLIPBOARD */
+    stlxwin_window*    window;
     union {
         struct { uint16_t usage; uint8_t modifiers; uint32_t ch; } key;
         struct { int32_t x, y; } motion;
@@ -485,6 +510,34 @@ int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len);
  * @return Length, 0 if empty, -1 on failure.
  */
 long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text);
+
+/**
+ * @brief Replace the clipboard with one item holding `count` representations of the same content, such as a file's
+ * `text/uri-list` beside its path as text, each copied into a shared memory object the display manager keeps.
+ * @return 0, or -1 for more than STLXWIN_OFFER_TYPES_MAX representations or a malformed one, when no shared memory
+ * object can hold one, or when the message cannot be sent, leaving the clipboard as it was.
+ */
+int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_clip_rep* reps, uint32_t count, uint32_t flags);
+
+/**
+ * @brief Fetch the clipboard's representation of `mime_type` into a malloc'd buffer the caller frees, with a NUL
+ * past its end.
+ * @return Length, 0 when the clipboard holds no such representation, -1 on failure.
+ */
+long stlxwin_clipboard_get_type(stlxwin_conn* conn, const char* mime_type, char** out_data);
+
+/**
+ * @brief Hear of every change of the clipboard. Waits for the clipboard's types, which the display manager sends at
+ * once and again after each change, queueing STLXWIN_EVT_CLIPBOARD for each later one.
+ * @return 0 once the types arrived, or -1 when the connection dies first.
+ */
+int stlxwin_clipboard_watch(stlxwin_conn* conn);
+
+/**
+ * @brief Read the clipboard's types as the newest STLXWIN_EVT_CLIPBOARD left them.
+ * @return 0, or -1 before stlxwin_clipboard_watch succeeded.
+ */
+int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_clip_types* out);
 
 /**
  * @brief Ask for an output's modes. The connection keeps the latest
