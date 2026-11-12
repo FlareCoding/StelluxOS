@@ -23,7 +23,15 @@ class section_head;
 class QPixmap;
 class QWidget;
 
-enum page_index : uint32_t { APPEARANCE_PAGE, DOCK_PAGE, DISPLAY_PAGE, INPUT_PAGE, STARTUP_PAGE, ABOUT_PAGE };
+enum page_index : uint32_t {
+    APPEARANCE_PAGE,
+    DOCK_PAGE,
+    QUICK_ACTIONS_PAGE,
+    DISPLAY_PAGE,
+    INPUT_PAGE,
+    STARTUP_PAGE,
+    ABOUT_PAGE
+};
 
 /* A setting search can find: the page and card it sits in, its label, its key and its value as edited.
  * Opening it finds the row named `row` on the page, or shows the page's top when `row` is empty */
@@ -34,6 +42,7 @@ struct search_entry {
     QString key;
     QString value;
     QString row; /* the object name of its row on the page */
+    QString keywords = {}; /* other words that find it, such as what its card is about */
 };
 
 extern stlxconf_t g_conf;
@@ -209,6 +218,7 @@ void build_appearance_page(QWidget* page);
 void build_displays_page(QWidget* page);
 void build_dock_page(QWidget* page);
 void build_input_page(QWidget* page);
+void build_quick_actions_page(QWidget* page);
 void build_startup_page(QWidget* page);
 
 /* Each page lists the settings it shows, in the order it shows them, for search. Displays lists the
@@ -217,6 +227,7 @@ void add_appearance_entries(QList<search_entry>& entries);
 void add_displays_entries(QList<search_entry>& entries);
 void add_dock_entries(QList<search_entry>& entries);
 void add_input_entries(QList<search_entry>& entries);
+void add_quick_actions_entries(QList<search_entry>& entries);
 void add_startup_entries(QList<search_entry>& entries);
 
 #endif /* STLXSETTINGS_SETTINGS_HPP */

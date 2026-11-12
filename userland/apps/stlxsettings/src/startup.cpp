@@ -47,7 +47,29 @@ QString program_name(const char* path, const char* args) {
     return file.isEmpty() ? QStringLiteral("New program") : file;
 }
 
+/* What a capture shortcut takes, by the args it hands stlxdm, as Quick Actions names it */
+static const char* const CAPTURE_ARGS[] = { "screen", "region", "window", "bar" };
+static const char* const CAPTURE_NAMES[] = { "Capture screen", "Capture region", "Capture window", "Capture bar" };
+static const char* const CAPTURE_CHOICES[] = { "Screen", "Region", "Window", "Bar" };
+static_assert(std::size(CAPTURE_ARGS) == std::size(CAPTURE_NAMES));
+static_assert(std::size(CAPTURE_ARGS) == std::size(CAPTURE_CHOICES));
+
+static int capture_of(const char* args) {
+    for (int i = 0; i < static_cast<int>(std::size(CAPTURE_ARGS)); i++) {
+        if (strcmp(args, CAPTURE_ARGS[i]) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 static QString shortcut_name(const stlxconf_shortcut_t& shortcut) {
+    int capture = capture_of(shortcut.args);
+    if (stlxconf_action_kind(shortcut.action) == STLXCONF_ACTION_SCREENSHOT && capture >= 0) {
+        return QString::fromUtf8(CAPTURE_NAMES[capture]);
+    }
+
     const char* label = stlxconf_action_label(stlxconf_action_kind(shortcut.action));
     if (label) {
         return QString::fromUtf8(label);
@@ -182,6 +204,24 @@ static QWidget* make_shortcut_editor(stlxconf_shortcut_t* entry, list_row* row, 
         sizeof(entry->key),
         refresh_row
     ));
+
+    if (stlxconf_action_kind(entry->action) == STLXCONF_ACTION_SCREENSHOT) {
+        QStringList captures;
+        for (const char* choice : CAPTURE_CHOICES) {
+            captures.append(QLatin1String(choice));
+        }
+
+        auto* capture_row = new setting_row(QStringLiteral("Capture"), QStringLiteral("args"));
+        auto* capture = new segmented(captures, std::max(capture_of(entry->args), 0), nullptr);
+        capture_row->add_control(capture);
+        editor->layout()->addWidget(capture_row);
+        capture->on_choose = [entry, refresh_row](int chosen) {
+            copy_string(entry->args, sizeof(entry->args), QLatin1String(CAPTURE_ARGS[chosen]));
+            refresh_row();
+        };
+
+        return editor;
+    }
 
     bool runs_program = stlxconf_action_kind(entry->action) == STLXCONF_ACTION_EXEC;
     if (!runs_program) {

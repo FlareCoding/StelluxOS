@@ -165,7 +165,8 @@ private:
 /* Paints the mark a segment shows before its label into `box`. `color` is the label's color, which a mark may use */
 using mark_painter = std::function<void(QPainter& painter, const QRectF& box, int index, const QColor& color)>;
 
-/* Choices on a recessed track, exactly one of them chosen. The chosen one is filled in cream, never amber */
+/* Choices on a recessed track, exactly one of them chosen, each label after the mark `paint_mark` paints, or alone
+ * when it is null. The chosen one is filled in cream, never amber */
 class segmented : public QWidget {
 public:
     segmented(const QStringList& labels, int chosen, mark_painter paint_mark);
@@ -181,6 +182,7 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
+    qreal mark_room() const;
     qreal segment_width(int index) const;
     QRectF segment_rect(int index) const;
     int segment_at(const QPointF& position) const;

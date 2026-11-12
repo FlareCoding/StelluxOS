@@ -78,22 +78,23 @@ stlxconf_t g_conf;
 constexpr uint32_t PAGE_COUNT = ABOUT_PAGE + 1;
 
 static const char* const PAGE_NAMES[] = {
-    "Appearance", "Dock", "Displays", "Input", "Startup", "About"
+    "Appearance", "Dock", "Quick Actions", "Displays", "Input", "Startup", "About"
 };
 static_assert(std::size(PAGE_NAMES) == PAGE_COUNT);
 
 /* The names `--page` takes */
 static const char* const PAGE_SLUGS[] = {
-    "appearance", "dock", "displays", "input", "startup", "about"
+    "appearance", "dock", "quick-actions", "displays", "input", "startup", "about"
 };
 static_assert(std::size(PAGE_SLUGS) == PAGE_COUNT);
 
 static const char* const PAGE_BLURBS[] = {
     "Wallpaper and glass.",
     "The apps pinned to the dock.",
+    "What file search skips, how much the clipboard history keeps, and how the capture bar starts.",
     "Where each display sits, which one is main, and each one's mode.",
     "How held keys repeat.",
-    "Programs that start with the desktop, and the shortcuts that launch programs.",
+    "Programs that start with the desktop, and the keyboard shortcuts.",
     "This machine and the software on it.",
 };
 static_assert(std::size(PAGE_BLURBS) == PAGE_COUNT);
@@ -101,12 +102,12 @@ static_assert(std::size(PAGE_BLURBS) == PAGE_COUNT);
 /* The file that stores each page's settings, for the Displays page the layout file that stlxdm writes.
  * About stores none and says so instead */
 static const char* const PAGE_FILES[] = {
-    STLXCONF_PATH, STLXCONF_PATH, LAYOUTS_PATH, STLXCONF_PATH, STLXCONF_PATH, "read only"
+    STLXCONF_PATH, STLXCONF_PATH, STLXCONF_PATH, LAYOUTS_PATH, STLXCONF_PATH, STLXCONF_PATH, "read only"
 };
 static_assert(std::size(PAGE_FILES) == PAGE_COUNT);
 
 static const glyph PAGE_GLYPHS[] = {
-    glyph::WALLPAPER, glyph::DOCK, glyph::DISPLAY, glyph::KEYBOARD, glyph::POWER, glyph::INFO
+    glyph::WALLPAPER, glyph::DOCK, glyph::SEARCH, glyph::DISPLAY, glyph::KEYBOARD, glyph::POWER, glyph::INFO
 };
 static_assert(std::size(PAGE_GLYPHS) == PAGE_COUNT);
 
@@ -744,6 +745,7 @@ static void build_page(uint32_t index) {
     switch (static_cast<page_index>(index)) {
     case APPEARANCE_PAGE: build_appearance_page(page); break;
     case DOCK_PAGE: build_dock_page(page); break;
+    case QUICK_ACTIONS_PAGE: build_quick_actions_page(page); break;
     case DISPLAY_PAGE: build_displays_page(page); break;
     case INPUT_PAGE: build_input_page(page); break;
     case STARTUP_PAGE: build_startup_page(page); break;
@@ -773,15 +775,20 @@ static void keep_page_scroll() {
 /* The settings whose label or key holds the query, page by page in sidebar order */
 static QList<search_entry> matching_entries(const QString& query) {
     QList<search_entry> entries;
+
     add_appearance_entries(entries);
     add_dock_entries(entries);
+    add_quick_actions_entries(entries);
     add_displays_entries(entries);
     add_input_entries(entries);
     add_startup_entries(entries);
 
     QList<search_entry> matches;
     for (const search_entry& entry : entries) {
-        if (entry.label.contains(query, Qt::CaseInsensitive) || entry.key.contains(query, Qt::CaseInsensitive)) {
+        bool is_match = entry.label.contains(query, Qt::CaseInsensitive) ||
+                        entry.key.contains(query, Qt::CaseInsensitive) ||
+                        entry.keywords.contains(query, Qt::CaseInsensitive);
+        if (is_match) {
             matches.append(entry);
         }
     }
