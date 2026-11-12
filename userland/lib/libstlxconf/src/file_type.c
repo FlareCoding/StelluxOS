@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Enough of a file to tell its magic number and whether it reads as text */
@@ -116,13 +117,25 @@ static bool is_text(const unsigned char* bytes, size_t length) {
     return true;
 }
 
+/* Only a regular file is opened and read: a device, a pipe or a socket may block its reader or lose the bytes it gives,
+ * so it types as data unread. The check repeats on the opened handle, since the path may change between the two. */
 static stlxconf_file_type_t sniffed_type(const char* path) {
-    unsigned char bytes[SNIFF_BYTES];
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        return BINARY_DATA;
+    }
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return BINARY_DATA;
     }
 
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return BINARY_DATA;
+    }
+
+    unsigned char bytes[SNIFF_BYTES];
     ssize_t length = read(fd, bytes, sizeof(bytes));
     close(fd);
     if (length <= 0) {

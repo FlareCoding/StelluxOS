@@ -267,7 +267,8 @@ typedef struct {
 } stlxconf_file_type_t;
 
 /**
- * @brief Names the type of the file at `path`. An empty file is plain text, as it holds nothing else.
+ * @brief Names the type of the file at `path`. An empty file is plain text, as it holds nothing else, and only a regular
+ * file is read, so a device, a pipe or a socket without a known extension is data and never blocks the caller.
  * @return the type, which points at static strings.
  */
 stlxconf_file_type_t stlxconf_file_type(const char* path);
