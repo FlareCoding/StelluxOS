@@ -8,6 +8,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/* How many changes of the current item an undo can reach back through */
+constexpr size_t BECAME_CURRENT_MAX = 1024;
+
 clipboard_item::clipboard_item(std::vector<clipboard_rep> reps, uint32_t flags)
     : m_reps(std::move(reps)), m_flags(flags) {
 }
@@ -123,12 +126,14 @@ void clipboard_history::set_limits(uint32_t items, uint64_t bytes) {
 void clipboard_history::copy(clipboard_item item, std::string label, int64_t now_ns) {
     retire_current();
     if (item.empty()) {
+        remember_current(0);
         evict();
         return;
     }
 
     if (item.flags() & SWP_CLIPBOARD_PRIVATE) {
         m_private = std::move(item);
+        remember_current(0);
         evict();
         return;
     }
@@ -151,6 +156,7 @@ void clipboard_history::copy(clipboard_item item, std::string label, int64_t now
 
     entry.label = std::move(label);
     entry.copied_ns = now_ns;
+    remember_current(entry.id);
     m_entries.insert(m_entries.begin(), std::move(entry));
     m_front_is_current = true;
     evict();
@@ -182,6 +188,10 @@ bool clipboard_history::is_current(uint64_t id) const {
     return m_front_is_current && m_entries.front().id == id;
 }
 
+uint64_t clipboard_history::current_id() const {
+    return m_front_is_current ? m_entries.front().id : 0;
+}
+
 void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
     size_t i = index_of(id);
     if (i == m_entries.size() || is_current(id)) {
@@ -193,9 +203,17 @@ void clipboard_history::make_current(uint64_t id, int64_t now_ns) {
     retire_current();
 
     entry.copied_ns = now_ns;
+    remember_current(id);
     m_entries.insert(m_entries.begin(), std::move(entry));
     m_front_is_current = true;
     evict();
+}
+
+void clipboard_history::set_name(uint64_t id, std::string name) {
+    size_t i = index_of(id);
+    if (i < m_entries.size()) {
+        m_entries[i].name = std::move(name);
+    }
 }
 
 bool clipboard_history::can_pin(uint64_t id) const {
@@ -231,30 +249,81 @@ void clipboard_history::remove(uint64_t id) {
         return;
     }
 
-    if (is_current(id)) {
+    bool was_current = is_current(id);
+    if (was_current) {
         m_front_is_current = false;
     }
 
-    m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
+    erase_at(i);
+    if (was_current) {
+        remember_current(0);
+    }
+}
+
+void clipboard_history::discard(uint64_t id) {
+    size_t i = index_of(id);
+    if (i == m_entries.size()) {
+        return;
+    }
+
+    bool was_current = is_current(id);
+    if (was_current) {
+        m_front_is_current = false;
+    }
+
+    erase_at(i);
+    size_t j = m_became_current.empty() ? m_entries.size() : index_of(m_became_current.back());
+    if (!was_current || j == m_entries.size()) {
+        return;
+    }
+
+    clipboard_entry entry = std::move(m_entries[j]);
+    m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(j));
+    m_entries.insert(m_entries.begin(), std::move(entry));
+    m_front_is_current = true;
+    evict();
+}
+
+bool clipboard_history::restores_on_discard(uint64_t id) const {
+    if (!is_current(id)) {
+        return false;
+    }
+
+    for (size_t i = m_became_current.size(); i-- > 0;) {
+        if (m_became_current[i] != id) {
+            return index_of(m_became_current[i]) != m_entries.size();
+        }
+    }
+
+    return false;
 }
 
 size_t clipboard_history::clear_unpinned() {
-    if (m_front_is_current && !m_entries.front().pinned) {
+    bool empties = m_front_is_current && !m_entries.front().pinned;
+    if (empties) {
         m_front_is_current = false;
     }
 
-    size_t before = m_entries.size();
-    std::erase_if(m_entries, [](const clipboard_entry& entry) {
-        return !entry.pinned;
-    });
+    size_t cleared = 0;
+    for (size_t i = m_entries.size(); i-- > 0;) {
+        if (!m_entries[i].pinned) {
+            erase_at(i);
+            cleared++;
+        }
+    }
 
-    return before - m_entries.size();
+    if (empties) {
+        remember_current(0);
+    }
+
+    return cleared;
 }
 
 void clipboard_history::clear() {
     m_entries.clear();
     m_front_is_current = false;
     m_private = clipboard_item();
+    m_became_current.clear();
 }
 
 size_t clipboard_history::kept_count() const {
@@ -299,7 +368,20 @@ void clipboard_history::retire_current() {
 
     m_front_is_current = false;
     if (m_entries.front().item.held() > m_byte_limit && !m_entries.front().pinned) {
-        m_entries.erase(m_entries.begin());
+        erase_at(0);
+    }
+}
+
+/* Each change of the current item joins the order entries became current, and the oldest changes leave past its bound,
+ * which only an undo that many changes deep would miss */
+void clipboard_history::remember_current(uint64_t id) {
+    if (!m_became_current.empty() && m_became_current.back() == id) {
+        return;
+    }
+
+    m_became_current.push_back(id);
+    if (m_became_current.size() > BECAME_CURRENT_MAX) {
+        m_became_current.erase(m_became_current.begin());
     }
 }
 
@@ -319,8 +401,15 @@ void clipboard_history::evict() {
             return;
         }
 
-        m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(oldest));
+        erase_at(oldest);
     }
+}
+
+/* An entry that leaves takes its places in the order entries became current, so an undo skips it */
+void clipboard_history::erase_at(size_t index) {
+    uint64_t gone = m_entries[index].id;
+    m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(index));
+    std::erase(m_became_current, gone);
 }
 
 size_t clipboard_history::index_of(uint64_t id) const {

@@ -55,6 +55,7 @@ struct clipboard_entry {
     uint64_t       id = 0;
     clipboard_item item;
     std::string    label;          /* the copier as the bar names it, or stlxdm's own name for its copies */
+    std::string    name;           /* what stlxdm's own copy is, such as a "Region" capture, empty for an app's */
     int64_t        copied_ns = 0;  /* CLOCK_MONOTONIC */
     bool           pinned = false;
 };
@@ -89,6 +90,9 @@ public:
     const clipboard_entry* find(uint64_t id) const;
     bool is_current(uint64_t id) const;
 
+    /* The current entry's id, 0 while the clipboard is empty or holds a private copy */
+    uint64_t current_id() const;
+
     /* Makes a kept entry current again as a fresh copy */
     void make_current(uint64_t id, int64_t now_ns);
 
@@ -96,8 +100,20 @@ public:
     bool can_pin(uint64_t id) const;
     bool set_pinned(uint64_t id, bool pinned);
 
+    /* Names entry `id` as what it is, as a capture's card names its kind */
+    void set_name(uint64_t id, std::string name);
+
     /* Removing the current entry empties the clipboard, so a deleted copy leaves it too */
     void remove(uint64_t id);
+
+    /* Removes `id`, and when it was current makes the entry current before it current again as it was copied, or leaves
+     * the clipboard empty when a private copy or nothing was. The history keeps the order entries became current, which
+     * an entry leaves with all its places, so undos in any order end where they began. */
+    void discard(uint64_t id);
+
+    /* Whether discarding `id` would make a copy current again: only while `id` is current and the entry before it in
+     * that order is still listed, not a private copy or an emptied clipboard */
+    bool restores_on_discard(uint64_t id) const;
     size_t clear_unpinned();
     void clear();
 
@@ -111,13 +127,16 @@ public:
 
 private:
     void retire_current();
+    void remember_current(uint64_t id);
     void evict();
+    void erase_at(size_t index);
     size_t index_of(uint64_t id) const;
 
     clipboard_matcher            m_matches;
     std::vector<clipboard_entry> m_entries;  /* newest first, the current one first while m_front_is_current */
     bool                         m_front_is_current = false;
     clipboard_item               m_private;  /* the current item while it is private */
+    std::vector<uint64_t>        m_became_current;  /* ids oldest first, 0 for a private copy or an empty clipboard */
     uint64_t                     m_next_id = 1;
     uint32_t                     m_item_limit = 0;
     uint64_t                     m_byte_limit = 0;

@@ -171,4 +171,14 @@ private:
 /* A copy of `r` of `frame`, in the frame's pixels, which the caller destroys, or null without memory */
 stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& r);
 
+/* `pixels` shrunk to `w` by `h`, each pixel the average of those it covers so text stays legible small, in straight
+ * alpha when `keeps_alpha` and opaque otherwise. Null without memory. */
+stlxgfx_surface_t* shrink_capture(const stlxgfx_surface_t* pixels, bool keeps_alpha, int32_t w, int32_t h);
+
+/* Draws glass in a hairline at `box` into `target`, whose first pixel shows the output pixel (`x`, `y`), from the
+ * output's `frost`, or on the menu's ink without one. Inside its rounded edge every pixel ends opaque, so it draws into
+ * a straight alpha picture as into a frame. */
+void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
+                     const damage_list::rect& box, int32_t radius);
+
 #endif

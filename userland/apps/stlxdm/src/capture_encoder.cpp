@@ -72,6 +72,24 @@ bool capture_encoder::encode(capture_job job) {
     return true;
 }
 
+bool capture_encoder::drop(uint64_t id) {
+    std::lock_guard<std::mutex> guard(m_lock);
+    for (auto job = m_jobs.begin(); job != m_jobs.end(); ++job) {
+        if (job->id == id) {
+            stlxgfx_destroy_surface(job->pixels);
+            m_jobs.erase(job);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+size_t capture_encoder::waiting() {
+    std::lock_guard<std::mutex> guard(m_lock);
+    return m_jobs.size();
+}
+
 bool capture_encoder::take(capture_png* png) {
     char drained[64];
     while (read(m_wake[0], drained, sizeof(drained)) > 0) {

@@ -46,6 +46,12 @@ public:
     /* Queues `job`, taking its pixels. False while not started, the pixels destroyed. */
     bool encode(capture_job job);
 
+    /* Takes back the job `id` before it encodes, destroying its pixels. False once it has begun. */
+    bool drop(uint64_t id);
+
+    /* How many jobs wait to begin encoding */
+    size_t waiting();
+
     /* Empties the wake pipe and moves out the oldest encoded capture, false when none waits */
     bool take(capture_png* png);
 

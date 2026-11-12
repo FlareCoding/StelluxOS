@@ -438,6 +438,143 @@ static void check_history_actions() {
           "clearing keeps the pinned entries and empties an unpinned clipboard");
 }
 
+static void check_history_discards() {
+    clipboard_history history(same_size);
+    history.set_limits(10, 1000);
+    history.copy(text_item(1, 0, nullptr), "Terminal", 1);
+    uint64_t replaced = history.current_id();
+
+    history.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+    history.set_name(history.current_id(), "Region");
+    check(history.find(history.current_id())->name == "Region", "a capture is named by its kind");
+    check(history.restores_on_discard(history.current_id()), "the current capture's Discard would put a copy back");
+    history.discard(history.current_id());
+    check(history.is_current(replaced) && history.find(replaced)->copied_ns == 1 &&
+              listed_sizes(history) == std::vector<uint64_t>{ 1 },
+          "discarding the current capture puts back the copy it replaced as it was");
+
+    history.copy(text_item(3, 0, nullptr), "Screenshot", 3);
+    uint64_t capture = history.current_id();
+    history.copy(text_item(4, 0, nullptr), "Terminal", 4);
+    check(!history.restores_on_discard(capture), "a capture no longer current would put nothing back");
+    history.discard(capture);
+    check(history.current().size() == 4 && listed_sizes(history) == std::vector<uint64_t>{ 4, 1 },
+          "discarding a capture no longer current leaves the clipboard as it is");
+
+    history.copy(text_item(5, SWP_CLIPBOARD_PRIVATE, nullptr), "Passwords", 5);
+    check(history.current_id() == 0, "a private copy has no id");
+
+    history.copy(text_item(6, 0, nullptr), "Screenshot", 6);
+    check(!history.restores_on_discard(history.current_id()), "a capture over a private copy would put nothing back");
+    history.discard(history.current_id());
+    check(history.current().empty() && listed_sizes(history) == std::vector<uint64_t>{ 4, 1 },
+          "discarding a capture that replaced a private copy empties the clipboard, which the history knows itself");
+}
+
+/* Two stacked captures discarded in either order end where they began, and a recapture or a capture made current
+ * again undoes to the copy it last replaced */
+static void check_discard_chains() {
+    for (bool is_oldest_first : { true, false }) {
+        clipboard_history history(same_size);
+        history.set_limits(10, 1000);
+        history.copy(text_item(1, 0, nullptr), "Terminal", 1);
+        uint64_t text = history.current_id();
+
+        history.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+        uint64_t first = history.current_id();
+        history.copy(text_item(3, 0, nullptr), "Screenshot", 3);
+        uint64_t second = history.current_id();
+
+        history.discard(is_oldest_first ? first : second);
+        history.discard(is_oldest_first ? second : first);
+        check(history.is_current(text) && listed_sizes(history) == std::vector<uint64_t>{ 1 },
+              is_oldest_first ? "two captures discarded oldest first put back the copy before both"
+                              : "two captures discarded newest first put back the copy before both");
+    }
+
+    clipboard_history recaptured(same_size);
+    recaptured.set_limits(10, 1000);
+    recaptured.copy(text_item(1, 0, nullptr), "Terminal", 1);
+    uint64_t text = recaptured.current_id();
+
+    recaptured.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+    recaptured.copy(text_item(2, 0, nullptr), "Screenshot", 3);
+    recaptured.discard(recaptured.current_id());
+    check(recaptured.is_current(text) && listed_sizes(recaptured) == std::vector<uint64_t>{ 1 },
+          "discarding an identical recapture puts back the copy before both captures");
+
+    clipboard_history again(same_size);
+    again.set_limits(10, 1000);
+    again.copy(text_item(1, 0, nullptr), "Terminal", 1);
+    again.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+    uint64_t capture = again.current_id();
+
+    again.copy(text_item(3, 0, nullptr), "Terminal", 3);
+    uint64_t later = again.current_id();
+
+    again.make_current(capture, 4);
+    again.discard(capture);
+    check(again.is_current(later), "discarding a capture made current again puts back the copy it last replaced");
+}
+
+/* Discard follows the order entries became current, so a capture made current again, an identical recapture of a
+ * capture no longer current, and a capture after the clipboard emptied each undo to what was current before them */
+static void check_discard_order() {
+    for (bool is_chosen_first : { true, false }) {
+        clipboard_history history(same_size);
+        history.set_limits(10, 1000);
+        history.copy(text_item(1, 0, nullptr), "Terminal", 1);
+        uint64_t text = history.current_id();
+
+        history.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+        uint64_t chosen = history.current_id();
+        history.copy(text_item(3, 0, nullptr), "Screenshot", 3);
+        uint64_t other = history.current_id();
+        history.make_current(chosen, 4);
+
+        history.discard(is_chosen_first ? chosen : other);
+        check(history.is_current(is_chosen_first ? other : chosen),
+              is_chosen_first ? "discarding a capture made current again puts back the capture it displaced"
+                              : "discarding the displaced capture leaves the one made current again");
+
+        history.discard(is_chosen_first ? other : chosen);
+        check(history.is_current(text) && listed_sizes(history) == std::vector<uint64_t>{ 1 },
+              is_chosen_first ? "then discarding the other capture puts back the copy before both"
+                              : "then discarding the chosen capture puts back the copy before both");
+    }
+
+    clipboard_history recaptured(same_size);
+    recaptured.set_limits(10, 1000);
+    recaptured.copy(text_item(1, 0, nullptr), "Terminal", 1);
+
+    recaptured.copy(text_item(2, 0, nullptr), "Screenshot", 2);
+    uint64_t first = recaptured.current_id();
+    recaptured.copy(text_item(3, 0, nullptr), "Terminal", 3);
+    uint64_t later = recaptured.current_id();
+
+    recaptured.copy(text_item(2, 0, nullptr), "Screenshot", 4);
+    check(recaptured.current_id() == first, "an identical recapture of an older capture moves its entry up by its id");
+
+    recaptured.discard(first);
+    check(recaptured.is_current(later) && recaptured.find(later)->copied_ns == 3 &&
+              listed_sizes(recaptured) == std::vector<uint64_t>{ 3, 1 },
+          "discarding the recapture puts back the copy made between the two captures");
+
+    recaptured.discard(first);
+    check(recaptured.is_current(later), "the first capture's Discard then finds nothing left to undo");
+
+    clipboard_history emptied(same_size);
+    emptied.set_limits(10, 1000);
+    emptied.copy(text_item(1, 0, nullptr), "Terminal", 1);
+    emptied.copy(text_item(2, 0, nullptr), "Terminal", 2);
+    emptied.remove(emptied.current_id());
+
+    emptied.copy(text_item(3, 0, nullptr), "Screenshot", 3);
+    emptied.discard(emptied.current_id());
+    check(emptied.current().empty() && listed_sizes(emptied) == std::vector<uint64_t>{ 1 },
+          "discarding a capture made after the current copy was deleted leaves the clipboard empty");
+}
+
 int main() {
     check_offers();
     check_items();
@@ -453,6 +590,10 @@ int main() {
     check_history_recopies();
     check_history_budget();
     check_history_actions();
+
+    check_history_discards();
+    check_discard_chains();
+    check_discard_order();
 
     check_history_pins();
     check_held_budget();

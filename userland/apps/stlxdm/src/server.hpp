@@ -4,6 +4,7 @@
 #include "animation.hpp"
 #include "capture.hpp"
 #include "capture_encoder.hpp"
+#include "capture_thumbnails.hpp"
 #include "clipboard.hpp"
 #include "cursor.hpp"
 #include "damage.hpp"
@@ -526,6 +527,10 @@ public:
     int capture_fd() const { return m_capture_encoder.wake_fd(); }
     void pump_captures();
 
+    /* The poll bound and tick of the capture thumbnails' time */
+    int64_t thumbnail_timeout_ns(uint64_t now_ns) const { return m_thumbnails.timeout_ns(now_ns); }
+    void thumbnail_tick(uint64_t now_ns) { m_thumbnails.tick(now_ns, m_damage); }
+
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
      * handled. */
@@ -666,6 +671,8 @@ private:
     void capture_region(const capture_target& target);
     void capture_focused_window();
     void capture_window_alone(dm_window& w, bool has_shadow);
+    void encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output);
+    void discard_capture(const thumbnail_click& click);
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
@@ -764,6 +771,7 @@ private:
     /* events.cpp */
     void capture_key(uint16_t usage, bool down, bool repeat);
     void capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed);
+    void thumbnail_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed);
     dm_client* window_owner(const dm_window* w);
     dm_window* popup_parent(const dm_window& w);
     dm_window* window_at(int32_t x, int32_t y, decor::zone* out_zone);
@@ -1022,6 +1030,9 @@ private:
     capture_encoder m_capture_encoder;
     uint64_t        m_next_capture = 1;
     bool            m_composes_freeze = false;
+
+    /* The cards of the latest captures, which a freeze leaves out */
+    capture_thumbnails m_thumbnails;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

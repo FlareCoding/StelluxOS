@@ -211,10 +211,8 @@ static void copy_opaque(stlxgfx_surface_t* view, const stlxgfx_surface_t* frozen
     }
 }
 
-/* Glass in a hairline at `box`, in its output's pixels, drawn into `target`, whose first pixel shows the output pixel
- * (`x`, `y`), from the output's `frost`, or on the menu's ink without one */
-static void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
-                            const damage_list::rect& box, int32_t radius) {
+void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
+                     const damage_list::rect& box, int32_t radius) {
     damage_list::rect local = moved(box, -x, -y);
     int32_t inner_radius = std::max(radius - 1, 0);
     blend_rounded(target, local, radius, material::HAIRLINE);
@@ -710,4 +708,52 @@ void capture_overlay::draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy,
     std::vector<chip_piece> line = window_line(window, (m_mods & CHORD_MOD_ALT) == 0);
     draw_chip_glass(view, ox - place.x, oy - place.y, frost, moved(chip, -place.x, -place.y), CHIP_RADIUS);
     draw_line(view, box.x + chip_left(line), box.y, box.h, line);
+}
+
+/* The average of the pixels in [left, right) by [top, bottom), their colors weighed by their alpha */
+static uint32_t average_of(const stlxgfx_surface_t* pixels, bool keeps_alpha, int64_t left, int64_t right, int64_t top,
+                           int64_t bottom) {
+    uint64_t sums[3] = {};
+    uint64_t alpha_sum = 0;
+    for (int64_t y = top; y < bottom; y++) {
+        const uint32_t* line = reinterpret_cast<const uint32_t*>(pixels->pixels + static_cast<size_t>(y) * pixels->pitch);
+        for (int64_t x = left; x < right; x++) {
+            uint32_t alpha = keeps_alpha ? line[x] >> 24 : 255;
+            alpha_sum += alpha;
+            for (uint32_t c = 0; c < 3; c++) {
+                sums[c] += ((line[x] >> (16 - 8 * c)) & 0xFF) * alpha;
+            }
+        }
+    }
+
+    uint64_t count = static_cast<uint64_t>((right - left) * (bottom - top));
+    uint32_t pixel = static_cast<uint32_t>((alpha_sum + count / 2) / count) << 24;
+    for (uint32_t c = 0; alpha_sum > 0 && c < 3; c++) {
+        pixel |= static_cast<uint32_t>((sums[c] + alpha_sum / 2) / alpha_sum) << (16 - 8 * c);
+    }
+
+    return pixel;
+}
+
+stlxgfx_surface_t* shrink_capture(const stlxgfx_surface_t* pixels, bool keeps_alpha, int32_t w, int32_t h) {
+    stlxgfx_surface_t* shrunk = stlxgfx_create_surface(static_cast<uint32_t>(w), static_cast<uint32_t>(h), 32, 16, 8, 0);
+    if (!shrunk) {
+        return nullptr;
+    }
+
+    shrunk->flags = keeps_alpha ? STLXGFX_SURFACE_STRAIGHT_ALPHA : 0;
+    int64_t source_w = pixels->width;
+    int64_t source_h = pixels->height;
+    for (int32_t y = 0; y < h; y++) {
+        int64_t top = y * source_h / h;
+        int64_t bottom = std::max(top + 1, (y + 1) * source_h / h);
+        uint32_t* row = reinterpret_cast<uint32_t*>(shrunk->pixels + static_cast<size_t>(y) * shrunk->pitch);
+        for (int32_t x = 0; x < w; x++) {
+            int64_t left = x * source_w / w;
+            int64_t right = std::max(left + 1, (x + 1) * source_w / w);
+            row[x] = average_of(pixels, keeps_alpha, left, right, top, bottom);
+        }
+    }
+
+    return shrunk;
 }

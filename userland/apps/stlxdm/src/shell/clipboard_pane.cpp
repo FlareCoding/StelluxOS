@@ -585,8 +585,8 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     if (png) {
         shown.is_image = true;
         png_size(read_bytes(*png, 24), &shown.image_w, &shown.image_h);
-        shown.kind = "Image";
-        shown.title = "Image, " + std::to_string(shown.image_w) + " \xC3\x97 " + std::to_string(shown.image_h);
+        shown.kind = entry.name.empty() ? "Image" : entry.name;
+        shown.title = shown.kind + ", " + std::to_string(shown.image_w) + " \xC3\x97 " + std::to_string(shown.image_h);
 
         shown.thumbnail = source.images->of(entry, false).thumbnail;
         shown.icon = shown.thumbnail ? shown.thumbnail.get() : source.image_icon;
