@@ -41,6 +41,7 @@
 #define BLINK_MS          500
 #define PTY_DRAIN_MAX     16
 #define SHELL_PATH        "/bin/shell"
+#define CWD_OPTION        "--cwd"
 
 /* Presses this close in time and place count as one double or triple click, Qt's defaults */
 #define MULTI_CLICK_MS    400
@@ -1120,8 +1121,18 @@ int main(int argc, char* argv[]) {
     int rows = (int)((INITIAL_HEIGHT - 2 * PADDING_Y) / g_cell_h);
     term_init(&g_term, rows, cols);
 
-    const char* program = argc > 1 ? argv[1] : SHELL_PATH;
-    const char** args = argc > 2 ? (const char**)&argv[2] : NULL;
+    /* stlxterm [--cwd folder] [program [args...]]: the program, the shell unless one is named, starts in the folder */
+    int first = 1;
+    if (argc > 2 && strcmp(argv[1], CWD_OPTION) == 0) {
+        if (chdir(argv[2]) != 0) {
+            printf("stlxterm: cannot enter %s: %s\r\n", argv[2], strerror(errno));
+        }
+
+        first = 3;
+    }
+
+    const char* program = argc > first ? argv[first] : SHELL_PATH;
+    const char** args = argc > first + 1 ? (const char**)&argv[first + 1] : NULL;
     const char* program_slash = strrchr(program, '/');
     g_program_name = program_slash ? program_slash + 1 : program;
     config_load(&g_config, CONFIG_PATH);
