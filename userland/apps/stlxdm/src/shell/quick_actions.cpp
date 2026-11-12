@@ -278,8 +278,10 @@ std::string shown_folder(const std::string& folder) {
 /* The search field, always focused while the palette is open, so it always shows the amber rule and the caret */
 class query_field : public ui::widget {
 public:
-    /* `chip_glyphs` holds each chip's glyph at rest, then each chip's glyph when chosen */
-    query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs);
+    /* `chip_glyphs` holds each chip's glyph at rest, then each chip's glyph when chosen, and `chip_keys` each chip's
+     * chord, shown with its name while the pointer rests on the chip */
+    query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs,
+                const std::vector<std::vector<std::string>>& chip_keys);
 
     /* Fired by a click on a chip */
     std::function<void(narrow_mode mode)> on_chip;
@@ -311,36 +313,66 @@ public:
     void paint(ui::painter& p) override;
 
     bool on_pointer_up(const ui::pointer_event& e) override;
+    bool on_pointer_move(const ui::pointer_event& e) override;
+    void on_pointer_leave() override;
 
 private:
     ui::rect chip_rect(size_t chip) const;
+    int32_t keys_width(size_t chip) const;
     void paint_chips(ui::painter& p) const;
 
-    const stlxgfx_surface_t*                   m_glyph;
-    const std::vector<stlxgfx_surface_t*>&     m_chip_glyphs;
-    std::vector<std::unique_ptr<text_picture>> m_chip_names;
+    const stlxgfx_surface_t*                          m_glyph;
+    const std::vector<stlxgfx_surface_t*>&            m_chip_glyphs;
+    std::vector<std::unique_ptr<text_picture>>        m_chip_names;
+    std::vector<std::vector<std::unique_ptr<keycap>>> m_chip_keys;
+    size_t                                            m_hover_chip = CHIP_COUNT;
     std::string                                m_text;
     size_t                                     m_cursor = 0;
     narrow_mode                                m_mode = narrow_mode::all;
     std::string                                m_placeholder = std::string(PLACEHOLDER);
 };
 
-query_field::query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs)
-    : m_glyph(glyph), m_chip_glyphs(chip_glyphs) {
+query_field::query_field(const stlxgfx_surface_t* glyph, const std::vector<stlxgfx_surface_t*>& chip_glyphs,
+                         const std::vector<std::vector<std::string>>& chip_keys)
+    : m_glyph(glyph), m_chip_glyphs(chip_glyphs), m_chip_keys(CHIP_COUNT) {
     for (const char* name : CHIP_NAMES) {
         m_chip_names.push_back(std::make_unique<text_picture>(name, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
                                                               STLXTHEME_TEXT));
     }
+
+    for (size_t i = 0; i < CHIP_COUNT && i < chip_keys.size(); i++) {
+        for (const std::string& key : chip_keys[i]) {
+            m_chip_keys[i].push_back(std::make_unique<keycap>(key));
+        }
+    }
 }
 
-/* The chips sit at the field's end, a chosen one wide enough for its name after its glyph */
+int32_t query_field::keys_width(size_t chip) const {
+    int32_t width = 0;
+    for (const auto& key : m_chip_keys[chip]) {
+        width += (width > 0 ? KEYCAP_GAP : 0) + key->width();
+    }
+
+    return width;
+}
+
+/* The chips sit at the field's end, a chosen one wide enough for its name after its glyph and the one under the
+ * pointer for its name and chord too, so it widens leftwards and stays under the pointer */
 ui::rect query_field::chip_rect(size_t chip) const {
     int32_t widths[CHIP_COUNT];
     int32_t total = 0;
     for (size_t i = 0; i < CHIP_COUNT; i++) {
         bool is_chosen = CHIP_MODES[i] == m_mode;
-        widths[i] = is_chosen ? 2 * CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP + m_chip_names[i]->width()
-                              : CHIP_MIN_WIDTH;
+        bool is_hovered = i == m_hover_chip;
+        widths[i] = CHIP_MIN_WIDTH;
+        if (is_chosen || is_hovered) {
+            widths[i] = 2 * CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP + m_chip_names[i]->width();
+        }
+
+        if (is_hovered && !m_chip_keys[i].empty()) {
+            widths[i] += CHIP_NAME_GAP + keys_width(i);
+        }
+
         total += widths[i] + (i > 0 ? CHIP_GAP : 0);
     }
 
@@ -356,10 +388,25 @@ void query_field::paint_chips(ui::painter& p) const {
     for (size_t i = 0; i < CHIP_COUNT; i++) {
         ui::rect chip = chip_rect(i);
         bool is_chosen = CHIP_MODES[i] == m_mode;
+        bool is_hovered = i == m_hover_chip;
         if (is_chosen) {
             p.rounded_rect(chip, STLXTHEME_INNER_RADIUS, STLXTHEME_SURFACE_ON);
             p.rounded_stroke(chip, STLXTHEME_INNER_RADIUS, STLXTHEME_LINE_ON);
-            m_chip_names[i]->draw(p, chip.x + CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP, chip.y, chip.h);
+        } else if (is_hovered) {
+            p.rounded_rect(chip, STLXTHEME_INNER_RADIUS, STLXTHEME_SURFACE_HOVER);
+        }
+
+        int32_t name_x = chip.x + CHIP_PADDING_X + CHIP_GLYPH_SIZE + CHIP_NAME_GAP;
+        if (is_chosen || is_hovered) {
+            m_chip_names[i]->draw(p, name_x, chip.y, chip.h);
+        }
+
+        if (is_hovered) {
+            int32_t key_x = name_x + m_chip_names[i]->width() + CHIP_NAME_GAP;
+            for (const auto& key : m_chip_keys[i]) {
+                key->paint(p, key_x, chip.y + (chip.h - KEYCAP_HEIGHT) / 2);
+                key_x += key->width() + KEYCAP_GAP;
+            }
         }
 
         const stlxgfx_surface_t* glyph = m_chip_glyphs[is_chosen ? CHIP_COUNT + i : i];
@@ -404,6 +451,30 @@ bool query_field::on_pointer_up(const ui::pointer_event& e) {
     }
 
     return false;
+}
+
+bool query_field::on_pointer_move(const ui::pointer_event& e) {
+    size_t hovered = CHIP_COUNT;
+    for (size_t i = 0; i < CHIP_COUNT; i++) {
+        if (chip_rect(i).contains(e.pos)) {
+            hovered = i;
+            break;
+        }
+    }
+
+    if (hovered != m_hover_chip) {
+        m_hover_chip = hovered;
+        invalidate();
+    }
+
+    return false;
+}
+
+void query_field::on_pointer_leave() {
+    if (m_hover_chip != CHIP_COUNT) {
+        m_hover_chip = CHIP_COUNT;
+        invalidate();
+    }
 }
 
 /* One row: the icon, the label with what the query matched marked, the subtitle under it, and at the right the
@@ -799,10 +870,11 @@ private:
  * query, Up and Down choose a row, Enter starts it */
 class palette_view : public ui::box {
 public:
-    /* `chip_glyphs` holds each chip's glyph at rest, then chosen, and `no_match_note` says where files are searched,
-     * under the words of a query that matched nothing */
+    /* `chip_glyphs` holds each chip's glyph at rest, then chosen, `chip_keys` each chip's chord, and `no_match_note`
+     * says where files are searched, under the words of a query that matched nothing */
     palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
-                 const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note);
+                 const std::vector<stlxgfx_surface_t*>& chip_glyphs,
+                 const std::vector<std::vector<std::string>>& chip_keys, std::string no_match_note);
 
     /* What a row can do, its first on Enter, and what Ctrl K's list notes about it. The first must be set before
      * `show_rows()`, since the footer names its actions. */
@@ -947,13 +1019,14 @@ private:
 };
 
 palette_view::palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
-                           const std::vector<stlxgfx_surface_t*>& chip_glyphs, std::string no_match_note)
+                           const std::vector<stlxgfx_surface_t*>& chip_glyphs,
+                           const std::vector<std::vector<std::string>>& chip_keys, std::string no_match_note)
     : ui::box(ui::axis::column), m_entries(std::move(entries)), m_no_match_note(std::move(no_match_note)) {
     m_body = add<ui::box>(ui::axis::column);
     m_body->s().padding = ui::edge_insets::all(PALETTE_PADDING);
     m_body->s().gap = LIST_GAP;
 
-    m_field = m_body->add<query_field>(glyph, chip_glyphs);
+    m_field = m_body->add<query_field>(glyph, chip_glyphs, chip_keys);
     m_field->on_chip = [this](narrow_mode mode) {
         narrow(mode);
     };
@@ -2522,8 +2595,16 @@ std::unique_ptr<ui::widget> quick_actions::build() {
         entry.recent = pick == m_picks.end() ? UNPICKED : static_cast<uint32_t>(pick - m_picks.begin());
     }
 
+    std::vector<std::string> clipboard_keys = shortcut_keys(m_conf, STLXCONF_ACTION_CLIPBOARD, "", "");
+    if (clipboard_keys.empty()) {
+        clipboard_keys = { "Ctrl", "4" };
+    }
+
+    std::vector<std::vector<std::string>> chip_keys = { { "Ctrl", "1" }, { "Ctrl", "2" }, { "Ctrl", "3" },
+                                                        clipboard_keys };
+
     m_files.rewalk();
-    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph, m_chip_glyphs,
+    auto view = std::make_unique<palette_view>(std::move(entries), m_search_glyph, m_chip_glyphs, chip_keys,
                                                skip_note(m_conf.quick_actions_skip));
     view->search_files = [this](const std::string& query) {
         return m_files.search(query, FILE_RESULTS_MAX);
