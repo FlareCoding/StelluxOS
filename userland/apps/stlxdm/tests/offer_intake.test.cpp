@@ -147,7 +147,8 @@ static void check_offer_objects() {
     int extra = object_holding("extra");
     int handles[3] = { object_holding("hello"), object_holding("png"), extra };
     uint32_t count = 3;
-    std::vector<clipboard_rep> reps = { { SWP_MIME_TEXT, 5, -1 }, { "text/html", 0, -1 }, { "image/png", 3, -1 } };
+    std::vector<clipboard_rep> reps =
+        make_reps({ { SWP_MIME_TEXT, 5, -1 }, { "text/html", 0, -1 }, { "image/png", 3, -1 } });
     intake_error error = take_offer_objects(reps, { handles, 3, &count });
 
     check(error == intake_error::none, "an offer whose objects hold their lengths is kept");
@@ -158,13 +159,13 @@ static void check_offer_objects() {
 
     int missing[1] = { object_holding("only") };
     uint32_t one = 1;
-    std::vector<clipboard_rep> two = { { SWP_MIME_TEXT, 4, -1 }, { "text/html", 4, -1 } };
+    std::vector<clipboard_rep> two = make_reps({ { SWP_MIME_TEXT, 4, -1 }, { "text/html", 4, -1 } });
     check(take_offer_objects(two, { missing, 1, &one }) == intake_error::missing_handles && one == 1,
           "an offer missing a handle is refused, taking none");
 
     int short_object = object_holding("ab");
     uint32_t short_count = 1;
-    std::vector<clipboard_rep> claimed = { { SWP_MIME_TEXT, 5, -1 } };
+    std::vector<clipboard_rep> claimed = make_reps({ { SWP_MIME_TEXT, 5, -1 } });
     check(take_offer_objects(claimed, { &short_object, 1, &short_count }) == intake_error::short_object,
           "an object holding less than its length is refused");
     check(!is_open(short_object) && claimed[0].object == -1, "a refused offer closes the handles it took");
@@ -177,18 +178,18 @@ static void check_offer_objects() {
     }
 
     uint32_t pipe_count = 1;
-    std::vector<clipboard_rep> piped = { { SWP_MIME_TEXT, 1, -1 } };
+    std::vector<clipboard_rep> piped = make_reps({ { SWP_MIME_TEXT, 1, -1 } });
     check(take_offer_objects(piped, { &ends[0], 1, &pipe_count }) == intake_error::not_memory && !is_open(ends[0]),
           "a pipe is refused as an object");
 
     uint32_t socket_count = 1;
-    std::vector<clipboard_rep> socketed = { { SWP_MIME_TEXT, 1, -1 } };
+    std::vector<clipboard_rep> socketed = make_reps({ { SWP_MIME_TEXT, 1, -1 } });
     check(take_offer_objects(socketed, { &sockets[0], 1, &socket_count }) == intake_error::not_memory,
           "a socket, such as the sender's own connection, is refused as an object");
 
     int large = object_holding(std::string(4096, 'x'));
     uint32_t large_count = 1;
-    std::vector<clipboard_rep> lying = { { SWP_MIME_TEXT, 1, -1 } };
+    std::vector<clipboard_rep> lying = make_reps({ { SWP_MIME_TEXT, 1, -1 } });
     check(take_offer_objects(lying, { &large, 1, &large_count }) == intake_error::none && lying[0].held == 4096,
           "an object longer than its length is kept, counted at what it holds");
 
@@ -215,7 +216,7 @@ static int make_nothing(const void*, size_t) {
 
 static void check_owned_items() {
     int offered = object_holding("hello");
-    std::vector<clipboard_rep> small = { { SWP_MIME_TEXT, 5, offered, 5 }, { "text/html", 0, -1 } };
+    std::vector<clipboard_rep> small = make_reps({ { SWP_MIME_TEXT, 5, offered, 5 }, { "text/html", 0, -1 } });
     own_small_item(small, make_regular);
     check(small[0].object >= 0 && small[0].object != offered && !is_open(offered),
           "a small item moves into an object of its own, the offered one closed");
@@ -223,18 +224,16 @@ static void check_owned_items() {
           "the owned object holds the same bytes, and a representation without bytes stays without an object");
 
     int big = object_holding(std::string(OWNED_COPY_MAX + 1, 'y'));
-    std::vector<clipboard_rep> large = { { SWP_MIME_TEXT, OWNED_COPY_MAX + 1, big, OWNED_COPY_MAX + 1 } };
+    std::vector<clipboard_rep> large =
+        make_reps({ { SWP_MIME_TEXT, OWNED_COPY_MAX + 1, big, OWNED_COPY_MAX + 1 } });
     own_small_item(large, make_regular);
     check(large[0].object == big && is_open(big), "a larger item stays in its offered object");
 
     int kept = object_holding("kept");
-    std::vector<clipboard_rep> refused = { { SWP_MIME_TEXT, 4, kept, 4 } };
+    std::vector<clipboard_rep> refused = make_reps({ { SWP_MIME_TEXT, 4, kept, 4 } });
     own_small_item(refused, make_nothing);
     check(refused[0].object == kept && is_open(kept), "an item whose copy finds no memory stays as offered");
 
-    for (int object : { small[0].object, big, kept }) {
-        close(object);
-    }
 }
 
 int main() {

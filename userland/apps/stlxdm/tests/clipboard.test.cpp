@@ -84,7 +84,7 @@ static void check_items() {
         return;
     }
 
-    clipboard_item item({ { SWP_MIME_TEXT, 5, text_pipe[0] }, { "text/uri-list", 9, list_pipe[0] } },
+    clipboard_item item(make_reps({ { SWP_MIME_TEXT, 5, text_pipe[0] }, { "text/uri-list", 9, list_pipe[0] } }),
                         SWP_CLIPBOARD_PRIVATE);
     const clipboard_rep* text = item.find(SWP_MIME_TEXT);
     check(text && text->object == text_pipe[0] && text->len == 5, "an item finds its text");
@@ -100,6 +100,16 @@ static void check_items() {
     check(kept.reps().empty() && !is_open(text_pipe[0]) && !is_open(list_pipe[0]),
           "a replaced item closes its objects");
 
+    int moved_pipe[2];
+    check(pipe(moved_pipe) == 0, "the test makes another object");
+    clipboard_rep first(SWP_MIME_TEXT, 1, moved_pipe[0]);
+    clipboard_rep second = std::move(first);
+    check(first.object == -1 && second.object == moved_pipe[0], "a moved representation hands over its object");
+
+    second = clipboard_rep();
+    check(!is_open(moved_pipe[0]), "a representation closes its object when it is replaced, and only once");
+    close(moved_pipe[1]);
+
     close(text_pipe[1]);
     close(list_pipe[1]);
 }
@@ -108,7 +118,7 @@ static void check_types() {
     swp_clipboard_types empty = describe_types(clipboard_item());
     check(empty.count == 0 && empty.types[0][0] == '\0', "an empty clipboard tells no types");
 
-    clipboard_item item({ { "image/png", 12, -1 }, { SWP_MIME_TEXT, 3, -1 } }, 0);
+    clipboard_item item(make_reps({ { "image/png", 12, -1 }, { SWP_MIME_TEXT, 3, -1 } }), 0);
     swp_clipboard_types types = describe_types(item);
     check(types.count == 2 && strcmp(types.types[0], "image/png") == 0 && strcmp(types.types[1], SWP_MIME_TEXT) == 0,
           "an item tells its types in the offer's order");
@@ -121,13 +131,13 @@ static void check_text_aliases() {
           "text/plain with or without its UTF-8 charset names text, in any case and spacing");
     check(!is_text_type("text/html") && !is_text_type("text/plain;charset=latin1"), "other types are not text");
 
-    clipboard_item bare({ { "text/plain", 5, -1 } }, 0);
+    clipboard_item bare(make_reps({ { "text/plain", 5, -1 } }), 0);
     swp_clipboard_types told = describe_types(bare);
     check(told.count == 1 && strcmp(told.types[0], SWP_MIME_TEXT) == 0, "a bare text/plain is told as UTF-8 text");
     check(bare.find_answer(SWP_MIME_TEXT) == &bare.reps()[0], "an ask for UTF-8 text reads a bare text/plain");
     check(!bare.find_answer("text/html"), "an ask for another type finds no text");
 
-    clipboard_item both({ { "text/html", 9, -1 }, { SWP_MIME_TEXT, 3, -1 }, { "text/plain", 3, -1 } }, 0);
+    clipboard_item both(make_reps({ { "text/html", 9, -1 }, { SWP_MIME_TEXT, 3, -1 }, { "text/plain", 3, -1 } }), 0);
     told = describe_types(both);
     check(told.count == 2 && strcmp(told.types[0], "text/html") == 0 && strcmp(told.types[1], SWP_MIME_TEXT) == 0,
           "text under two names is told once");
@@ -162,7 +172,6 @@ static void check_reads() {
     clipboard_rep closed = { SWP_MIME_TEXT, 4, -1 };
     check(read_bytes(closed, 1024).empty(), "a representation without an object reads as empty");
 
-    close(object);
     unlink(path);
 }
 
@@ -203,7 +212,7 @@ static clipboard_item text_item(uint64_t len, uint32_t flags, int* object) {
         *object = ends[0];
     }
 
-    return clipboard_item({ { SWP_MIME_TEXT, len, ends[0] } }, flags);
+    return clipboard_item(make_reps({ { SWP_MIME_TEXT, len, ends[0] } }), flags);
 }
 
 /* Copies of one size count as the same content here */
@@ -283,7 +292,7 @@ static int object_holding(std::string_view text) {
 }
 
 static clipboard_item item_holding(std::string_view text, const char* mime_type = SWP_MIME_TEXT) {
-    return clipboard_item({ { mime_type, text.size(), object_holding(text) } }, 0);
+    return clipboard_item(make_reps({ { mime_type, text.size(), object_holding(text) } }), 0);
 }
 
 static void check_same_content() {
@@ -300,7 +309,7 @@ static void check_same_content() {
     }
 
     close(ends[1]);
-    clipboard_item piped({ { SWP_MIME_TEXT, 5, ends[0] } }, 0);
+    clipboard_item piped(make_reps({ { SWP_MIME_TEXT, 5, ends[0] } }), 0);
     check(!same_content(hello, piped), "an object that refuses its mapping counts as different");
 }
 
@@ -403,7 +412,7 @@ static void check_held_budget() {
     close(ends[1]);
     clipboard_history history(same_size);
     history.set_limits(10, 100);
-    history.copy(clipboard_item({ { SWP_MIME_TEXT, 1, ends[0], 500 } }, 0), "Sheen", 1);
+    history.copy(clipboard_item(make_reps({ { SWP_MIME_TEXT, 1, ends[0], 500 } }), 0), "Sheen", 1);
     check(history.current().size() == 1 && history.current().held() == 500,
           "an item counts what its objects hold beside the lengths they claim");
 
