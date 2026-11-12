@@ -41,9 +41,24 @@ pinned_sha256() {
     awk -v n="$1" -v a="$2" '$1 == n && $3 == a { print $4 }' "$LOCK"
 }
 
-# The committed tree of a recipe, which identifies what a release was built from
+# The tree paths a recipe's archives build from beyond packages/<recipe>, as its versions.sh names them, none for most
+recipe_tree() {
+    (. "$SCRIPT_DIR/$1/versions.sh" && echo "${RECIPE_TREE:-}")
+}
+
+# The committed tree of a recipe, hashed with the trees it builds from when it names any, which identifies what a
+# release was built from
 recipe_hash() {
-    git -C "$REPO_ROOT" rev-parse "HEAD:packages/$1"
+    tree="$(recipe_tree "$1")"
+    if [ -z "$tree" ]; then
+        git -C "$REPO_ROOT" rev-parse "HEAD:packages/$1"
+        return
+    fi
+
+    # shellcheck disable=SC2086
+    for path in "packages/$1" $tree; do
+        git -C "$REPO_ROOT" rev-parse "HEAD:$path"
+    done | git -C "$REPO_ROOT" hash-object --stdin
 }
 
 pinned_recipe_hash() {
@@ -55,13 +70,15 @@ pinned_recipe_hash() {
 check_reuse() {
     recipe="$(recipe_of "$1")"
     pinned="$(pinned_recipe_hash "$recipe")"
-    if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "packages/$recipe")" ]; then
-        echo "packages: packages/$recipe has uncommitted changes, commit or revert them before reusing $1" >&2
+    tree="$(recipe_tree "$recipe")"
+    # shellcheck disable=SC2086
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "packages/$recipe" $tree)" ]; then
+        echo "packages: packages/$recipe or the tree it builds from has uncommitted changes, commit or revert them before reusing $1" >&2
         exit 1
     fi
 
     if [ -n "$pinned" ] && [ "$pinned" != "$(recipe_hash "$recipe")" ]; then
-        echo "packages: packages/$recipe changed since $(lock_release) without a release bump for $1" >&2
+        echo "packages: packages/$recipe or the tree it builds from changed since $(lock_release) without a release bump for $1" >&2
         exit 1
     fi
 }
