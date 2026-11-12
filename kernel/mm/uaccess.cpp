@@ -62,6 +62,59 @@ static const access_region* find_access_region(uintptr_t pc) {
     return nullptr;
 }
 
+// Checks that the regions covering [start, end] all allow `prot` and faults in their missing pages, under the held
+// mm_ctx->lock
+__PRIVILEGED_CODE static int32_t fault_in_locked(mm_context* mm_ctx, uintptr_t start, uintptr_t end, uint32_t prot) {
+    uintptr_t cursor = start;
+    while (cursor <= end) {
+        vma* region = vma_find_locked(mm_ctx, cursor);
+        if (!region || cursor < region->start || cursor >= region->end ||
+            (region->prot & prot) != prot) {
+            return ERR_FAULT;
+        }
+
+        uintptr_t next = region->end;
+        if (next == 0 || next <= cursor) {
+            return ERR_FAULT;
+        }
+
+        if (next > end) {
+            break;
+        }
+
+        cursor = next;
+    }
+
+    // Nothing blocks under the held lock. A present entry in a region that
+    // allows `prot` allows it too, since nothing maps copy-on-write.
+    uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
+    for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
+         page <= end_page;
+         page += pmm::PAGE_SIZE) {
+        if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
+            continue;
+        }
+
+        if (handle_user_pf_locked(mm_ctx, page, 0) != MM_CTX_OK) {
+            return ERR_FAULT;
+        }
+    }
+
+    return OK;
+}
+
+// Runs one user copy with fault-in disabled for this task, so a missing page ends it at the fixup, and returns the
+// bytes it copied
+__PRIVILEGED_CODE static size_t copy_without_fault_in(void* dst, const void* src, size_t len) {
+    sched::task_exec_core& core = sched::current()->exec;
+    core.flags |= sched::TASK_FLAG_FAULT_IN_DISABLED;
+
+    size_t left = stlx_user_copy(dst, src, len);
+    core.flags &= ~sched::TASK_FLAG_FAULT_IN_DISABLED;
+
+    return len - left;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -77,7 +130,8 @@ __PRIVILEGED_CODE bool handle_kernel_fault(
         return false;
     }
 
-    if (can_sleep && mm_ctx && handle_user_pf(mm_ctx, fault_addr, pf_flags) == MM_CTX_OK) {
+    bool may_fault_in = can_sleep && !(sched::current()->exec.flags & sched::TASK_FLAG_FAULT_IN_DISABLED);
+    if (may_fault_in && mm_ctx && handle_user_pf(mm_ctx, fault_addr, pf_flags) == MM_CTX_OK) {
         return true;
     }
 
@@ -228,42 +282,10 @@ __PRIVILEGED_CODE int32_t copy_to_user_irqs_masked(
         return ERR_RETRY;
     }
 
-    uintptr_t cursor = start;
-    while (cursor <= end) {
-        vma* region = vma_find_locked(mm_ctx, cursor);
-        if (!region || cursor < region->start || cursor >= region->end ||
-            (region->prot & MM_PROT_WRITE) == 0) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
-
-        uintptr_t next = region->end;
-        if (next == 0 || next <= cursor) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
-
-        if (next > end) {
-            break;
-        }
-
-        cursor = next;
-    }
-
-    // Fault lazy stack pages in under the held lock, nothing blocks. A present
-    // entry in a writable region is writable, nothing maps copy-on-write.
-    uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
-    for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
-         page <= end_page;
-         page += pmm::PAGE_SIZE) {
-        if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
-            continue;
-        }
-
-        if (handle_user_pf_locked(mm_ctx, page, 0) != MM_CTX_OK) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
+    int32_t rc = fault_in_locked(mm_ctx, start, end, MM_PROT_WRITE);
+    if (rc != OK) {
+        sync::mutex_unlock(mm_ctx->lock);
+        return rc;
     }
 
     // Copying under the held lock keeps a concurrent unmap out of the range
@@ -271,6 +293,77 @@ __PRIVILEGED_CODE int32_t copy_to_user_irqs_masked(
     sync::mutex_unlock(mm_ctx->lock);
 
     return left == 0 ? OK : ERR_FAULT;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t copy_to_user_without_fault_in(
+    void* udst,
+    const void* ksrc,
+    size_t len
+) {
+    if (!udst || !ksrc || len == 0 || !user_range_ok(udst, len)) {
+        return 0;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return 0;
+    }
+
+    return copy_without_fault_in(udst, ksrc, len);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE size_t copy_from_user_without_fault_in(
+    void* kdst,
+    const void* usrc,
+    size_t len
+) {
+    if (!kdst || !usrc || len == 0 || !user_range_ok(usrc, len)) {
+        return 0;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return 0;
+    }
+
+    return copy_without_fault_in(kdst, usrc, len);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t fault_in_user_range(
+    const void* uaddr,
+    size_t len,
+    uint32_t prot
+) {
+    if (len == 0) {
+        return OK;
+    }
+
+    if (!user_range_ok(uaddr, len)) {
+        return ERR_FAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    uintptr_t start = reinterpret_cast<uintptr_t>(uaddr);
+    mm_context* mm_ctx = task->exec.mm_ctx;
+    sync::mutex_lock(mm_ctx->lock);
+
+    int32_t rc = fault_in_locked(mm_ctx, start, start + len - 1, prot);
+    sync::mutex_unlock(mm_ctx->lock);
+
+    return rc;
 }
 
 /**
