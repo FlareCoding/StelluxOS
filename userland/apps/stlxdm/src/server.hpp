@@ -586,6 +586,7 @@ private:
 
     void drop_client(dm_client& c);
     void run_shortcut(const dm_hotkey& hotkey);
+    void paste_into_focus();
     void open_power();
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
