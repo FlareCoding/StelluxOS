@@ -30,9 +30,9 @@ static_assert(layout::DESKTOP_LIMIT == SWP_DESKTOP_LIMIT, "the layout keeps the 
  * each of many clients pass the default limit */
 constexpr rlim_t HANDLE_LIMIT = 65536;
 
-/* Room for one attach's handles. The kernel fits (controllen -
- * sizeof(cmsghdr)) / 4, so CMSG_SPACE's padding would fit a fourth. */
-constexpr size_t HANDLE_CONTROL_BYTES = CMSG_LEN(SWP_GPU_HANDLES * sizeof(int));
+/* Room for the most handles one message carries. The kernel fits `(controllen - sizeof(cmsghdr)) / 4`, so CMSG_SPACE's
+ * padding would fit one more. */
+constexpr size_t HANDLE_CONTROL_BYTES = CMSG_LEN(SWP_HANDLES_MAX * sizeof(int));
 
 /* A retired GPU compositor's timeline is read at least this often */
 constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;

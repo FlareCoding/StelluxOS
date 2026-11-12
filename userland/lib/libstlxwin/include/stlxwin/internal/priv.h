@@ -21,7 +21,7 @@
 #define STLXWIN_EVQ_INITIAL 64u
 #define STLXWIN_BUFS_PER_WINDOW 2u
 #define STLXWIN_UNACKED_CONFS_MAX 8u  /* as many sent CONFIGUREs as the DM remembers */
-#define STLXWIN_QUEUED_HANDLES_MAX 2u /* one read reaches into at most two CLIPBOARD_DATA messages */
+#define STLXWIN_QUEUED_HANDLES_MAX (2u * SWP_HANDLES_MAX) /* one read reaches into at most two messages with handles */
 
 typedef struct stlxwin_buf_slot {
     uint32_t buf_id;

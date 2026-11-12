@@ -258,7 +258,7 @@ struct dm_client {
 
     /* Handles received for ATTACH_GPU_BUFFER and CLIPBOARD_SET messages not
      * yet handled, oldest first. One read reaches into at most two of them. */
-    static constexpr uint32_t QUEUED_HANDLES_MAX = 2 * SWP_GPU_HANDLES;
+    static constexpr uint32_t QUEUED_HANDLES_MAX = 2 * SWP_HANDLES_MAX;
     int      queued_handles[QUEUED_HANDLES_MAX] = {};
     uint32_t queued_handle_count = 0;
 

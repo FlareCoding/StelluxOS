@@ -34,6 +34,7 @@
 #define SWP_GPU_HANDLES       3u      /* handles one ATTACH_GPU_BUFFER carries */
 #define SWP_GPU_BUFFERS_MAX   16u     /* GPU buffers one connection holds at once, shown detached ones included */
 #define SWP_GPU_DIMENSION_MAX 16384u  /* largest width or height of a GPU buffer's picture */
+#define SWP_HANDLES_MAX       4u      /* the most handles one message carries, which both ends read */
 
 /* Client to DM types are 0x01xx, DM to client are 0x02xx */
 enum {
@@ -501,5 +502,6 @@ _Static_assert(sizeof(swp_header) + sizeof(swp_outputs) <= SWP_MAX_MSG_SIZE, "an
 _Static_assert(sizeof(swp_header) + sizeof(swp_event_prefix) +
                    SWP_EVENTS_MAX_BATCH * sizeof(swp_event_rec) <= SWP_MAX_MSG_SIZE,
                "a full EVENT fits a read");
+_Static_assert(SWP_HANDLES_MAX >= SWP_GPU_HANDLES, "an attach's handles fit one message");
 
 #endif /* STLXWIN_PROTO_H */
