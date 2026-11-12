@@ -595,9 +595,15 @@ const clipboard_rep* server::drop_rep_for(dm_client& c, const dm_drop_ask& ask) 
 
 bool server::send_drop_answer(dm_client& c) {
     const clipboard_rep* rep = drop_rep_for(c, c.drop_asks.front());
-    swp_drop_data m = { rep ? rep->len : 0 };
+    int object = rep ? read_only_copy(rep->object) : -1;
+    swp_drop_data m = { object >= 0 ? rep->len : 0 };
 
-    return send_with_handle(c, SWP_MSG_DROP_DATA, &m, sizeof(m), rep ? rep->object : -1);
+    bool is_sent = send_with_handle(c, SWP_MSG_DROP_DATA, &m, sizeof(m), object);
+    if (object >= 0) {
+        close(object);
+    }
+
+    return is_sent;
 }
 
 void server::send_drop_answers(dm_client& c) {

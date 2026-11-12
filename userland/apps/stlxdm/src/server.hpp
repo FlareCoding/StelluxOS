@@ -676,6 +676,7 @@ private:
     void copy_file(const std::string& path);
     bool send_clipboard_answer(dm_client& c);
     void send_clipboard_answers(dm_client& c);
+    static int read_only_copy(int object);
     bool send_with_handle(dm_client& c, uint16_t type, const void* payload, uint32_t length, int handle);
     void send_window_message(dm_client& c, dm_window* w, uint16_t type, const void* payload, uint32_t length);
 
