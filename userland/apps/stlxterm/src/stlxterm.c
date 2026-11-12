@@ -821,11 +821,31 @@ static int paste_text(int master_fd, char* text, size_t len) {
     return 1;
 }
 
+/* A paste with no text says what the clipboard holds instead, which watching the clipboard tells from then on */
+static void note_textless_paste(stlxwin_conn* conn) {
+    const char* note = "The clipboard holds no text";
+    stlxwin_offer_types types;
+    if (stlxwin_clipboard_watch(conn) == 0 && stlxwin_clipboard_types(conn, &types) == 0) {
+        int is_image = 0;
+        for (uint32_t i = 0; i < types.count; i++) {
+            is_image |= strncmp(types.types[i], "image/", strlen("image/")) == 0;
+        }
+
+        note = types.count == 0 ? "The clipboard is empty" : is_image ? "The clipboard holds an image" : note;
+    }
+
+    show_pill(note, 0, NOTE_PILL_MS);
+}
+
 static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
     char* text = NULL;
     long len = stlxwin_clipboard_get(conn, &text);
     if (len <= 0) {
         free(text);
+        if (len == 0) {
+            note_textless_paste(conn);
+        }
+
         return 0;
     }
 
