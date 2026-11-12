@@ -7,6 +7,9 @@
 #include <QPalette>
 #include <qpa/qplatformtheme.h>
 
+// A desktop font of `family` at an em size in pixels, which may be a half pixel
+QFont desktop_font(const char* family, float em_px, QFont::Weight weight);
+
 // The desktop's look for Qt programs: its palette, fonts, file icons and the stellux style
 class QStelluxTheme : public QPlatformTheme {
 public:

@@ -1,19 +1,34 @@
 #ifndef STLXQPA_CLIPBOARD_H
 #define STLXQPA_CLIPBOARD_H
 
+#include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QMimeData>
+#include <QPair>
 #include <QStringList>
 #include <qpa/qplatformclipboard.h>
 
+#include <functional>
+
 #include <stlxwin/stlxwin.h>
 
-// The desktop clipboard's item, fetched one representation at a time as Qt asks for it and kept until it changes
+// One representation of an item as a MIME type and its bytes
+using representation = QPair<QString, QByteArray>;
+
+// What a copy or a drag offers of Qt's data, the richest first: an image as PNG, files, HTML, then text
+QList<representation> representations(const QMimeData* data);
+
+// An item of the desktop's, the clipboard's or a drop's, fetched one representation at a time as Qt asks for it and
+// kept until its types change
 class QStelluxMimeData : public QMimeData {
 public:
-    explicit QStelluxMimeData(stlxwin_conn* connection);
+    // Reads one representation into a malloc'd buffer, returning its length, 0 when there is none, or -1
+    using reader = std::function<long(const char* mime_type, char** out_data)>;
 
-    // Forgets what was fetched, since the clipboard now holds `types`
+    explicit QStelluxMimeData(reader read);
+
+    // Forgets what was fetched, since the item now holds `types`
     void show_types(const stlxwin_offer_types& types);
 
     QStringList formats() const override;
@@ -25,7 +40,7 @@ protected:
 private:
     QByteArray fetch(const QString& mime_type) const;
 
-    stlxwin_conn* m_connection;
+    reader m_read;
     QStringList m_types;
     mutable QHash<QString, QByteArray> m_fetched;
 };

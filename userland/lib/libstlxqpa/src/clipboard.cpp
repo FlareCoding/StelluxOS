@@ -19,8 +19,6 @@ static const QString HTML = QStringLiteral("text/html");
 // The hint password managers set on a copy, which keeps it out of the clipboard's history
 static const QString PASSWORD_HINT = QStringLiteral("x-kde-passwordManagerHint");
 
-using representation = QPair<QString, QByteArray>;
-
 // The desktop type a Qt format is read from
 static QString desktop_type(const QString& format) {
     if (format == QT_TEXT) {
@@ -36,8 +34,7 @@ static void add(QList<representation>& reps, const QString& mime_type, const QBy
     }
 }
 
-// What a copy offers, the richest first: an image as PNG, files, HTML, then text
-static QList<representation> representations(const QMimeData* data) {
+QList<representation> representations(const QMimeData* data) {
     QList<representation> reps;
     if (!data) {
         return reps;
@@ -66,8 +63,8 @@ static QList<representation> representations(const QMimeData* data) {
     return reps;
 }
 
-QStelluxMimeData::QStelluxMimeData(stlxwin_conn* connection)
-    : m_connection(connection) {
+QStelluxMimeData::QStelluxMimeData(reader read)
+    : m_read(std::move(read)) {
 }
 
 void QStelluxMimeData::show_types(const stlxwin_offer_types& types) {
@@ -128,7 +125,7 @@ QByteArray QStelluxMimeData::fetch(const QString& mime_type) const {
 
     // The fetch waits for stlxdm's answer, queueing whatever events arrive meanwhile
     char* bytes = nullptr;
-    long length = stlxwin_clipboard_get_type(m_connection, mime_type.toUtf8().constData(), &bytes);
+    long length = m_read(mime_type.toUtf8().constData(), &bytes);
     QStelluxIntegration::instance()->schedule_queued_events();
 
     QByteArray data = length > 0 ? QByteArray(bytes, length) : QByteArray();
@@ -139,7 +136,10 @@ QByteArray QStelluxMimeData::fetch(const QString& mime_type) const {
 }
 
 QStelluxClipboard::QStelluxClipboard(stlxwin_conn* connection)
-    : m_connection(connection), m_item(connection) {
+    : m_connection(connection)
+    , m_item([connection](const char* mime_type, char** out_data) {
+        return stlxwin_clipboard_get_type(connection, mime_type, out_data);
+    }) {
     // The watch waits for the clipboard's types, queueing whatever events arrive meanwhile
     if (stlxwin_clipboard_watch(m_connection) == 0) {
         read_types();
