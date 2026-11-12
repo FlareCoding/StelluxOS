@@ -9,8 +9,14 @@
 
 #include <cstdint>
 
-/* stlxdm's own pointer shapes past the protocol's: the crosshair a capture aims a region with */
+/* stlxdm's own pointer shapes past the protocol's: the crosshair a capture aims a region with, and the camera it
+ * aims a window with */
 constexpr uint32_t CURSOR_CROSSHAIR = 0x100;
+constexpr uint32_t CURSOR_CAMERA = 0x101;
+
+/* The camera's size, its hot spot at its middle, which a capture's window chip keeps clear of */
+constexpr int32_t CURSOR_CAMERA_WIDTH = 17;
+constexpr int32_t CURSOR_CAMERA_HEIGHT = 13;
 
 /* One pointer shape: the image, its coverage-derived drop shadow, the
  * two as one cursor picture, and the hotspot at the pointer position */
@@ -52,6 +58,7 @@ private:
     cursor_sprite m_resize_nwse;
     cursor_sprite m_resize_nesw;
     cursor_sprite m_crosshair;
+    cursor_sprite m_camera;
 
     const cursor_sprite* sprite_for(uint32_t shape) const;
 };

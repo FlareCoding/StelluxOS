@@ -625,6 +625,8 @@ private:
     bool compose_capture(dm_output& out);
     bool freeze_output(dm_output& out, frozen_frame& frozen);
     void draw_capture_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
+    void compose_window_over(dm_window& w, stlxgfx_surface_t* back, int32_t x, int32_t y, uint32_t ground);
+    stlxgfx_surface_t* compose_window_alone(dm_window& w, bool has_shadow);
     bool capture_on_gpu(dm_output& out, const presenter::target& t, const std::vector<damage_list::rect>& rects);
     bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
     bool switch_to_cpu_on_failed_compose(compose_result result);
@@ -662,6 +664,8 @@ private:
     void open_capture();
     void close_capture();
     void capture_region(const capture_target& target);
+    void capture_focused_window();
+    void capture_window_alone(dm_window& w, bool has_shadow);
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);

@@ -1,5 +1,6 @@
 #include "capture.hpp"
 
+#include "cursor.hpp"
 #include "material.hpp"
 #include "shell/chord.hpp"
 #include "shell/draw.hpp"
@@ -12,17 +13,27 @@
 #include <cstring>
 #include <string>
 
-/* The dim over everything but the region, ink at .45 */
+/* The dim over everything but what a capture takes, ink at .45 */
 constexpr uint32_t DIM_COLOR = 0x73000000u | (STLXTHEME_INK & 0x00FFFFFFu);
 
-/* The hairline lies just outside the region, so it covers no pixel the capture takes */
+/* The hairline lies just outside what a capture takes, so it covers none of its pixels */
 constexpr int32_t OUTLINE_WIDTH = 1;
+
+/* A chip is a line of words and keycaps on glass, a keycap at either end as far from the edge as from the top */
+constexpr int32_t CHIP_HEIGHT = 32;
+constexpr int32_t CHIP_RADIUS = STLXTHEME_WINDOW_RADIUS;
+constexpr int32_t CHIP_PADDING_X = 14;
+constexpr int32_t KEY_HEIGHT = 18;
+constexpr int32_t KEY_PADDING_X = 5;
+constexpr int32_t KEY_INSET = (CHIP_HEIGHT - KEY_HEIGHT) / 2;
+constexpr float KEY_TEXT_SIZE = 11.0f;
 
 /* The tag down and right of the crosshair */
 constexpr int32_t TAG_HEIGHT = 22;
 constexpr int32_t TAG_PADDING_X = 8;
 constexpr int32_t TAG_RADIUS = STLXTHEME_CONTROL_RADIUS;
 constexpr int32_t TAG_OFFSET = 16;
+constexpr int32_t POINTER_CLEARANCE = 8;
 constexpr float TAG_TEXT_SIZE = 11.0f;
 
 /* A drag shorter than this either way is a click, and the pointer moves this far with Shift before an axis is kept */
@@ -45,36 +56,185 @@ static damage_list::rect grown(const damage_list::rect& r, int32_t by) {
     return { r.x - by, r.y - by, r.w + 2 * by, r.h + 2 * by };
 }
 
-/* Blends `color` over the rounded rect `r` of `view`, its corners antialiased */
-static void blend_rounded(stlxgfx_surface_t* view, const damage_list::rect& r, int32_t radius, uint32_t color) {
-    for (int32_t y = r.y; y < r.y + r.h; y++) {
-        bool is_corner_row = y < r.y + radius || y >= r.y + r.h - radius;
-        if (!is_corner_row) {
-            stlxgfx_fill_rect_blend(view, r.x, y, static_cast<uint32_t>(r.w), 1, color);
+static damage_list::rect moved(const damage_list::rect& r, int32_t dx, int32_t dy) {
+    return { r.x + dx, r.y + dy, r.w, r.h };
+}
+
+static uint32_t coverage_of(const damage_list::rect& r, int32_t radius, int32_t x, int32_t y) {
+    return radius > 0 ? rounded_rect_coverage(x, y, { r.x, r.y, r.w, r.h }, radius) : (contains(r, x, y) ? 255 : 0);
+}
+
+static void blend_span(stlxgfx_surface_t* view, int32_t y, int32_t x0, int32_t x1, uint32_t color) {
+    x0 = std::max(x0, 0);
+    x1 = std::min(x1, static_cast<int32_t>(view->width));
+    if (x1 > x0) {
+        stlxgfx_fill_rect_blend(view, x0, y, static_cast<uint32_t>(x1 - x0), 1, color);
+    }
+}
+
+/* Blends `color` over `view` where `outer` covers and `inner` does not, both rounded. Rows clear of the corners blend
+ * whole spans, so only corner rows weigh coverage and a large window's ring costs little. */
+static void blend_between(stlxgfx_surface_t* view, const damage_list::rect& outer, int32_t outer_radius,
+                          const damage_list::rect& inner, int32_t inner_radius, uint32_t color) {
+    bool has_inner = !is_empty(inner);
+    int32_t corner = std::max(outer_radius, has_inner ? inner.y - outer.y + inner_radius : 0);
+    int32_t top = std::max(outer.y, 0);
+    int32_t bottom = std::min(outer.y + outer.h, static_cast<int32_t>(view->height));
+    for (int32_t y = top; y < bottom; y++) {
+        bool is_corner_row = y < outer.y + corner || y >= outer.y + outer.h - corner;
+        if (!is_corner_row && !has_inner) {
+            blend_span(view, y, outer.x, outer.x + outer.w, color);
             continue;
         }
 
-        for (int32_t x = r.x; x < r.x + r.w; x++) {
-            uint32_t coverage = rounded_rect_coverage(x, y, { r.x, r.y, r.w, r.h }, radius);
-            stlxgfx_blend_coverage(view, x, y, color, static_cast<uint8_t>(coverage));
+        if (!is_corner_row) {
+            blend_span(view, y, outer.x, inner.x, color);
+            blend_span(view, y, inner.x + inner.w, outer.x + outer.w, color);
+            continue;
+        }
+
+        for (int32_t x = std::max(outer.x, 0); x < std::min(outer.x + outer.w, static_cast<int32_t>(view->width)); x++) {
+            uint32_t outside = coverage_of(outer, outer_radius, x, y);
+            uint32_t inside = coverage_of(inner, inner_radius, x, y);
+            if (outside > inside) {
+                stlxgfx_blend_coverage(view, x, y, color, static_cast<uint8_t>(outside - inside));
+            }
         }
     }
 }
 
-/* Glass in a hairline at `box`, in its output's pixels, drawn into `view`, whose first pixel shows the output pixel
+static void blend_rounded(stlxgfx_surface_t* view, const damage_list::rect& r, int32_t radius, uint32_t color) {
+    blend_between(view, r, radius, {}, 0, color);
+}
+
+/* A one pixel ring just inside the rounded edge of `r` */
+static void blend_ring(stlxgfx_surface_t* view, const damage_list::rect& r, int32_t radius, uint32_t color) {
+    blend_between(view, r, radius, grown(r, -1), std::max(radius - 1, 0), color);
+}
+
+static int32_t piece_width(const chip_piece& piece) {
+    stlxgfx_font* font = shell_font(piece.face ? piece.face : STLXTHEME_MONO_FONT_PATH,
+                                    piece.face ? piece.size : KEY_TEXT_SIZE);
+    int32_t text_w = font ? stlxgfx_text_width(font, piece.text.data(), piece.text.size()) : 0;
+    return piece.face ? text_w : std::max(KEY_HEIGHT, text_w + 2 * KEY_PADDING_X);
+}
+
+static int32_t line_width(const std::vector<chip_piece>& line) {
+    int32_t width = 0;
+    for (size_t i = 0; i < line.size(); i++) {
+        width += piece_width(line[i]) + (i + 1 < line.size() ? line[i].gap : 0);
+    }
+
+    return width;
+}
+
+/* Draws `line` from `x`, each piece centered in the `height` rows below `top`, keycaps as the shell's */
+static void draw_line(stlxgfx_surface_t* view, int32_t x, int32_t top, int32_t height,
+                      const std::vector<chip_piece>& line) {
+    for (const chip_piece& piece : line) {
+        stlxgfx_font* font = shell_font(piece.face ? piece.face : STLXTHEME_MONO_FONT_PATH,
+                                        piece.face ? piece.size : KEY_TEXT_SIZE);
+        int32_t width = piece_width(piece);
+        if (!font) {
+            continue;
+        }
+
+        stlxgfx_font_metrics metrics;
+        stlxgfx_font_metrics_get(font, &metrics);
+        int32_t text_x = x;
+        if (!piece.face) {
+            damage_list::rect key = { x, top + (height - KEY_HEIGHT) / 2, width, KEY_HEIGHT };
+            blend_rounded(view, key, STLXTHEME_CHIP_RADIUS, STLXTHEME_SURFACE);
+            blend_ring(view, key, STLXTHEME_CHIP_RADIUS, STLXTHEME_LINE);
+            text_x = x + (width - stlxgfx_text_width(font, piece.text.data(), piece.text.size())) / 2;
+        }
+
+        int32_t baseline = top + (height - metrics.ascent - metrics.descent) / 2 + metrics.ascent;
+        uint32_t color = piece.face ? piece.color : STLXTHEME_TEXT_DIM;
+        stlxgfx_draw_text(view, font, text_x, baseline, piece.text.data(), piece.text.size(), color);
+        x += width + piece.gap;
+    }
+}
+
+/* How far a chip's line starts from its left edge */
+static int32_t chip_left(const std::vector<chip_piece>& line) {
+    return !line.empty() && !line.front().face ? KEY_INSET : CHIP_PADDING_X;
+}
+
+static std::string size_label(const damage_list::rect& r) {
+    return std::to_string(r.w) + " \xC3\x97 " + std::to_string(r.h);
+}
+
+/* The lit window's name and the size its capture takes, the shadow's included unless Alt leaves it out, as the card
+ * names it after, or that no window is open */
+static std::vector<chip_piece> window_line(const capture_window* window, bool has_shadow) {
+    if (!window) {
+        return { { "No windows to capture", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT } };
+    }
+
+    bool takes_shadow = has_shadow && (window->bounds.w != window->frame.w || window->bounds.h != window->frame.h);
+    std::string size = takes_shadow ? size_label(window->bounds) + " with shadow" : size_label(window->frame);
+    return {
+        { window->title.empty() ? "Window" : window->title, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE,
+          STLXTHEME_TEXT },
+        { size, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM },
+    };
+}
+
+/* A view over `clip` of `back` carrying its flags, which the caller destroys, or null */
+static stlxgfx_surface_t* view_of(stlxgfx_surface_t* back, const damage_list::rect& clip) {
+    uint8_t* first = back->pixels + static_cast<size_t>(clip.y) * back->pitch + static_cast<size_t>(clip.x) * 4;
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(first, static_cast<uint32_t>(clip.w),
+                                                          static_cast<uint32_t>(clip.h), back->pitch, 32, 16, 8, 0);
+    if (view) {
+        view->flags = back->flags;
+    }
+
+    return view;
+}
+
+/* Copies the frozen pixels under `clip` into `view` opaque, ink past the frame's edge */
+static void copy_opaque(stlxgfx_surface_t* view, const stlxgfx_surface_t* frozen, const damage_list::rect& clip) {
+    for (int32_t row = 0; row < clip.h; row++) {
+        uint32_t* dst = reinterpret_cast<uint32_t*>(view->pixels + static_cast<size_t>(row) * view->pitch);
+        int32_t y = clip.y + row;
+        int32_t kept = 0;
+        const uint32_t* src = nullptr;
+        if (frozen && y < static_cast<int32_t>(frozen->height)) {
+            kept = std::clamp(static_cast<int32_t>(frozen->width) - clip.x, 0, clip.w);
+            src = reinterpret_cast<const uint32_t*>(frozen->pixels + static_cast<size_t>(y) * frozen->pitch) + clip.x;
+        }
+
+        for (int32_t x = 0; x < clip.w; x++) {
+            dst[x] = x < kept ? src[x] | 0xFF000000u : STLXTHEME_INK;
+        }
+    }
+}
+
+/* Glass in a hairline at `box`, in its output's pixels, drawn into `target`, whose first pixel shows the output pixel
  * (`x`, `y`), from the output's `frost`, or on the menu's ink without one */
-static void draw_chip_glass(stlxgfx_surface_t* view, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
+static void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlxgfx_surface_t* frost,
                             const damage_list::rect& box, int32_t radius) {
-    damage_list::rect local = { box.x - x, box.y - y, box.w, box.h };
+    damage_list::rect local = moved(box, -x, -y);
     int32_t inner_radius = std::max(radius - 1, 0);
-    blend_rounded(view, local, radius, material::HAIRLINE);
+    blend_rounded(target, local, radius, material::HAIRLINE);
     if (!frost) {
-        blend_rounded(view, grown(local, -1), inner_radius, STLXTHEME_MENU_BG | 0xFF000000u);
+        blend_rounded(target, grown(local, -1), inner_radius, STLXTHEME_MENU_BG | 0xFF000000u);
         return;
     }
 
-    damage_list::rect area = { x, y, static_cast<int32_t>(view->width), static_cast<int32_t>(view->height) };
-    material::draw(view, x, y, frost, { grown(box, -1), inner_radius }, area);
+    damage_list::rect area = { x, y, static_cast<int32_t>(target->width), static_cast<int32_t>(target->height) };
+    material::draw(target, x, y, frost, { grown(box, -1), inner_radius }, area);
+}
+
+/* How wide a chip of `line` is */
+static int32_t chip_width(const std::vector<chip_piece>& line) {
+    if (line.empty()) {
+        return 0;
+    }
+
+    int32_t right = line.back().face ? CHIP_PADDING_X : KEY_INSET;
+    return chip_left(line) + line_width(line) + right;
 }
 
 stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& r) {
@@ -93,9 +253,12 @@ stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list
     return copy;
 }
 
-void capture_overlay::open(std::vector<frozen_frame> frames, int32_t x, int32_t y) {
+void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x,
+                           int32_t y) {
     m_frames = std::move(frames);
+    m_windows = std::move(windows);
     m_is_open = true;
+    m_mode = mode::region;
     m_pointer_x = x;
     m_pointer_y = y;
 
@@ -105,6 +268,8 @@ void capture_overlay::open(std::vector<frozen_frame> frames, int32_t x, int32_t 
     m_is_shift_held = false;
     m_kept_axis = axis::none;
 
+    m_lit = -1;
+    m_pressed = -1;
     m_shown_outline = {};
     m_shown_chip = {};
     m_shown_words.clear();
@@ -114,10 +279,14 @@ void capture_overlay::close() {
     m_is_open = false;
     m_is_dragging = false;
     m_frames.clear();
+    m_windows.clear();
 }
 
 void capture_overlay::on_motion(int32_t x, int32_t y, uint8_t mods, damage_list& damage) {
-    if (m_is_dragging && m_is_space_held) {
+    m_mods = mods;
+    if (m_mode == mode::window) {
+        m_lit = window_at(x, y);
+    } else if (m_is_dragging && m_is_space_held) {
         move_region(x, y);
     } else if (m_is_dragging) {
         follow(x, y, mods);
@@ -128,27 +297,40 @@ void capture_overlay::on_motion(int32_t x, int32_t y, uint8_t mods, damage_list&
     damage_changes(damage);
 }
 
-void capture_overlay::on_press(int32_t x, int32_t y, damage_list& damage) {
-    for (uint32_t i = 0; i < m_frames.size(); i++) {
-        const damage_list::rect& place = m_frames[i].place;
-        bool is_inside = x >= place.x && x < place.x + place.w && y >= place.y && y < place.y + place.h;
-        if (m_frames[i].surface && is_inside) {
-            m_is_dragging = true;
-            m_output = i;
-            m_anchor_x = x;
-            m_anchor_y = y;
-            m_region = { x, y, 0, 0 };
+void capture_overlay::on_press(int32_t x, int32_t y, uint8_t mods, damage_list& damage) {
+    if (m_mode == mode::window) {
+        m_pressed = m_lit;
+        m_press_has_shadow = (mods & CHORD_MOD_ALT) == 0;
+        return;
+    }
 
-            m_is_shift_held = false;
-            m_kept_axis = axis::none;
-            break;
-        }
+    uint32_t output = output_at(x, y);
+    if (output < m_frames.size() && m_frames[output].surface && contains(m_frames[output].place, x, y)) {
+        m_is_dragging = true;
+        m_output = output;
+        m_anchor_x = x;
+        m_anchor_y = y;
+        m_region = { x, y, 0, 0 };
+
+        m_is_shift_held = false;
+        m_kept_axis = axis::none;
     }
 
     damage_changes(damage);
 }
 
 bool capture_overlay::on_release(capture_target* target, damage_list& damage) {
+    if (m_mode == mode::window) {
+        bool is_click = m_pressed >= 0 && m_pressed == m_lit;
+        if (is_click) {
+            target->window = m_windows[static_cast<size_t>(m_lit)].id;
+            target->has_shadow = m_press_has_shadow;
+        }
+
+        m_pressed = -1;
+        return is_click;
+    }
+
     if (!m_is_dragging) {
         return false;
     }
@@ -167,10 +349,28 @@ bool capture_overlay::on_release(capture_target* target, damage_list& damage) {
     return is_drag;
 }
 
-void capture_overlay::hold_space(bool is_held) {
-    m_is_space_held = is_held;
-    m_move_x = m_pointer_x;
-    m_move_y = m_pointer_y;
+void capture_overlay::press_space(damage_list& damage) {
+    if (m_mode == mode::region && m_is_dragging) {
+        m_is_space_held = true;
+        m_move_x = m_pointer_x;
+        m_move_y = m_pointer_y;
+        return;
+    }
+
+    m_mode = m_mode == mode::region ? mode::window : mode::region;
+    m_lit = m_mode == mode::window ? window_at(m_pointer_x, m_pointer_y) : -1;
+    m_pressed = -1;
+
+    damage_everything(damage);
+    damage_changes(damage);
+}
+
+void capture_overlay::release_space() {
+    m_is_space_held = false;
+}
+
+uint32_t capture_overlay::cursor_shape() const {
+    return m_mode == mode::window ? CURSOR_CAMERA : CURSOR_CROSSHAIR;
 }
 
 /* The region spans the anchor and the pointer, held to the drag's output, or twice that from the anchor with Alt */
@@ -231,8 +431,14 @@ void capture_overlay::move_region(int32_t x, int32_t y) {
     m_move_y = y;
 }
 
-static std::string size_label(const damage_list::rect& r) {
-    return std::to_string(r.w) + " \xC3\x97 " + std::to_string(r.h);
+int32_t capture_overlay::window_at(int32_t x, int32_t y) const {
+    for (size_t i = 0; i < m_windows.size(); i++) {
+        if (contains(m_windows[i].frame, x, y)) {
+            return static_cast<int32_t>(i);
+        }
+    }
+
+    return -1;
 }
 
 /* The served output holding (`x`, `y`), else the first one served */
@@ -249,7 +455,7 @@ uint32_t capture_overlay::output_at(int32_t x, int32_t y) const {
     return first;
 }
 
-/* The output the crosshair's tag lies on: the drag's, or the one under the pointer while aiming */
+/* The output the crosshair's marks lie on: the drag's, or the one under the pointer while aiming */
 uint32_t capture_overlay::pointer_output() const {
     return m_is_dragging ? m_output : output_at(m_pointer_x, m_pointer_y);
 }
@@ -269,8 +475,45 @@ std::string capture_overlay::tag_text() const {
     return std::to_string(m_pointer_x - place.x) + ", " + std::to_string(m_pointer_y - place.y);
 }
 
-/* Down and right of the crosshair, turned to its other side where the output ends */
+/* The tag beside the crosshair, turned to its other side where the output ends, or the window's chip at its middle,
+ * or the note that no window is open at the middle of the pointer's output */
 damage_list::rect capture_overlay::chip_rect() const {
+    if (m_mode == mode::window) {
+        if (m_lit < 0 && !m_windows.empty()) {
+            return {};
+        }
+
+        const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
+        int32_t w = chip_width(window_line(window, (m_mods & CHORD_MOD_ALT) == 0));
+        int32_t h = CHIP_HEIGHT;
+        damage_list::rect around = window ? window->frame : damage_list::rect{ m_pointer_x, m_pointer_y, 0, 0 };
+        uint32_t output = output_at(around.x + around.w / 2, around.y + around.h / 2);
+        if (output >= m_frames.size()) {
+            return {};
+        }
+
+        const damage_list::rect& place = m_frames[output].place;
+        if (!window) {
+            around = place;
+        }
+
+        int32_t x = std::clamp(around.x + (around.w - w) / 2, place.x, std::max(place.x, place.x + place.w - w));
+        int32_t y = std::clamp(around.y + (around.h - h) / 2, place.y, std::max(place.y, place.y + place.h - h));
+
+        /* The camera never covers the chip: under it the chip moves below the pointer, or above it near the window's
+         * bottom, staying inside the window */
+        damage_list::rect camera = { m_pointer_x - CURSOR_CAMERA_WIDTH / 2, m_pointer_y - CURSOR_CAMERA_HEIGHT / 2,
+                                     CURSOR_CAMERA_WIDTH, CURSOR_CAMERA_HEIGHT };
+        if (window && !is_empty(damage_list::intersect({ x, y, w, h }, camera))) {
+            int32_t below = m_pointer_y + CURSOR_CAMERA_HEIGHT + POINTER_CLEARANCE;
+            int32_t above = m_pointer_y - CURSOR_CAMERA_HEIGHT - POINTER_CLEARANCE - h;
+            y = below + h <= around.y + around.h ? below : above;
+            y = std::clamp(y, place.y, std::max(place.y, place.y + place.h - h));
+        }
+
+        return { x, y, w, h };
+    }
+
     uint32_t output = pointer_output();
     stlxgfx_font* font = shell_font(STLXTHEME_MONO_FONT_PATH, TAG_TEXT_SIZE);
     if (output >= m_frames.size() || !m_frames[output].surface || !font) {
@@ -295,14 +538,30 @@ damage_list::rect capture_overlay::chip_rect() const {
     return { x, y, w, TAG_HEIGHT };
 }
 
-/* What the tag says, since its words can change where it stays */
+/* What the chip says, since its words can change where it stays */
 std::string capture_overlay::chip_words() const {
-    return tag_text();
+    if (m_mode == mode::region) {
+        return tag_text();
+    }
+
+    std::string words;
+    const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
+    for (const chip_piece& piece : window_line(window, (m_mods & CHORD_MOD_ALT) == 0)) {
+        words += piece.text;
+    }
+
+    return words;
 }
 
-/* A change repaints where the outline and the chip were and are, and the region's undimmed inside lies in them */
+/* A change repaints where the outline and the chip were and are, and what they light lies in them */
 void capture_overlay::damage_changes(damage_list& damage) {
-    damage_list::rect outline = m_is_dragging ? grown(m_region, OUTLINE_WIDTH) : damage_list::rect{};
+    damage_list::rect outline = {};
+    if (m_mode == mode::window && m_lit >= 0) {
+        outline = m_windows[static_cast<size_t>(m_lit)].frame;
+    } else if (m_mode == mode::region && m_is_dragging) {
+        outline = grown(m_region, OUTLINE_WIDTH);
+    }
+
     damage_list::rect chip = chip_rect();
     std::string words = chip_words();
     if (!is_same(outline, m_shown_outline)) {
@@ -326,99 +585,129 @@ void capture_overlay::damage_changes(damage_list& damage) {
     m_shown_words = std::move(words);
 }
 
+void capture_overlay::damage_everything(damage_list& damage) const {
+    for (const frozen_frame& frame : m_frames) {
+        if (frame.surface) {
+            damage.add(frame.place.x, frame.place.y, frame.place.w, frame.place.h);
+        }
+    }
+}
+
 /* The frozen pixels go in opaque, so every later draw blends the same into a scanout buffer and a top picture */
 void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damage_list::rect& clip) const {
-    uint8_t* first = back->pixels + static_cast<size_t>(clip.y) * back->pitch + static_cast<size_t>(clip.x) * 4;
-    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(first, static_cast<uint32_t>(clip.w),
-                                                          static_cast<uint32_t>(clip.h), back->pitch, 32, 16, 8, 0);
+    stlxgfx_surface_t* view = view_of(back, clip);
     if (!view) {
         return;
     }
 
-    view->flags = back->flags;
     const stlxgfx_surface_t* frozen = output < m_frames.size() ? m_frames[output].surface : nullptr;
-    for (int32_t row = 0; row < clip.h; row++) {
-        uint32_t* dst = reinterpret_cast<uint32_t*>(view->pixels + static_cast<size_t>(row) * view->pitch);
-        int32_t y = clip.y + row;
-        int32_t kept = 0;
-        const uint32_t* src = nullptr;
-        if (frozen && y < static_cast<int32_t>(frozen->height)) {
-            kept = std::clamp(static_cast<int32_t>(frozen->width) - clip.x, 0, clip.w);
-            src = reinterpret_cast<const uint32_t*>(frozen->pixels + static_cast<size_t>(y) * frozen->pitch) + clip.x;
+    copy_opaque(view, frozen, clip);
+    if (frozen) {
+        /* The view's first pixel on the desktop */
+        int32_t ox = m_frames[output].place.x + clip.x;
+        int32_t oy = m_frames[output].place.y + clip.y;
+        if (m_mode == mode::window) {
+            draw_window(view, ox, oy);
+        } else {
+            draw_region(view, ox, oy, output);
         }
 
-        for (int32_t x = 0; x < clip.w; x++) {
-            dst[x] = x < kept ? src[x] | 0xFF000000u : STLXTHEME_INK;
-        }
+        draw_chip(view, ox, oy, output);
     }
 
-    if (!frozen) {
-        stlxgfx_destroy_surface(view);
+    stlxgfx_destroy_surface(view);
+}
+
+/* Everything dims but the region of a drag on this output, which a hairline rings */
+void capture_overlay::draw_region(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
+    int32_t w = static_cast<int32_t>(view->width);
+    int32_t h = static_cast<int32_t>(view->height);
+    bool shows_region = m_is_dragging && m_output == output && !is_empty(m_region);
+    if (!shows_region) {
+        stlxgfx_fill_rect_blend(view, 0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h), DIM_COLOR);
         return;
     }
 
-    /* The view's first pixel on the desktop, and the region on it when the drag lies on this output */
-    const damage_list::rect& place = m_frames[output].place;
-    int32_t ox = place.x + clip.x;
-    int32_t oy = place.y + clip.y;
-    bool shows_region = m_is_dragging && m_output == output && !is_empty(m_region);
-    damage_list::rect lit = shows_region ? damage_list::rect{ m_region.x - ox, m_region.y - oy, m_region.w,
-                                                             m_region.h }
-                                         : damage_list::rect{};
-
-    std::vector<damage_list::rect> dimmed = { { 0, 0, clip.w, clip.h } };
-    if (shows_region) {
-        dimmed = { { 0, 0, clip.w, lit.y },
-                   { 0, lit.y + lit.h, clip.w, clip.h - lit.y - lit.h },
-                   { 0, lit.y, lit.x, lit.h },
-                   { lit.x + lit.w, lit.y, clip.w - lit.x - lit.w, lit.h } };
-    }
-
+    damage_list::rect lit = { m_region.x - ox, m_region.y - oy, m_region.w, m_region.h };
+    damage_list::rect dimmed[] = { { 0, 0, w, lit.y },
+                                   { 0, lit.y + lit.h, w, h - lit.y - lit.h },
+                                   { 0, lit.y, lit.x, lit.h },
+                                   { lit.x + lit.w, lit.y, w - lit.x - lit.w, lit.h } };
     for (const damage_list::rect& piece : dimmed) {
-        damage_list::rect inside = damage_list::intersect(piece, { 0, 0, clip.w, clip.h });
+        damage_list::rect inside = damage_list::intersect(piece, { 0, 0, w, h });
         if (!is_empty(inside)) {
             stlxgfx_fill_rect_blend(view, inside.x, inside.y, static_cast<uint32_t>(inside.w),
                                     static_cast<uint32_t>(inside.h), DIM_COLOR);
         }
     }
 
-    if (shows_region) {
-        damage_list::rect ring = grown(lit, OUTLINE_WIDTH);
-        damage_list::rect edges[] = {
-            { ring.x, ring.y, ring.w, OUTLINE_WIDTH },
-            { ring.x, lit.y + lit.h, ring.w, OUTLINE_WIDTH },
-            { ring.x, lit.y, OUTLINE_WIDTH, lit.h },
-            { lit.x + lit.w, lit.y, OUTLINE_WIDTH, lit.h },
-        };
+    blend_between(view, grown(lit, OUTLINE_WIDTH), 0, lit, 0, STLXTHEME_ACCENT);
+}
 
-        for (const damage_list::rect& edge : edges) {
-            stlxgfx_fill_rect(view, edge.x, edge.y, static_cast<uint32_t>(edge.w), static_cast<uint32_t>(edge.h),
-                              STLXTHEME_ACCENT);
+/* Everything dims but the lit window, whose corners stay rounded, its edge drawn over as a hairline since the capture
+ * takes the window's own pixels */
+void capture_overlay::draw_window(stlxgfx_surface_t* view, int32_t ox, int32_t oy) const {
+    int32_t w = static_cast<int32_t>(view->width);
+    int32_t h = static_cast<int32_t>(view->height);
+    if (m_lit < 0) {
+        stlxgfx_fill_rect_blend(view, 0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h), DIM_COLOR);
+        return;
+    }
+
+    const capture_window& window = m_windows[static_cast<size_t>(m_lit)];
+    damage_list::rect lit = { window.frame.x - ox, window.frame.y - oy, window.frame.w, window.frame.h };
+    damage_list::rect dimmed[] = { { 0, 0, w, lit.y },
+                                   { 0, lit.y + lit.h, w, h - lit.y - lit.h },
+                                   { 0, lit.y, lit.x, lit.h },
+                                   { lit.x + lit.w, lit.y, w - lit.x - lit.w, lit.h } };
+    for (const damage_list::rect& piece : dimmed) {
+        damage_list::rect inside = damage_list::intersect(piece, { 0, 0, w, h });
+        if (!is_empty(inside)) {
+            stlxgfx_fill_rect_blend(view, inside.x, inside.y, static_cast<uint32_t>(inside.w),
+                                    static_cast<uint32_t>(inside.h), DIM_COLOR);
         }
     }
 
-    draw_tag(view, ox, oy, output);
-    stlxgfx_destroy_surface(view);
+    /* The corner squares dim outside each rounded corner */
+    int32_t r = window.radius;
+    damage_list::rect corners[] = { { lit.x, lit.y, r, r },
+                                    { lit.x + lit.w - r, lit.y, r, r },
+                                    { lit.x, lit.y + lit.h - r, r, r },
+                                    { lit.x + lit.w - r, lit.y + lit.h - r, r, r } };
+    for (const damage_list::rect& corner : corners) {
+        damage_list::rect inside = damage_list::intersect(corner, { 0, 0, w, h });
+        for (int32_t y = inside.y; y < inside.y + inside.h; y++) {
+            for (int32_t x = inside.x; x < inside.x + inside.w; x++) {
+                uint32_t covered = coverage_of(lit, r, x, y);
+                stlxgfx_blend_coverage(view, x, y, DIM_COLOR, static_cast<uint8_t>(255 - covered));
+            }
+        }
+    }
+
+    blend_ring(view, lit, r, STLXTHEME_ACCENT);
 }
 
-/* The tag in the crosshair's numbers, on the glass of the output being drawn */
-void capture_overlay::draw_tag(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
-    damage_list::rect tag = chip_rect();
-    stlxgfx_font* font = shell_font(STLXTHEME_MONO_FONT_PATH, TAG_TEXT_SIZE);
-    if (is_empty(tag) || !font) {
+/* The tag in the crosshair's numbers, or the window's chip, on the glass of the output being drawn */
+void capture_overlay::draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy, uint32_t output) const {
+    damage_list::rect chip = chip_rect();
+    if (is_empty(chip)) {
         return;
     }
 
     const damage_list::rect& place = m_frames[output].place;
     const stlxgfx_surface_t* frost = m_frost_of ? m_frost_of(output) : nullptr;
-    damage_list::rect on_output = { tag.x - place.x, tag.y - place.y, tag.w, tag.h };
-    draw_chip_glass(view, ox - place.x, oy - place.y, frost, on_output, TAG_RADIUS);
+    damage_list::rect box = moved(chip, -ox, -oy);
+    if (m_mode == mode::region) {
+        bool shows_size = m_is_dragging && !is_empty(m_region);
+        std::vector<chip_piece> line = { { tag_text(), STLXTHEME_MONO_FONT_PATH, TAG_TEXT_SIZE,
+                                           shows_size ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY } };
+        draw_chip_glass(view, ox - place.x, oy - place.y, frost, moved(chip, -place.x, -place.y), TAG_RADIUS);
+        draw_line(view, box.x + TAG_PADDING_X, box.y, box.h, line);
+        return;
+    }
 
-    stlxgfx_font_metrics metrics;
-    stlxgfx_font_metrics_get(font, &metrics);
-    std::string text = tag_text();
-    bool shows_size = m_is_dragging && !is_empty(m_region);
-    int32_t baseline = tag.y - oy + (tag.h - metrics.ascent - metrics.descent) / 2 + metrics.ascent;
-    stlxgfx_draw_text(view, font, tag.x - ox + TAG_PADDING_X, baseline, text.data(), text.size(),
-                      shows_size ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY);
+    const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
+    std::vector<chip_piece> line = window_line(window, (m_mods & CHORD_MOD_ALT) == 0);
+    draw_chip_glass(view, ox - place.x, oy - place.y, frost, moved(chip, -place.x, -place.y), CHIP_RADIUS);
+    draw_line(view, box.x + chip_left(line), box.y, box.h, line);
 }
