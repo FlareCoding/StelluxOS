@@ -26,7 +26,7 @@ LLVM_SHA256="6898f963c8e938981e6c4a302e83ec5beb4630147c7311183cf61069af16333d"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/llvm-project-$LLVM_VER.src.tar.xz"
 
 # Package release number, bumped when the recipe, a pin or the Qt kit changes without Sheen's version changing
-SHEEN_PKG_REL="1"
+SHEEN_PKG_REL="2"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {
