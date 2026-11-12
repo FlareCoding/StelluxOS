@@ -8,6 +8,7 @@
 #include <QPair>
 #include <QUrl>
 
+#include <algorithm>
 #include <cstdlib>
 
 // Qt names text without its charset and asks for an image as a QImage under a format of its own
@@ -48,6 +49,22 @@ static void add(QList<representation>& reps, const QString& mime_type, const QBy
     }
 }
 
+// A format the desktop can carry by its own name: printable ASCII that fits the wire, since stlxdm ends a client whose
+// offer names anything else
+static bool is_wire_name(const QString& format) {
+    QByteArray name = format.toLatin1();
+    bool fits = !name.isEmpty() && name.size() < static_cast<qsizetype>(STLXWIN_MIME_MAX);
+    return fits && std::all_of(name.begin(), name.end(), [](char c) { return c >= 0x20 && c <= 0x7E; });
+}
+
+// Formats the richer representations already carry, Qt's own internal ones, and the password hint, which is a flag
+static bool is_carried(const QMimeData* data, const QString& format) {
+    bool is_named = format == QT_TEXT || format == HTML || format == URI_LIST || format == PNG ||
+                    format == PASSWORD_HINT;
+    return is_named || format.startsWith(QStringLiteral("application/x-qt-")) ||
+           (data->hasImage() && format.startsWith(QStringLiteral("image/")));
+}
+
 QList<representation> representations(const QMimeData* data) {
     QList<representation> reps;
     if (!data) {
@@ -72,6 +89,13 @@ QList<representation> representations(const QMimeData* data) {
 
     if (data->hasText()) {
         add(reps, QStringLiteral(STLXWIN_MIME_TEXT), data->text().toUtf8());
+    }
+
+    for (const QString& format : data->formats()) {
+        bool has_room = reps.size() < static_cast<qsizetype>(STLXWIN_OFFER_TYPES_MAX);
+        if (has_room && !is_carried(data, format) && is_wire_name(format)) {
+            reps.append({format, data->data(format)});
+        }
     }
 
     return reps;
@@ -166,20 +190,27 @@ QStelluxClipboard::QStelluxClipboard(stlxwin_conn* connection)
 }
 
 QMimeData* QStelluxClipboard::mimeData(QClipboard::Mode mode) {
-    return supportsMode(mode) ? &m_item : nullptr;
+    if (!supportsMode(mode)) {
+        return nullptr;
+    }
+
+    return m_own ? m_own.get() : &m_item;
 }
 
-// Qt hands over the data, which the desktop keeps as up to four types. A copy that fails leaves the clipboard
-// unchanged.
+// Qt hands over the data, which the desktop keeps as up to four types and the app keeps whole while its copy lasts. A
+// copy that fails leaves the clipboard unchanged, and data the app read back from the clipboard is never deleted.
 void QStelluxClipboard::setMimeData(QMimeData* data, QClipboard::Mode mode) {
-    if (!supportsMode(mode)) {
-        delete data;
+    bool is_ours = data == &m_item || data == m_own.get();
+    if (!supportsMode(mode) || data == &m_item) {
+        if (!is_ours) {
+            delete data;
+        }
+
         return;
     }
 
     QList<representation> reps = representations(data);
     bool is_private = data && data->data(PASSWORD_HINT) == "secret";
-    delete data;
 
     QByteArray names[STLXWIN_OFFER_TYPES_MAX];
     stlxwin_offer_rep wire[STLXWIN_OFFER_TYPES_MAX];
@@ -193,7 +224,15 @@ void QStelluxClipboard::setMimeData(QMimeData* data, QClipboard::Mode mode) {
 
     uint32_t flags = is_private ? STLXWIN_CLIPBOARD_PRIVATE : 0;
     if (stlxwin_clipboard_offer(m_connection, wire, offered.count, flags) != 0) {
+        if (!is_ours) {
+            delete data;
+        }
+
         return;
+    }
+
+    if (!is_ours) {
+        m_own.reset(data);
     }
 
     m_item.show_types(offered);
@@ -204,8 +243,15 @@ bool QStelluxClipboard::supportsMode(QClipboard::Mode mode) const {
     return mode == QClipboard::Clipboard;
 }
 
+// The app's own copy came back as the clipboard's change, which setMimeData already told Qt of, and any other change
+// drops the app's data
 void QStelluxClipboard::changed() {
     read_types();
+    if (m_own && stlxwin_clipboard_is_own(m_connection)) {
+        return;
+    }
+
+    m_own.reset();
     emitChanged(QClipboard::Clipboard);
 }
 

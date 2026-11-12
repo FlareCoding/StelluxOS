@@ -10,13 +10,15 @@
 #include <qpa/qplatformclipboard.h>
 
 #include <functional>
+#include <memory>
 
 #include <stlxwin/stlxwin.h>
 
 // One representation of an item as a MIME type and its bytes
 using representation = QPair<QString, QByteArray>;
 
-// What a copy or a drag offers of Qt's data, the richest first: an image as PNG, files, HTML, then text
+// What a copy or a drag offers of Qt's data, the richest first: an image as PNG, files, HTML, then text, and then the
+// app's own formats while room is left, empty markers included
 QList<representation> representations(const QMimeData* data);
 
 // An item of the desktop's, the clipboard's or a drop's, fetched one representation at a time as Qt asks for it and
@@ -54,7 +56,7 @@ public:
     void setMimeData(QMimeData* data, QClipboard::Mode mode) override;
     bool supportsMode(QClipboard::Mode mode) const override;
 
-    // Takes the types of another client's copy
+    // Takes the types of a new copy, keeping the app's own data while the copy is the app's own
     void changed();
 
 private:
@@ -62,6 +64,10 @@ private:
 
     stlxwin_conn* m_connection;
     QStelluxMimeData m_item;
+
+    // The app's own latest copy, which answers its own pastes while the clipboard holds it, as Qt's contract keeps a
+    // copy's data within its app, formats the desktop does not carry included
+    std::unique_ptr<QMimeData> m_own;
 };
 
 #endif
