@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QList>
 #include <QPair>
+#include <QUrl>
 
 #include <cstdlib>
 
@@ -26,6 +27,19 @@ static QString desktop_type(const QString& format) {
     }
 
     return format == QT_IMAGE ? PNG : format;
+}
+
+// A URI list's URLs, one a line, without its comment lines
+static QVariantList parsed_urls(const QByteArray& data) {
+    QVariantList urls;
+    for (const QByteArray& line : data.split('\n')) {
+        QByteArray uri = line.trimmed();
+        if (!uri.isEmpty() && !uri.startsWith('#')) {
+            urls.append(QUrl::fromEncoded(uri));
+        }
+    }
+
+    return urls;
 }
 
 static void add(QList<representation>& reps, const QString& mime_type, const QByteArray& data) {
@@ -97,7 +111,9 @@ bool QStelluxMimeData::hasFormat(const QString& format) const {
     return m_types.contains(desktop_type(format));
 }
 
-QVariant QStelluxMimeData::retrieveData(const QString& format, QMetaType) const {
+// Qt 6.11 turns a URI list's bytes into URLs through a QByteArrayView its QVariant cannot give, which leaves urls()
+// empty, so a list asked for as URLs arrives parsed
+QVariant QStelluxMimeData::retrieveData(const QString& format, QMetaType type) const {
     QString mime_type = desktop_type(format);
     if (!m_types.contains(mime_type)) {
         return QVariant();
@@ -112,7 +128,8 @@ QVariant QStelluxMimeData::retrieveData(const QString& format, QMetaType) const 
         return QImage::fromData(data, "PNG");
     }
 
-    return data;
+    bool wants_urls = type.id() == QMetaType::QVariantList || type.id() == QMetaType::QUrl;
+    return format == URI_LIST && wants_urls ? QVariant(parsed_urls(data)) : QVariant(data);
 }
 
 // One paste often asks twice, for the data and then for its text, so a fetch answers every ask until the clipboard
