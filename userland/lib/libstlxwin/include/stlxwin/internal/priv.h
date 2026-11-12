@@ -122,6 +122,7 @@ struct stlxwin_conn {
     int      drop_pending;      /* a DROP_GET answer is outstanding */
 
     swp_clipboard_types clip_types; /* the newest CLIPBOARD_TYPES */
+    uint16_t clip_types_flags;  /* its header's SWP_CLIPBOARD_TYPES_* */
     int      has_clip_types;    /* a watch brought the first CLIPBOARD_TYPES */
 
     /* Last MODES of each output, allocated at the first watch */

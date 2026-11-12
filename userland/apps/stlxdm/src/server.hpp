@@ -979,10 +979,11 @@ private:
     clipboard_history m_history{ same_content };
     std::string       m_clipboard_since;
 
-    /* Raised by each change of the current item, which watchers catch up to once per flush, and whether the history's
-     * views wait to refresh */
-    uint64_t m_clipboard_generation = 0;
-    bool     m_history_changed = false;
+    /* Raised by each change of the current item, which watchers catch up to once per flush, whether the history's views
+     * wait to refresh, and the client whose own copy the current item is, null for none */
+    uint64_t         m_clipboard_generation = 0;
+    bool             m_history_changed = false;
+    const dm_client* m_clipboard_owner = nullptr;
 
     /* The running drag, null while none runs, and what it shows from its start until its picture settles or snaps
      * back: the look, how its picture moves apart from the pointer, and where it shows */

@@ -597,6 +597,13 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn);
 int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_offer_types* out);
 
 /**
+ * @brief Whether the clipboard's item is this connection's own latest copy, as the newest STLXWIN_EVT_CLIPBOARD left
+ * it, so the app may answer its own pastes from the copy it made, formats the clipboard does not carry included.
+ * @return 1 or 0, and 0 before stlxwin_clipboard_watch succeeded.
+ */
+int stlxwin_clipboard_is_own(stlxwin_conn* conn);
+
+/**
  * @brief Drag an item of `count` representations, as stlxwin_clipboard_offer takes them, from the press `serial`
  * names, which must still hold on the window. The display manager copies the picture, NULL for none, keeps the
  * representations until the drag ends, and reports its course with STLXWIN_EVT_DRAG_STATE. An item of none, whose
