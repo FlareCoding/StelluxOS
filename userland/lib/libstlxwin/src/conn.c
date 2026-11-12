@@ -14,9 +14,9 @@
 /* The longest a message waits for room in a full socket before the connection counts as dead */
 #define SEND_WAIT_NS 100000000ll
 
-/* Room for the one handle a CLIPBOARD_DATA sends. The kernel fits `(controllen - sizeof(cmsghdr)) / 4` handles,
- * so CMSG_SPACE's padding would fit a second. */
-#define HANDLE_CONTROL_BYTES CMSG_LEN(sizeof(int))
+/* Room for the most handles one message carries. The kernel fits `(controllen - sizeof(cmsghdr)) / 4` handles, so
+ * CMSG_SPACE's padding would fit one more. */
+#define HANDLE_CONTROL_BYTES CMSG_LEN(SWP_HANDLES_MAX * sizeof(int))
 
 _Static_assert(STLXWIN_MODES_MAX == SWP_MODES_MAX, "stlxwin.h names proto.h's limit");
 _Static_assert(STLXWIN_OUTPUTS_MAX == SWP_OUTPUTS_MAX, "stlxwin.h names proto.h's limit");
@@ -160,7 +160,7 @@ int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
                                 const void* payload, uint32_t length,
                                 const int* handles, uint32_t handle_count) {
     if (conn->dead || length > SWP_MAX_MSG_SIZE - sizeof(swp_header) ||
-        handle_count == 0 || handle_count > SWP_GPU_HANDLES) {
+        handle_count == 0 || handle_count > SWP_HANDLES_MAX) {
         return -1;
     }
 
@@ -171,7 +171,7 @@ int stlxwin_send_handles_locked(stlxwin_conn* conn, uint16_t type,
 
     union {
         struct cmsghdr head;
-        uint8_t        space[CMSG_SPACE(SWP_GPU_HANDLES * sizeof(int))];
+        uint8_t        space[CMSG_SPACE(SWP_HANDLES_MAX * sizeof(int))];
     } control;
     memset(&control, 0, sizeof(control));
 
