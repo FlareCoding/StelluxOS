@@ -18,9 +18,13 @@
 #include <vector>
 
 class QAction;
+class QDragEnterEvent;
+class QDragMoveEvent;
+class QDropEvent;
 class QLabel;
 class QMenu;
 class QStackedWidget;
+class QUrl;
 class banner;
 class empty_state;
 class find_bar;
@@ -70,6 +74,9 @@ protected:
     void closeEvent(QCloseEvent* event) override;
     void changeEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -94,6 +101,8 @@ private:
     QList<recent_file> recent_files() const;
 
     void new_document();
+    bool take_file_drag(QEvent* event);
+    void open_dropped(const QList<QUrl>& urls);
     void choose_files_to_open(const QString& folder);
     bool open_path(const QString& path, const QByteArray& encoding, int index);
     bool load_in_background(const QString& path, qint64 size, const QByteArray& encoding, int index);

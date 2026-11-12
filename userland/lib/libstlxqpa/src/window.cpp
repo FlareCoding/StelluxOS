@@ -15,7 +15,9 @@
 #include <QWheelEvent>
 #include <QWindow>
 #include <qpa/qwindowsysteminterface.h>
+#include <stlxqpa/drop.h>
 
+#include <algorithm>
 #include <cstring>
 
 static const QSize DEFAULT_WINDOW_SIZE(640, 480);
@@ -488,6 +490,10 @@ void QStelluxWindow::forget_buttons() {
     m_buttons = Qt::NoButton;
 }
 
+void QStelluxWindow::set_drop_words(const QString& words) {
+    m_drop_words = words;
+}
+
 // The desktop's paste reaches the focus object as the theme's Paste key sequence, through shortcuts first, so every
 // widget pastes its own way. The release carries the held modifiers, which leaves Qt's modifier state as it was.
 void QStelluxWindow::paste() {
@@ -623,13 +629,25 @@ static QObject* text_input_of(QObject* receiver) {
     return takes_text_input(widget) ? widget : nullptr;
 }
 
+// The words as the UTF-8 a DROP_STATUS holds, cut before a character that would not fit whole
+static QByteArray fitted_words(const QString& words) {
+    QByteArray utf8 = words.toUtf8();
+    qsizetype end = std::min<qsizetype>(utf8.size(), STLXWIN_DROP_WORDS_MAX - 1);
+    while (end > 0 && end < utf8.size() && (static_cast<uchar>(utf8[end]) & 0xC0) == 0x80) {
+        end--;
+    }
+
+    return utf8.left(end);
+}
+
 // A drag of this app's reads as Qt's own QMimeData, so formats that never leave the app still drop
 const QMimeData* QStelluxWindow::drop_data() const {
     QDrag* own = m_drop_is_own ? QStelluxIntegration::instance()->drag()->currentDrag() : nullptr;
     return own ? own->mimeData() : m_drop_data.get();
 }
 
-// Each move over the window asks Qt where a drop would land and tells stlxdm the action the widget there takes
+// Each move over the window asks Qt where a drop would land and tells stlxdm the action the widget there takes, with
+// the words it set for that action
 void QStelluxWindow::handle_drop_motion(const stlxwin_event& event) {
     if (event.type == STLXWIN_EVT_DROP_ENTER) {
         stlxwin_offer_types types = {};
@@ -648,10 +666,13 @@ void QStelluxWindow::handle_drop_motion(const stlxwin_event& event) {
     m_modifiers = to_qt_modifiers(event.drop.modifiers);
     QStelluxIntegration::instance()->note_pointer(global_position(local).toPoint());
 
+    m_drop_words.clear();
     QPlatformDragQtResponse answer = QWindowSystemInterface::handleDrag(window(), drop_data(), local, m_drop_actions,
                                                                       Qt::LeftButton, m_modifiers);
     uint32_t action = answer.isAccepted() ? to_stlxwin_actions(answer.acceptedAction()) : 0;
-    stlxwin_drop_status(m_handle, action, action, 0, nullptr);
+    QByteArray words = fitted_words(m_drop_words);
+    bool has_words = action != 0 && !words.isEmpty();
+    stlxwin_drop_status(m_handle, action, action, has_words ? action : 0, has_words ? words.constData() : nullptr);
 }
 
 void QStelluxWindow::handle_drop_leave() {
@@ -694,3 +715,15 @@ void QStelluxWindow::close_dismissed_popups() {
         }
     }
 }
+
+namespace stlxqpa {
+
+// Every window of this platform is a QStelluxWindow, so a window's handle holds the words for its drag
+void set_drop_words(QWindow* window, const QString& words) {
+    auto* shown = window ? static_cast<QStelluxWindow*>(window->handle()) : nullptr;
+    if (shown) {
+        shown->set_drop_words(words);
+    }
+}
+
+} // namespace stlxqpa

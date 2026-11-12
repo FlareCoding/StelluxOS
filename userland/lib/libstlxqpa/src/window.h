@@ -31,6 +31,9 @@ public:
     // Lets go of every button, whose release a drag took
     void forget_buttons();
 
+    // Words for the chip of the drag over the window, which the next answer to it carries
+    void set_drop_words(const QString& words);
+
     void setGeometry(const QRect& rect) override;
     void setVisible(bool visible) override;
     void setWindowTitle(const QString& title) override;
@@ -71,11 +74,12 @@ private:
     Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
     bool m_visible = false;
 
-    // The drag over the window: the desktop's item, read once dropped, the actions its source allows, and whether it
-    // comes from this app, whose own QMimeData Qt then reads
+    // The drag over the window: the desktop's item, read once dropped, the actions its source allows, whether it
+    // comes from this app, whose own QMimeData Qt then reads, and the words the widget under the pointer set
     std::unique_ptr<QStelluxMimeData> m_drop_data;
     Qt::DropActions m_drop_actions = Qt::IgnoreAction;
     bool m_drop_is_own = false;
+    QString m_drop_words;
 };
 
 #endif
