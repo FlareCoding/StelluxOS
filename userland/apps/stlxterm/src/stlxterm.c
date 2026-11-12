@@ -23,6 +23,7 @@
 #include <sys/stat.h>
 
 #include "config.h"
+#include "drop.h"
 #include "keymap.h"
 #include "overlay.h"
 #include "paste.h"
@@ -48,8 +49,9 @@
 /* The echo of one write must fit the pty's output buffer, which the loop drains between writes */
 #define INPUT_WRITE_MAX   2048
 
-/* How long the copied pill stays, and the widths of the paste questions */
+/* How long the copied pill and a drop's note stay, and the widths of the paste questions */
 #define COPIED_PILL_MS    1500
+#define NOTE_PILL_MS      3000
 #define LINES_QUESTION_W  520
 #define SIZE_QUESTION_W   440
 
@@ -147,14 +149,21 @@ static term_config_t g_config;
 static struct stat g_config_stat;
 static const char* g_program_name = "shell";
 
-/* A paste a question holds back, the copied pill and when it leaves, 0
- * while none shows, and whether the last frame drew either of them */
+/* A paste a question holds back, the pill at the bottom, which confirms a copy or says what a drop left out, and when
+ * it leaves, 0 while none shows, and whether the last frame drew any overlay */
 static char* g_held_paste = NULL;
 static size_t g_held_paste_len = 0;
 static overlay_question_t g_question;
-static char g_copied_figure[OVERLAY_TEXT_MAX];
-static uint64_t g_copied_until_ms = 0;
+static char g_pill_text[OVERLAY_TEXT_MAX];
+static int g_is_copied_pill = 0;
+static uint64_t g_pill_until_ms = 0;
 static int g_overlay_drawn = 0;
+
+/* The drag over the window, lit while the terminal would paste it: what it pastes, the type read for it, and the words
+ * on its chip */
+static drop_kind_t g_drop_kind = DROP_REFUSED;
+static const char* g_drop_mime = NULL;
+static char g_drop_words[STLXWIN_DROP_WORDS_MAX];
 
 /* The grid as it was last painted, diffed against the live grid to
  * find damage. Each buffer of the pair also keeps the spans painted
@@ -281,8 +290,9 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     }
 
     int resized = buf->width != g_last_buf_w || buf->height != g_last_buf_h;
-    int has_overlay = g_held_paste || g_copied_until_ms;
-    int full = !g_prev_valid || resized || grounded_index(buf->pixels) < 0 || has_overlay || g_overlay_drawn;
+    int has_overlay = g_held_paste || g_pill_until_ms || g_drop_kind != DROP_REFUSED;
+    int touches_overlay = has_overlay || g_overlay_drawn;
+    int full = !g_prev_valid || resized || grounded_index(buf->pixels) < 0 || touches_overlay;
 
     /* A size change replaces the slots, nothing stays grounded */
     if (resized) {
@@ -383,8 +393,14 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
             render_span(s, r, 0, g_term.cols - 1, drawn_cursor);
         }
 
-        if (g_copied_until_ms) {
-            overlay_draw_copied(s, g_copied_figure);
+        if (g_drop_kind != DROP_REFUSED) {
+            overlay_draw_drop_target(s);
+        }
+
+        if (g_pill_until_ms && g_is_copied_pill) {
+            overlay_draw_copied(s, g_pill_text);
+        } else if (g_pill_until_ms) {
+            overlay_draw_note(s, g_pill_text);
         }
 
         if (g_held_paste) {
@@ -473,6 +489,11 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         }
     }
     stale_add(other, diff_min, diff_max);
+
+    /* An overlay reaches into the padding, which the spans owed to the other buffer never cover, so it paints whole */
+    if (touches_overlay) {
+        g_grounded[other] = NULL;
+    }
 
     g_last_cur_row = drawn_cursor ? g_term.cursor_row : -1;
     g_last_cur_col = g_term.cursor_col < g_term.cols
@@ -611,6 +632,13 @@ static void format_count(size_t count, char* out, size_t cap) {
     out[n] = '\0';
 }
 
+/* Shows the pill for `ms`, saying Copied and `text` when it confirms a copy, else `text` alone */
+static void show_pill(const char* text, int is_copied, uint64_t ms) {
+    snprintf(g_pill_text, sizeof(g_pill_text), "%s", text);
+    g_is_copied_pill = is_copied;
+    g_pill_until_ms = now_ms() + ms;
+}
+
 /* The selection goes to the clipboard, and the copied pill says how
  * much: lines when it holds a line break, otherwise characters */
 static void copy_selection(stlxwin_conn* conn) {
@@ -633,9 +661,10 @@ static void copy_selection(stlxwin_conn* conn) {
     free(text);
 
     char figure[32];
+    char amount[OVERLAY_TEXT_MAX];
     format_count(count, figure, sizeof(figure));
-    snprintf(g_copied_figure, sizeof(g_copied_figure), "%s %s", figure, unit);
-    g_copied_until_ms = now_ms() + COPIED_PILL_MS;
+    snprintf(amount, sizeof(amount), "%s %s", figure, unit);
+    show_pill(amount, 1, COPIED_PILL_MS);
 }
 
 /* Queues pasted text for the program as if typed, bracketed when it asked */
@@ -777,8 +806,20 @@ static int handle_question_pointer(int master_fd, const stlxwin_event* ev) {
     return 1;
 }
 
-/* The clipboard goes to the program, or waits behind a question about
- * its lines or its size. Returns 1 when it went straight to the program. */
+/* Pasted text goes to the program, or waits behind a question about its lines or its size, and is taken either way.
+ * Returns 1 when it went straight to the program. */
+static int paste_text(int master_fd, char* text, size_t len) {
+    paste_check_t check = paste_check(text, len, g_term.bracketed_paste, g_config.paste_protection);
+    if (check != PASTE_SEND) {
+        ask_before_paste(check, text, len);
+        return 0;
+    }
+
+    queue_paste(master_fd, text, len);
+    free(text);
+    return 1;
+}
+
 static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
     char* text = NULL;
     long len = stlxwin_clipboard_get(conn, &text);
@@ -787,15 +828,78 @@ static int paste_clipboard(stlxwin_conn* conn, int master_fd) {
         return 0;
     }
 
-    paste_check_t check = paste_check(text, (size_t)len, g_term.bracketed_paste, g_config.paste_protection);
-    if (check != PASTE_SEND) {
-        ask_before_paste(check, text, (size_t)len);
+    return paste_text(master_fd, text, (size_t)len);
+}
+
+/* The terminal pastes a drag's files or text as a copy, and refuses anything else and any drag while a question holds
+ * a paste */
+static void answer_drag(stlxwin_window* win, const stlxwin_event* ev) {
+    stlxwin_offer_types types;
+    if (ev->type == STLXWIN_EVT_DROP_ENTER) {
+        int is_readable = !g_held_paste && stlxwin_drop_types(win, &types) == 0;
+        g_drop_kind = is_readable ? drop_kind(&types, &g_drop_mime) : DROP_REFUSED;
+        if (g_drop_kind == DROP_FILES && ev->drop.item_count > 1) {
+            snprintf(g_drop_words, sizeof(g_drop_words), "Paste %u paths", (unsigned)ev->drop.item_count);
+        } else {
+            snprintf(g_drop_words, sizeof(g_drop_words), "%s", g_drop_kind == DROP_FILES ? "Paste path" : "Paste text");
+        }
+    }
+
+    if (g_drop_kind == DROP_REFUSED) {
+        stlxwin_drop_status(win, 0, 0, 0, NULL);
+        return;
+    }
+
+    stlxwin_drop_status(win, STLXWIN_DND_COPY, STLXWIN_DND_COPY, STLXWIN_DND_COPY, g_drop_words);
+}
+
+/* The pill says why files were left out of a drop, another computer before a name the shell would misread */
+static void note_left_out(const drop_paste_t* paste) {
+    char note[OVERLAY_TEXT_MAX];
+    if (paste->remote == 1) {
+        snprintf(note, sizeof(note), "This file is on another computer (%s)", paste->host);
+    } else if (paste->remote > 1) {
+        snprintf(note, sizeof(note), "%u files are on another computer (%s)", (unsigned)paste->remote, paste->host);
+    } else if (paste->unsafe == 1) {
+        snprintf(note, sizeof(note), "A name holds a line break, so it was left out");
+    } else if (paste->unsafe > 1) {
+        snprintf(note, sizeof(note), "%u names hold line breaks, so they were left out", (unsigned)paste->unsafe);
+    } else {
+        return;
+    }
+
+    show_pill(note, 0, NOTE_PILL_MS);
+}
+
+/* A drop pastes its files' quoted paths, which hold no line break to ask about, or its text as Ctrl Shift V does.
+ * Returns the STLXWIN_DND_* action done. */
+static uint32_t paste_drop(stlxwin_window* win, int master_fd) {
+    char* data = NULL;
+    long len = g_drop_kind != DROP_REFUSED ? stlxwin_drop_read(win, g_drop_mime, &data) : 0;
+    if (len <= 0) {
+        free(data);
         return 0;
     }
 
-    queue_paste(master_fd, text, (size_t)len);
-    free(text);
-    return 1;
+    if (g_drop_kind == DROP_TEXT) {
+        paste_text(master_fd, data, (size_t)len);
+        return STLXWIN_DND_COPY;
+    }
+
+    drop_paste_t paste;
+    int rc = drop_paste_uri_list(data, (size_t)len, &paste);
+    free(data);
+    if (rc != 0) {
+        return 0;
+    }
+
+    note_left_out(&paste);
+    if (paste.pasted > 0) {
+        queue_paste(master_fd, paste.text, paste.len);
+    }
+
+    free(paste.text);
+    return paste.pasted > 0 ? STLXWIN_DND_COPY : 0;
 }
 
 /* The settings file is read again when a window gains focus after it changed */
@@ -1037,8 +1141,8 @@ int main(int argc, char* argv[]) {
     int dirty = 1;
 
     while (running) {
-        if (g_copied_until_ms && now_ms() >= g_copied_until_ms) {
-            g_copied_until_ms = 0;
+        if (g_pill_until_ms && now_ms() >= g_pill_until_ms) {
+            g_pill_until_ms = 0;
             dirty = 1;
         }
 
@@ -1055,11 +1159,11 @@ int main(int argc, char* argv[]) {
             { master_fd, pty_events, 0 },
         };
 
-        /* The cursor blinks, and the copied pill leaves on time, without input */
+        /* The cursor blinks, and the pill leaves on time, without input */
         int timeout = g_focused && g_term.cursor_visible && !g_held_paste ? BLINK_MS : -1;
-        if (g_copied_until_ms) {
+        if (g_pill_until_ms) {
             uint64_t now = now_ms();
-            int pill_left = g_copied_until_ms > now ? (int)(g_copied_until_ms - now) : 0;
+            int pill_left = g_pill_until_ms > now ? (int)(g_pill_until_ms - now) : 0;
             timeout = timeout < 0 || pill_left < timeout ? pill_left : timeout;
         }
 
@@ -1072,7 +1176,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (rc == 0) {
-            if (!g_copied_until_ms || now_ms() < g_copied_until_ms) {
+            if (!g_pill_until_ms || now_ms() < g_pill_until_ms) {
                 cursor_on = !cursor_on;
             }
 
@@ -1209,6 +1313,27 @@ int main(int argc, char* argv[]) {
                 }
 
                 dirty |= change != SELECTION_UNCHANGED;
+                break;
+            }
+            case STLXWIN_EVT_DROP_ENTER:
+            case STLXWIN_EVT_DROP_MOTION:
+                answer_drag(win, &ev);
+                dirty |= ev.type == STLXWIN_EVT_DROP_ENTER;
+                break;
+            case STLXWIN_EVT_DROP_LEAVE:
+                g_drop_kind = DROP_REFUSED;
+                dirty = 1;
+                break;
+            case STLXWIN_EVT_DROP: {
+                /* What the drop typed lands at the cursor, so the window takes the focus for Enter to run it */
+                uint32_t action = paste_drop(win, master_fd);
+                stlxwin_drop_finish(win, action, action ? STLXWIN_DROP_FOCUS : 0);
+                g_drop_kind = DROP_REFUSED;
+                if (action && g_select.active) {
+                    select_clear(&g_select);
+                }
+
+                dirty = 1;
                 break;
             }
             default:
