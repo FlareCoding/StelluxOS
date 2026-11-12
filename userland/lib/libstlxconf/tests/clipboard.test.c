@@ -26,6 +26,20 @@ static const char DROP_IN_TEXT[] =
     "[clipboard]\n"
     "history_items=1000\n";
 
+static const char HUGE_TEXT[] =
+    "[clipboard]\n"
+    "history_items=5000\n"
+    "history_mb=99999999999999999999\n";
+
+static const char NEGATIVE_TEXT[] =
+    "[clipboard]\n"
+    "history_items=-1\n"
+    "history_mb=lots\n";
+
+static const char NONE_TEXT[] =
+    "[clipboard]\n"
+    "history_items=0\n";
+
 static void check(bool holds, const char* what) {
     g_checks++;
     if (holds) {
@@ -82,6 +96,26 @@ int main(void) {
     check(stlxconf_load(&g_reloaded, saved_path) == 0, "the saved file loads");
     check(g_reloaded.clipboard_history_items == 25 && g_reloaded.clipboard_history_mb == 8,
           "a save writes the limits back");
+
+    char limits_path[256];
+    snprintf(limits_path, sizeof(limits_path), "%s/limits.conf", g_dir);
+    write_file(limits_path, HUGE_TEXT);
+    stlxconf_defaults(&g_conf);
+    check(stlxconf_load(&g_conf, limits_path) == 0 && g_conf.clipboard_history_items == STLXCONF_CLIPBOARD_ITEMS_MAX &&
+              g_conf.clipboard_history_mb == STLXCONF_CLIPBOARD_MB_MAX,
+          "limits past their most are clamped to it, a number too long to parse included");
+
+    write_file(limits_path, NEGATIVE_TEXT);
+    stlxconf_defaults(&g_conf);
+    check(stlxconf_load(&g_conf, limits_path) == 0 &&
+              g_conf.clipboard_history_items == STLXCONF_DEFAULT_CLIPBOARD_ITEMS &&
+              g_conf.clipboard_history_mb == STLXCONF_DEFAULT_CLIPBOARD_MB,
+          "a negative or wordy limit keeps the default instead of meaning unlimited");
+
+    write_file(limits_path, NONE_TEXT);
+    stlxconf_defaults(&g_conf);
+    check(stlxconf_load(&g_conf, limits_path) == 0 && g_conf.clipboard_history_items == 0,
+          "a limit of 0 keeps no history beside the current clipboard");
 
     char command[600];
     snprintf(command, sizeof(command), "rm -rf %s", g_dir);

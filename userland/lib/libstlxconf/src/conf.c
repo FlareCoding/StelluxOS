@@ -98,6 +98,18 @@ void stlxconf_defaults(stlxconf_t* conf) {
     conf->clipboard_history_mb    = STLXCONF_DEFAULT_CLIPBOARD_MB;
 }
 
+/* A whole number clamped to `max`, or `fallback` for a value that is not one, such as "-1" */
+static uint32_t parse_limit(const char* val, uint32_t max, uint32_t fallback) {
+    char* end = NULL;
+    errno = 0;
+    unsigned long n = strtoul(val, &end, 10);
+    if (val[0] == '-' || end == val || *end != '\0') {
+        return fallback;
+    }
+
+    return errno == ERANGE || n > max ? max : (uint32_t)n;
+}
+
 static char* trim(char* s) {
     while (*s == ' ' || *s == '\t') {
         s++;
@@ -373,9 +385,10 @@ static void apply_value(stlxconf_t* conf, conf_section_t sec,
         return;
     case SEC_CLIPBOARD:
         if (strcmp(key, "history_items") == 0) {
-            conf->clipboard_history_items = (uint32_t)strtoul(val, NULL, 10);
+            conf->clipboard_history_items =
+                parse_limit(val, STLXCONF_CLIPBOARD_ITEMS_MAX, STLXCONF_DEFAULT_CLIPBOARD_ITEMS);
         } else if (strcmp(key, "history_mb") == 0) {
-            conf->clipboard_history_mb = (uint32_t)strtoul(val, NULL, 10);
+            conf->clipboard_history_mb = parse_limit(val, STLXCONF_CLIPBOARD_MB_MAX, STLXCONF_DEFAULT_CLIPBOARD_MB);
         }
 
         return;
