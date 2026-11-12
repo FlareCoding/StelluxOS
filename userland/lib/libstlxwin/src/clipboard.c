@@ -6,7 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
+
+/* A clipboard read gives up after 5 seconds, as Qt's XCB clipboard does, so a stalled display manager never freezes a
+ * pasting app for good */
+#define CLIPBOARD_DEADLINE_MS 5000
 
 /* A shared memory object holding the bytes, which the display manager keeps for the clipboard or a drag */
 int stlxwin_create_shared(const void* data, size_t len) {
@@ -56,12 +61,24 @@ void stlxwin_close_objects(const int* objects, uint32_t count) {
     }
 }
 
+static int64_t monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 /* Reads the connection while `*flag` holds `value`, queueing the events that arrive meanwhile for the app to drain
- * afterwards */
-void stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value) {
+ * afterwards, for at most `timeout_ms`, negative waiting for good. 0 once the flag changed, else -1. */
+int stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value, int timeout_ms) {
+    int64_t deadline = timeout_ms < 0 ? 0 : monotonic_ms() + timeout_ms;
     while (*flag == value && !conn->dead) {
+        int64_t left = deadline == 0 ? -1 : deadline - monotonic_ms();
+        if (deadline != 0 && left <= 0) {
+            return -1;
+        }
+
         struct pollfd pfd = { conn->fd, POLLIN, 0 };
-        int rc = poll(&pfd, 1, -1);
+        int rc = poll(&pfd, 1, (int)left);
         if (rc < 0 && errno != EINTR) {
             stlxwin_mark_dead(conn);
             break;
@@ -71,6 +88,8 @@ void stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value) {
             stlxwin_dispatch(conn);
         }
     }
+
+    return *flag == value || conn->dead ? -1 : 0;
 }
 
 /* Asks with an untyped or a typed CLIPBOARD_GET and copies the representation it answers with */
@@ -81,9 +100,18 @@ static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** 
         return -1;
     }
 
-    stlxwin_wait_while(conn, &conn->clip_pending, 1);
-    if (conn->dead || conn->clip_len == 0) {
-        return conn->dead ? -1 : 0;
+    /* A late answer still comes in its turn, so an ask given up on drops its answer rather than another's */
+    if (stlxwin_wait_while(conn, &conn->clip_pending, 1, CLIPBOARD_DEADLINE_MS) != 0) {
+        if (!conn->dead) {
+            conn->clip_pending = 0;
+            conn->clip_abandoned++;
+        }
+
+        return -1;
+    }
+
+    if (conn->clip_len == 0) {
+        return 0;
     }
 
     /* Closed once copied, so no reader keeps a replaced clipboard's memory alive */
@@ -222,7 +250,9 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn) {
         return -1;
     }
 
-    stlxwin_wait_while(conn, &conn->has_clip_types, 0);
+    conn->is_clip_watch_waiting = 1;
+    stlxwin_wait_while(conn, &conn->has_clip_types, 0, CLIPBOARD_DEADLINE_MS);
+    conn->is_clip_watch_waiting = 0;
 
     return conn->has_clip_types ? 0 : -1;
 }

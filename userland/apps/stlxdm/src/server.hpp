@@ -313,6 +313,8 @@ struct dm_client {
     /* The types unanswered CLIPBOARD_GETs ask for, oldest first. An answer's handle must ride its first byte, so
      * answers go out only once out_q is empty. */
     std::deque<std::string> clipboard_asks;
+    uint64_t clipboard_asks_taken = 0;    /* every ask it took, and every answer sent for one */
+    uint64_t clipboard_answers_sent = 0;
     bool watches_clipboard = false;  /* sent CLIPBOARD_WATCH, so it hears of every change */
     uint64_t clipboard_generation = 0;  /* the clipboard's generation its last CLIPBOARD_TYPES told */
 

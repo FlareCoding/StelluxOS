@@ -12,6 +12,7 @@
 #include <stlx/proc.h>
 #include <stlxgfx/image.h>
 
+#include <cassert>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -2553,6 +2554,7 @@ void server::ask_clipboard(dm_client& c, const swp_header& hdr, const uint8_t* p
     }
 
     c.clipboard_asks.push_back(std::move(mime_type));
+    c.clipboard_asks_taken++;
     send_clipboard_answers(c);
 }
 
@@ -2654,6 +2656,9 @@ void server::send_window_message(dm_client& c, dm_window* w, uint16_t type, cons
     send_to(c, type, payload, length);
 }
 
+/* Every well-formed ask gets exactly one answer, in the order asked, and a client past CLIPBOARD_ASKS_MAX asks is ended
+ * rather than skipped. libstlxwin relies on it: a read that gives up drops its late answer by count, so an ask skipped,
+ * answered twice or answered out of order would hand a later read the wrong data. */
 void server::send_clipboard_answers(dm_client& c) {
     while (!c.clipboard_asks.empty() && c.out_q.empty() && !c.dead) {
         if (!send_clipboard_answer(c)) {
@@ -2661,6 +2666,8 @@ void server::send_clipboard_answers(dm_client& c) {
         }
 
         c.clipboard_asks.pop_front();
+        c.clipboard_answers_sent++;
+        assert(c.clipboard_answers_sent + c.clipboard_asks.size() == c.clipboard_asks_taken);
     }
 }
 
