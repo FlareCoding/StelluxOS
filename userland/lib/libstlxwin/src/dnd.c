@@ -180,7 +180,7 @@ long stlxwin_drop_read(stlxwin_window* win, const char* mime_type, char** out_da
         return -1;
     }
 
-    stlxwin_wait_while(conn, &conn->drop_pending, 1);
+    stlxwin_wait_while(conn, &conn->drop_pending, 1, -1);
     if (conn->dead || conn->drop_len == 0) {
         return conn->dead ? -1 : 0;
     }

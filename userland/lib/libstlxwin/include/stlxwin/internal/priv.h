@@ -115,6 +115,7 @@ struct stlxwin_conn {
     uint64_t clip_len;
     int      clip_handle;
     int      clip_pending;      /* a CLIPBOARD_GET answer is outstanding */
+    uint32_t clip_abandoned;    /* asks given up on past their deadline, whose answers are dropped as they arrive */
 
     /* The last DROP_DATA's length and shared memory object, -1 when it sent none */
     uint64_t drop_len;
@@ -124,6 +125,7 @@ struct stlxwin_conn {
     swp_clipboard_types clip_types; /* the newest CLIPBOARD_TYPES */
     uint16_t clip_types_flags;  /* its header's SWP_CLIPBOARD_TYPES_* */
     int      has_clip_types;    /* a watch brought the first CLIPBOARD_TYPES */
+    int      is_clip_watch_waiting; /* a watch waits for the first CLIPBOARD_TYPES */
 
     /* Last MODES of each output, allocated at the first watch */
     swp_modes* modes;
@@ -171,7 +173,7 @@ stlxwin_mode stlxwin_mode_from_swp(const swp_mode* mode);
 int stlxwin_create_shared(const void* data, size_t len);
 char* stlxwin_copy_shared(int object, uint64_t len);
 void stlxwin_close_objects(const int* objects, uint32_t count);
-void stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value);
+int stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value, int timeout_ms);
 int stlxwin_pack_offer(const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags, swp_offer* msg, int* objects);
 
 /* dnd.c */

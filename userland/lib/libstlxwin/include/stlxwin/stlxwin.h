@@ -563,8 +563,8 @@ int stlxwin_gpu_check(stlxwin_conn* conn);
 int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len);
 
 /**
- * @brief Fetch the clipboard into a malloc'd buffer the caller frees.
- * @return Length, 0 if empty, -1 on failure.
+ * @brief Fetch the clipboard into a malloc'd buffer the caller frees, waiting at most 5 seconds for the answer.
+ * @return Length, 0 if empty, -1 on failure or when no answer came in time.
  */
 long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text);
 
@@ -578,15 +578,15 @@ int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, u
 
 /**
  * @brief Fetch the clipboard's representation of `mime_type` into a malloc'd buffer the caller frees, with a NUL
- * past its end.
- * @return Length, 0 when the clipboard holds no such representation, -1 on failure.
+ * past its end, waiting at most 5 seconds for the answer.
+ * @return Length, 0 when the clipboard holds no such representation, -1 on failure or when no answer came in time.
  */
 long stlxwin_clipboard_get_type(stlxwin_conn* conn, const char* mime_type, char** out_data);
 
 /**
  * @brief Hear of every change of the clipboard. Waits for the clipboard's types, which the display manager sends at
  * once and again after each change, queueing STLXWIN_EVT_CLIPBOARD for each later one.
- * @return 0 once the types arrived, or -1 when the connection dies first.
+ * @return 0 once the types arrived, or -1 when the connection dies first or they take more than 5 seconds.
  */
 int stlxwin_clipboard_watch(stlxwin_conn* conn);
 

@@ -492,12 +492,22 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         }
 
         memcpy(&m, payload, sizeof(m));
+        int handle = m.len > 0 ? take_queued_handle(conn) : -1;
+        if (conn->clip_abandoned > 0) {
+            conn->clip_abandoned--;
+            if (handle >= 0) {
+                close(handle);
+            }
+
+            return;
+        }
+
         if (conn->clip_handle >= 0) {
             close(conn->clip_handle);
         }
 
         conn->clip_len = m.len;
-        conn->clip_handle = m.len > 0 ? take_queued_handle(conn) : -1;
+        conn->clip_handle = handle;
         conn->clip_pending = 0;
         return;
     }
@@ -539,11 +549,13 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
             m.types[i][SWP_MIME_MAX - 1] = '\0';
         }
 
-        /* The first answers the watch, which waits for it, and each later one is a change */
+        /* The first answers the watch while it waits, and each later one is a change, the first too once the watch gave
+         * up on it, so an app whose watch timed out still hears the clipboard when its types arrive */
         conn->clip_types = m;
         conn->clip_types_flags = hdr->flags;
-        if (!conn->has_clip_types) {
-            conn->has_clip_types = 1;
+        int answers_watch = !conn->has_clip_types && conn->is_clip_watch_waiting;
+        conn->has_clip_types = 1;
+        if (answers_watch) {
             return;
         }
 
