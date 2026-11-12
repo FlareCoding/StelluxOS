@@ -132,6 +132,25 @@ static void check_random_rects() {
     }
 }
 
+/* A capture copies a region measured on one layout out of a frame of another, which clip cuts to the frame, as a 400
+ * by 300 region kept at 1920x1080 meets a 1280x720 frame */
+static void check_clip_to_frame() {
+    damage_list::rect past = { 1400, 700, 400, 300 };
+    check(!damage_list::clip(past, 1280, 720), "a region past the frame leaves nothing to copy");
+
+    damage_list::rect across = { 1000, 500, 400, 300 };
+    check(damage_list::clip(across, 1280, 720), "a region across the frame's corner keeps its inside");
+    check(across.x == 1000 && across.y == 500 && across.w == 280 && across.h == 220, "the inside is the corner's part");
+
+    damage_list::rect before = { -100, -50, 400, 300 };
+    check(damage_list::clip(before, 1280, 720), "a region before the frame keeps its inside");
+    check(before.x == 0 && before.y == 0 && before.w == 300 && before.h == 250, "nothing is read before the frame");
+
+    damage_list::rect inside = { 10, 20, 400, 300 };
+    check(damage_list::clip(inside, 1280, 720), "a region inside the frame stays whole");
+    check(inside.x == 10 && inside.y == 20 && inside.w == 400 && inside.h == 300, "a whole region keeps its size");
+}
+
 int main() {
     check_rule({ { 0, 0, 10, 10 }, { 20, 0, 10, 10 } }, 2, "rects apart stay as added");
     check_rule({ { 0, 0, 10, 10 }, { 2, 2, 4, 4 } }, 1, "a rect another holds adds nothing");
@@ -145,6 +164,7 @@ int main() {
 
     check_overflow();
     check_random_rects();
+    check_clip_to_frame();
 
     if (g_failures != 0) {
         printf("damage: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

@@ -382,6 +382,8 @@ void server::handle_create_window(dm_client& c, const uint8_t* payload) {
     }
 
     auto w = std::make_unique<dm_window>();
+    w->serial = m_next_window_serial++;
+
     w->win_id = m->win_id;
     w->parent_id = m->parent_id;
     w->flags = m->flags;

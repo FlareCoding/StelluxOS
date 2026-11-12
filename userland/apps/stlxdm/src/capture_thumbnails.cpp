@@ -451,6 +451,23 @@ void capture_thumbnails::notify(stlxgfx_surface_t* chip, uint32_t output, const 
     damage.add(m_notice_rect.x, m_notice_rect.y, m_notice_rect.w, m_notice_rect.h);
 }
 
+void capture_thumbnails::mark(const damage_list::rect& ring, uint32_t output, damage_list& damage) {
+    for (const damage_list::rect& edge : m_mark_edges) {
+        damage.add(edge.x, edge.y, edge.w, edge.h);
+    }
+
+    bool has_ring = ring.w > 1 && ring.h > 1;
+    m_mark_edges[0] = has_ring ? damage_list::rect{ ring.x, ring.y, ring.w, 1 } : damage_list::rect{};
+    m_mark_edges[1] = has_ring ? damage_list::rect{ ring.x, ring.y + ring.h - 1, ring.w, 1 } : damage_list::rect{};
+    m_mark_edges[2] = has_ring ? damage_list::rect{ ring.x, ring.y, 1, ring.h } : damage_list::rect{};
+    m_mark_edges[3] = has_ring ? damage_list::rect{ ring.x + ring.w - 1, ring.y, 1, ring.h } : damage_list::rect{};
+    m_mark_output = output;
+
+    for (const damage_list::rect& edge : m_mark_edges) {
+        damage.add(edge.x, edge.y, edge.w, edge.h);
+    }
+}
+
 /* An entry deleted, cleared or evicted leaves nothing of its capture to discard or describe */
 void capture_thumbnails::follow_clipboard(const clipboard_history& history, damage_list& damage) {
     bool is_any_gone = false;
@@ -609,6 +626,12 @@ void capture_thumbnails::bounds(uint32_t output, std::vector<damage_list::rect>&
     if (m_notice && m_notice_output == output) {
         out.push_back(m_notice_rect);
     }
+
+    for (const damage_list::rect& edge : m_mark_edges) {
+        if (m_mark_output == output && edge.w > 0 && edge.h > 0) {
+            out.push_back(edge);
+        }
+    }
 }
 
 void capture_thumbnails::draw(uint32_t output, stlxgfx_surface_t* back, int32_t ox, int32_t oy,
@@ -625,6 +648,14 @@ void capture_thumbnails::draw(uint32_t output, stlxgfx_surface_t* back, int32_t 
 
     if (m_notice_output == output) {
         blend_clipped(back, ox, oy, m_notice, m_notice_rect, clip);
+    }
+
+    for (const damage_list::rect& edge : m_mark_edges) {
+        damage_list::rect inside = damage_list::intersect(edge, clip);
+        if (m_mark_output == output && inside.w > 0 && inside.h > 0) {
+            stlxgfx_fill_rect_blend(back, inside.x - ox, inside.y - oy, static_cast<uint32_t>(inside.w),
+                                    static_cast<uint32_t>(inside.h), STLXTHEME_ACCENT);
+        }
     }
 }
 

@@ -339,6 +339,11 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
+    if (m_counts_down && is_escape_press) {
+        cancel_countdown();
+        return;
+    }
+
     if (m_preview.active()) {
         if (is_escape_press) {
             close_preview();

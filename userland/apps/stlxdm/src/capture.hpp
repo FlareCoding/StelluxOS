@@ -70,6 +70,16 @@ struct capture_target {
 /* What a release in the capture overlay asks of the server */
 enum class capture_result { none, take, close };
 
+/* Where and how the capture overlay opens its bar: on output `output`, -1 for no bar, with the session's `options`,
+ * and the last region the bar kept, which it shows again while the options remember it */
+struct capture_bar_start {
+    int32_t           output = -1;
+    capture_options   options;
+    bool              has_region = false;
+    uint32_t          region_output = 0;
+    damage_list::rect region = {};
+};
+
 /* The frost an output's glass is drawn from, null for an output not served */
 using frost_lookup = std::function<const stlxgfx_surface_t*(uint32_t output)>;
 
@@ -116,13 +126,14 @@ public:
     void set_frost_lookup(frost_lookup lookup) { m_frost_of = std::move(lookup); }
 
     /* Opens over `frames`, one per output by index and empty for an output not served, aiming at a region, with
-     * `windows` top first and the pointer at (`x`, `y`), and the capture bar on output `bar_output`, or at -1 the
+     * `windows` top first and the pointer at (`x`, `y`), and the capture bar as `bar` says, or without one the
      * region's keys hinted at the top of the pointer's output a while */
     void open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x, int32_t y,
-              uint64_t now_ns, int32_t bar_output);
+              uint64_t now_ns, const capture_bar_start& bar);
     void close();
 
     bool has_bar() const { return m_bar.shown(); }
+    const capture_options& options() const { return m_bar.options(); }
 
     /* Aims at `mode`'s targets, as Space and the bar's modes and keys switch */
     void choose(capture_mode mode, damage_list& damage);
@@ -163,6 +174,7 @@ private:
 
     capture_result press_control(capture_bar::control control, capture_target* target, damage_list& damage);
     bool is_on_bar(int32_t x, int32_t y) const;
+    bool keeps_shadow() const;
     void follow(int32_t x, int32_t y, uint8_t mods);
     void move_region(int32_t x, int32_t y);
     int32_t window_at(int32_t x, int32_t y) const;
@@ -255,8 +267,9 @@ private:
     std::vector<frozen_frame> m_frames;
 };
 
-/* A copy of `r` of `frame`, in the frame's pixels, which the caller destroys, or null without memory */
-stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& r);
+/* A copy of `wanted` of `frame`, cut to the frame so a rect measured on another layout never reads past it, which
+ * the caller destroys, or null when none of it is inside or without memory */
+stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& wanted);
 
 /* `pixels` shrunk to `w` by `h`, each pixel the average of those it covers so text stays legible small, in straight
  * alpha when `keeps_alpha` and opaque otherwise. Null without memory. */

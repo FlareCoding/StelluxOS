@@ -284,14 +284,19 @@ stlxgfx_surface_t* make_chip_picture(const std::vector<chip_piece>& line, const 
     return chip;
 }
 
-stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& r) {
+stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& wanted) {
+    const stlxgfx_surface_t* from = frame.surface;
+    damage_list::rect r = wanted;
+    if (!damage_list::clip(r, static_cast<int32_t>(from->width), static_cast<int32_t>(from->height))) {
+        return nullptr;
+    }
+
     stlxgfx_surface_t* copy = stlxgfx_create_surface(static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h), 32, 16, 8,
                                                      0);
     if (!copy) {
         return nullptr;
     }
 
-    const stlxgfx_surface_t* from = frame.surface;
     for (int32_t y = 0; y < r.h; y++) {
         const uint8_t* src = from->pixels + static_cast<size_t>(r.y + y) * from->pitch + static_cast<size_t>(r.x) * 4;
         memcpy(copy->pixels + static_cast<size_t>(y) * copy->pitch, src, static_cast<size_t>(r.w) * 4);
@@ -305,7 +310,7 @@ capture_overlay::~capture_overlay() {
 }
 
 void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x,
-                           int32_t y, uint64_t now_ns, int32_t bar_output) {
+                           int32_t y, uint64_t now_ns, const capture_bar_start& bar) {
     m_frames = std::move(frames);
     m_windows = std::move(windows);
     m_is_open = true;
@@ -330,10 +335,22 @@ void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture
     m_shown_chip = {};
     m_shown_words.clear();
 
-    size_t bar_index = static_cast<size_t>(bar_output);
-    if (bar_output >= 0 && bar_index < m_frames.size() && m_frames[bar_index].surface) {
-        const stlxgfx_surface_t* frost = m_frost_of ? m_frost_of(static_cast<uint32_t>(bar_output)) : nullptr;
-        m_bar.show(m_frames[bar_index].place, frost, capture_mode::region);
+    size_t bar_index = static_cast<size_t>(bar.output);
+    if (bar.output >= 0 && bar_index < m_frames.size() && m_frames[bar_index].surface) {
+        const stlxgfx_surface_t* frost = m_frost_of ? m_frost_of(static_cast<uint32_t>(bar.output)) : nullptr;
+        m_bar.show(m_frames[bar_index].place, frost, capture_mode::region, bar.options);
+
+        /* The kept region returns cut to its output, which may have shrunk or moved since */
+        bool is_kept_region_shown = bar.region_output < m_frames.size() && m_frames[bar.region_output].surface;
+        damage_list::rect kept = is_kept_region_shown
+                                     ? damage_list::intersect(bar.region, m_frames[bar.region_output].place)
+                                     : damage_list::rect{};
+        if (bar.options.remember_region && bar.has_region && !is_empty(kept)) {
+            m_has_region = true;
+            m_output = bar.region_output;
+            m_region = kept;
+        }
+
         return;
     }
 
@@ -461,7 +478,7 @@ capture_result capture_overlay::on_release(capture_target* target, damage_list& 
         bool is_click = m_pressed >= 0 && m_pressed == m_lit;
         if (is_click) {
             target->window = m_windows[static_cast<size_t>(m_lit)].id;
-            target->has_shadow = m_press_has_shadow;
+            target->has_shadow = m_press_has_shadow && (!m_bar.shown() || m_bar.options().shadow);
         }
 
         m_pressed = -1;
@@ -513,10 +530,20 @@ capture_result capture_overlay::press_control(capture_bar::control control, capt
     case capture_bar::control::screen:
         choose(capture_mode::screen, damage);
         return capture_result::none;
+    case capture_bar::control::options:
+        m_bar.toggle_panel(damage);
+        return capture_result::none;
     case capture_bar::control::capture:
         return take(target) ? capture_result::take : capture_result::none;
     case capture_bar::control::close:
         return capture_result::close;
+    case capture_bar::control::timer:
+    case capture_bar::control::shadow:
+    case capture_bar::control::pointer:
+    case capture_bar::control::remember:
+        m_bar.change(control, damage);
+        damage_changes(damage);
+        return capture_result::none;
     case capture_bar::control::none:
         break;
     }
@@ -547,7 +574,7 @@ bool capture_overlay::take(capture_target* target) const {
         }
 
         target->window = m_windows[static_cast<size_t>(m_lit)].id;
-        target->has_shadow = (m_mods & CHORD_MOD_ALT) == 0;
+        target->has_shadow = keeps_shadow();
         return true;
     }
 
@@ -574,7 +601,12 @@ bool capture_overlay::take(capture_target* target) const {
 }
 
 bool capture_overlay::is_on_bar(int32_t x, int32_t y) const {
-    return m_bar.shown() && contains(m_bar.rect(), x, y);
+    return m_bar.contains(x, y);
+}
+
+/* A window keeps its shadow unless Alt is held, or with the bar unless its options leave the shadow out */
+bool capture_overlay::keeps_shadow() const {
+    return (m_mods & CHORD_MOD_ALT) == 0 && (!m_bar.shown() || m_bar.options().shadow);
 }
 
 void capture_overlay::press_space(uint64_t now_ns, damage_list& damage) {
@@ -719,7 +751,7 @@ damage_list::rect capture_overlay::chip_rect() const {
         }
 
         const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
-        int32_t w = chip_width(window_line(window, (m_mods & CHORD_MOD_ALT) == 0));
+        int32_t w = chip_width(window_line(window, keeps_shadow()));
         int32_t h = CHIP_HEIGHT;
         damage_list::rect around = window ? window->frame : damage_list::rect{ m_pointer_x, m_pointer_y, 0, 0 };
         uint32_t output = output_at(around.x + around.w / 2, around.y + around.h / 2);
@@ -785,7 +817,7 @@ std::string capture_overlay::chip_words() const {
 
     std::string words;
     const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
-    for (const chip_piece& piece : window_line(window, (m_mods & CHORD_MOD_ALT) == 0)) {
+    for (const chip_piece& piece : window_line(window, keeps_shadow())) {
         words += piece.text;
     }
 
@@ -862,7 +894,7 @@ void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damag
                                m_hint->height);
         }
 
-        if (m_bar.shown() && !is_empty(damage_list::intersect(m_bar.rect(), m_frames[output].place))) {
+        if (m_bar.shown() && !is_empty(damage_list::intersect(m_bar.bounds(), m_frames[output].place))) {
             m_bar.draw(view, ox, oy);
         }
     }
@@ -970,7 +1002,7 @@ void capture_overlay::draw_chip(stlxgfx_surface_t* view, int32_t ox, int32_t oy,
     }
 
     const capture_window* window = m_lit >= 0 ? &m_windows[static_cast<size_t>(m_lit)] : nullptr;
-    std::vector<chip_piece> line = window_line(window, (m_mods & CHORD_MOD_ALT) == 0);
+    std::vector<chip_piece> line = window_line(window, keeps_shadow());
     draw_chip_glass(view, ox - place.x, oy - place.y, frost, moved(chip, -place.x, -place.y), CHIP_RADIUS);
     draw_line(view, box.x + chip_left(line), box.y, box.h, line);
 }
