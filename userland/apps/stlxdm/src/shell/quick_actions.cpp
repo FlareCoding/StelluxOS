@@ -871,7 +871,7 @@ private:
 class palette_view : public ui::box {
 public:
     /* `chip_glyphs` holds each chip's glyph at rest, then chosen, `chip_keys` each chip's chord, and `no_match_note`
-     * says where files are searched, under the words of a query that matched nothing */
+     * says where files are searched, under the words of a query that matched nothing in Files mode */
     palette_view(std::vector<palette_entry> entries, const stlxgfx_surface_t* glyph,
                  const std::vector<stlxgfx_surface_t*>& chip_glyphs,
                  const std::vector<std::vector<std::string>>& chip_keys, std::string no_match_note);
@@ -1600,7 +1600,7 @@ void palette_view::show_matches(std::string_view query) {
     if (found.empty() && !has_calculation && !has_command) {
         if (m_is_file_answer_newest) {
             std::string text = "No apps, actions or files match " + std::string(query);
-            m_list->content()->add<no_match>(text, m_no_match_note);
+            m_list->content()->add<no_match>(text, m_mode == narrow_mode::files ? m_no_match_note : "");
         }
 
         return;
@@ -2105,7 +2105,7 @@ std::string items_text(uint64_t count) {
     return count == 1 ? "1 item" : shown_number(static_cast<double>(count)) + " items";
 }
 
-/* Where files are searched, from the skip list, said under a query that matched nothing */
+/* Where files are searched, from the skip list, said in Files mode under a query that matched nothing */
 std::string skip_note(const char* skip) {
     std::vector<std::string> folders;
     for (const char* at = skip; *at;) {
