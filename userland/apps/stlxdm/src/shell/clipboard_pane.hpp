@@ -65,6 +65,7 @@ struct shown_entry {
     bool                     is_too_large = false;   /* current, and past the whole budget alone */
     std::string              text;                   /* the first 64 KB of its text */
     uint64_t                 text_len = 0;
+    bool                     has_text = false;       /* a text representation, which every app pastes */
     std::vector<std::string> files;
     bool                     is_image = false;
     uint32_t                 image_w = 0;
@@ -111,6 +112,7 @@ private:
     clipboard_image image_of(const shown_entry& shown) const;
     void move_selection(int32_t rows);
     void choose(bool pastes);
+    bool can_paste(const shown_entry& entry) const;
     bool on_menu_key(const ui::key_event& e);
     bool on_question_key(const ui::key_event& e);
     std::vector<clip_action> actions_of(const shown_entry& entry);
