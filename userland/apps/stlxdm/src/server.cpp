@@ -34,6 +34,10 @@ constexpr rlim_t HANDLE_LIMIT = 65536;
  * padding would fit one more. */
 constexpr size_t HANDLE_CONTROL_BYTES = CMSG_LEN(SWP_HANDLES_MAX * sizeof(int));
 
+/* CLIPBOARD_GETs one client may leave unanswered, which only a client
+ * that asks without reading its socket reaches */
+constexpr size_t CLIPBOARD_ASKS_MAX = 64;
+
 /* A retired GPU compositor's timeline is read at least this often */
 constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;
 
@@ -150,7 +154,7 @@ static bool may_begin_handle_message(const dm_client& c) {
     uint16_t type;
     memcpy(&type, c.rd_buf, sizeof(type));
 
-    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET;
+    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET || type == SWP_MSG_CLIPBOARD_OFFER;
 }
 
 /* The configured wallpaper decoded, or null when there is none or it
@@ -1437,11 +1441,7 @@ void server::shutdown() {
         close(c->fd);
     }
     m_clients.clear();
-
-    if (m_clipboard_object >= 0) {
-        close(m_clipboard_object);
-        m_clipboard_object = -1;
-    }
+    m_clipboard = clipboard_item();
 
     /* Panels hold views into the backdrop, so they go first */
     if (m_panels) {
@@ -1478,7 +1478,7 @@ void server::collect_fds(std::vector<pollfd>& fds) const {
     fds.push_back({ m_listen_fd, POLLIN, 0 });
     for (const auto& c : m_clients) {
         short events = POLLIN;
-        if (!c->out_q.empty() || c->clipboard_answers_owed > 0) {
+        if (!c->out_q.empty() || !c->clipboard_asks.empty()) {
             events |= POLLOUT;
         }
         fds.push_back({ c->fd, events, 0 });
@@ -1668,9 +1668,19 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
         set_clipboard(c, payload);
         return;
+    case SWP_MSG_CLIPBOARD_OFFER:
+        if (hdr.length != sizeof(swp_offer)) {
+            break;
+        }
+
+        offer_clipboard(c, payload);
+        return;
     case SWP_MSG_CLIPBOARD_GET:
-        c.clipboard_answers_owed++;
-        send_clipboard_answers(c);
+        if (hdr.length != 0 && hdr.length != sizeof(swp_clipboard_get)) {
+            break;
+        }
+
+        ask_clipboard(c, hdr, payload);
         return;
     case SWP_MSG_CAPTURE:
         /* Deferred until the screenshot consumer exists, the wire needs
@@ -1938,61 +1948,120 @@ void server::flush_client(dm_client& c) {
     }
 }
 
-/* A copy with text takes the oldest queued handle as the clipboard, and
- * one without that handle ends the client */
+/* Takes the oldest queued handles in order, one per representation with
+ * bytes, and a client that sent too few ends */
+bool server::take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps) {
+    uint32_t needed = 0;
+    for (const clipboard_rep& rep : reps) {
+        needed += rep.len > 0 ? 1 : 0;
+    }
+
+    if (c.queued_handle_count < needed) {
+        c.dead = true;
+        return false;
+    }
+
+    uint32_t taken = 0;
+    for (clipboard_rep& rep : reps) {
+        if (rep.len > 0) {
+            rep.object = c.queued_handles[taken++];
+        }
+    }
+
+    c.queued_handle_count -= taken;
+    memmove(c.queued_handles, c.queued_handles + taken, c.queued_handle_count * sizeof(int));
+
+    return true;
+}
+
+/* A copy with text becomes an item of one text representation */
 void server::set_clipboard(dm_client& c, const uint8_t* payload) {
     swp_clipboard_set m;
     memcpy(&m, payload, sizeof(m));
 
-    int object = -1;
+    std::vector<clipboard_rep> reps;
     if (m.len > 0) {
-        if (c.queued_handle_count == 0) {
-            c.dead = true;
-            return;
-        }
-
-        object = c.queued_handles[0];
-        c.queued_handle_count--;
-        memmove(c.queued_handles, c.queued_handles + 1, c.queued_handle_count * sizeof(int));
+        reps.push_back({ SWP_MIME_TEXT, m.len, -1 });
     }
 
-    if (m_clipboard_object >= 0) {
-        close(m_clipboard_object);
+    if (take_queued_handles(c, reps)) {
+        m_clipboard = clipboard_item(std::move(reps), 0);
     }
-
-    m_clipboard_len = m.len;
-    m_clipboard_object = object;
 }
 
-/* Makes `text` the clipboard, as a client's CLIPBOARD_SET does, keeping the old clipboard when memory runs out */
-void server::copy_text(const std::string& text) {
+/* A malformed offer ends the client, and flags it does not know are dropped */
+void server::offer_clipboard(dm_client& c, const uint8_t* payload) {
+    swp_offer m;
+    memcpy(&m, payload, sizeof(m));
+
+    std::vector<clipboard_rep> reps;
+    if (!read_offer(m, &reps)) {
+        c.dead = true;
+        return;
+    }
+
+    if (take_queued_handles(c, reps)) {
+        m_clipboard = clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE);
+    }
+}
+
+/* An ask without a type asks for text */
+void server::ask_clipboard(dm_client& c, const swp_header& hdr, const uint8_t* payload) {
+    if (c.clipboard_asks.size() == CLIPBOARD_ASKS_MAX) {
+        c.dead = true;
+        return;
+    }
+
+    std::string mime_type = SWP_MIME_TEXT;
+    if (hdr.length == sizeof(swp_clipboard_get)) {
+        swp_clipboard_get m;
+        memcpy(&m, payload, sizeof(m));
+        mime_type.assign(m.mime, strnlen(m.mime, sizeof(m.mime)));
+    }
+
+    c.clipboard_asks.push_back(std::move(mime_type));
+    send_clipboard_answers(c);
+}
+
+/* A shared memory object holding `len` bytes of `data`, or -1 with errno set */
+static int make_shared_object(const void* data, size_t len) {
     int object = memfd_create("stlxdm-clipboard", MFD_CLOEXEC);
-    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(text.size())) == 0;
-    void* shared = is_sized ? mmap(nullptr, text.size(), PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
+    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(len)) == 0;
+    void* shared = is_sized ? mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
     if (shared == MAP_FAILED) {
-        printf("stlxdm: copying %zu bytes failed, errno %d\r\n", text.size(), errno);
+        int error = errno;
         if (object >= 0) {
             close(object);
         }
 
+        errno = error;
+        return -1;
+    }
+
+    memcpy(shared, data, len);
+    munmap(shared, len);
+
+    return object;
+}
+
+/* Makes `text` the clipboard, as a client's CLIPBOARD_SET does, keeping the old clipboard when memory runs out */
+void server::copy_text(const std::string& text) {
+    int object = make_shared_object(text.data(), text.size());
+    if (object < 0) {
+        printf("stlxdm: copying %zu bytes failed, errno %d\r\n", text.size(), errno);
         return;
     }
 
-    memcpy(shared, text.data(), text.size());
-    munmap(shared, text.size());
-
-    if (m_clipboard_object >= 0) {
-        close(m_clipboard_object);
-    }
-
-    m_clipboard_len = text.size();
-    m_clipboard_object = object;
+    m_clipboard = clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0);
 }
 
-/* Sends one CLIPBOARD_DATA from an empty out_q, queueing what the socket
- * leaves. Returns false when the socket takes none of it. */
+/* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, queueing
+ * what the socket leaves. Returns false when the socket takes none of it. */
 bool server::send_clipboard_answer(dm_client& c) {
-    swp_clipboard_data m = { m_clipboard_len };
+    const clipboard_rep* found = m_clipboard.find(c.clipboard_asks.front());
+    const clipboard_rep* rep = found && found->object >= 0 ? found : nullptr;
+
+    swp_clipboard_data m = { rep ? rep->len : 0 };
     swp_header hdr = { SWP_MSG_CLIPBOARD_DATA, 0, sizeof(m) };
     uint8_t bytes[sizeof(hdr) + sizeof(m)];
     memcpy(bytes, &hdr, sizeof(hdr));
@@ -2004,7 +2073,7 @@ bool server::send_clipboard_answer(dm_client& c) {
     msg.msg_iovlen = 1;
 
     alignas(cmsghdr) uint8_t control[CMSG_SPACE(sizeof(int))] = {};
-    if (m_clipboard_object >= 0) {
+    if (rep) {
         msg.msg_control = control;
         msg.msg_controllen = sizeof(control);
 
@@ -2012,7 +2081,7 @@ bool server::send_clipboard_answer(dm_client& c) {
         head->cmsg_level = SOL_SOCKET;
         head->cmsg_type = SCM_RIGHTS;
         head->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(head), &m_clipboard_object, sizeof(int));
+        memcpy(CMSG_DATA(head), &rep->object, sizeof(int));
     }
 
     ssize_t n = sendmsg(c.fd, &msg, MSG_NOSIGNAL);
@@ -2030,12 +2099,12 @@ bool server::send_clipboard_answer(dm_client& c) {
 }
 
 void server::send_clipboard_answers(dm_client& c) {
-    while (c.clipboard_answers_owed > 0 && c.out_q.empty() && !c.dead) {
+    while (!c.clipboard_asks.empty() && c.out_q.empty() && !c.dead) {
         if (!send_clipboard_answer(c)) {
             return;
         }
 
-        c.clipboard_answers_owed--;
+        c.clipboard_asks.pop_front();
     }
 }
 
