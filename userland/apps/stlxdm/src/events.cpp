@@ -400,7 +400,7 @@ void server::capture_key(uint16_t usage, bool down, bool repeat) {
     }
 
     if (usage == HID_USAGE_SPACE && down) {
-        m_capture.press_space(m_damage);
+        m_capture.press_space(now_ns(), m_damage);
         move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     } else if (usage == HID_USAGE_SPACE) {
         m_capture.release_space();

@@ -40,6 +40,9 @@ constexpr float TAG_TEXT_SIZE = 11.0f;
 constexpr int32_t MIN_DRAG = 4;
 constexpr int32_t SHIFT_SETTLE = 4;
 
+/* The hint of a mode's keys sits at the top middle of the pointer's output a while */
+constexpr uint64_t HINT_SHOWN_NS = 2000000000ull;
+
 /* The preview fits the capture inside a margin above its chip, on a soft drop shadow */
 constexpr int32_t PREVIEW_MARGIN = 48;
 constexpr int32_t PREVIEW_CHIP_GAP = 24;
@@ -170,6 +173,32 @@ static std::string size_label(const damage_list::rect& r) {
     return std::to_string(r.w) + " \xC3\x97 " + std::to_string(r.h);
 }
 
+/* What a mode does and its keys, as the palette's footer names its actions */
+static std::vector<chip_piece> hint_line(bool is_window_mode) {
+    const char* face = STLXTHEME_UI_FONT_MEDIUM_PATH;
+    float size = STLXTHEME_CAPTION_SIZE;
+    uint32_t action = STLXTHEME_TEXT_SECONDARY;
+    if (is_window_mode) {
+        return {
+            { "Click a window to capture it", face, size, STLXTHEME_TEXT, CHIP_GROUP_GAP },
+            { "Without shadow", face, size, action },
+            { "Alt", nullptr, 0, 0, CHIP_GROUP_GAP },
+            { "Region", face, size, action },
+            { "Space", nullptr, 0, 0, CHIP_GROUP_GAP },
+            { "Cancel", face, size, action },
+            { "Esc" },
+        };
+    }
+
+    return {
+        { "Drag to select a region", face, size, STLXTHEME_TEXT, CHIP_GROUP_GAP },
+        { "Window", face, size, action },
+        { "Space", nullptr, 0, 0, CHIP_GROUP_GAP },
+        { "Cancel", face, size, action },
+        { "Esc" },
+    };
+}
+
 /* The lit window's name and the size its capture takes, the shadow's included unless Alt leaves it out, as the card
  * names it after, or that no window is open */
 static std::vector<chip_piece> window_line(const capture_window* window, bool has_shadow) {
@@ -230,14 +259,29 @@ void draw_chip_glass(stlxgfx_surface_t* target, int32_t x, int32_t y, const stlx
     material::draw(target, x, y, frost, { grown(box, -1), inner_radius }, area);
 }
 
-/* How wide a chip of `line` is */
-static int32_t chip_width(const std::vector<chip_piece>& line) {
+int32_t chip_width(const std::vector<chip_piece>& line) {
     if (line.empty()) {
         return 0;
     }
 
     int32_t right = line.back().face ? CHIP_PADDING_X : KEY_INSET;
     return chip_left(line) + line_width(line) + right;
+}
+
+stlxgfx_surface_t* make_chip_picture(const std::vector<chip_piece>& line, const stlxgfx_surface_t* frost, int32_t x,
+                                     int32_t y) {
+    int32_t w = chip_width(line);
+    stlxgfx_surface_t* chip = w > 0 ? stlxgfx_create_surface(static_cast<uint32_t>(w), CHIP_HEIGHT, 32, 16, 8, 0)
+                                    : nullptr;
+    if (!chip) {
+        return nullptr;
+    }
+
+    chip->flags = STLXGFX_SURFACE_STRAIGHT_ALPHA;
+    stlxgfx_clear(chip, 0);
+    draw_chip_glass(chip, x, y, frost, { x, y, w, CHIP_HEIGHT }, CHIP_RADIUS);
+    draw_line(chip, chip_left(line), 0, CHIP_HEIGHT, line);
+    return chip;
 }
 
 stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list::rect& r) {
@@ -256,8 +300,12 @@ stlxgfx_surface_t* copy_frozen_rect(const frozen_frame& frame, const damage_list
     return copy;
 }
 
+capture_overlay::~capture_overlay() {
+    stlxgfx_destroy_surface(m_hint);
+}
+
 void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture_window> windows, int32_t x,
-                           int32_t y) {
+                           int32_t y, uint64_t now_ns) {
     m_frames = std::move(frames);
     m_windows = std::move(windows);
     m_is_open = true;
@@ -276,6 +324,8 @@ void capture_overlay::open(std::vector<frozen_frame> frames, std::vector<capture
     m_shown_outline = {};
     m_shown_chip = {};
     m_shown_words.clear();
+
+    place_hint(now_ns);
 }
 
 void capture_overlay::close() {
@@ -283,6 +333,50 @@ void capture_overlay::close() {
     m_is_dragging = false;
     m_frames.clear();
     m_windows.clear();
+    stlxgfx_destroy_surface(m_hint);
+    m_hint = nullptr;
+}
+
+int64_t capture_overlay::timeout_ns(uint64_t now_ns) const {
+    if (!m_hint) {
+        return -1;
+    }
+
+    return m_hint_until_ns > now_ns ? static_cast<int64_t>(m_hint_until_ns - now_ns) : 0;
+}
+
+void capture_overlay::tick(uint64_t now_ns, damage_list& damage) {
+    if (m_hint && now_ns >= m_hint_until_ns) {
+        hide_hint(damage);
+    }
+}
+
+/* The hint of the mode's keys at the top middle of the pointer's output */
+void capture_overlay::place_hint(uint64_t now_ns) {
+    stlxgfx_destroy_surface(m_hint);
+    m_hint = nullptr;
+    uint32_t output = output_at(m_pointer_x, m_pointer_y);
+    if (output >= m_frames.size()) {
+        return;
+    }
+
+    std::vector<chip_piece> line = hint_line(m_mode == mode::window);
+    const damage_list::rect& place = m_frames[output].place;
+    int32_t x = (place.w - chip_width(line)) / 2;
+    m_hint = make_chip_picture(line, m_frost_of ? m_frost_of(output) : nullptr, x, CAPTURE_HINT_TOP);
+    if (m_hint) {
+        m_hint_rect = { place.x + x, place.y + CAPTURE_HINT_TOP, static_cast<int32_t>(m_hint->width),
+                        static_cast<int32_t>(m_hint->height) };
+        m_hint_until_ns = now_ns + HINT_SHOWN_NS;
+    }
+}
+
+void capture_overlay::hide_hint(damage_list& damage) {
+    if (m_hint) {
+        damage.add(m_hint_rect.x, m_hint_rect.y, m_hint_rect.w, m_hint_rect.h);
+        stlxgfx_destroy_surface(m_hint);
+        m_hint = nullptr;
+    }
 }
 
 void capture_overlay::on_motion(int32_t x, int32_t y, uint8_t mods, damage_list& damage) {
@@ -352,7 +446,7 @@ bool capture_overlay::on_release(capture_target* target, damage_list& damage) {
     return is_drag;
 }
 
-void capture_overlay::press_space(damage_list& damage) {
+void capture_overlay::press_space(uint64_t now_ns, damage_list& damage) {
     if (m_mode == mode::region && m_is_dragging) {
         m_is_space_held = true;
         m_move_x = m_pointer_x;
@@ -364,6 +458,8 @@ void capture_overlay::press_space(damage_list& damage) {
     m_lit = m_mode == mode::window ? window_at(m_pointer_x, m_pointer_y) : -1;
     m_pressed = -1;
 
+    hide_hint(damage);
+    place_hint(now_ns);
     damage_everything(damage);
     damage_changes(damage);
 }
@@ -616,6 +712,11 @@ void capture_overlay::draw(uint32_t output, stlxgfx_surface_t* back, const damag
         }
 
         draw_chip(view, ox, oy, output);
+
+        if (m_hint) {
+            stlxgfx_blit_alpha(view, m_hint_rect.x - ox, m_hint_rect.y - oy, m_hint, 0, 0, m_hint->width,
+                               m_hint->height);
+        }
     }
 
     stlxgfx_destroy_surface(view);

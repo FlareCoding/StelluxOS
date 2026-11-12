@@ -1265,8 +1265,9 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
  * `follow_outputs()` describes */
 desktop_point server::adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons) {
     /* Frozen frames no longer match outputs that changed, so a capture or a preview ends, the repaint below showing the
-     * desktop */
-    if (freezes()) {
+     * desktop with a notice of why */
+    bool was_frozen = freezes();
+    if (was_frozen) {
         printf("stlxdm: the outputs changed during a capture, which ends\r\n");
         m_capture.close();
         m_preview.close();
@@ -1311,6 +1312,10 @@ desktop_point server::adopt_layout(const layout& before, desktop_point pointer, 
     if (places_changed || rebuilt) {
         keep_windows_in_reach();
         refit_placed_windows();
+    }
+
+    if (was_frozen) {
+        show_capture_notice("Capture cancelled", "the displays changed");
     }
 
     m_cursor_x = moved.x;
@@ -2005,7 +2010,7 @@ void server::open_capture() {
         windows.push_back({ w, frame, is_decorated ? decor::CORNER_R : 0, w->title, bounds });
     }
 
-    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y);
+    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y, static_cast<uint64_t>(monotonic_ns()));
     move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     m_damage.add_full();
 }
@@ -2132,6 +2137,21 @@ void server::capture_screen() {
     encode_capture(pixels, false, capture_kind::screen, output);
 }
 
+/* `title` and `detail` on glass at the top of the main output a few seconds, for a capture that ended or never began */
+void server::show_capture_notice(const char* title, const char* detail) {
+    std::vector<chip_piece> line = {
+        { title, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT },
+        { detail, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM },
+    };
+    uint32_t main_output = m_layout.main_output();
+    dm_output& shown_on = m_outputs[main_output];
+
+    int32_t x = (shown_on.place.w - chip_width(line)) / 2;
+    const stlxgfx_surface_t* frost = shown_on.pres ? frost_of(shown_on) : nullptr;
+    stlxgfx_surface_t* notice = make_chip_picture(line, frost, x, CAPTURE_HINT_TOP);
+    m_thumbnails.notify(notice, main_output, shown_on.place, static_cast<uint64_t>(monotonic_ns()), m_damage);
+}
+
 /* A capture's thumbnail shows at once, shrunk from its pixels before the encoder takes them, and goes again when no
  * encoder runs to take them. While as many captures wait as the cards show, a new one is refused rather than an older
  * one dropped, so a burst parks no more pixels than the cards show and every card it showed reaches the clipboard. */
@@ -2139,6 +2159,7 @@ void server::encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture
     if (m_capture_encoder.waiting() >= CAPTURES_WAITING_MAX) {
         printf("stlxdm: %zu captures still wait to encode, so a new one is not taken\r\n", CAPTURES_WAITING_MAX);
         stlxgfx_destroy_surface(pixels);
+        show_capture_notice("Capture not taken", "three captures are still saving");
         return;
     }
 
