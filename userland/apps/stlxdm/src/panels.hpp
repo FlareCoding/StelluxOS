@@ -59,6 +59,9 @@ public:
     std::function<void(const char* path, const char* args)> on_spawn;
     std::function<void()> on_power;
 
+    /* Fired by a Quick Actions capture: the capture to take, "screen", "region" or "window" */
+    std::function<void(const char* mode)> on_screenshot;
+
     /* Fired by Quick Actions' calculator: text to put on the clipboard */
     std::function<void(const std::string& text)> on_copy;
 
