@@ -60,6 +60,12 @@ static bool exists(const char* path) {
     return lstat(under_root(path), &status) == 0;
 }
 
+static void write_text(const char* path, const char* text) {
+    FILE* file = fopen(under_root(path), "w");
+    fputs(text, file);
+    fclose(file);
+}
+
 static void check_line_matching(void) {
     check(record_paths_hold("/a/\n/lib/x\n", "/lib/x"), "a line matches itself");
     check(!record_paths_hold("/usr/lib/x\n", "/lib/x"), "a line ending another does not match");
@@ -94,6 +100,30 @@ static void check_upgrade(void) {
     check(exists("/shared/foreign"), "a directory holding another file stays with it");
 }
 
+static void check_paths_size(void) {
+    char lines[LINES_MAX] = "";
+    add_line(lines, "/sized/");
+    add_line(lines, "/sized/four");
+    add_line(lines, "/sized/seven");
+    add_line(lines, "/sized/link");
+    add_line(lines, "/sized/missing");
+
+    create("/sized/");
+    write_text("/sized/four", "four");
+    write_text("/sized/seven", "seven!!");
+
+    char target[PATH_SIZE];
+    snprintf(target, sizeof(target), "%s", under_root("/sized/four"));
+    check(symlink(target, under_root("/sized/link")) == 0, "a symlink is created");
+    check(record_paths_size(lines) == 11, "an install's size counts its regular files only");
+    check(record_paths_size(NULL) == 0, "no record has no size");
+
+    unlink(under_root("/sized/link"));
+    unlink(under_root("/sized/seven"));
+    unlink(under_root("/sized/four"));
+    rmdir(under_root("/sized"));
+}
+
 static void check_remove(void) {
     bool changed_drop_ins = false;
     check(remove_paths(g_new, NULL, &changed_drop_ins) == 0, "removing a package succeeds");
@@ -114,6 +144,7 @@ int main(void) {
 
     check_line_matching();
     check_upgrade();
+    check_paths_size();
     check_remove();
 
     rmdir(under_root("/now-a-directory"));

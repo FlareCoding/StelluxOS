@@ -3,6 +3,7 @@
 #include "remove.h"
 #include "desktop.h"
 #include "records.h"
+#include "report.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -27,8 +28,7 @@ static bool take_line(const char* line, size_t length, const char* kept) {
 
 static int remove_file(bool* changed_drop_ins) {
     if (unlink(g_line) != 0 && errno != ENOENT) {
-        fprintf(stderr, "stlxpkg: cannot delete %s (errno %d)\n", g_line, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot delete %s (errno %d)", g_line, errno);
     }
 
     *changed_drop_ins = *changed_drop_ins || desktop_reads(g_line);
@@ -39,8 +39,7 @@ static int remove_file(bool* changed_drop_ins) {
 /* A directory is kept while it holds something, so only other failures of rmdir count */
 static int remove_directory(void) {
     if (rmdir(g_line) != 0 && errno != ENOTEMPTY && errno != EEXIST && errno != EBUSY && errno != ENOENT) {
-        fprintf(stderr, "stlxpkg: cannot delete %s (errno %d)\n", g_line, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot delete %s (errno %d)", g_line, errno);
     }
 
     return 0;
@@ -99,7 +98,7 @@ int remove_package(const char* name) {
     char* paths = NULL;
     int found = record_read(name, &installed, &paths);
     if (found == 0) {
-        fprintf(stderr, "stlxpkg: %s is not installed\n", name);
+        return fail(FAILURE_MISSING, "%s is not installed", name);
     }
 
     if (found != 1) {
@@ -118,7 +117,8 @@ int remove_package(const char* name) {
     }
 
     if (rc == 0) {
-        printf("stlxpkg: removed %s %s\n", name, installed.version);
+        report_say("removed %s %s", name, installed.version);
+        report_removed(name, installed.version);
     }
 
     return rc;

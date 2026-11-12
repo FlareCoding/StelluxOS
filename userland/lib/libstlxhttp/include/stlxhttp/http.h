@@ -66,6 +66,12 @@ int64_t stlxhttp_read(stlxhttp_request* request, void* buffer, size_t size);
 const char* stlxhttp_location(const stlxhttp_request* request);
 
 /**
+ * @brief The length the final reply states for its body.
+ * @return the length in bytes, or -1 when the reply states none.
+ */
+int64_t stlxhttp_content_length(const stlxhttp_request* request);
+
+/**
  * @brief Describes the last failure of a call on `request`, naming the host,
  * status or byte counts it involved.
  * @return a message owned by the request, or the one for running out of memory
