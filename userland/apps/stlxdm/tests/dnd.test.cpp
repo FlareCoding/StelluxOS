@@ -16,6 +16,8 @@ constexpr uint32_t UNKNOWN_ACTION = 1u << 4;
 /* A representation's bytes in the offers start_of builds */
 constexpr uint64_t TEXT_LENGTH = 5;
 
+constexpr uint64_t MS = 1000000ull;
+
 static uint64_t g_checks;
 static uint64_t g_failures;
 
@@ -183,12 +185,81 @@ static void check_chip_places() {
           "an output right of the main one places the chip in its own pixels");
 }
 
+static bool is_between(uint32_t value, uint32_t low, uint32_t high) {
+    return value >= low && value <= high;
+}
+
+static void check_lift() {
+    damage_list::rect at_pointer = { 400, 300, 160, 40 };
+    dnd_motion lift = lift_motion({ 100, 200, 160, 40 }, 0);
+
+    dnd_frame start = step_dnd_motion(lift, 0, at_pointer, 255);
+    check(is_rect(start.picture, 100, 200, 160, 40) && start.shadow_opacity == 0,
+          "a lift starts exactly over its item, without a shadow");
+
+    dnd_frame third = step_dnd_motion(lift, 40 * MS, at_pointer, 255);
+    check(third.picture.x >= 305 && third.picture.x <= 315, "a third of the way in, a lift has eased about 70 percent");
+    check(is_between(third.shadow_opacity, 170, 190), "its shadow fades in along the same curve");
+
+    dnd_frame end = step_dnd_motion(lift, 120 * MS, { 420, 310, 160, 40 }, 143);
+    check(is_rect(end.picture, 420, 310, 160, 40) && end.opacity == 143 && end.shadow_opacity == 143,
+          "a lift ends on the pointer where it moved, at the opacity the drag shows");
+    check(!has_dnd_motion_ended(lift, 119 * MS) && has_dnd_motion_ended(lift, 120 * MS), "a lift takes 120 ms");
+}
+
+static void check_settle() {
+    dnd_frame shown = { { 400, 300, 200, 100 }, 255, 255 };
+    dnd_motion settle = settle_motion(shown, 450, 320, 0);
+
+    check(is_between(step_dnd_motion(settle, 40 * MS, {}, 0).opacity, 70, 80),
+          "40 ms into a settle the picture shows about 30 percent");
+    check(is_between(step_dnd_motion(settle, 80 * MS, {}, 0).opacity, 7, 12), "and about 4 percent at 80 ms");
+
+    dnd_frame end = step_dnd_motion(settle, 120 * MS, {}, 0);
+    check(end.opacity == 0 && end.shadow_opacity == 0 && has_dnd_motion_ended(settle, 120 * MS),
+          "a settle fades out completely in 120 ms");
+    check(is_rect(end.picture, 402, 301, 192, 96), "it shrinks 4 percent toward where it was released");
+
+    dnd_frame faded = { { 400, 300, 200, 100 }, 143, 143 };
+    check(step_dnd_motion(settle_motion(faded, 450, 320, 0), 0, {}, 0).opacity == 143,
+          "a settle starts at the opacity the picture showed");
+}
+
+static void check_snap_back() {
+    damage_list::rect item = { 100, 300, 200, 40 };
+    dnd_frame shown = { { 772, 300, 200, 40 }, 143, 143 };
+    dnd_motion snap = snap_back_motion(shown, item, 0);
+    check(snap.type == dnd_motion::kind::snap_back && snap.duration_ns == 216 * MS,
+          "a snap-back of 672 px takes 160 ms plus 56 ms");
+    check(snap_back_motion(shown, { 772, 300, 200, 40 }, 0).duration_ns == 160 * MS, "one that stays put takes 160 ms");
+    check(snap_back_motion(shown, { -9000, 300, 200, 40 }, 0).duration_ns == 320 * MS, "and none takes over 320 ms");
+
+    dnd_frame start = step_dnd_motion(snap, 0, {}, 0);
+    check(is_rect(start.picture, 772, 300, 200, 40) && start.opacity == 143 && start.shadow_opacity == 143,
+          "a snap-back starts where the picture was let go");
+    check(is_between(step_dnd_motion(snap, 186 * MS, {}, 0).shadow_opacity, 100, 130),
+          "its shadow is half gone 30 ms before it lands");
+
+    dnd_frame end = step_dnd_motion(snap, 216 * MS, {}, 0);
+    check(is_rect(end.picture, 100, 300, 200, 40) && end.opacity == 255 && end.shadow_opacity == 0,
+          "it lands whole on its item without a shadow");
+
+    dnd_motion fade = snap_back_motion(shown, {}, 0);
+    dnd_frame faded = step_dnd_motion(fade, 120 * MS, {}, 0);
+    check(fade.type == dnd_motion::kind::fade && is_rect(faded.picture, 772, 300, 200, 40) && faded.opacity == 0,
+          "without an item to return to, the picture fades out where it is");
+}
+
 int main() {
     check_actions();
     check_answers();
     check_starts();
     check_chips();
     check_chip_places();
+
+    check_lift();
+    check_settle();
+    check_snap_back();
 
     if (g_failures != 0) {
         printf("dnd: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

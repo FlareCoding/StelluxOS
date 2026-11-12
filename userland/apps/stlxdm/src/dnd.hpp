@@ -64,6 +64,8 @@ struct dnd_session {
     int32_t               hot_x = 0;
     int32_t               hot_y = 0;
 
+    int32_t    press_x = 0;             /* where the press grabbed the item, which the picture lifts off and returns to */
+    int32_t    press_y = 0;
     int32_t    x = 0;                   /* the pointer */
     int32_t    y = 0;
     uint16_t   buttons = 0;             /* held, as the newest pointer report gave them */
@@ -75,6 +77,34 @@ struct dnd_session {
     uint32_t   action = 0;              /* what a release does now, 0 for nothing */
 
     uint64_t   finish_deadline_ns = 0;  /* while dropped */
+};
+
+/* How a drag's picture moves apart from the pointer */
+struct dnd_motion {
+    enum class kind {
+        none,       /* the picture rides the pointer */
+        lift,       /* eases from its item to the pointer, its shadow fading in */
+        settle,     /* fades where it was dropped, shrinking toward the pointer */
+        fade,       /* fades where it is, for a cancel whose source window is gone */
+        snap_back,  /* slides back to its item, its shadow fading last */
+    };
+
+    kind              type = kind::none;
+    uint64_t          start_ns = 0;
+    uint64_t          duration_ns = 0;
+    damage_list::rect from;              /* the picture's rect as the motion starts */
+    damage_list::rect to;                /* the item's place, where a snap-back ends */
+    uint32_t          from_opacity = 0;  /* the picture's opacity as a settle, fade or snap-back starts */
+    int32_t           pointer_x = 0;     /* where a settle shrinks toward */
+    int32_t           pointer_y = 0;
+};
+
+/* A drag's picture at one moment: its rect, which its shadow follows at the same scale, and the opacities of both, 0
+ * to 255 */
+struct dnd_frame {
+    damage_list::rect picture;
+    uint32_t          opacity = 0;
+    uint32_t          shadow_opacity = 0;
 };
 
 /* Whether `action` is exactly one known action */
@@ -100,5 +130,23 @@ dnd_chip chip_for(uint32_t action, const dnd_answer& answer);
  * of the pointer and under the picture, flipped left and above it at the edges of `output` */
 damage_list::rect place_chip(int32_t x, int32_t y, const damage_list::rect& picture, int32_t width, int32_t height,
                              const damage_list::rect& output);
+
+/* A lift from `item`, the picture's rect with its hotspot where the press grabbed it, over 120 ms */
+dnd_motion lift_motion(const damage_list::rect& item, uint64_t now_ns);
+
+/* A settle of the picture `shown` toward the release at (`x`, `y`), over 120 ms */
+dnd_motion settle_motion(const dnd_frame& shown, int32_t x, int32_t y, uint64_t now_ns);
+
+/* A snap-back of the picture `shown` to `item` in 160 ms plus 1 ms per 12 px it travels, at most 320 ms, or a fade
+ * where it is over 120 ms when `item` is empty */
+dnd_motion snap_back_motion(const dnd_frame& shown, const damage_list::rect& item, uint64_t now_ns);
+
+/* Whether `motion` has run its course by `now_ns`, which a picture without motion always has */
+bool has_dnd_motion_ended(const dnd_motion& motion, uint64_t now_ns);
+
+/* The picture `motion` shows at `now_ns`. One riding the pointer, as a lift's end does, lies at `at_pointer` and shows
+ * at `opacity`, its shadow too. */
+dnd_frame step_dnd_motion(const dnd_motion& motion, uint64_t now_ns, const damage_list::rect& at_pointer,
+                          uint32_t opacity);
 
 #endif

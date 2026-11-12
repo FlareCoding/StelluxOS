@@ -1528,7 +1528,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
     }
 
     if (drag_shows()) {
-        m_drag_look.draw(canvas, m_dnd->x, m_dnd->y, drag_output(), drag_opacity(), r);
+        m_drag_look.draw(canvas, m_drag_pose, r);
     }
 
     if (is_main) {
@@ -1910,7 +1910,7 @@ bool server::draw_pictures(dm_output& out, const std::vector<damage_list::rect>&
     scene.drag.clear();
     scene.drag_chip = {};
     if (drag_shows() && !is_capture) {
-        m_drag_look.pieces(m_dnd->x, m_dnd->y, drag_output(), drag_opacity(), scene.drag, scene.drag_chip);
+        m_drag_look.pieces(m_drag_pose, scene.drag, scene.drag_chip);
         for (layer_scaled& piece : scene.drag) {
             piece.bounds.x -= ox;
             piece.bounds.y -= oy;
@@ -2219,6 +2219,7 @@ void server::compose_tick(uint32_t output) {
     }
 
     advance_animations();
+    advance_drag_motion();
     spread_damage();
 
     /* Windows still latch and release their buffers and the power action still runs, so clients and the loop settle */

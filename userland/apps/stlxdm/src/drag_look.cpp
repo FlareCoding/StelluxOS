@@ -439,7 +439,7 @@ bool drag_look::draw_chip(const dnd_chip& chip) {
     return true;
 }
 
-damage_list::rect drag_look::picture_rect(int32_t x, int32_t y) const {
+damage_list::rect drag_look::picture_at(int32_t x, int32_t y) const {
     if (!m_picture) {
         return {};
     }
@@ -448,48 +448,58 @@ damage_list::rect drag_look::picture_rect(int32_t x, int32_t y) const {
              static_cast<int32_t>(m_picture->height()) };
 }
 
-damage_list::rect drag_look::shadow_rect(int32_t x, int32_t y) const {
-    if (!m_shadow) {
-        return {};
-    }
-
-    damage_list::rect picture = picture_rect(x, y);
-
-    return { picture.x + m_shadow_x, picture.y + m_shadow_y, static_cast<int32_t>(m_shadow->width()),
-             static_cast<int32_t>(m_shadow->height()) };
+/* `length` of the picture's pixels where the picture spans `shown` of its `drawn` pixels */
+static int32_t at_scale(int32_t length, int32_t shown, int32_t drawn) {
+    return static_cast<int32_t>(static_cast<int64_t>(length) * shown / drawn);
 }
 
-damage_list::rect drag_look::chip_rect(int32_t x, int32_t y, const damage_list::rect& output) const {
-    if (!m_chip_picture) {
+damage_list::rect drag_look::shadow_rect(const damage_list::rect& picture) const {
+    if (!m_shadow || !m_picture) {
         return {};
     }
 
-    damage_list::rect body = place_chip(x, y, picture_rect(x, y), m_chip_body.w, m_chip_body.h, output);
+    int32_t drawn_w = static_cast<int32_t>(m_picture->width());
+    int32_t drawn_h = static_cast<int32_t>(m_picture->height());
+
+    return { picture.x + at_scale(m_shadow_x, picture.w, drawn_w), picture.y + at_scale(m_shadow_y, picture.h, drawn_h),
+             at_scale(static_cast<int32_t>(m_shadow->width()), picture.w, drawn_w),
+             at_scale(static_cast<int32_t>(m_shadow->height()), picture.h, drawn_h) };
+}
+
+/* The chip keeps to the pointer and the picture's place there, wherever a motion shows the picture */
+damage_list::rect drag_look::chip_rect(const drag_pose& pose) const {
+    if (!m_chip_picture || !pose.has_chip) {
+        return {};
+    }
+
+    damage_list::rect beside = picture_at(pose.pointer_x, pose.pointer_y);
+    damage_list::rect body = place_chip(pose.pointer_x, pose.pointer_y, beside, m_chip_body.w, m_chip_body.h,
+                                        pose.output);
 
     return { body.x - m_chip_body.x, body.y - m_chip_body.y, static_cast<int32_t>(m_chip_picture->width()),
              static_cast<int32_t>(m_chip_picture->height()) };
 }
 
-damage_list::rect drag_look::bounds(int32_t x, int32_t y, const damage_list::rect& output) const {
-    damage_list::rect covered = damage_list::union_of(picture_rect(x, y), shadow_rect(x, y));
-    return damage_list::union_of(covered, chip_rect(x, y, output));
+damage_list::rect drag_look::bounds(const drag_pose& pose) const {
+    damage_list::rect picture = m_picture ? pose.picture : damage_list::rect{};
+    damage_list::rect covered = damage_list::union_of(picture, shadow_rect(pose.picture));
+    return damage_list::union_of(covered, chip_rect(pose));
 }
 
-void drag_look::pieces(int32_t x, int32_t y, const damage_list::rect& output, uint32_t opacity,
-                       std::vector<layer_scaled>& scaled, layer_piece& chip) const {
-    if (m_shadow) {
+void drag_look::pieces(const drag_pose& pose, std::vector<layer_scaled>& scaled, layer_piece& chip) const {
+    if (m_shadow && pose.shadow_opacity > 0) {
         layer_scaled shadow;
-        shadow.bounds = shadow_rect(x, y);
+        shadow.bounds = shadow_rect(pose.picture);
         shadow.source = region_of(*m_shadow);
-        shadow.opacity = opacity;
+        shadow.opacity = pose.shadow_opacity;
         scaled.push_back(shadow);
     }
 
-    if (m_picture) {
+    if (m_picture && pose.opacity > 0) {
         layer_scaled picture;
-        picture.bounds = picture_rect(x, y);
+        picture.bounds = pose.picture;
         picture.source = region_of(*m_picture);
-        picture.opacity = opacity;
+        picture.opacity = pose.opacity;
 
         picture.is_content = true;
         picture.is_premultiplied = true;
@@ -497,23 +507,22 @@ void drag_look::pieces(int32_t x, int32_t y, const damage_list::rect& output, ui
     }
 
     chip = {};
-    if (m_chip_picture) {
-        chip.bounds = chip_rect(x, y, output);
+    if (m_chip_picture && pose.has_chip) {
+        chip.bounds = chip_rect(pose);
         chip.picture = { m_chip_picture->address(), m_chip_picture->pitch(), chip.bounds.x, chip.bounds.y,
                          m_chip_picture.get() };
     }
 }
 
-void drag_look::draw(const decor::canvas& canvas, int32_t x, int32_t y, const damage_list::rect& output,
-                     uint32_t opacity, const damage_list::rect& clip) const {
+void drag_look::draw(const decor::canvas& canvas, const drag_pose& pose, const damage_list::rect& clip) const {
     std::vector<layer_scaled> scaled;
     layer_piece chip;
-    pieces(x, y, output, opacity, scaled, chip);
+    pieces(pose, scaled, chip);
     for (const layer_scaled& piece : scaled) {
         draw_scaled(canvas, piece, clip);
     }
 
-    if (!m_chip_picture) {
+    if (!m_chip_picture || !pose.has_chip) {
         return;
     }
 
