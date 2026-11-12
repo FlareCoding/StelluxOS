@@ -122,18 +122,18 @@ enum {
     STLXWIN_CLIPBOARD_PRIVATE = 1u << 0,  /* the copy stays out of the clipboard's history, as a password must */
 };
 
-/* One representation of a clipboard item: the item's content as one MIME type */
+/* One representation of an item to copy or drag: the item's content as one MIME type */
 typedef struct {
     const char* mime_type;  /* printable ASCII shorter than STLXWIN_MIME_MAX, text as STLXWIN_MIME_TEXT */
     const void* data;
     size_t      len;        /* 0 for an empty representation, which takes no shared memory object */
-} stlxwin_clip_rep;
+} stlxwin_offer_rep;
 
-/* The clipboard item's MIME types in the offer's order, empty while the clipboard is */
+/* An item's MIME types in its offer's order, empty for no item */
 typedef struct {
     uint32_t count;
     char     types[STLXWIN_OFFER_TYPES_MAX][STLXWIN_MIME_MAX];
-} stlxwin_clip_types;
+} stlxwin_offer_types;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
 #define STLXWIN_OUTPUTS_MAX 16u  /* the most outputs a display drives */
@@ -518,7 +518,7 @@ long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text);
  * @return 0, or -1 for more than STLXWIN_OFFER_TYPES_MAX representations or a malformed one, when no shared memory
  * object can hold one, or when the message cannot be sent, leaving the clipboard as it was.
  */
-int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_clip_rep* reps, uint32_t count, uint32_t flags);
+int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags);
 
 /**
  * @brief Fetch the clipboard's representation of `mime_type` into a malloc'd buffer the caller frees, with a NUL
@@ -538,7 +538,7 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn);
  * @brief Read the clipboard's types as the newest STLXWIN_EVT_CLIPBOARD left them.
  * @return 0, or -1 before stlxwin_clipboard_watch succeeded.
  */
-int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_clip_types* out);
+int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_offer_types* out);
 
 /**
  * @brief Ask for an output's modes. The connection keeps the latest

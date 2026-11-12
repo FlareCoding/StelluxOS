@@ -135,7 +135,7 @@ long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text) {
     return fetch(conn, NULL, 0, out_text);
 }
 
-int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_clip_rep* reps, uint32_t count, uint32_t flags) {
+int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags) {
     if (!conn || conn->dead || count > SWP_OFFER_TYPES_MAX || (count > 0 && !reps)) {
         return -1;
     }
@@ -217,7 +217,7 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn) {
     return conn->has_clip_types ? 0 : -1;
 }
 
-int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_clip_types* out) {
+int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_offer_types* out) {
     if (!conn || !out || !conn->has_clip_types) {
         return -1;
     }
