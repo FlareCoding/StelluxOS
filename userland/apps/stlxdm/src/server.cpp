@@ -154,7 +154,8 @@ static bool may_begin_handle_message(const dm_client& c) {
     uint16_t type;
     memcpy(&type, c.rd_buf, sizeof(type));
 
-    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET || type == SWP_MSG_CLIPBOARD_OFFER;
+    return type == SWP_MSG_ATTACH_GPU_BUFFER || type == SWP_MSG_CLIPBOARD_SET || type == SWP_MSG_CLIPBOARD_OFFER ||
+           type == SWP_MSG_START_DRAG;
 }
 
 /* The configured wallpaper decoded, or null when there is none or it
@@ -1483,7 +1484,7 @@ void server::collect_fds(std::vector<pollfd>& fds) const {
     fds.push_back({ m_listen_fd, POLLIN, 0 });
     for (const auto& c : m_clients) {
         short events = POLLIN;
-        if (!c->out_q.empty() || !c->clipboard_asks.empty()) {
+        if (!c->out_q.empty() || !c->clipboard_asks.empty() || !c->drop_asks.empty()) {
             events |= POLLOUT;
         }
         fds.push_back({ c->fd, events, 0 });
@@ -1500,6 +1501,7 @@ void server::pump(const std::vector<pollfd>& fds) {
         if (fds[i + 1].revents & POLLOUT) {
             flush_client(*m_clients[i]);
             send_clipboard_answers(*m_clients[i]);
+            send_drop_answers(*m_clients[i]);
         }
         if (fds[i + 1].revents & (POLLIN | POLLHUP | POLLERR)) {
             pump_client(*m_clients[i]);
@@ -1752,6 +1754,41 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
         handle_activate_window(c, payload);
         return;
+    case SWP_MSG_START_DRAG:
+        if (hdr.length != sizeof(swp_start_drag)) {
+            break;
+        }
+
+        handle_start_drag(c, payload);
+        return;
+    case SWP_MSG_CANCEL_DRAG:
+        if (hdr.length != sizeof(swp_cancel_drag)) {
+            break;
+        }
+
+        handle_cancel_drag(c, payload);
+        return;
+    case SWP_MSG_DROP_STATUS:
+        if (hdr.length != sizeof(swp_drop_status)) {
+            break;
+        }
+
+        handle_drop_status(c, payload);
+        return;
+    case SWP_MSG_DROP_GET:
+        if (hdr.length != sizeof(swp_drop_get)) {
+            break;
+        }
+
+        handle_drop_get(c, payload);
+        return;
+    case SWP_MSG_DROP_FINISH:
+        if (hdr.length != sizeof(swp_drop_finish)) {
+            break;
+        }
+
+        handle_drop_finish(c, payload);
+        return;
     default:
         break;
     }
@@ -1761,6 +1798,7 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
 void server::drop_client(dm_client& c) {
     forget_mode_client(c);
+    forget_drag_client(c);
 
     /* The client is freed once this returns, so no queued request or staged answer may name it */
     auto names_client = [&c](const auto& entry) { return entry.client == &c; };
@@ -1947,6 +1985,8 @@ void server::flush_window_events(dm_client& c, dm_window& w) {
 /* Cross-window delivery order within one wakeup is unspecified, only
  * per-window order is promised. */
 void server::flush_events() {
+    flush_drag();
+
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             flush_window_events(*c, *w);
@@ -2118,25 +2158,22 @@ void server::copy_file(const std::string& path) {
                                        { SWP_MIME_TEXT, path.size(), text_object } }, 0));
 }
 
-/* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, queueing
- * what the socket leaves. Returns false when the socket takes none of it. */
-bool server::send_clipboard_answer(dm_client& c) {
-    const clipboard_rep* found = m_clipboard.find(c.clipboard_asks.front());
-    const clipboard_rep* rep = found && found->object >= 0 ? found : nullptr;
-
-    swp_clipboard_data m = { rep ? rep->len : 0 };
-    swp_header hdr = { SWP_MSG_CLIPBOARD_DATA, 0, sizeof(m) };
-    uint8_t bytes[sizeof(hdr) + sizeof(m)];
+/* Sends a message whose one handle, unless `handle` is -1, rides its first byte, so it leaves only from an empty out_q,
+ * queueing what the socket leaves. Returns false when the socket takes none of it. */
+bool server::send_with_handle(dm_client& c, uint16_t type, const void* payload, uint32_t length, int handle) {
+    swp_header hdr = { type, 0, length };
+    uint8_t bytes[SWP_MAX_MSG_SIZE];
+    size_t total = sizeof(hdr) + length;
     memcpy(bytes, &hdr, sizeof(hdr));
-    memcpy(bytes + sizeof(hdr), &m, sizeof(m));
+    memcpy(bytes + sizeof(hdr), payload, length);
 
-    iovec iov = { bytes, sizeof(bytes) };
+    iovec iov = { bytes, total };
     msghdr msg = {};
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
     alignas(cmsghdr) uint8_t control[CMSG_SPACE(sizeof(int))] = {};
-    if (rep) {
+    if (handle >= 0) {
         msg.msg_control = control;
         msg.msg_controllen = sizeof(control);
 
@@ -2144,7 +2181,7 @@ bool server::send_clipboard_answer(dm_client& c) {
         head->cmsg_level = SOL_SOCKET;
         head->cmsg_type = SCM_RIGHTS;
         head->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(head), &rep->object, sizeof(int));
+        memcpy(CMSG_DATA(head), &handle, sizeof(int));
     }
 
     ssize_t n = sendmsg(c.fd, &msg, MSG_NOSIGNAL);
@@ -2156,9 +2193,28 @@ bool server::send_clipboard_answer(dm_client& c) {
         return false;
     }
 
-    c.out_q.insert(c.out_q.end(), bytes + n, bytes + sizeof(bytes));
+    c.out_q.insert(c.out_q.end(), bytes + n, bytes + total);
 
     return true;
+}
+
+/* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q */
+bool server::send_clipboard_answer(dm_client& c) {
+    const clipboard_rep* found = m_clipboard.find(c.clipboard_asks.front());
+    const clipboard_rep* rep = found && found->object >= 0 ? found : nullptr;
+
+    swp_clipboard_data m = { rep ? rep->len : 0 };
+
+    return send_with_handle(c, SWP_MSG_CLIPBOARD_DATA, &m, sizeof(m), rep ? rep->object : -1);
+}
+
+/* Sends a message to `c` behind the events `w` staged, so the client reads them in the order they happened */
+void server::send_window_message(dm_client& c, dm_window* w, uint16_t type, const void* payload, uint32_t length) {
+    if (w) {
+        flush_window_events(c, *w);
+    }
+
+    send_to(c, type, payload, length);
 }
 
 void server::send_clipboard_answers(dm_client& c) {

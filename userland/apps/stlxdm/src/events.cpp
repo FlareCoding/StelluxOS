@@ -278,6 +278,7 @@ void server::forget_window(dm_window* w) {
     }
 
     forget_animation(w);
+    forget_drag_window(w);
 
     if (hands_grab) {
         m_grab_popup = parent;
@@ -286,6 +287,26 @@ void server::forget_window(dm_window* w) {
     if (focus_after) {
         set_focus(focus_after);
     }
+}
+
+/* The window the popup opened over hears it dismissed. `forget_window()` gives the focus back if the popup still holds
+ * it. */
+void server::dismiss_grab_popup() {
+    dm_window* popup = m_grab_popup;
+    dm_client* owner = window_owner(popup);
+    if (!owner) {
+        return;
+    }
+
+    dm_window* parent = find_window(*owner, popup->parent_id);
+    if (parent) {
+        swp_event_rec rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.kind = SWP_EV_POPUP_DISMISSED;
+        send_event(parent, rec);
+    }
+
+    dismiss_window_tree(*owner, popup->win_id);
 }
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
@@ -303,6 +324,10 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         if (is_escape_press) {
             m_power->dismiss();
         }
+        return;
+    }
+
+    if (route_drag_key(usage, down, repeat)) {
         return;
     }
 
@@ -668,6 +693,10 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
+    if (route_drag_pointer(x, y, buttons, changed, wheel)) {
+        return;
+    }
+
     /* An active resize drag owns the pointer until every button lifts,
      * and the final target flushes as one last configure */
     if (m_resize) {
@@ -729,35 +758,10 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* A press outside a grabbing popup dismisses it and swallows the press.
-     * `forget_window()` gives the focus back if the popup still holds it. */
-    if (m_grab_popup && press) {
-        dm_window* hit = window_at(x, y, nullptr);
-        if (hit != m_grab_popup) {
-            dm_window* popup = m_grab_popup;
-            dm_client* owner = window_owner(popup);
-            uint32_t parent_id = popup->parent_id;
-
-            if (owner) {
-                dm_window* parent = nullptr;
-                for (auto& win : owner->windows) {
-                    if (win->win_id == parent_id) {
-                        parent = win.get();
-                        break;
-                    }
-                }
-                if (parent) {
-                    swp_event_rec rec;
-                    memset(&rec, 0, sizeof(rec));
-                    rec.kind = SWP_EV_POPUP_DISMISSED;
-                    send_event(parent, rec);
-                }
-
-                dismiss_window_tree(*owner, popup->win_id);
-            }
-
-            return;
-        }
+    /* A press outside a grabbing popup dismisses it and swallows the press */
+    if (m_grab_popup && press && window_at(x, y, nullptr) != m_grab_popup) {
+        dismiss_grab_popup();
+        return;
     }
 
     decor::zone zone = decor::zone::none;
