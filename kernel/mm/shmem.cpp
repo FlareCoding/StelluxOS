@@ -5,6 +5,7 @@
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/uaccess.h"
 
 namespace mm {
 
@@ -368,6 +369,78 @@ ssize_t shmem_write_locked(shmem* s, size_t offset, const void* src, size_t coun
         }
     });
     return result;
+}
+
+size_t shmem_copy_to_user_locked(
+    shmem* s, size_t offset, void* udst, size_t count, bool* stopped_by_user_page
+) {
+    size_t copied = 0;
+    bool is_stopped = false;
+    RUN_ELEVATED({
+        size_t total = offset < s->m_size ? s->m_size - offset : 0;
+        if (count < total) {
+            total = count;
+        }
+
+        auto* out = static_cast<uint8_t*>(udst);
+        while (copied < total && !is_stopped) {
+            size_t pos = offset + copied;
+            size_t page_idx = pos / pmm::PAGE_SIZE;
+            size_t page_off = pos % pmm::PAGE_SIZE;
+            size_t chunk = pmm::PAGE_SIZE - page_off;
+            if (chunk > total - copied) {
+                chunk = total - copied;
+            }
+
+            if (s->m_pages[page_idx] == 0) {
+                break;
+            }
+
+            auto* src_page = static_cast<const uint8_t*>(paging::phys_to_virt(s->m_pages[page_idx]));
+            size_t moved = uaccess::copy_to_user_without_fault_in(out + copied, src_page + page_off, chunk);
+            copied += moved;
+            is_stopped = moved < chunk;
+        }
+    });
+
+    *stopped_by_user_page = is_stopped;
+    return copied;
+}
+
+size_t shmem_copy_from_user_locked(
+    shmem* s, size_t offset, const void* usrc, size_t count, bool* stopped_by_user_page
+) {
+    size_t copied = 0;
+    bool is_stopped = false;
+    RUN_ELEVATED({
+        size_t total = offset < s->m_size ? s->m_size - offset : 0;
+        if (count < total) {
+            total = count;
+        }
+
+        auto* in = static_cast<const uint8_t*>(usrc);
+        while (copied < total && !is_stopped) {
+            size_t pos = offset + copied;
+            size_t page_idx = pos / pmm::PAGE_SIZE;
+            size_t page_off = pos % pmm::PAGE_SIZE;
+            size_t chunk = pmm::PAGE_SIZE - page_off;
+            if (chunk > total - copied) {
+                chunk = total - copied;
+            }
+
+            if (s->m_pages[page_idx] == 0) {
+                break;
+            }
+
+            auto* dst_page = static_cast<uint8_t*>(paging::phys_to_virt(s->m_pages[page_idx]));
+            size_t moved = uaccess::copy_from_user_without_fault_in(dst_page + page_off, in + copied, chunk);
+            copied += moved;
+            is_stopped = moved < chunk;
+        }
+    });
+
+    *stopped_by_user_page = is_stopped;
+    return copied;
 }
 
 } // namespace mm

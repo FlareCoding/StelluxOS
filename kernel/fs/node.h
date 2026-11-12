@@ -46,9 +46,16 @@ public:
     virtual ssize_t read(file* f, void* buf, size_t count, uint32_t flags);
     virtual ssize_t write(file* f, const void* buf, size_t count, uint32_t flags);
     virtual int64_t seek(file* f, int64_t offset, int whence);
+
     // Positional I/O leaves the file offset alone and ignores O_APPEND, nodes that cannot seek refuse it
     virtual ssize_t read_at(file* f, void* buf, size_t count, uint64_t offset);
     virtual ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset);
+
+    // Transfers with a user buffer, at the file offset when `offset` is negative. Nodes that leave them out return
+    // ERR_NOSYS and are read and written through a kernel buffer.
+    virtual ssize_t read_to_user(file* f, void* ubuf, size_t count, int64_t offset, uint32_t flags);
+    virtual ssize_t write_from_user(file* f, const void* ubuf, size_t count, int64_t offset, uint32_t flags);
+
     virtual ssize_t readdir(file* f, dirent* entries, size_t count);
     virtual int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
     // The mapping must never hold a protection bit outside `max_prot`, at mmap or after any later mprotect

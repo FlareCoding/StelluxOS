@@ -116,6 +116,22 @@ ssize_t shmem_write(shmem* s, size_t offset, const void* src, size_t count);
  */
 ssize_t shmem_write_locked(shmem* s, size_t offset, const void* src, size_t count);
 
+/**
+ * @brief Copy up to `count` bytes at `offset` to the user buffer `udst`, stopping
+ * at the size or at a user page that is missing or read-only, which is never
+ * faulted in. Caller must hold s->lock.
+ * @return Bytes copied, with `stopped_by_user_page` set when a user page stopped them.
+ */
+size_t shmem_copy_to_user_locked(shmem* s, size_t offset, void* udst, size_t count, bool* stopped_by_user_page);
+
+/**
+ * @brief Copy up to `count` bytes from the user buffer `usrc` to `offset`,
+ * stopping at the current size or at a missing user page, which is never
+ * faulted in. Caller must hold s->lock.
+ * @return Bytes copied, with `stopped_by_user_page` set when a user page stopped them.
+ */
+size_t shmem_copy_from_user_locked(shmem* s, size_t offset, const void* usrc, size_t count, bool* stopped_by_user_page);
+
 } // namespace mm
 
 #endif // STELLUX_MM_SHMEM_H

@@ -951,9 +951,45 @@ static bool is_valid_file_range(uint64_t offset, uint64_t count) {
            static_cast<int64_t>(offset + count) >= 0;
 }
 
+// Moves the bytes of a read or write between a file and the user buffer with no staging copy when the file allows
+// it, giving the result in `out_result`, and returns false when the transfer must be staged
+__PRIVILEGED_CODE static bool try_transfer_without_staging(
+    sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags,
+    transfer_direction direction, int64_t* out_result
+) {
+    uint32_t required_right = direction == transfer_direction::read ? resource::RIGHT_READ : resource::RIGHT_WRITE;
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(task->handles, static_cast<resource::handle_t>(fd), required_right, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return false;
+    }
+
+    ssize_t n = fs::ERR_NOSYS;
+    fs::file* f = resource::file_provider::get_file(obj);
+    if (f) {
+        uint32_t flags = resource::get_status_flags(obj) | call_flags;
+        n = direction == transfer_direction::read
+            ? fs::read_to_user(f, reinterpret_cast<void*>(buf), count, offset, flags)
+            : fs::write_from_user(f, reinterpret_cast<const void*>(buf), count, offset, flags);
+    }
+
+    resource::resource_release(obj);
+    if (n == fs::ERR_NOSYS) {
+        return false;
+    }
+
+    *out_result = n < 0 ? syscall::error_map::map_fs_error(static_cast<int32_t>(n)) : n;
+    return true;
+}
+
 __PRIVILEGED_CODE static int64_t read_to_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    int64_t direct = 0;
+    if (try_transfer_without_staging(task, fd, buf, count, offset, call_flags, transfer_direction::read, &direct)) {
+        return direct;
+    }
+
     if (offset == CURRENT_FILE_OFFSET) {
         size_t max_message = syscall::message_limit(task, static_cast<resource::handle_t>(fd));
         if (max_message > 0) {
@@ -1060,6 +1096,11 @@ DEFINE_SYSCALL4(pread64, fd, buf, count, offset) {
 __PRIVILEGED_CODE static int64_t write_from_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    int64_t direct = 0;
+    if (try_transfer_without_staging(task, fd, buf, count, offset, call_flags, transfer_direction::write, &direct)) {
+        return direct;
+    }
+
     if (offset == CURRENT_FILE_OFFSET) {
         size_t max_message = syscall::message_limit(task, static_cast<resource::handle_t>(fd));
         if (max_message > 0) {

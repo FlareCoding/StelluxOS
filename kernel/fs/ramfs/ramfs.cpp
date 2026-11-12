@@ -4,8 +4,12 @@
 #include "common/string.h"
 #include "mm/heap.h"
 #include "mm/mm.h"
+#include "mm/uaccess.h"
 
 namespace ramfs {
+
+// How far a write grows the file ahead of the bytes it has copied, which bounds the growth a missing source page undoes
+constexpr size_t WRITE_GROWTH_STEP = 16 * pmm::PAGE_SIZE;
 
 __PRIVILEGED_CODE static int32_t ramfs_mount_fn(
     fs::driver* drv, const char* source, uint32_t flags,
@@ -415,6 +419,131 @@ ssize_t file_node::write_at(fs::file*, const void* buf, size_t count, uint64_t o
     sync::mutex_unlock(m_backing->lock);
 
     return result;
+}
+
+ssize_t file_node::read_to_user(fs::file* f, void* ubuf, size_t count, int64_t offset, uint32_t) {
+    auto* out = static_cast<uint8_t*>(ubuf);
+    size_t done = 0;
+    bool retried = false;
+
+    while (true) {
+        bool stopped_by_user_page = false;
+        sync::mutex_lock(m_backing->lock);
+
+        // Each part starts at the file offset as it stands, so bytes another reader took meanwhile are not read twice
+        int64_t pos = offset >= 0 ? offset + static_cast<int64_t>(done) : f->offset();
+        size_t moved = mm::shmem_copy_to_user_locked(
+            m_backing.ptr(), static_cast<size_t>(pos), out + done, count - done, &stopped_by_user_page);
+        done += moved;
+        if (offset < 0 && moved > 0) {
+            f->set_offset(pos + static_cast<int64_t>(moved));
+        }
+
+        sync::mutex_unlock(m_backing->lock);
+
+        if (!stopped_by_user_page) {
+            return static_cast<ssize_t>(done);
+        }
+
+        // The fault path takes the address-space lock, which ranks above the file's, so the page is faulted in with
+        // the file unlocked. A page missing again right after means another thread keeps unmapping it.
+        bool is_missing_again = retried && moved == 0;
+        if (is_missing_again || mm::uaccess::fault_in_user_range(out + done, 1, mm::MM_PROT_WRITE) != mm::uaccess::OK) {
+            return done > 0 ? static_cast<ssize_t>(done) : fs::ERR_FAULT;
+        }
+
+        retried = true;
+    }
+}
+
+ssize_t file_node::write_from_user_locked(
+    size_t offset, const uint8_t* ubuf, size_t count, bool* stopped_by_user_page
+) {
+    size_t copied = 0;
+    *stopped_by_user_page = false;
+
+    while (copied < count) {
+        size_t step = count - copied < WRITE_GROWTH_STEP ? count - copied : WRITE_GROWTH_STEP;
+        size_t step_end = offset + copied + step;
+        if (step_end < offset) {
+            return copied > 0 ? static_cast<ssize_t>(copied) : fs::ERR_INVAL;
+        }
+
+        size_t old_size = m_backing->m_size;
+        if (step_end > old_size) {
+            int32_t rc = mm::shmem_resize_locked(m_backing.ptr(), step_end);
+            if (rc != mm::SHMEM_OK) {
+                return copied > 0 ? static_cast<ssize_t>(copied) : map_shmem_error_to_fs(rc);
+            }
+        }
+
+        size_t moved = mm::shmem_copy_from_user_locked(
+            m_backing.ptr(), offset + copied, ubuf + copied, step, stopped_by_user_page);
+        copied += moved;
+
+        // Growth the copy left unfilled goes back, so a failed write leaves no zeros past the bytes it wrote. A
+        // shrink allocates nothing and cannot fail.
+        size_t filled = offset + copied;
+        if (m_backing->m_size > old_size && filled < m_backing->m_size) {
+            mm::shmem_resize_locked(m_backing.ptr(), moved > 0 && filled > old_size ? filled : old_size);
+        }
+
+        if (moved < step) {
+            break;
+        }
+    }
+
+    return static_cast<ssize_t>(copied);
+}
+
+ssize_t file_node::write_from_user(fs::file* f, const void* ubuf, size_t count, int64_t offset, uint32_t flags) {
+    auto* in = static_cast<const uint8_t*>(ubuf);
+    size_t done = 0;
+    bool retried = false;
+
+    while (true) {
+        bool stopped_by_user_page = false;
+        sync::mutex_lock(m_backing->lock);
+
+        // Each part starts at the file offset, or the end for an append, as it stands, so it never writes over bytes
+        // another write put there while the file was unlocked
+        int64_t pos = 0;
+        if (offset >= 0) {
+            pos = offset + static_cast<int64_t>(done);
+        } else if (flags & fs::O_APPEND) {
+            pos = static_cast<int64_t>(m_backing->m_size);
+        } else {
+            pos = f->offset();
+        }
+
+        ssize_t moved = write_from_user_locked(
+            static_cast<size_t>(pos), in + done, count - done, &stopped_by_user_page);
+        if (moved > 0) {
+            done += static_cast<size_t>(moved);
+            update_size_from_backing_locked();
+            mark_modified();
+            if (offset < 0) {
+                f->set_offset(pos + moved);
+            }
+        }
+
+        sync::mutex_unlock(m_backing->lock);
+
+        if (moved < 0) {
+            return done > 0 ? static_cast<ssize_t>(done) : moved;
+        }
+
+        if (!stopped_by_user_page) {
+            return static_cast<ssize_t>(done);
+        }
+
+        bool is_missing_again = retried && moved == 0;
+        if (is_missing_again || mm::uaccess::fault_in_user_range(in + done, 1, mm::MM_PROT_READ) != mm::uaccess::OK) {
+            return done > 0 ? static_cast<ssize_t>(done) : fs::ERR_FAULT;
+        }
+
+        retried = true;
+    }
 }
 
 int32_t file_node::truncate(size_t size) {

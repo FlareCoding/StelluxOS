@@ -58,6 +58,8 @@ public:
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     ssize_t read_at(fs::file* f, void* buf, size_t count, uint64_t offset) override;
     ssize_t write_at(fs::file* f, const void* buf, size_t count, uint64_t offset) override;
+    ssize_t read_to_user(fs::file* f, void* ubuf, size_t count, int64_t offset, uint32_t flags) override;
+    ssize_t write_from_user(fs::file* f, const void* ubuf, size_t count, int64_t offset, uint32_t flags) override;
     int32_t truncate(size_t size) override;
     int32_t allocate(uint64_t offset, uint64_t length) override;
     int32_t mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
@@ -66,6 +68,7 @@ public:
 
 private:
     ssize_t write_at_locked(size_t offset, const void* buf, size_t count);
+    ssize_t write_from_user_locked(size_t offset, const uint8_t* ubuf, size_t count, bool* stopped_by_user_page);
     void update_size_from_backing_locked();
 
     rc::strong_ref<mm::shmem> m_backing;

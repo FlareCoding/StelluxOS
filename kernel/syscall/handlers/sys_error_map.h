@@ -71,6 +71,8 @@ inline int64_t map_fs_error(int32_t rc) {
             return syscall::EXDEV;
         case fs::ERR_NODATA:
             return syscall::ENODATA;
+        case fs::ERR_FAULT:
+            return syscall::EFAULT;
         case fs::ERR_IO:
         default:
             return syscall::EIO;
