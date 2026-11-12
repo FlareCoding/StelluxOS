@@ -116,6 +116,12 @@ swp_clipboard_types describe_types(const clipboard_item& item);
 /* The `text/uri-list` naming one file by its absolute path, which File Manager's copies carry */
 std::string file_uri_list(std::string_view path);
 
+/* The paths of the local files a `text/uri-list` names, its comments and other schemes left out */
+std::vector<std::string> uri_list_paths(std::string_view list);
+
+/* A PNG's width and height from its first 24 bytes. False when they hold no PNG header. */
+bool png_size(std::string_view header, uint32_t* width, uint32_t* height);
+
 /* A representation's first `max` bytes, empty when the kernel refuses to map its object */
 std::string read_bytes(const clipboard_rep& rep, uint64_t max);
 
