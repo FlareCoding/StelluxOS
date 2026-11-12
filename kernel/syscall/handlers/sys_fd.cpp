@@ -1332,6 +1332,14 @@ DEFINE_SYSCALL4(pwritev, fd, iov, iovcnt, offset) {
     return run_vectored_transfer(fd, iov, iovcnt, static_cast<int64_t>(offset), 0, transfer_direction::write);
 }
 
+DEFINE_SYSCALL3(readv, fd, iov, iovcnt) {
+    return run_vectored_transfer(fd, iov, iovcnt, CURRENT_FILE_OFFSET, 0, transfer_direction::read);
+}
+
+DEFINE_SYSCALL3(writev, fd, iov, iovcnt) {
+    return run_vectored_transfer(fd, iov, iovcnt, CURRENT_FILE_OFFSET, 0, transfer_direction::write);
+}
+
 constexpr uint64_t RWF_HIPRI  = 0x01;
 constexpr uint64_t RWF_DSYNC  = 0x02;
 constexpr uint64_t RWF_SYNC   = 0x04;
