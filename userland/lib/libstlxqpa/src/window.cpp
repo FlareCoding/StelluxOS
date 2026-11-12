@@ -484,6 +484,7 @@ void QStelluxWindow::handle_pointer(const stlxwin_event& event) {
     switch (event.type) {
         case STLXWIN_EVT_POINTER_MOTION: {
             QPointF local(event.motion.x, event.motion.y);
+            m_modifiers = to_qt_modifiers(event.motion.modifiers);
             QWindowSystemInterface::handleMouseEvent(window(), local, global_position(local), m_buttons,
                                                      Qt::NoButton, QEvent::MouseMove, m_modifiers);
             break;
@@ -495,6 +496,7 @@ void QStelluxWindow::handle_pointer(const stlxwin_event& event) {
             bool is_press = event.type == STLXWIN_EVT_BUTTON_DOWN;
 
             m_buttons = is_press ? (m_buttons | button) : (m_buttons & ~button);
+            m_modifiers = to_qt_modifiers(event.button.modifiers);
             QWindowSystemInterface::handleMouseEvent(window(), local, global_position(local), m_buttons, button,
                                                      is_press ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease,
                                                      m_modifiers);
@@ -504,12 +506,14 @@ void QStelluxWindow::handle_pointer(const stlxwin_event& event) {
             // A positive detent scrolls toward the top, as a positive angle delta does
             QPointF local(event.scroll.x, event.scroll.y);
             QPoint angle(0, event.scroll.dy * QWheelEvent::DefaultDeltasPerStep);
+            m_modifiers = to_qt_modifiers(event.scroll.modifiers);
             QWindowSystemInterface::handleWheelEvent(window(), local, global_position(local), QPoint(), angle,
                                                      m_modifiers);
             break;
         }
         case STLXWIN_EVT_POINTER_ENTER: {
             QPointF local(event.motion.x, event.motion.y);
+            m_modifiers = to_qt_modifiers(event.motion.modifiers);
             QWindowSystemInterface::handleEnterEvent(window(), local, global_position(local));
             break;
         }

@@ -450,17 +450,21 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
             case STLXWIN_EVT_POINTER_LEAVE:
                 ev.motion.x = rec->x;
                 ev.motion.y = rec->y;
+                ev.motion.modifiers = rec->modifiers;
                 break;
             case STLXWIN_EVT_BUTTON_DOWN:
             case STLXWIN_EVT_BUTTON_UP:
                 ev.button.x = rec->x;
                 ev.button.y = rec->y;
                 ev.button.button = rec->button;
+                ev.button.modifiers = rec->modifiers;
+                ev.button.serial = ev.type == STLXWIN_EVT_BUTTON_DOWN ? rec->ch : 0;
                 break;
             case STLXWIN_EVT_SCROLL:
                 ev.scroll.x = rec->x;
                 ev.scroll.y = rec->y;
                 ev.scroll.dy = rec->scroll;
+                ev.scroll.modifiers = rec->modifiers;
                 break;
             default:
                 break;

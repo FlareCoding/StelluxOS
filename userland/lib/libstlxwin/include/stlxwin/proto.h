@@ -394,7 +394,7 @@ enum {
     SWP_EV_KEY_UP,
     SWP_EV_KEY_REPEAT,
     SWP_EV_MOTION,
-    SWP_EV_BUTTON_DOWN,
+    SWP_EV_BUTTON_DOWN,     /* `ch` holds the press's serial, new and nonzero for every press routed to a window */
     SWP_EV_BUTTON_UP,
     SWP_EV_SCROLL,
     SWP_EV_ENTER,
@@ -411,11 +411,11 @@ enum {
  * HID usage, so clients never own keymap tables. */
 typedef struct {
     uint16_t kind;          /* SWP_EV_* */
-    uint8_t  modifiers;     /* key records */
+    uint8_t  modifiers;     /* key and pointer records, the modifiers held */
     uint8_t  button;        /* button records */
     uint16_t usage;         /* key records, HID usage */
     int16_t  scroll;        /* scroll records, signed detents */
-    uint32_t ch;            /* key records, UTF-32 codepoint or 0 */
+    uint32_t ch;            /* key records, UTF-32 codepoint or 0, and BUTTON_DOWN's press serial */
     int32_t  x, y;          /* pointer records, window content local */
 } swp_event_rec;
 SWP_STATIC_ASSERT(sizeof(swp_event_rec) == 20, "wire layout");

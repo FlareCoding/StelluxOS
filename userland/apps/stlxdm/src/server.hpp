@@ -33,6 +33,9 @@ constexpr uint32_t DM_EV_BATCH_MAX = 16;
 /* Frames of damage an output keeps for targets older than one present */
 constexpr uint32_t DM_DAMAGE_HISTORY = 3;
 
+/* The pointer buttons routed: left, right and middle */
+constexpr uint32_t DM_BUTTONS = 3;
+
 /* One parsed shortcut: what it runs, a program with its args or one of stlxdm's own actions, and the usage that
  * fires it while exactly its modifier bits are held */
 struct dm_hotkey {
@@ -782,6 +785,14 @@ private:
 
     /* When the user last pressed a key or button, which a window's request to come forward must follow closely */
     uint64_t m_last_press_ns = 0;
+
+    /* The modifiers held, which pointer records carry */
+    uint8_t m_modifiers = 0;
+
+    /* The serial the newest press routed to a window took, and each button's press serial while the button is held
+     * after a press routed to a window, else 0 */
+    uint32_t m_press_serial = 0;
+    uint32_t m_press_serials[DM_BUTTONS] = {};
 
     /* The system figures the shell shows, kept across rebuilds of the panels */
     stats_sampler m_stats;
