@@ -75,6 +75,11 @@ struct stlxwin_window {
     uint32_t next_buf_id;
     int      want_frame;        /* deliver the next FRAME_DONE as an event */
     int      dead;
+
+    /* The drag over the window or dropped on it, 0 for none, its types, and whether it was dropped */
+    uint32_t drop_drag;
+    stlxwin_offer_types drop_types;
+    int      dropped;
 };
 
 struct stlxwin_conn {
@@ -102,7 +107,7 @@ struct stlxwin_conn {
     int gpu_fd;                 /* /dev/gpuN, opened by the first GPU attach, -1 before */
     stlxwin_gpu_record gpu_records[SWP_GPU_BUFFERS_MAX];
 
-    /* Handles received for CLIPBOARD_DATA messages not yet handled, oldest first */
+    /* Handles received for CLIPBOARD_DATA and DROP_DATA messages not yet handled, oldest first */
     int      queued_handles[STLXWIN_QUEUED_HANDLES_MAX];
     uint32_t queued_handle_count;
 
@@ -110,6 +115,11 @@ struct stlxwin_conn {
     uint64_t clip_len;
     int      clip_handle;
     int      clip_pending;      /* a CLIPBOARD_GET answer is outstanding */
+
+    /* The last DROP_DATA's length and shared memory object, -1 when it sent none */
+    uint64_t drop_len;
+    int      drop_handle;
+    int      drop_pending;      /* a DROP_GET answer is outstanding */
 
     swp_clipboard_types clip_types; /* the newest CLIPBOARD_TYPES */
     int      has_clip_types;    /* a watch brought the first CLIPBOARD_TYPES */
@@ -155,5 +165,15 @@ void stlxwin_gpu_release_records_locked(stlxwin_conn* conn,
 
 /* modes.c */
 stlxwin_mode stlxwin_mode_from_swp(const swp_mode* mode);
+
+/* clipboard.c */
+int stlxwin_create_shared(const void* data, size_t len);
+char* stlxwin_copy_shared(int object, uint64_t len);
+void stlxwin_close_objects(const int* objects, uint32_t count);
+void stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value);
+int stlxwin_pack_offer(const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags, swp_offer* msg, int* objects);
+
+/* dnd.c */
+void stlxwin_dnd_take_message(stlxwin_conn* conn, const swp_header* hdr, const uint8_t* payload);
 
 #endif /* STLXWIN_INTERNAL_PRIV_H */

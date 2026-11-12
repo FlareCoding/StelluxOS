@@ -8,9 +8,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-/* A shared memory object holding the bytes, which the display manager keeps as part of the clipboard */
-static int create_shared(const void* data, size_t len) {
-    int object = memfd_create("stlxwin-clipboard", MFD_CLOEXEC);
+/* A shared memory object holding the bytes, which the display manager keeps for the clipboard or a drag */
+int stlxwin_create_shared(const void* data, size_t len) {
+    int object = memfd_create("stlxwin-offer", MFD_CLOEXEC);
     if (object < 0) {
         return -1;
     }
@@ -33,7 +33,7 @@ static int create_shared(const void* data, size_t len) {
 }
 
 /* Fails when another client shrank the object below len, which the mapping refuses */
-static char* copy_shared(int object, uint64_t len) {
+char* stlxwin_copy_shared(int object, uint64_t len) {
     void* shared = mmap(NULL, len, PROT_READ, MAP_SHARED, object, 0);
     if (shared == MAP_FAILED) {
         return NULL;
@@ -50,7 +50,7 @@ static char* copy_shared(int object, uint64_t len) {
     return data;
 }
 
-static void close_objects(const int* objects, uint32_t count) {
+void stlxwin_close_objects(const int* objects, uint32_t count) {
     for (uint32_t i = 0; i < count; i++) {
         close(objects[i]);
     }
@@ -58,7 +58,7 @@ static void close_objects(const int* objects, uint32_t count) {
 
 /* Reads the connection while `*flag` holds `value`, queueing the events that arrive meanwhile for the app to drain
  * afterwards */
-static void wait_while(stlxwin_conn* conn, const int* flag, int value) {
+void stlxwin_wait_while(stlxwin_conn* conn, const int* flag, int value) {
     while (*flag == value && !conn->dead) {
         struct pollfd pfd = { conn->fd, POLLIN, 0 };
         int rc = poll(&pfd, 1, -1);
@@ -81,7 +81,7 @@ static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** 
         return -1;
     }
 
-    wait_while(conn, &conn->clip_pending, 1);
+    stlxwin_wait_while(conn, &conn->clip_pending, 1);
     if (conn->dead || conn->clip_len == 0) {
         return conn->dead ? -1 : 0;
     }
@@ -93,7 +93,7 @@ static long fetch(stlxwin_conn* conn, const void* ask, uint32_t ask_len, char** 
         return -1;
     }
 
-    char* data = copy_shared(object, conn->clip_len);
+    char* data = stlxwin_copy_shared(object, conn->clip_len);
     close(object);
     if (!data) {
         return -1;
@@ -114,7 +114,7 @@ int stlxwin_clipboard_set(stlxwin_conn* conn, const char* text, size_t len) {
         return stlxwin_send(conn, SWP_MSG_CLIPBOARD_SET, &msg, sizeof(msg));
     }
 
-    int object = create_shared(text, len);
+    int object = stlxwin_create_shared(text, len);
     if (object < 0) {
         return -1;
     }
@@ -135,39 +135,48 @@ long stlxwin_clipboard_get(stlxwin_conn* conn, char** out_text) {
     return fetch(conn, NULL, 0, out_text);
 }
 
+/* Each representation with bytes goes into a shared memory object of its own, whose handle follows in order */
+int stlxwin_pack_offer(const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags, swp_offer* msg, int* objects) {
+    memset(msg, 0, sizeof(*msg));
+    msg->count = count;
+    msg->flags = flags;
+
+    uint32_t object_count = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        size_t type_len = reps[i].mime_type ? strlen(reps[i].mime_type) : 0;
+        if (type_len == 0 || type_len >= SWP_MIME_MAX || (reps[i].len > 0 && !reps[i].data)) {
+            stlxwin_close_objects(objects, object_count);
+            return -1;
+        }
+
+        memcpy(msg->types[i].mime, reps[i].mime_type, type_len);
+        msg->types[i].len = reps[i].len;
+        if (reps[i].len == 0) {
+            continue;
+        }
+
+        int object = stlxwin_create_shared(reps[i].data, reps[i].len);
+        if (object < 0) {
+            stlxwin_close_objects(objects, object_count);
+            return -1;
+        }
+
+        objects[object_count++] = object;
+    }
+
+    return (int)object_count;
+}
+
 int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, uint32_t count, uint32_t flags) {
     if (!conn || conn->dead || count > SWP_OFFER_TYPES_MAX || (count > 0 && !reps)) {
         return -1;
     }
 
     swp_offer msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.count = count;
-    msg.flags = flags;
-
-    /* Each representation with bytes goes into a shared memory object of its own, whose handle follows in order */
     int objects[SWP_OFFER_TYPES_MAX];
-    uint32_t object_count = 0;
-    for (uint32_t i = 0; i < count; i++) {
-        size_t type_len = reps[i].mime_type ? strlen(reps[i].mime_type) : 0;
-        if (type_len == 0 || type_len >= SWP_MIME_MAX || (reps[i].len > 0 && !reps[i].data)) {
-            close_objects(objects, object_count);
-            return -1;
-        }
-
-        memcpy(msg.types[i].mime, reps[i].mime_type, type_len);
-        msg.types[i].len = reps[i].len;
-        if (reps[i].len == 0) {
-            continue;
-        }
-
-        int object = create_shared(reps[i].data, reps[i].len);
-        if (object < 0) {
-            close_objects(objects, object_count);
-            return -1;
-        }
-
-        objects[object_count++] = object;
+    int object_count = stlxwin_pack_offer(reps, count, flags, &msg, objects);
+    if (object_count < 0) {
+        return -1;
     }
 
     if (object_count == 0) {
@@ -175,9 +184,10 @@ int stlxwin_clipboard_offer(stlxwin_conn* conn, const stlxwin_offer_rep* reps, u
     }
 
     pthread_mutex_lock(&conn->lock);
-    int rc = stlxwin_send_handles_locked(conn, SWP_MSG_CLIPBOARD_OFFER, &msg, sizeof(msg), objects, object_count);
+    int rc = stlxwin_send_handles_locked(conn, SWP_MSG_CLIPBOARD_OFFER, &msg, sizeof(msg), objects,
+                                         (uint32_t)object_count);
     pthread_mutex_unlock(&conn->lock);
-    close_objects(objects, object_count);
+    stlxwin_close_objects(objects, (uint32_t)object_count);
 
     return rc;
 }
@@ -212,7 +222,7 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn) {
         return -1;
     }
 
-    wait_while(conn, &conn->has_clip_types, 0);
+    stlxwin_wait_while(conn, &conn->has_clip_types, 0);
 
     return conn->has_clip_types ? 0 : -1;
 }

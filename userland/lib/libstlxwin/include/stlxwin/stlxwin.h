@@ -110,6 +110,11 @@ typedef enum {
     STLXWIN_EVT_WINDOW_OUTPUT,   /* a toplevel's output or position changed, see stlxwin_window_get_output */
     STLXWIN_EVT_CLIPBOARD,       /* the watched clipboard changed, read its types with stlxwin_clipboard_types */
     STLXWIN_EVT_PASTE,           /* paste the clipboard into the window as its own paste key would */
+    STLXWIN_EVT_DRAG_STATE,      /* a drag the window started went on or ended, see `drag_state` */
+    STLXWIN_EVT_DROP_ENTER,      /* a drag came over the window, answer with stlxwin_drop_status */
+    STLXWIN_EVT_DROP_MOTION,     /* the drag over the window moved or its modifiers changed, answer again */
+    STLXWIN_EVT_DROP_LEAVE,      /* the drag left the window */
+    STLXWIN_EVT_DROP,            /* the drag was dropped on the window, read it and call stlxwin_drop_finish */
 } stlxwin_event_type;
 
 #define STLXWIN_MIME_MAX        64u  /* a MIME type's bytes with its NUL */
@@ -134,6 +139,40 @@ typedef struct {
     uint32_t count;
     char     types[STLXWIN_OFFER_TYPES_MAX][STLXWIN_MIME_MAX];
 } stlxwin_offer_types;
+
+#define STLXWIN_DRAG_PICTURE_MAX 512u  /* largest width or height of a drag's picture */
+#define STLXWIN_DROP_WORDS_MAX   64u   /* a drop target's words for the drag's chip with their NUL */
+
+/* What a drop does with the data, which a drag's source allows and its target accepts */
+enum {
+    STLXWIN_DND_COPY = 1u << 0,
+    STLXWIN_DND_MOVE = 1u << 1,
+    STLXWIN_DND_LINK = 1u << 2,
+};
+
+/* The course of a drag, as STLXWIN_EVT_DRAG_STATE reports it */
+enum {
+    STLXWIN_DRAG_STARTED   = 1,  /* the picture follows the pointer */
+    STLXWIN_DRAG_REFUSED   = 2,  /* the press had ended, another drag ran or an overlay held the input, so no drag */
+    STLXWIN_DRAG_FINISHED  = 3,  /* a target finished the drop with the event's action, 0 when it did nothing */
+    STLXWIN_DRAG_CANCELLED = 4,  /* Esc, a release where nothing accepted, or stlxwin_drag_cancel */
+};
+
+enum {
+    STLXWIN_DROP_OWN = 1u << 0,  /* the drag over the window comes from this connection */
+};
+
+enum {
+    STLXWIN_DROP_FOCUS = 1u << 0,  /* raise and focus the window that took the drop */
+};
+
+/* A drag's picture: premultiplied ARGB rows `stride` bytes apart, and its pixel under the pointer */
+typedef struct {
+    const uint32_t* pixels;
+    uint32_t        width, height;  /* each 1 to STLXWIN_DRAG_PICTURE_MAX */
+    uint32_t        stride;
+    int32_t         hot_x, hot_y;
+} stlxwin_drag_picture;
 
 #define STLXWIN_MODES_MAX   32u  /* the most modes an output lists */
 #define STLXWIN_OUTPUTS_MAX 16u  /* the most outputs a display drives */
@@ -269,6 +308,20 @@ typedef struct {
             uint32_t outcome;      /* STLXWIN_LAYOUT_* */
             uint32_t generation;   /* the newest OUTPUTS' when answered */
         } layout_result;
+        struct {
+            uint32_t drag;         /* the serial stlxwin_drag_start named */
+            uint32_t state;        /* STLXWIN_DRAG_* */
+            uint32_t action;       /* FINISHED's STLXWIN_DND_* action, else 0 */
+        } drag_state;
+        struct {
+            int32_t  x, y;
+            uint32_t drag;
+            uint32_t actions;      /* ENTER's: the STLXWIN_DND_* actions the source allows */
+            uint32_t action;       /* DROP's: the STLXWIN_DND_* action the display manager chose */
+            uint32_t item_count;   /* ENTER's */
+            uint32_t flags;        /* ENTER's: STLXWIN_DROP_OWN */
+            uint8_t  modifiers;
+        } drop;                    /* DROP_ENTER, DROP_MOTION and DROP */
     };
 } stlxwin_event;
 
@@ -542,6 +595,53 @@ int stlxwin_clipboard_watch(stlxwin_conn* conn);
  * @return 0, or -1 before stlxwin_clipboard_watch succeeded.
  */
 int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_offer_types* out);
+
+/**
+ * @brief Drag an item of `count` representations, as stlxwin_clipboard_offer takes them, from the press `serial`
+ * names, which must still hold on the window. The display manager copies the picture, NULL for none, keeps the
+ * representations until the drag ends, and reports its course with STLXWIN_EVT_DRAG_STATE. An item of none, whose
+ * formats only the app reads, drops only on the connection's own windows.
+ * @return 0, or -1 for no STLXWIN_DND_* action, more than STLXWIN_OFFER_TYPES_MAX representations or a malformed one,
+ * a picture past STLXWIN_DRAG_PICTURE_MAX, an item count of 0, when no shared memory object can hold the data, or when
+ * the message cannot be sent.
+ */
+int stlxwin_drag_start(stlxwin_window* win, uint32_t serial, const stlxwin_offer_rep* reps, uint32_t count,
+                       const stlxwin_drag_picture* picture, uint32_t actions, uint32_t item_count);
+
+/**
+ * @brief End the drag this connection started from the press `serial` named, as Esc does.
+ * @return 0, or -1 when the message cannot be sent.
+ */
+int stlxwin_drag_cancel(stlxwin_conn* conn, uint32_t serial);
+
+/**
+ * @brief Answer each STLXWIN_EVT_DROP_ENTER and STLXWIN_EVT_DROP_MOTION of the drag over the window with the
+ * STLXWIN_DND_* actions accepted where the pointer is, 0 refusing, the one preferred, and words for the drag's chip,
+ * NULL for none, describing `words_action`, or with 0 a refusal's reason.
+ * @return 0, or -1 when no drag is over the window or the message cannot be sent.
+ */
+int stlxwin_drop_status(stlxwin_window* win, uint32_t actions, uint32_t preferred, uint32_t words_action,
+                        const char* words);
+
+/**
+ * @brief Read the MIME types of the drag over the window, or dropped on it.
+ * @return 0, or -1 when there is none.
+ */
+int stlxwin_drop_types(stlxwin_window* win, stlxwin_offer_types* out);
+
+/**
+ * @brief Fetch the representation of `mime_type` of the drag dropped on the window into a malloc'd buffer the caller
+ * frees, with a NUL past its end, from STLXWIN_EVT_DROP until stlxwin_drop_finish.
+ * @return Length, 0 when the drop holds no such representation, -1 on failure.
+ */
+long stlxwin_drop_read(stlxwin_window* win, const char* mime_type, char** out_data);
+
+/**
+ * @brief End the drop on the window with the STLXWIN_DND_* action done, 0 for none, and STLXWIN_DROP_FOCUS to bring
+ * the window forward. A window that sends none within 5 seconds of the drop counts as having done nothing.
+ * @return 0, or -1 when no drop waits on the window or the message cannot be sent.
+ */
+int stlxwin_drop_finish(stlxwin_window* win, uint32_t action, uint32_t flags);
 
 /**
  * @brief Ask for an output's modes. The connection keeps the latest
