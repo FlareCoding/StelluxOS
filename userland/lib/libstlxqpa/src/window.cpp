@@ -3,6 +3,7 @@
 #include "drag.h"
 #include "integration.h"
 
+#include <QAbstractScrollArea>
 #include <QCoreApplication>
 #include <QDrag>
 #include <QGuiApplication>
@@ -613,6 +614,15 @@ static bool takes_text_input(QObject* object) {
     return query.value(Qt::ImEnabled).toBool();
 }
 
+// The widget a drop typed into: the one it reached, or the scrolling view whose viewport it reached, as QTextEdit and
+// Scintilla take their drops
+static QObject* text_input_of(QObject* receiver) {
+    auto* area = receiver ? qobject_cast<QAbstractScrollArea*>(receiver->parent()) : nullptr;
+    QObject* widget = area && area->viewport() == receiver ? area : receiver;
+
+    return takes_text_input(widget) ? widget : nullptr;
+}
+
 // A drag of this app's reads as Qt's own QMimeData, so formats that never leave the app still drop
 const QMimeData* QStelluxWindow::drop_data() const {
     QDrag* own = m_drop_is_own ? QStelluxIntegration::instance()->drag()->currentDrag() : nullptr;
@@ -663,9 +673,10 @@ void QStelluxWindow::handle_drop(const stlxwin_event& event) {
     QCoreApplication::instance()->removeEventFilter(&filter);
 
     uint32_t action = answer.isAccepted() ? to_stlxwin_actions(answer.acceptedAction()) : 0;
-    bool focuses = action != 0 && takes_text_input(filter.receiver);
+    QObject* typed_into = text_input_of(filter.receiver);
+    bool focuses = action != 0 && typed_into;
     if (focuses) {
-        QMetaObject::invokeMethod(filter.receiver, "setFocus");
+        QMetaObject::invokeMethod(typed_into, "setFocus");
     }
 
     stlxwin_drop_finish(m_handle, action, focuses ? STLXWIN_DROP_FOCUS : 0);
