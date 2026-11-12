@@ -10,6 +10,9 @@ DECLARE_SYSCALL(dup);
 DECLARE_SYSCALL(dup2);
 DECLARE_SYSCALL(dup3);
 
+// A new handle to the same object that holds only the rights given, a nonempty subset of the source's
+DECLARE_SYSCALL(handle_restrict);
+
 namespace syscall {
 
 /**
