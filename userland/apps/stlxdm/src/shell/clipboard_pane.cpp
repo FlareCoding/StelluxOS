@@ -565,7 +565,7 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     shown.is_pinned = entry.pinned;
 
     shown.size = entry.item.size();
-    shown.is_too_large = shown.is_current && shown.size > source.history->byte_limit();
+    shown.is_too_large = shown.is_current && entry.item.held() > source.history->byte_limit();
     shown.icon = icon_for(source, entry.label);
     for (const clipboard_rep& rep : entry.item.reps()) {
         shown.types.push_back(rep.mime_type);

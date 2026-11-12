@@ -669,7 +669,7 @@ private:
     void send_clipboard_types(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
     void offer_clipboard(dm_client& c, const uint8_t* payload);
-    bool take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps);
+    bool take_offer(dm_client& c, std::vector<clipboard_rep>& reps, bool owns_small);
     void ask_clipboard(dm_client& c, const swp_header& hdr, const uint8_t* payload);
     void copy_text(const std::string& text);
     void copy_file(const std::string& path);

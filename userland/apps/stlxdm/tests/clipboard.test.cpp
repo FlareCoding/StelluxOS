@@ -368,6 +368,26 @@ static void check_history_pins() {
           "pins filling the item limit leave the unpinned entries a whole limit");
 }
 
+/* The budgets count what an object holds, so a length shorter than its object hides nothing */
+static void check_held_budget() {
+    int ends[2];
+    if (pipe(ends) != 0) {
+        check(false, "the test makes its pipe");
+        return;
+    }
+
+    close(ends[1]);
+    clipboard_history history(same_size);
+    history.set_limits(10, 100);
+    history.copy(clipboard_item({ { SWP_MIME_TEXT, 1, ends[0], 500 } }, 0), "Sheen", 1);
+    check(history.current().size() == 1 && history.current().held() == 500,
+          "an item counts what its objects hold beside the lengths they claim");
+
+    history.copy(text_item(2, 0, nullptr), "Sheen", 2);
+    check(!is_open(ends[0]) && listed_sizes(history) == std::vector<uint64_t>{ 2 },
+          "an object past the budget leaves once replaced, whatever length it claimed");
+}
+
 /* A pin past the pins' own budget is refused, and an unpin makes room */
 static void check_pin_limits() {
     clipboard_history history(same_size);
@@ -428,9 +448,11 @@ int main() {
     check_history_order();
     check_history_recopies();
     check_history_budget();
-    check_history_pins();
-    check_pin_limits();
     check_history_actions();
+
+    check_history_pins();
+    check_held_budget();
+    check_pin_limits();
 
     if (g_failures != 0) {
         printf("clipboard: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),
