@@ -2415,8 +2415,10 @@ void server::flush_client(dm_client& c) {
     }
 }
 
-/* Every copy comes through here, so the history keeps it and each watching client hears of it */
+/* Every copy comes through here, so the history keeps it, fingerprinted to tell it from unlike copies unread, and each
+ * watching client hears of it */
 void server::replace_clipboard(clipboard_item item, std::string label) {
+    item.take_fingerprints();
     m_history.copy(std::move(item), std::move(label), monotonic_ns());
     note_clipboard_change();
 }
