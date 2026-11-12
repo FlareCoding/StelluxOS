@@ -1264,10 +1264,12 @@ desktop_point server::follow_outputs(desktop_point pointer, uint16_t buttons) {
 /* Moves the outputs' records, the shell, windows and the pointer from `before` onto the layout, as
  * `follow_outputs()` describes */
 desktop_point server::adopt_layout(const layout& before, desktop_point pointer, uint16_t buttons) {
-    /* Frozen frames no longer match outputs that changed, so a capture ends, the repaint below showing the desktop */
-    if (m_capture.active()) {
+    /* Frozen frames no longer match outputs that changed, so a capture or a preview ends, the repaint below showing the
+     * desktop */
+    if (freezes()) {
         printf("stlxdm: the outputs changed during a capture, which ends\r\n");
         m_capture.close();
+        m_preview.close();
     }
 
     /* Thumbnails sit at corners that moved, and their captures stay on the clipboard */
@@ -1979,16 +1981,9 @@ void server::take_screenshot(const char* mode) {
 /* Every served output freezes before anything else draws, so menus and hover states hold still while a region or a
  * window is aimed */
 void server::open_capture() {
-    if (m_capture.active() || m_power->active()) {
+    std::vector<frozen_frame> frames;
+    if (freezes() || m_power->active() || !freeze_outputs(frames)) {
         return;
-    }
-
-    std::vector<frozen_frame> frames(gfxfb::GFXFB_OUTPUTS_MAX);
-    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
-        if (m_outputs[output].pres && !freeze_output(m_outputs[output], frames[output])) {
-            printf("stlxdm: freezing output %u for a capture failed\r\n", output);
-            return;
-        }
     }
 
     /* The shown toplevels, top first, which window mode lights under the pointer */
@@ -2015,9 +2010,51 @@ void server::open_capture() {
     m_damage.add_full();
 }
 
+/* Freezes every served output into `frames` by index, empty for an output not served. False when one failed. */
+bool server::freeze_outputs(std::vector<frozen_frame>& frames) {
+    frames.resize(gfxfb::GFXFB_OUTPUTS_MAX);
+    for (uint32_t output = 0; output < gfxfb::GFXFB_OUTPUTS_MAX; output++) {
+        if (m_outputs[output].pres && !freeze_output(m_outputs[output], frames[output])) {
+            printf("stlxdm: freezing output %u for a capture failed\r\n", output);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* A thumbnail's preview dims every output, frozen, with the capture at full size on its own until Esc or a click */
+void server::open_preview(uint64_t job) {
+    preview_source source;
+    std::vector<frozen_frame> frames;
+    if (freezes() || m_power->active() || !m_thumbnails.preview_of(job, &source) || !freeze_outputs(frames)) {
+        return;
+    }
+
+    dm_output& out = m_outputs[source.output];
+    m_preview.open(std::move(frames), source, out.pres ? frost_of(out) : nullptr);
+    m_preview_job = job;
+    move_cursor(m_cursor_x, m_cursor_y, SWP_CURSOR_ARROW);
+    m_damage.add_full();
+}
+
+void server::close_preview() {
+    m_preview.close();
+    m_damage.add_full();
+}
+
+/* Delete in a preview discards its capture as the card's Discard does, and the preview closes first */
+void server::discard_preview() {
+    close_preview();
+    thumbnail_click click = m_thumbnails.discard_of(m_preview_job);
+    if (click.action == thumbnail_action::discard) {
+        discard_capture(click);
+    }
+}
+
 /* Alt Print takes the focused window at once, alone with its shadow */
 void server::capture_focused_window() {
-    if (!m_focus || m_capture.active() || m_power->active()) {
+    if (!m_focus || freezes() || m_power->active()) {
         return;
     }
 
@@ -2113,12 +2150,11 @@ void server::encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture
     }
 }
 
-/* An encoded capture becomes the clipboard as a copy does, the copy it replaces staying in the history, which its
- * thumbnail's Discard puts back. A capture discarded while it encoded stays off. */
+/* An encoded capture becomes the clipboard as a copy does, and its thumbnail keeps its pixels for its preview. A
+ * capture discarded while it encoded stays off. */
 void server::pump_captures() {
     capture_png png;
     while (m_capture_encoder.take(&png)) {
-        stlxgfx_destroy_surface(png.pixels);
         bool is_dropped = m_thumbnails.take_dropped(png.id);
         if (png.object < 0 || is_dropped) {
             if (png.object < 0) {
@@ -2129,13 +2165,16 @@ void server::pump_captures() {
             }
 
             m_thumbnails.remove(png.id, m_damage);
+            stlxgfx_destroy_surface(png.pixels);
             continue;
         }
 
         replace_clipboard(clipboard_item({ { PNG_TYPE, png.len, png.object } }, 0), SCREENSHOT_LABEL);
         const char* kind = m_thumbnails.kind_name_of(png.id);
         m_history.set_name(m_history.current_id(), kind ? kind : "");
-        m_thumbnails.encoded(png.id, m_history.current_id());
+        if (!m_thumbnails.encoded(png.id, m_history.current_id(), png.pixels)) {
+            stlxgfx_destroy_surface(png.pixels);
+        }
     }
 }
 

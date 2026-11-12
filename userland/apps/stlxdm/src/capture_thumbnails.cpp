@@ -8,6 +8,7 @@
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
+#include <cmath>
 
 constexpr size_t CARDS_MAX = 3;
 constexpr uint64_t SHOWN_NS = 6000000000ull;
@@ -41,10 +42,12 @@ constexpr int32_t TIP_HEIGHT = 24;
 constexpr int32_t TIP_PADDING_X = 8;
 constexpr int32_t TIP_GAP = 8;
 
+constexpr const char* PREVIEW_TIP = "Preview";
 constexpr const char* DISCARD_TIP = "Discard, and put back what was copied before";
 constexpr const char* DISCARD_ONLY_TIP = "Discard";
 
-/* A capture's card: the capture fitted to it, its kind and size, and its place on the desktop */
+/* A capture's card: the capture fitted to it, its kind and size, its place on the desktop, and its pixels, which the
+ * encoder holds until it hands them back and the card keeps from then on */
 struct thumbnail_card {
     uint64_t                       job = 0;
     uint64_t                       entry = 0;
@@ -56,6 +59,8 @@ struct thumbnail_card {
     damage_list::rect              box = {};        /* the card on the desktop, its shadow left out */
     damage_list::rect              glass_box = {};  /* where its picture's glass was drawn from */
     stlxgfx_surface_t*             image = nullptr; /* the capture fitted to the card */
+    const stlxgfx_surface_t*       pixels = nullptr;
+    stlxgfx_surface_t*             kept = nullptr;
     bool                           keeps_alpha = false;
     std::unique_ptr<panel_picture> picture;
     bool                           is_current = true;
@@ -65,7 +70,10 @@ struct thumbnail_card {
     int32_t                        slide = 0;       /* how far right of its box it still is as it slides in */
 
     thumbnail_card() = default;
-    ~thumbnail_card() { stlxgfx_destroy_surface(image); }
+    ~thumbnail_card() {
+        stlxgfx_destroy_surface(image);
+        stlxgfx_destroy_surface(kept);
+    }
 
     thumbnail_card(const thumbnail_card&) = delete;
     thumbnail_card& operator=(const thumbnail_card&) = delete;
@@ -82,6 +90,36 @@ static std::vector<std::vector<glyph_point>> discard_contours() {
         { { 6.4f, 7.5f }, { 7.6f, 7.5f }, { 7.6f, 11.75f }, { 6.4f, 11.75f } },
         { { 8.4f, 7.5f }, { 9.6f, 7.5f }, { 9.6f, 11.75f }, { 8.4f, 11.75f } },
     };
+}
+
+/* An almond on the 16 unit grid between two parabolas meeting at its tips, `reach` from its middle */
+static std::vector<glyph_point> almond(float reach, float rise) {
+    constexpr int32_t STEPS = 12;
+    std::vector<glyph_point> outline;
+    for (int32_t i = 0; i <= STEPS; i++) {
+        float t = -1.0f + 2.0f * static_cast<float>(i) / STEPS;
+        outline.push_back({ 8.0f + reach * t, 8.0f - rise * (1.0f - t * t) });
+    }
+
+    for (int32_t i = STEPS - 1; i > 0; i--) {
+        float t = -1.0f + 2.0f * static_cast<float>(i) / STEPS;
+        outline.push_back({ 8.0f + reach * t, 8.0f + rise * (1.0f - t * t) });
+    }
+
+    return outline;
+}
+
+/* An eye on the 16 unit grid: an almond's outline around its pupil */
+static std::vector<std::vector<glyph_point>> preview_contours() {
+    constexpr int32_t SIDES = 16;
+    constexpr float PUPIL = 2.4f;
+    std::vector<glyph_point> pupil;
+    for (int32_t i = 0; i < SIDES; i++) {
+        float angle = 6.2831853f * static_cast<float>(i) / SIDES;
+        pupil.push_back({ 8.0f + PUPIL * std::cos(angle), 8.0f + PUPIL * std::sin(angle) });
+    }
+
+    return { almond(7.0f, 5.0f), almond(5.6f, 3.6f), pupil };
 }
 
 /* A cross on the 16 unit grid as one polygon, a plus turned an eighth, so the evenodd rule keeps its middle */
@@ -165,8 +203,8 @@ static int32_t card_height(const thumbnail_card& card) {
     return CARD_PADDING + static_cast<int32_t>(card.image->height) + CAPTION_HEIGHT;
 }
 
-/* Where the actions sit on a card's picture content, from the right: close then Discard, along the image's top right
- * corner, or at the caption's end when the image is too short to keep them off its middle */
+/* Where the actions sit on a card's picture content, from the right: close, Discard, then Preview, along the image's top
+ * right corner, or at the caption's end when the image is too short to keep them off its middle */
 static damage_list::rect action_rect(const thumbnail_card& card, int32_t slot) {
     damage_list::rect image = image_rect(card);
     bool is_under = image.h < ACTIONS_OVER_MIN_H;
@@ -181,6 +219,10 @@ static damage_list::rect close_rect(const thumbnail_card& card) {
 
 static damage_list::rect discard_rect(const thumbnail_card& card) {
     return action_rect(card, 1);
+}
+
+static damage_list::rect preview_rect(const thumbnail_card& card) {
+    return action_rect(card, 2);
 }
 
 static void draw_glyph(stlxgfx_surface_t* target, const stlxgfx_surface_t* glyph, const damage_list::rect& r) {
@@ -202,18 +244,19 @@ static void draw_action(stlxgfx_ctx_t* ctx, stlxgfx_surface_t* target, const dam
 }
 
 capture_thumbnails::capture_thumbnails()
-    : m_discard_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, discard_contours())),
+    : m_preview_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, preview_contours())),
+      m_preview_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, preview_contours())),
+      m_discard_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, discard_contours())),
       m_discard_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, discard_contours())),
       m_close_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, close_contours())),
       m_close_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, close_contours())) {
 }
 
 capture_thumbnails::~capture_thumbnails() {
-    stlxgfx_destroy_surface(m_discard_glyph);
-    stlxgfx_destroy_surface(m_discard_glyph_lit);
-    stlxgfx_destroy_surface(m_close_glyph);
-    stlxgfx_destroy_surface(m_close_glyph_lit);
-    stlxgfx_destroy_surface(m_tip);
+    for (stlxgfx_surface_t* glyph : { m_preview_glyph, m_preview_glyph_lit, m_discard_glyph, m_discard_glyph_lit,
+                                      m_close_glyph, m_close_glyph_lit, m_tip }) {
+        stlxgfx_destroy_surface(glyph);
+    }
 }
 
 void capture_thumbnails::add(uint64_t job, capture_kind kind, const stlxgfx_surface_t* pixels, bool keeps_alpha,
@@ -231,6 +274,8 @@ void capture_thumbnails::add(uint64_t job, capture_kind kind, const stlxgfx_surf
     card->output = output;
     card->place = place;
 
+    card->pixels = pixels;
+    card->keeps_alpha = keeps_alpha;
     card->shown_ns = now_ns;
     card->deadline_ns = now_ns + SHOWN_NS;
     card->slide = slide_at(0);
@@ -243,12 +288,43 @@ void capture_thumbnails::add(uint64_t job, capture_kind kind, const stlxgfx_surf
     lay_out(damage);
 }
 
-void capture_thumbnails::encoded(uint64_t job, uint64_t entry) {
+bool capture_thumbnails::encoded(uint64_t job, uint64_t entry, stlxgfx_surface_t* pixels) {
     for (std::unique_ptr<thumbnail_card>& card : m_cards) {
         if (card->job == job) {
             card->entry = entry;
+            card->kept = pixels;
+            return true;
         }
     }
+
+    return false;
+}
+
+bool capture_thumbnails::preview_of(uint64_t job, preview_source* out) const {
+    for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
+        if (card->job == job) {
+            *out = { card->pixels, card->keeps_alpha, title_of(*card), card->is_current, card->output };
+            return true;
+        }
+    }
+
+    return false;
+}
+
+thumbnail_click capture_thumbnails::discard_of(uint64_t job) {
+    for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
+        if (card->job != job) {
+            continue;
+        }
+
+        if (card->entry == 0) {
+            m_dropped.push_back(job);
+        }
+
+        return { thumbnail_action::discard, job, card->entry };
+    }
+
+    return {};
 }
 
 const char* capture_thumbnails::kind_name_of(uint64_t job) const {
@@ -351,7 +427,8 @@ void capture_thumbnails::press(int32_t x, int32_t y, uint64_t now_ns, damage_lis
     m_pressed_part = m_hover_part;
 }
 
-/* A release over the part its press took acts: close takes the card down here, Discard goes to the server */
+/* A release over the part its press took acts: close takes the card down here, and Preview, a click on the image and
+ * Discard go to the server */
 thumbnail_click capture_thumbnails::release(int32_t x, int32_t y, uint64_t now_ns, damage_list& damage) {
     pointer_move(x, y, now_ns, damage);
     bool is_click = m_pressed >= 0 && m_pressed == m_hover && m_pressed_part == m_hover_part;
@@ -371,16 +448,11 @@ thumbnail_click capture_thumbnails::release(int32_t x, int32_t y, uint64_t now_n
         return {};
     }
 
-    if (pressed_part != part::discard) {
-        return {};
+    if (pressed_part == part::preview || pressed_part == part::image) {
+        return { thumbnail_action::preview, card.job, card.entry };
     }
 
-    thumbnail_click click = { thumbnail_action::discard, card.job, card.entry };
-    if (card.entry == 0) {
-        m_dropped.push_back(card.job);
-    }
-
-    return click;
+    return pressed_part == part::discard ? discard_of(card.job) : thumbnail_click{};
 }
 
 /* A sliding card wants its next frame, and the pointer on any card holds them all, so the stack never shifts under it */
@@ -534,9 +606,13 @@ void capture_thumbnails::paint(thumbnail_card& card) {
 
     bool is_hovered = m_hover >= 0 && m_cards[static_cast<size_t>(m_hover)].get() == &card;
     if (is_hovered) {
+        bool is_preview_lit = m_hover_part == part::preview;
         bool is_discard_lit = m_hover_part == part::discard;
+        draw_action(&ctx, content, preview_rect(card), is_preview_lit,
+                    is_preview_lit ? m_preview_glyph_lit : m_preview_glyph);
         draw_action(&ctx, content, discard_rect(card), is_discard_lit,
                     is_discard_lit ? m_discard_glyph_lit : m_discard_glyph);
+
         bool is_close_lit = m_hover_part == part::close;
         draw_action(&ctx, content, close_rect(card), is_close_lit, is_close_lit ? m_close_glyph_lit : m_close_glyph);
     }
@@ -575,6 +651,10 @@ capture_thumbnails::part capture_thumbnails::part_at(const thumbnail_card& card,
         return part::close;
     }
 
+    if (::contains(preview_rect(card), local_x, local_y)) {
+        return part::preview;
+    }
+
     if (::contains(discard_rect(card), local_x, local_y)) {
         return part::discard;
     }
@@ -587,10 +667,12 @@ void capture_thumbnails::show_tip(damage_list& damage) {
     std::string words;
     damage_list::rect anchor = {};
     const thumbnail_card* card = m_hover >= 0 ? m_cards[static_cast<size_t>(m_hover)].get() : nullptr;
-    if (card && card->picture && m_hover_part == part::discard) {
-        words = card->restores ? DISCARD_TIP : DISCARD_ONLY_TIP;
-        damage_list::rect discard = discard_rect(*card);
-        anchor = { card->box.x + discard.x, card->box.y + discard.y, discard.w, discard.h };
+    bool has_tip = card && card->picture && (m_hover_part == part::preview || m_hover_part == part::discard);
+    if (has_tip) {
+        bool is_preview = m_hover_part == part::preview;
+        words = is_preview ? PREVIEW_TIP : card->restores ? DISCARD_TIP : DISCARD_ONLY_TIP;
+        damage_list::rect action = is_preview ? preview_rect(*card) : discard_rect(*card);
+        anchor = { card->box.x + action.x, card->box.y + action.y, action.w, action.h };
     }
 
     stlxgfx_font* font = shell_font(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE);

@@ -40,6 +40,11 @@ constexpr float TAG_TEXT_SIZE = 11.0f;
 constexpr int32_t MIN_DRAG = 4;
 constexpr int32_t SHIFT_SETTLE = 4;
 
+/* The preview fits the capture inside a margin above its chip, on a soft drop shadow */
+constexpr int32_t PREVIEW_MARGIN = 48;
+constexpr int32_t PREVIEW_CHIP_GAP = 24;
+constexpr shadow_layer PREVIEW_SHADOW = { 12, 28, 153 };
+
 static bool is_empty(const damage_list::rect& r) {
     return r.w <= 0 || r.h <= 0;
 }
@@ -756,4 +761,102 @@ stlxgfx_surface_t* shrink_capture(const stlxgfx_surface_t* pixels, bool keeps_al
     }
 
     return shrunk;
+}
+
+/* A soft drop shadow under `box` on `frame` */
+static void draw_shadow(stlxgfx_surface_t* frame, const damage_list::rect& box) {
+    int32_t side = PREVIEW_SHADOW.blur;
+    int32_t above = PREVIEW_SHADOW.blur - PREVIEW_SHADOW.offset_y;
+    int32_t below = PREVIEW_SHADOW.blur + PREVIEW_SHADOW.offset_y;
+    stlxgfx_surface_t* shadow = stlxgfx_create_surface(static_cast<uint32_t>(box.w + 2 * side),
+                                                       static_cast<uint32_t>(above + box.h + below), 32, 16, 8, 0);
+    if (!shadow) {
+        return;
+    }
+
+    paint_drop_shadow(shadow, { side, above, box.w, box.h }, 0, 0, &PREVIEW_SHADOW, 1);
+    stlxgfx_blit_alpha(frame, box.x - side, box.y - above, shadow, 0, 0, shadow->width, shadow->height);
+    stlxgfx_destroy_surface(shadow);
+}
+
+/* The chip under the capture: its kind and size, where it is now, and the keys that discard it and close the
+ * preview */
+static void draw_preview_chip(stlxgfx_surface_t* frame, const stlxgfx_surface_t* frost, const preview_source& source,
+                              int32_t top) {
+    const char* face = STLXTHEME_UI_FONT_MEDIUM_PATH;
+    float size = STLXTHEME_CAPTION_SIZE;
+    std::vector<chip_piece> line = {
+        { source.title, face, size, STLXTHEME_TEXT },
+        { source.is_current ? "on the clipboard" : "in the clipboard history", STLXTHEME_UI_FONT_PATH, size,
+          STLXTHEME_TEXT_DIM, CHIP_GROUP_GAP },
+        { "Discard", face, size, STLXTHEME_TEXT_SECONDARY },
+        { "Delete", nullptr, 0, 0, CHIP_GROUP_GAP },
+        { "Close", face, size, STLXTHEME_TEXT_SECONDARY },
+        { "Esc" },
+    };
+
+    int32_t w = chip_width(line);
+    damage_list::rect chip = { (static_cast<int32_t>(frame->width) - w) / 2, top, w, CHIP_HEIGHT };
+    draw_chip_glass(frame, 0, 0, frost, chip, CHIP_RADIUS);
+    draw_line(frame, chip.x + chip_left(line), chip.y, CHIP_HEIGHT, line);
+}
+
+/* The capture fitted above its chip, never grown, in a one pixel ring on its shadow, or as it is when it has alpha,
+ * since a window's capture carries its own frame and shadow */
+static void draw_preview(stlxgfx_surface_t* frame, const stlxgfx_surface_t* frost, const preview_source& source) {
+    int32_t room_w = static_cast<int32_t>(frame->width) - 2 * PREVIEW_MARGIN;
+    int32_t room_h = static_cast<int32_t>(frame->height) - PREVIEW_MARGIN - 2 * PREVIEW_CHIP_GAP - CHIP_HEIGHT;
+    double scale = std::min({ 1.0, static_cast<double>(room_w) / source.pixels->width,
+                              static_cast<double>(room_h) / source.pixels->height });
+    int32_t w = std::max(1, static_cast<int32_t>(source.pixels->width * scale + 0.5));
+    int32_t h = std::max(1, static_cast<int32_t>(source.pixels->height * scale + 0.5));
+
+    stlxgfx_surface_t* fitted = scale < 1.0 ? shrink_capture(source.pixels, source.keeps_alpha, w, h) : nullptr;
+    const stlxgfx_surface_t* image = fitted ? fitted : source.pixels;
+    if (scale < 1.0 && !fitted) {
+        return;
+    }
+
+    damage_list::rect at = { (static_cast<int32_t>(frame->width) - w) / 2, PREVIEW_MARGIN + (room_h - h) / 2, w, h };
+    if (source.keeps_alpha) {
+        stlxgfx_blit_alpha(frame, at.x, at.y, image, 0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+    } else {
+        draw_shadow(frame, at);
+        stlxgfx_blit(frame, at.x, at.y, image, 0, 0, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+        blend_between(frame, grown(at, 1), 0, at, 0, STLXTHEME_LINE);
+    }
+
+    stlxgfx_destroy_surface(fitted);
+    draw_preview_chip(frame, frost, source, at.y + h + PREVIEW_CHIP_GAP);
+}
+
+void capture_preview::open(std::vector<frozen_frame> frames, const preview_source& source,
+                           const stlxgfx_surface_t* frost) {
+    m_frames = std::move(frames);
+    m_is_open = true;
+    for (frozen_frame& frame : m_frames) {
+        if (frame.surface) {
+            stlxgfx_fill_rect_blend(frame.surface, 0, 0, frame.surface->width, frame.surface->height, DIM_COLOR);
+        }
+    }
+
+    bool has_frame = source.output < m_frames.size() && m_frames[source.output].surface;
+    if (has_frame && source.pixels) {
+        draw_preview(m_frames[source.output].surface, frost, source);
+    }
+}
+
+void capture_preview::close() {
+    m_is_open = false;
+    m_frames.clear();
+}
+
+void capture_preview::draw(uint32_t output, stlxgfx_surface_t* back, const damage_list::rect& clip) const {
+    stlxgfx_surface_t* view = view_of(back, clip);
+    if (!view) {
+        return;
+    }
+
+    copy_opaque(view, output < m_frames.size() ? m_frames[output].surface : nullptr, clip);
+    stlxgfx_destroy_surface(view);
 }

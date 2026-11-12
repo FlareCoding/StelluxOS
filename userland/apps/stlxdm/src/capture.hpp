@@ -64,8 +64,9 @@ struct capture_target {
 /* The frost an output's glass is drawn from, null for an output not served */
 using frost_lookup = std::function<const stlxgfx_surface_t*(uint32_t output)>;
 
-/* The room between a chip's pieces, as the palette's footer spaces a label and its keys */
+/* The room between a chip's pieces, and between its groups of pieces, as the palette's footer spaces its actions */
 constexpr int32_t PIECE_GAP = 6;
+constexpr int32_t CHIP_GROUP_GAP = 18;
 
 /* One piece of a chip's line: words in a face, size and color, or with no face a key's name drawn as a keycap, and the
  * room after it */
@@ -75,6 +76,16 @@ struct chip_piece {
     float       size = 0;
     uint32_t    color = 0;
     int32_t     gap = PIECE_GAP;
+};
+
+/* What a preview shows: a capture's pixels, read only while it opens, its title, whether it is still the clipboard,
+ * and the output it came from */
+struct preview_source {
+    const stlxgfx_surface_t* pixels = nullptr;
+    bool                     keeps_alpha = false;
+    std::string              title;
+    bool                     is_current = true;
+    uint32_t                 output = 0;
 };
 
 /* The capture overlay: every output frozen and dimmed, and either a region dragged on one undimmed inside an amber
@@ -166,6 +177,25 @@ private:
     damage_list::rect m_shown_outline = {};
     damage_list::rect m_shown_chip = {};
     std::string m_shown_words;
+};
+
+/* A capture at full size over a dim on the output it came from, every output frozen beneath, drawn into the frames
+ * once as it opens from stlxdm's own pixels. Delete discards the capture, and Esc or a click closes it. */
+class capture_preview {
+public:
+    bool active() const { return m_is_open; }
+
+    /* Opens over `frames`, one per output by index and empty for an output not served, showing `source` above a chip
+     * on the glass of `frost`, its output's */
+    void open(std::vector<frozen_frame> frames, const preview_source& source, const stlxgfx_surface_t* frost);
+    void close();
+
+    /* Draws output `output`'s preview inside `clip`, in its pixels, every pixel opaque */
+    void draw(uint32_t output, stlxgfx_surface_t* back, const damage_list::rect& clip) const;
+
+private:
+    bool                      m_is_open = false;
+    std::vector<frozen_frame> m_frames;
 };
 
 /* A copy of `r` of `frame`, in the frame's pixels, which the caller destroys, or null without memory */
