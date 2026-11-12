@@ -57,8 +57,13 @@ struct clipboard_entry {
 /* Whether two items hold the same content, which the server reads from their objects */
 using clipboard_matcher = std::function<bool(const clipboard_item& a, const clipboard_item& b)>;
 
+/* The server's matcher: the same types and lengths in order, and the same bytes read through read-only mappings, a
+ * refused mapping counting as different */
+bool same_content(const clipboard_item& a, const clipboard_item& b);
+
 /* The clipboard and the copies it replaced, newest first, within a budget of entries and bytes besides the current
- * one. A private copy stays out, the same content copied again moves its entry up, and pinned entries stay. */
+ * one. A private copy stays out, the same content copied again moves its entry up under its id, and pinned entries
+ * stay. */
 class clipboard_history {
 public:
     explicit clipboard_history(clipboard_matcher matches);

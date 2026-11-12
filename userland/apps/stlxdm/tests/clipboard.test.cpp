@@ -226,10 +226,74 @@ static void check_history_order() {
     check(!is_open(private_object) && listed_sizes(history) == std::vector<uint64_t>{ 5, 3, 2, 1 },
           "a private copy leaves no entry once replaced");
 
-    int repeated_object = entry_of_size(history, 2)->item.reps()[0].object;
-    history.copy(text_item(2, 0, nullptr), "Settings", 6);
-    check(!is_open(repeated_object) && listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 3, 1 },
-          "the same content copied again moves its entry up");
+    const clipboard_entry* repeated = entry_of_size(history, 2);
+    uint64_t repeated_id = repeated->id;
+    int repeated_object = repeated->item.reps()[0].object;
+    int recopied_object = -1;
+    history.copy(text_item(2, 0, &recopied_object), "Settings", 6);
+
+    check(listed_sizes(history) == std::vector<uint64_t>{ 2, 5, 3, 1 }, "the same content copied again moves its entry up");
+    check(history.is_current(repeated_id) && is_open(repeated_object) && !is_open(recopied_object),
+          "the moved entry keeps its id and objects, and the new copy's objects close");
+
+    const clipboard_entry* moved = history.find(repeated_id);
+    check(moved && moved->label == "Settings" && moved->copied_ns == 6,
+          "the moved entry names the new copy's source and time");
+}
+
+/* A regular file holding `text`, which reads and maps as a shared memory object does */
+static int object_holding(std::string_view text) {
+    char path[] = "/tmp/stlxdm-clipboard-XXXXXX";
+    int object = mkstemp(path);
+    if (object < 0) {
+        return -1;
+    }
+
+    unlink(path);
+    if (write(object, text.data(), text.size()) != static_cast<ssize_t>(text.size())) {
+        close(object);
+        return -1;
+    }
+
+    return object;
+}
+
+static clipboard_item item_holding(std::string_view text, const char* mime_type = SWP_MIME_TEXT) {
+    return clipboard_item({ { mime_type, text.size(), object_holding(text) } }, 0);
+}
+
+static void check_same_content() {
+    clipboard_item hello = item_holding("hello");
+    check(same_content(hello, item_holding("hello")), "items of one type holding the same bytes match");
+    check(!same_content(hello, item_holding("jello")), "items whose bytes differ at the same length differ");
+    check(!same_content(hello, item_holding("hello!")), "items of different lengths differ");
+    check(!same_content(hello, item_holding("hello", "text/html")), "items of different types differ");
+
+    int ends[2];
+    if (pipe(ends) != 0) {
+        check(false, "the test makes its pipe");
+        return;
+    }
+
+    close(ends[1]);
+    clipboard_item piped({ { SWP_MIME_TEXT, 5, ends[0] } }, 0);
+    check(!same_content(hello, piped), "an object that refuses its mapping counts as different");
+}
+
+/* The server's own matcher, so only the same bytes merge entries */
+static void check_history_recopies() {
+    clipboard_history history(same_content);
+    history.set_limits(10, 1000);
+    history.copy(item_holding("first"), "Terminal", 1);
+    uint64_t first = history.entries().front()->id;
+    history.set_pinned(first, true);
+
+    history.copy(item_holding("other"), "Terminal", 2);
+    check(history.entries().size() == 2, "a copy of the same length but other bytes gets its own entry");
+
+    history.copy(item_holding("first"), "Settings", 3);
+    check(history.entries().size() == 2 && history.is_current(first), "a pinned entry copied again keeps its id");
+    check(history.find(first) && history.find(first)->pinned, "a pinned entry copied again stays pinned");
 }
 
 static void check_history_budget() {
@@ -300,8 +364,10 @@ int main() {
     check_folded_finds();
     check_uri_lists();
     check_png_sizes();
+    check_same_content();
 
     check_history_order();
+    check_history_recopies();
     check_history_budget();
     check_history_actions();
 

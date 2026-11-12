@@ -64,6 +64,43 @@ void clipboard_item::close_objects() {
     }
 }
 
+/* Compares two objects' first `len` bytes through read-only mappings, a refused mapping counting as different */
+static bool same_bytes(int a, int b, uint64_t len) {
+    void* first = mmap(nullptr, len, PROT_READ, MAP_SHARED, a, 0);
+    if (first == MAP_FAILED) {
+        return false;
+    }
+
+    void* second = mmap(nullptr, len, PROT_READ, MAP_SHARED, b, 0);
+    bool same = second != MAP_FAILED && memcmp(first, second, len) == 0;
+    if (second != MAP_FAILED) {
+        munmap(second, len);
+    }
+
+    munmap(first, len);
+    return same;
+}
+
+bool same_content(const clipboard_item& a, const clipboard_item& b) {
+    if (a.reps().size() != b.reps().size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < a.reps().size(); i++) {
+        const clipboard_rep& x = a.reps()[i];
+        const clipboard_rep& y = b.reps()[i];
+        if (x.mime_type != y.mime_type || x.len != y.len) {
+            return false;
+        }
+
+        if (x.len > 0 && !same_bytes(x.object, y.object, x.len)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 clipboard_history::clipboard_history(clipboard_matcher matches)
     : m_matches(std::move(matches)) {
 }
@@ -87,23 +124,24 @@ void clipboard_history::copy(clipboard_item item, std::string label, int64_t now
         return;
     }
 
-    /* The same content copied again replaces its entry, keeping its pin */
-    bool pinned = false;
-    for (size_t i = 0; i < m_entries.size(); i++) {
-        if (m_matches(m_entries[i].item, item)) {
-            pinned = m_entries[i].pinned;
-            m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
-            break;
-        }
+    /* The same content copied again moves its entry up with its id and pin, so whatever names the entry still finds
+     * it, and the new copy's objects close */
+    size_t i = 0;
+    while (i < m_entries.size() && !m_matches(m_entries[i].item, item)) {
+        i++;
     }
 
     clipboard_entry entry;
-    entry.id = m_next_id++;
-    entry.item = std::move(item);
+    if (i < m_entries.size()) {
+        entry = std::move(m_entries[i]);
+        m_entries.erase(m_entries.begin() + static_cast<ptrdiff_t>(i));
+    } else {
+        entry.id = m_next_id++;
+        entry.item = std::move(item);
+    }
+
     entry.label = std::move(label);
     entry.copied_ns = now_ns;
-    entry.pinned = pinned;
-
     m_entries.insert(m_entries.begin(), std::move(entry));
     m_front_is_current = true;
     evict();
