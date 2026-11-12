@@ -58,6 +58,9 @@ public:
     /* Empties the wake pipe and moves out the newest answer when one arrived since the last call */
     bool take(text_matches* matches);
 
+    /* The bytes searches have mapped so far, which shows a superseded search stopping within its window */
+    uint64_t bytes_mapped() const { return m_bytes_mapped; }
+
 private:
     struct request {
         uint64_t                   number = 0;
@@ -66,7 +69,7 @@ private:
     };
 
     void search_loop();
-    bool holds(const searched_text& text, const std::string& query, uint64_t number) const;
+    bool holds(const searched_text& text, const std::string& query, uint64_t number);
     void wake();
 
     int m_wake[2] = { -1, -1 };
@@ -76,6 +79,7 @@ private:
     bool                    m_stopping = false;
     uint64_t                m_next_request = 1;
     std::atomic<uint64_t>   m_newest_request{ 0 };
+    std::atomic<uint64_t>   m_bytes_mapped{ 0 };
     bool                    m_has_request = false;
     request                 m_request;
     bool                    m_has_answer = false;

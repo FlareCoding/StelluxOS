@@ -19,6 +19,8 @@ constexpr int LATE_WAIT_MS = 200;
 constexpr int POLL_MS = 10;
 constexpr size_t CHUNK_BYTES = 1024 * 1024;
 constexpr size_t LONG_TEXT_BYTES = 3 * CHUNK_BYTES;
+constexpr uint64_t SUPERSEDED_TEXTS = 6;
+constexpr size_t SUPERSEDED_TEXT_BYTES = 8 * CHUNK_BYTES;
 
 static uint64_t g_checks;
 static uint64_t g_failures;
@@ -109,6 +111,32 @@ static void check_newest(clipboard_search& search, const std::vector<int>& objec
     check(!answered(search, 0, matches, LATE_WAIT_MS), "no older answer follows the newest");
 }
 
+/* A newer request stops an older search within the window it reads, so the older one maps no more of its texts */
+static void check_superseded(clipboard_search& search) {
+    std::vector<int> objects;
+    std::vector<searched_text> older;
+    for (uint64_t i = 0; i < SUPERSEDED_TEXTS; i++) {
+        objects.push_back(scratch_object(std::string(SUPERSEDED_TEXT_BYTES, 'a')));
+        older.emplace_back(i + 1, dup(objects.back()), SUPERSEDED_TEXT_BYTES);
+    }
+
+    uint64_t before = search.bytes_mapped();
+    search.search("needlex", std::move(older));
+    for (int waited = 0; search.bytes_mapped() == before && waited < WAIT_MS; waited++) {
+        usleep(1000);
+    }
+
+    uint64_t request = search.search("absent", {});
+    text_matches matches;
+    check(answered(search, request, matches), "a newer request is answered");
+    check(search.bytes_mapped() - before < 2 * SUPERSEDED_TEXT_BYTES,
+          "a newer request stops an older search within its window, before the rest of its texts");
+
+    for (int object : objects) {
+        close(object);
+    }
+}
+
 int main() {
     clipboard_search idle;
     check(idle.search("needlex", {}) == 0, "a searcher not started takes no request");
@@ -122,6 +150,7 @@ int main() {
                                  scratch_object("a short needlex") };
     check_search(search, objects);
     check_newest(search, objects);
+    check_superseded(search);
 
     for (int object : objects) {
         close(object);

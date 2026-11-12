@@ -2,13 +2,14 @@
 
 #include "../clipboard.hpp"
 
+#include <algorithm>
 #include <fcntl.h>
 #include <string_view>
 #include <sys/mman.h>
 #include <system_error>
 #include <unistd.h>
 
-/* A search looks for a newer request between chunks of this many bytes */
+/* A search maps a text a window of this many bytes at a time, looking for a newer request before each */
 constexpr size_t CHUNK_BYTES = 1024 * 1024;
 
 searched_text::~searched_text() {
@@ -131,6 +132,10 @@ void clipboard_search::search_loop() {
 
         text_matches found = { asked.number, {} };
         for (const searched_text& text : asked.texts) {
+            if (m_newest_request != asked.number) {
+                break;
+            }
+
             if (holds(text, asked.query, asked.number)) {
                 found.ids.push_back(text.id());
             }
@@ -146,24 +151,26 @@ void clipboard_search::search_loop() {
     }
 }
 
-/* A match may straddle two chunks, so each reads on past its end by the query's length less one */
-bool clipboard_search::holds(const searched_text& text, const std::string& query, uint64_t number) const {
+/* Each window maps one chunk and reads on past its end by the query's length less one, so a match may straddle two
+ * chunks, and a newer request stops the search before the next window is mapped */
+bool clipboard_search::holds(const searched_text& text, const std::string& query, uint64_t number) {
     if (text.len() == 0 || query.empty()) {
         return false;
     }
 
-    void* shared = mmap(nullptr, text.len(), PROT_READ, MAP_SHARED, text.object(), 0);
-    if (shared == MAP_FAILED) {
-        return false;
-    }
-
-    std::string_view bytes(static_cast<const char*>(shared), text.len());
     bool is_found = false;
-    for (size_t at = 0; at < bytes.size() && !is_found && m_newest_request == number; at += CHUNK_BYTES) {
-        std::string_view chunk = bytes.substr(at, CHUNK_BYTES + query.size() - 1);
-        is_found = find_folded(chunk, query) != std::string_view::npos;
+    for (uint64_t at = 0; at < text.len() && !is_found && m_newest_request == number; at += CHUNK_BYTES) {
+        size_t window = static_cast<size_t>(std::min<uint64_t>(CHUNK_BYTES + query.size() - 1, text.len() - at));
+        void* shared = mmap(nullptr, window, PROT_READ, MAP_SHARED, text.object(), static_cast<off_t>(at));
+        if (shared == MAP_FAILED) {
+            return false;
+        }
+
+        m_bytes_mapped += window;
+        std::string_view bytes(static_cast<const char*>(shared), window);
+        is_found = find_folded(bytes, query) != std::string_view::npos;
+        munmap(shared, window);
     }
 
-    munmap(shared, text.len());
     return is_found;
 }
