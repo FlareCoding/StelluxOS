@@ -114,10 +114,20 @@ static void check_types() {
     check(types.types[2][0] == '\0' && types.types[3][0] == '\0', "the types past the count stay zero");
 }
 
+static void check_uri_lists() {
+    check(file_uri_list("/etc/stlxdm/stlxdm.conf") == "file:///etc/stlxdm/stlxdm.conf\r\n",
+          "a plain path names its file as it is");
+    check(file_uri_list("/tmp/a b%c#d") == "file:///tmp/a%20b%25c%23d\r\n",
+          "spaces, percents and hashes are escaped");
+    check(file_uri_list("/home/caf\xc3\xa9.txt") == "file:///home/caf%C3%A9.txt\r\n",
+          "UTF-8 bytes are escaped one by one");
+}
+
 int main() {
     check_offers();
     check_items();
     check_types();
+    check_uri_lists();
 
     if (g_failures != 0) {
         printf("clipboard: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

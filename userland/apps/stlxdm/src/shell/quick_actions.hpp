@@ -35,11 +35,12 @@ public:
     quick_actions& operator=(const quick_actions&) = delete;
 
     /* Fired by a chosen row: a launcher to start as the dock does, an action, a program to run in Terminal with its
-     * space separated args, or a value to copy. All must be set before the palette opens. */
+     * space separated args, a value to copy, or a file to copy as a file. All must be set before the palette opens. */
     std::function<void(const stlxconf_pin_t& pin)> on_launch;
     std::function<void(const stlxconf_action_t& action)> on_run;
     std::function<void(const char* program, const char* args)> on_run_program;
     std::function<void(const std::string& text)> on_copy;
+    std::function<void(const std::string& path)> on_copy_file;
 
     /* Fired by a chosen file or folder: a program to run with exactly these args, its handler or File Manager */
     std::function<bool(const char* program, const std::vector<std::string>& args)> on_exec;
