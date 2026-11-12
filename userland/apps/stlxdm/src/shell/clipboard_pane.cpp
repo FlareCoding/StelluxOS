@@ -581,6 +581,7 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     if (text) {
         shown.text = read_bytes(*text, PREVIEW_BYTES_MAX);
         shown.text_len = text->len;
+        shown.has_text = true;
     }
 
     const clipboard_rep* png = entry.item.find("image/png");
@@ -738,8 +739,13 @@ void clip_preview::drop_pictures() {
  * that a long text shows its first 64 KB, or that a search's match lies past them */
 static std::vector<std::string> meta_parts(const shown_entry& entry, std::string_view query) {
     if (entry.is_image) {
-        return { "PNG", std::to_string(entry.image_w) + " \xC3\x97 " + std::to_string(entry.image_h),
-                 size_text(entry.size) };
+        std::vector<std::string> parts = { "PNG", std::to_string(entry.image_w) + " \xC3\x97 " +
+                                                      std::to_string(entry.image_h), size_text(entry.size) };
+        if (!entry.has_text) {
+            parts.push_back("pastes into apps that read images");
+        }
+
+        return parts;
     }
 
     if (!entry.files.empty()) {
@@ -1273,18 +1279,24 @@ void clipboard_pane::move_selection(int32_t rows) {
     select(static_cast<size_t>(std::clamp(static_cast<int32_t>(m_selected) + rows, 0, last)));
 }
 
-/* Enter pastes into the focused window when there is one, and otherwise copies, as Ctrl Enter always does */
+/* Enter pastes into the focused window an entry it can take, and otherwise copies, as Ctrl Enter always does */
 void clipboard_pane::choose(bool pastes) {
     if (m_selected >= m_listed.size()) {
         return;
     }
 
     uint64_t id = listed(m_selected).id;
-    if (pastes && !m_source.focused_app.empty()) {
+    if (pastes && can_paste(listed(m_selected))) {
         m_source.paste(id);
     } else {
         m_source.copy(id);
     }
+}
+
+/* Every app pastes text, while an entry with none, such as a capture, pastes only into apps that read its type, which
+ * no app tells the desktop yet, so Enter copies it instead of promising a paste */
+bool clipboard_pane::can_paste(const shown_entry& entry) const {
+    return !m_source.focused_app.empty() && entry.has_text;
 }
 
 /* Ctrl K's list names the entry it acts on, as "TEXT FROM SHEEN, 9 LINES", and replaces the entries until a choice
@@ -1313,11 +1325,14 @@ void clipboard_pane::build_menu() {
 std::vector<clip_action> clipboard_pane::actions_of(const shown_entry& entry) {
     uint64_t id = entry.id;
     std::vector<clip_action> actions;
-    if (!m_source.focused_app.empty()) {
+    if (can_paste(entry)) {
         actions.push_back({ "Paste into " + m_source.focused_app, "Enter", [this]() { choose(true); } });
     }
 
-    actions.push_back({ "Copy", actions.empty() ? "Enter" : "Ctrl Enter", [this]() { choose(false); } });
+    if (!entry.is_current) {
+        actions.push_back({ "Copy", actions.empty() ? "Enter" : "Ctrl Enter", [this]() { choose(false); } });
+    }
+
     actions.push_back({ entry.is_pinned ? "Unpin" : "Pin", "Ctrl P", [this, id, pinned = entry.is_pinned]() {
         toggle_pin(id, pinned);
     } });
@@ -1472,12 +1487,15 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
         return { { "Choose", "Enter" }, { "Back", "Esc" } };
     }
 
+    /* The entry already on the clipboard offers no Copy, and Enter on one no app can paste only closes the palette */
     std::vector<footer_item> items;
-    if (m_source.focused_app.empty()) {
-        items.push_back({ "Copy", "Enter" });
-    } else {
+    const shown_entry& entry = listed(m_selected);
+    if (can_paste(entry)) {
         items.push_back({ "Paste into " + m_source.focused_app, "Enter" });
-        items.push_back({ "Copy", "Ctrl Enter" });
+    }
+
+    if (!entry.is_current) {
+        items.push_back({ "Copy", items.empty() ? "Enter" : "Ctrl Enter" });
     }
 
     items.push_back({ listed(m_selected).is_pinned ? "Unpin" : "Pin", "Ctrl P" });
