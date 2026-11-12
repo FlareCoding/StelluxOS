@@ -141,7 +141,7 @@ private:
     bool                                             m_opens_clipboard = false;
     clipboard_search                                 m_clipboard_search;
     std::function<bool()>                            m_shows_clipboard;
-    std::function<void()>                            m_show_clipboard;
+    std::function<void(bool clears_query)>           m_show_clipboard;
     std::function<void()>                            m_refresh_clipboard;
     std::function<void(const text_matches& matches)> m_show_text_matches;
 
