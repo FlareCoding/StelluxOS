@@ -3,9 +3,12 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QImage>
 #include <QList>
+#include <QMetaObject>
 #include <QPair>
+#include <QThreadPool>
 #include <QUrl>
 
 #include <algorithm>
@@ -65,18 +68,22 @@ static bool is_carried(const QMimeData* data, const QString& format) {
            (data->hasImage() && format.startsWith(QStringLiteral("image/")));
 }
 
-QList<representation> representations(const QMimeData* data) {
+static QByteArray encoded_png(const QImage& image) {
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return png;
+}
+
+QList<representation> representations(const QMimeData* data, bool includes_image) {
     QList<representation> reps;
     if (!data) {
         return reps;
     }
 
-    if (data->hasImage()) {
-        QByteArray png;
-        QBuffer buffer(&png);
-        buffer.open(QIODevice::WriteOnly);
-        qvariant_cast<QImage>(data->imageData()).save(&buffer, "PNG");
-        add(reps, PNG, png);
+    if (includes_image && data->hasImage()) {
+        add(reps, PNG, encoded_png(qvariant_cast<QImage>(data->imageData())));
     }
 
     if (data->hasUrls()) {
@@ -210,9 +217,37 @@ void QStelluxClipboard::setMimeData(QMimeData* data, QClipboard::Mode mode) {
         return;
     }
 
-    QList<representation> reps = representations(data);
+    m_copy++;
     bool is_private = data && data->data(PASSWORD_HINT) == "secret";
+    if (data && data->hasImage()) {
+        QImage image = qvariant_cast<QImage>(data->imageData());
+        QList<representation> rest = representations(data, false);
+        if (!is_ours) {
+            m_own.reset(data);
+        }
 
+        emitChanged(mode);
+        offer_image(std::move(image), std::move(rest), is_private, mode);
+        return;
+    }
+
+    if (!offer(representations(data), is_private)) {
+        if (!is_ours) {
+            delete data;
+        }
+
+        return;
+    }
+
+    if (!is_ours) {
+        m_own.reset(data);
+    }
+
+    emitChanged(mode);
+}
+
+// Offers `reps` as the desktop's clipboard and shows their types, false when the offer cannot be sent
+bool QStelluxClipboard::offer(const QList<representation>& reps, bool is_private) {
     QByteArray names[STLXWIN_OFFER_TYPES_MAX];
     stlxwin_offer_rep wire[STLXWIN_OFFER_TYPES_MAX];
     stlxwin_offer_types offered = {};
@@ -225,19 +260,38 @@ void QStelluxClipboard::setMimeData(QMimeData* data, QClipboard::Mode mode) {
 
     uint32_t flags = is_private ? STLXWIN_CLIPBOARD_PRIVATE : 0;
     if (stlxwin_clipboard_offer(m_connection, wire, offered.count, flags) != 0) {
-        if (!is_ours) {
-            delete data;
-        }
-
-        return;
-    }
-
-    if (!is_ours) {
-        m_own.reset(data);
+        return false;
     }
 
     m_item.show_types(offered);
-    emitChanged(mode);
+    return true;
+}
+
+// A copied image's PNG is encoded on a pool thread, so a large image never holds up the app, and offered from the GUI
+// thread, which libstlxwin calls stay on, unless a newer copy or another app's change came first. The app's own
+// pastes read its data meanwhile, and a copy whose offer fails gives the app the desktop's clipboard back.
+void QStelluxClipboard::offer_image(QImage image, QList<representation> rest, bool is_private, QClipboard::Mode mode) {
+    std::weak_ptr<bool> alive = m_alive;
+    uint64_t copy = m_copy;
+    QThreadPool::globalInstance()->start([this, alive, image, rest, is_private, mode, copy]() {
+        QByteArray png = encoded_png(image);
+        QMetaObject::invokeMethod(qApp, [this, alive, png, rest, is_private, mode, copy]() {
+            if (!alive.lock() || copy != m_copy) {
+                return;
+            }
+
+            QList<representation> reps;
+            add(reps, PNG, png);
+            for (const representation& rep : rest) {
+                add(reps, rep.first, rep.second);
+            }
+
+            if (!offer(reps, is_private)) {
+                m_own.reset();
+                emitChanged(mode);
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 bool QStelluxClipboard::supportsMode(QClipboard::Mode mode) const {
@@ -252,6 +306,7 @@ void QStelluxClipboard::changed() {
         return;
     }
 
+    m_copy++;
     m_own.reset();
     emitChanged(QClipboard::Clipboard);
 }
