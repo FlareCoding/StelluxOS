@@ -98,7 +98,9 @@ public:
     bool on_key(const ui::key_event& e);
 
     std::vector<footer_item> footer_actions() const;
-    std::string footer_end() const;
+
+    /* The footer's end, longest first, for the footer to show the first that fits beside the actions */
+    std::vector<std::string> footer_ends() const;
     std::string placeholder() const;
 
 private:

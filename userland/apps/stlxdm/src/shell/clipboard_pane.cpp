@@ -1503,31 +1503,64 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
     return items;
 }
 
-/* The count of entries and the bytes the history's budget counts against its limit, then what the pins hold against
- * theirs, or how many entries a search lists while the searcher may find more */
-std::string clipboard_pane::footer_end() const {
+/* What the history keeps against its budget, which leaves the current clipboard out, as "100 of 100 kept, 6.2 MB of
+ * 64 MB", then what the pins hold against theirs, giving way to the same without the pins and then without the limits,
+ * "100 kept, 6.2 MB". A search shows how many entries it lists while the searcher may find more. */
+std::vector<std::string> clipboard_pane::footer_ends() const {
     if (!m_query.empty()) {
         std::string listed = std::to_string(m_listed.size()) + " of " + std::to_string(m_entries.size());
-        return m_is_reading_texts ? listed + ", searching" : listed;
+        return { m_is_reading_texts ? listed + ", searching" : listed };
     }
 
-    size_t count = m_entries.size();
-    std::string items = count == 1 ? "1 item" : std::to_string(count) + " items";
-    if (count == 0) {
-        return items;
+    if (m_entries.empty()) {
+        return { "0 items" };
     }
 
     const clipboard_history& history = *m_source.history;
     std::string limit = " of " + std::to_string(history.byte_limit() >> 20) + " MB";
-    std::string kept = items + ", " + size_text(history.kept_bytes()) + limit;
-    return history.pinned_count() == 0 ? kept : kept + ", pins " + size_text(history.pinned_bytes()) + limit;
+    std::string count = std::to_string(history.kept_count()) + " of " + std::to_string(history.item_limit()) + " kept";
+    std::string kept = count + ", " + size_text(history.kept_bytes()) + limit;
+    std::string brief = std::to_string(history.kept_count()) + " kept, " + size_text(history.kept_bytes());
+    if (history.pinned_count() == 0) {
+        return { kept, brief };
+    }
+
+    return { kept + ", pins " + size_text(history.pinned_bytes()) + limit, kept, brief };
 }
 
+/* What a search covers, counted as the footer counts it: the copy on the clipboard apart from the kept copies and the
+ * pins, so a history at a limit of 100 reads "the clipboard and 100 kept copies" rather than 101 items */
 std::string clipboard_pane::placeholder() const {
-    size_t count = m_entries.size();
-    if (count == 0) {
+    if (m_entries.empty()) {
         return "Search the clipboard history";
     }
 
-    return count == 1 ? "Search 1 clipboard item" : "Search " + std::to_string(count) + " clipboard items";
+    const clipboard_history& history = *m_source.history;
+    const clipboard_entry* current = history.find(history.current_id());
+    size_t kept = history.kept_count();
+    size_t pins = history.pinned_count() - (current && current->pinned ? 1 : 0);
+
+    std::vector<std::string> parts;
+    if (current) {
+        parts.push_back("the clipboard");
+    }
+
+    if (kept > 0) {
+        parts.push_back(kept == 1 ? "1 kept copy" : std::to_string(kept) + " kept copies");
+    }
+
+    if (pins > 0) {
+        parts.push_back(pins == 1 ? "1 pin" : std::to_string(pins) + " pins");
+    }
+
+    if (parts.empty()) {
+        return "Search the clipboard history";
+    }
+
+    std::string words = "Search " + parts[0];
+    for (size_t i = 1; i < parts.size(); i++) {
+        words += (i + 1 == parts.size() ? " and " : ", ") + parts[i];
+    }
+
+    return words;
 }

@@ -715,13 +715,29 @@ void footer_group::paint(ui::painter& p, int32_t x, int32_t box_h, int32_t item_
 /* The actions of the selected row and the mode at the left, each with its keys, and the palette's own at the right */
 class palette_footer : public ui::widget {
 public:
-    palette_footer()
-        : m_actions(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_TEXT_SECONDARY),
-          m_end(STLXTHEME_UI_FONT_PATH, STLXTHEME_TEXT_DIM) {}
+    palette_footer() : m_actions(STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_TEXT_SECONDARY) {}
 
     void show(const std::vector<footer_item>& actions, const std::vector<footer_item>& end) {
+        show_fitting(actions, { end });
+    }
+
+    /* Shows the actions from the left and, from the right, the first of `ends` that fits beside them, so a long end
+     * gives way to a shorter one and never covers an action */
+    void show_fitting(const std::vector<footer_item>& actions, const std::vector<std::vector<footer_item>>& ends) {
         bool has_changed = m_actions.show(actions);
-        has_changed = m_end.show(end) || has_changed;
+        if (ends.size() != m_ends.size()) {
+            m_ends.clear();
+            for (size_t i = 0; i < ends.size(); i++) {
+                m_ends.push_back(std::make_unique<footer_group>(STLXTHEME_UI_FONT_PATH, STLXTHEME_TEXT_DIM));
+            }
+
+            has_changed = true;
+        }
+
+        for (size_t i = 0; i < ends.size(); i++) {
+            has_changed = m_ends[i]->show(ends[i]) || has_changed;
+        }
+
         if (has_changed) {
             invalidate();
         }
@@ -735,13 +751,19 @@ public:
         p.fill({ 0, 0, m_frame.w, 1 }, STLXTHEME_LINE_SUBTLE);
         m_actions.paint(p, FOOTER_PADDING_LEFT, m_frame.h, FOOTER_ITEM_GAP);
 
-        int32_t end_w = m_end.width(FOOTER_KEY_GAP);
-        m_end.paint(p, m_frame.w - FOOTER_PADDING_RIGHT - end_w, m_frame.h, FOOTER_KEY_GAP);
+        int32_t actions_right = FOOTER_PADDING_LEFT + m_actions.width(FOOTER_ITEM_GAP) + FOOTER_ITEM_GAP;
+        for (const std::unique_ptr<footer_group>& end : m_ends) {
+            int32_t end_x = m_frame.w - FOOTER_PADDING_RIGHT - end->width(FOOTER_KEY_GAP);
+            if (end_x >= actions_right) {
+                end->paint(p, end_x, m_frame.h, FOOTER_KEY_GAP);
+                return;
+            }
+        }
     }
 
 private:
-    footer_group m_actions;
-    footer_group m_end;
+    footer_group                               m_actions;
+    std::vector<std::unique_ptr<footer_group>> m_ends;
 };
 
 /* The rows under the field, scrolled by the wheel and to keep the selected row in view */
@@ -1659,7 +1681,12 @@ bool palette_view::go_up() {
  * the chips' keys, or Esc while they narrow the rows. */
 void palette_view::update_footer() {
     if (m_clipboard_pane) {
-        m_footer->show(m_clipboard_pane->footer_actions(), { { m_clipboard_pane->footer_end(), "" } });
+        std::vector<std::vector<footer_item>> ends;
+        for (const std::string& end : m_clipboard_pane->footer_ends()) {
+            ends.push_back({ { end, "" } });
+        }
+
+        m_footer->show_fitting(m_clipboard_pane->footer_actions(), ends);
         return;
     }
 
