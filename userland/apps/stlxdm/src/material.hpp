@@ -24,6 +24,10 @@ constexpr int32_t WINDOW_RIM_FADE = 72;
 constexpr int32_t PANEL_RIM_FADE = 72;
 constexpr int32_t DOCK_RIM_FADE = 36;
 
+/* The hairline around small glass such as tooltips and chips, a brass
+ * premixed over the warm glass tint so it draws opaque */
+constexpr uint32_t HAIRLINE = 0xFF3A3326;
+
 /* A glass surface: a rounded rect in an output's pixels. Its veil and rim
  * light run down from its top edge, and its grain repeats from its
  * top-left pixel. */

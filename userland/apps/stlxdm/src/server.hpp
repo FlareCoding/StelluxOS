@@ -494,14 +494,13 @@ public:
      * than a second, which the tick no longer runs for, or -1 if none. */
     int64_t latch_timeout_ns(uint64_t now_ns) const;
 
-    /* The bar clock's poll bound and tick, frozen while the overlay
+    /* The bar clock's poll bound and tick, frozen while an overlay
      * dims the desktop. */
     int64_t clock_timeout_ns(uint64_t now_ns) const {
-        return m_power->active() ? -1
-                                 : m_panels->clock_timeout_ns(now_ns);
+        return m_power->active() || m_capture.active() ? -1 : m_panels->clock_timeout_ns(now_ns);
     }
     void clock_tick() {
-        if (!m_power->active()) {
+        if (!m_power->active() && !m_capture.active()) {
             m_panels->clock_tick();
         }
     }
@@ -625,6 +624,8 @@ private:
     bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_capture(dm_output& out);
     bool freeze_output(dm_output& out, frozen_frame& frozen);
+    void draw_capture_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r);
+    bool capture_on_gpu(dm_output& out, const presenter::target& t, const std::vector<damage_list::rect>& rects);
     bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
     bool switch_to_cpu_on_failed_compose(compose_result result);
     void note_gpu_frame(dm_output& out);
@@ -658,6 +659,9 @@ private:
     void open_power();
     void take_screenshot(const char* mode);
     void capture_screen();
+    void open_capture();
+    void close_capture();
+    void capture_region(const capture_target& target);
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
@@ -754,6 +758,8 @@ private:
     void refresh_drag_carry();
 
     /* events.cpp */
+    void capture_key(uint16_t usage, bool down, bool repeat);
+    void capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed);
     dm_client* window_owner(const dm_window* w);
     dm_window* popup_parent(const dm_window& w);
     dm_window* window_at(int32_t x, int32_t y, decor::zone* out_zone);
@@ -1006,8 +1012,9 @@ private:
     int32_t        m_drag_carrier = -1;
     dm_drag_cursor m_drag_cursor;
 
-    /* The encoder of captures, the next capture's number, and whether a compose draws a frozen frame, which leaves
-     * the pointer out */
+    /* The capture overlay, the encoder of captures, the next capture's number, and whether a compose draws a frozen
+     * frame, which leaves the pointer out */
+    capture_overlay m_capture;
     capture_encoder m_capture_encoder;
     uint64_t        m_next_capture = 1;
     bool            m_composes_freeze = false;

@@ -18,6 +18,7 @@ constexpr uint8_t HID_GUI =
     STLX_INPUT_MOD_LGUI | STLX_INPUT_MOD_RGUI;
 
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
+constexpr uint16_t HID_USAGE_SPACE = 0x2C;
 
 constexpr char DIGIT_PLAIN[] = "1234567890";
 constexpr char DIGIT_SHIFT[] = "!@#$%^&*()";
@@ -327,6 +328,11 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
         return;
     }
 
+    if (m_capture.active()) {
+        capture_key(usage, down, repeat);
+        return;
+    }
+
     if (route_drag_key(usage, down, repeat)) {
         return;
     }
@@ -368,6 +374,44 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     rec.ch = ch;
 
     send_event(m_focus, rec);
+}
+
+/* The capture overlay takes every key: Esc cancels it, Space held moves the region, and Shift and Alt reshape the
+ * region at once */
+void server::capture_key(uint16_t usage, bool down, bool repeat) {
+    if (repeat) {
+        return;
+    }
+
+    if (usage == HID_USAGE_ESCAPE && down) {
+        close_capture();
+        return;
+    }
+
+    if (usage == HID_USAGE_SPACE) {
+        m_capture.hold_space(down);
+    }
+
+    m_capture.on_motion(m_cursor_x, m_cursor_y, m_modifiers, m_damage);
+}
+
+/* The capture overlay takes the pointer whole, and a primary release that ends a drag takes its region */
+void server::capture_pointer(int32_t x, int32_t y, uint16_t buttons, uint16_t changed) {
+    move_cursor(x, y, CURSOR_CROSSHAIR);
+    m_capture.on_motion(x, y, m_modifiers, m_damage);
+    if ((changed & 1) == 0) {
+        return;
+    }
+
+    if ((buttons & 1) != 0) {
+        m_capture.on_press(x, y, m_damage);
+        return;
+    }
+
+    capture_target target;
+    if (m_capture.on_release(&target, m_damage)) {
+        capture_region(target);
+    }
 }
 
 static bool rects_overlap(const damage_list::rect& a, const damage_list::rect& b) {
@@ -696,6 +740,11 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                 m_damage.add(ob.x, ob.y, ob.w, ob.h);
             }
         }
+        return;
+    }
+
+    if (m_capture.active()) {
+        capture_pointer(x, y, buttons, changed);
         return;
     }
 

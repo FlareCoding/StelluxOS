@@ -123,6 +123,23 @@ static stlxgfx_surface_t* build_resize_diag(bool nwse) {
     return s;
 }
 
+/* Light lines edged in dark, so the cross reads over whatever pixel a region starts on */
+static stlxgfx_surface_t* build_crosshair() {
+    constexpr int32_t N = 21;
+    constexpr int32_t C = N / 2;
+    stlxgfx_surface_t* s = stlxgfx_create_surface(N, N, 32, 16, 8, 0);
+    if (!s) {
+        return nullptr;
+    }
+
+    stlxgfx_clear(s, 0x00000000);
+    stlxgfx_fill_rect(s, C - 1, 0, 3, N, OUTLINE);
+    stlxgfx_fill_rect(s, 0, C - 1, N, 3, OUTLINE);
+    stlxgfx_fill_rect(s, C, 0, 1, N, FILL);
+    stlxgfx_fill_rect(s, 0, C, N, 1, FILL);
+    return s;
+}
+
 /* A soft shadow at half the sprite's own coverage, drawn offset one
  * pixel down and right so the shape reads on any background */
 static stlxgfx_surface_t* build_shadow(const stlxgfx_surface_t* sprite) {
@@ -252,8 +269,12 @@ int cursor::init() {
     m_resize_nesw.hot_x = 6;
     m_resize_nesw.hot_y = 6;
 
-    cursor_sprite* all[] = { &m_arrow, &m_ibeam, &m_resize_h,
-                             &m_resize_v, &m_resize_nwse, &m_resize_nesw };
+    m_crosshair.image = build_crosshair();
+    m_crosshair.hot_x = 10;
+    m_crosshair.hot_y = 10;
+
+    cursor_sprite* all[] = { &m_arrow, &m_ibeam, &m_resize_h, &m_resize_v,
+                             &m_resize_nwse, &m_resize_nesw, &m_crosshair };
     for (cursor_sprite* s : all) {
         if (s->image) {
             s->shadow = build_shadow(s->image);
@@ -267,6 +288,8 @@ int cursor::init() {
 void cursor::shutdown() {
     destroy_sprite(&m_arrow);
     destroy_sprite(&m_ibeam);
+    destroy_sprite(&m_crosshair);
+
     destroy_sprite(&m_resize_h);
     destroy_sprite(&m_resize_v);
     destroy_sprite(&m_resize_nwse);
@@ -282,6 +305,7 @@ const cursor_sprite* cursor::sprite_for(uint32_t shape) const {
     case SWP_CURSOR_RESIZE_NWSE: return &m_resize_nwse;
     case SWP_CURSOR_RESIZE_NESW: return &m_resize_nesw;
     case SWP_CURSOR_NONE:        return nullptr;
+    case CURSOR_CROSSHAIR:       return &m_crosshair;
     default:                     return &m_arrow;
     }
 }

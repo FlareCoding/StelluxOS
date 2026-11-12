@@ -9,6 +9,9 @@
 
 #include <cstdint>
 
+/* stlxdm's own pointer shapes past the protocol's: the crosshair a capture aims a region with */
+constexpr uint32_t CURSOR_CROSSHAIR = 0x100;
+
 /* One pointer shape: the image, its coverage-derived drop shadow, the
  * two as one cursor picture, and the hotspot at the pointer position */
 struct cursor_sprite {
@@ -48,6 +51,7 @@ private:
     cursor_sprite m_resize_v;
     cursor_sprite m_resize_nwse;
     cursor_sprite m_resize_nesw;
+    cursor_sprite m_crosshair;
 
     const cursor_sprite* sprite_for(uint32_t shape) const;
 };

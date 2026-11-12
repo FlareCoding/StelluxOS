@@ -1646,14 +1646,22 @@ bool server::compose_on_cpu(dm_output& out, const presenter::target& t, const da
         return false;
     }
 
+    /* A capture overlay shows the frozen frames in place of the scene */
+    auto compose_local = [&](const damage_list::rect& r) {
+        if (m_capture.active()) {
+            draw_capture_rect(out, back, r);
+        } else {
+            compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
+        }
+    };
+
     if (effective.full()) {
-        damage_list::rect whole = { out.place.x, out.place.y, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
-        compose_rect(out, back, whole);
+        compose_local({ 0, 0, static_cast<int32_t>(sw), static_cast<int32_t>(sh) });
     } else {
         for (uint32_t i = 0; i < effective.count(); i++) {
             damage_list::rect r = effective.at(i);
             if (damage_list::clip(r, static_cast<int32_t>(sw), static_cast<int32_t>(sh))) {
-                compose_rect(out, back, { r.x + out.place.x, r.y + out.place.y, r.w, r.h });
+                compose_local(r);
             }
         }
     }
@@ -1684,6 +1692,10 @@ bool server::compose_on_gpu(dm_output& out, const presenter::target& t, const da
                 rects.push_back(r);
             }
         }
+    }
+
+    if (m_capture.active()) {
+        return capture_on_gpu(out, t, rects);
     }
 
     bool is_main = &out == &m_outputs[m_layout.main_output()];
@@ -1742,6 +1754,54 @@ bool server::compose_capture(dm_output& out) {
     }
 
     m_power->mark_captured();
+
+    return true;
+}
+
+/* Draws the capture overlay over `r` of `out`, in its pixels, then the pointer when the frames draw it */
+void server::draw_capture_rect(dm_output& out, stlxgfx_surface_t* back, const damage_list::rect& r) {
+    m_capture.draw(static_cast<uint32_t>(&out - m_outputs), back, r);
+    if (out.cursor_in_frames) {
+        m_cursor.draw(back, m_cursor_shape, m_cursor_x - out.place.x, m_cursor_y - out.place.y, r);
+    }
+}
+
+/* Composes capture overlay frames into the output buffer `t` names, drawn into the upper top picture, which covers the
+ * scene opaquely. False when it took every output's composes off the GPU */
+bool server::capture_on_gpu(dm_output& out, const presenter::target& t, const std::vector<damage_list::rect>& rects) {
+    int32_t sw = static_cast<int32_t>(out.pres->width());
+    int32_t sh = static_cast<int32_t>(out.pres->height());
+    top_picture& upper = *out.pictures.upper_top;
+    upper.begin();
+    upper.add_bounds({ 0, 0, sw, sh });
+    for (const damage_list::rect& r : rects) {
+        draw_capture_rect(out, upper.surface(), r);
+        upper.mark_drawn(r);
+    }
+
+    layer_scene& scene = out.pictures.scene;
+    scene.width = sw;
+    scene.height = sh;
+    scene.backdrop = gpu_backdrop_of(out).twin_layer();
+    scene.upper_top = upper.layer();
+
+    scene.windows.clear();
+    scene.popover = {};
+    scene.lower_top = {};
+    scene.drag.clear();
+    scene.drag_chip = {};
+    scene.is_dimmed = false;
+
+    compose_target target = output_target(t);
+    target.readback = out.pictures.readback.get();
+    compose_result result = m_gpu_compositor->compose(*out.pictures.compose, target, scene, rects);
+    if (switch_to_cpu_on_failed_compose(result)) {
+        return false;
+    }
+
+    if (target.readback) {
+        compare_with_cpu(out, t.stride, false);
+    }
 
     return true;
 }
@@ -2150,6 +2210,11 @@ void server::compare_with_cpu(dm_output& out, uint32_t pitch, bool is_collapse) 
     if (is_collapse) {
         /* The faded collapse backdrop covers every pixel opaquely, so no pixel may round apart */
         draw_collapse_frame(out, frame);
+    } else if (m_capture.active()) {
+        /* The capture overlay draws every pixel opaquely too */
+        for (const damage_list::rect& r : pictures.rects) {
+            draw_capture_rect(out, frame, r);
+        }
     } else {
         /* Any capture of this frame was composed on the GPU before it, so these composes write none */
         for (const damage_list::rect& r : pictures.rects) {
