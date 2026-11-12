@@ -35,6 +35,7 @@
 #define BUTTON_GAP        8
 #define SHADOW_OFFSET     8
 #define SHADOW_BLUR       20
+#define DROP_TARGET_INSET 4
 
 /* Translucent colors the design gives as values rather than tokens */
 #define SCRIM             0x75060402 /* ink at .46 */
@@ -139,6 +140,13 @@ static void draw_copy_glyph(stlxgfx_ctx_t *ctx, int32_t x, int32_t y, uint32_t c
     stlxgfx_ctx_fill_rect(ctx, x + 3, y + 3, 1, 1, half);
 }
 
+/* A pill of width w at the bottom center */
+static overlay_rect_t bottom_pill(const stlxgfx_surface_t *s, uint32_t w) {
+    overlay_rect_t pill = { ((int32_t)s->width - (int32_t)w) / 2, (int32_t)s->height - PILL_BOTTOM - PILL_HEIGHT,
+                            w, PILL_HEIGHT };
+    return pill;
+}
+
 int overlay_draw_copied(stlxgfx_surface_t *s, const char *figure) {
     if (open_faces() < 0) {
         return -1;
@@ -147,9 +155,8 @@ int overlay_draw_copied(stlxgfx_surface_t *s, const char *figure) {
     static const char lead[] = "Copied ";
     int32_t lead_w = stlxgfx_text_width(g_body, lead, sizeof(lead) - 1);
     int32_t figure_w = stlxgfx_text_width(g_medium, figure, strlen(figure));
-    uint32_t w = (uint32_t)(PILL_PAD_LEFT + GLYPH_SIZE + PILL_GAP + lead_w + figure_w + PILL_PAD_RIGHT);
-    overlay_rect_t pill = { ((int32_t)s->width - (int32_t)w) / 2, (int32_t)s->height - PILL_BOTTOM - PILL_HEIGHT,
-                            w, PILL_HEIGHT };
+    overlay_rect_t pill =
+        bottom_pill(s, (uint32_t)(PILL_PAD_LEFT + GLYPH_SIZE + PILL_GAP + lead_w + figure_w + PILL_PAD_RIGHT));
 
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, s);
@@ -160,6 +167,39 @@ int overlay_draw_copied(stlxgfx_surface_t *s, const char *figure) {
     draw_line_text(s, g_body, text_x, pill.y, PILL_HEIGHT, lead, STLXTHEME_TEXT_SECONDARY);
     draw_line_text(s, g_medium, text_x + lead_w, pill.y, PILL_HEIGHT, figure, STLXTHEME_TEXT);
     return 0;
+}
+
+/* A sentence in a pill, cut to fit a narrow window */
+int overlay_draw_note(stlxgfx_surface_t *s, const char *text) {
+    if (open_faces() < 0) {
+        return -1;
+    }
+
+    int32_t room = (int32_t)s->width - 2 * SHEET_MARGIN - 2 * PILL_PAD_LEFT;
+    int32_t text_w = stlxgfx_text_width(g_body, text, strlen(text));
+    text_w = text_w < room ? text_w : room;
+    overlay_rect_t pill = bottom_pill(s, (uint32_t)(2 * PILL_PAD_LEFT + text_w));
+
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, s);
+    draw_panel(&ctx, pill, STLXTHEME_MENU_RADIUS, PILL_RING);
+    draw_fitted_text(s, g_body, pill.x + PILL_PAD_LEFT, pill.y, PILL_HEIGHT, text, text_w, STLXTHEME_TEXT_SECONDARY);
+    return 0;
+}
+
+void overlay_draw_drop_target(stlxgfx_surface_t *s) {
+    if (s->width <= 2 * DROP_TARGET_INSET || s->height <= 2 * DROP_TARGET_INSET) {
+        return;
+    }
+
+    uint32_t w = s->width - 2 * DROP_TARGET_INSET;
+    uint32_t h = s->height - 2 * DROP_TARGET_INSET;
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, s);
+    stlxgfx_ctx_fill_rounded_rect(&ctx, DROP_TARGET_INSET, DROP_TARGET_INSET, w, h, STLXTHEME_CONTROL_RADIUS,
+                                  STLXTHEME_ROW_HOVER);
+    stlxgfx_ctx_draw_rounded_rect(&ctx, DROP_TARGET_INSET, DROP_TARGET_INSET, w, h, STLXTHEME_CONTROL_RADIUS,
+                                  STLXTHEME_LINE_STRONG);
 }
 
 /* Breaks text at its spaces into lines no wider than width. Returns how many, at most BODY_LINES_MAX. */

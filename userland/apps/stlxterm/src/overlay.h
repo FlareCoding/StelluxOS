@@ -30,7 +30,11 @@ typedef enum {
 
 // Each draws onto the window's whole surface. Returns 0, or -1 when the faces cannot be opened.
 int overlay_draw_copied(stlxgfx_surface_t *s, const char *figure);
+int overlay_draw_note(stlxgfx_surface_t *s, const char *text);
 int overlay_draw_question(stlxgfx_surface_t *s, const overlay_question_t *question);
+
+// The highlight of a pane a drag would paste into, drawn over its text
+void overlay_draw_drop_target(stlxgfx_surface_t *s);
 
 // The button of the last question drawn under a window position
 overlay_hit_t overlay_question_hit(int32_t x, int32_t y);
