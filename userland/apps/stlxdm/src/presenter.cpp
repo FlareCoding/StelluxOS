@@ -516,9 +516,12 @@ void buffer_presenter::count_missed_frames(uint64_t frame, uint64_t latch_ns) {
     m_latch_ns = latch_ns;
 }
 
+bool buffer_presenter::holds_cursor(uint32_t width, uint32_t height) const {
+    return has_cursor() && width <= m_cursor_max_width && height <= m_cursor_max_height;
+}
+
 bool buffer_presenter::set_cursor(const cursor_picture& picture) {
-    bool fits = picture.width <= m_cursor_max_width && picture.height <= m_cursor_max_height;
-    if (!has_cursor() || !fits) {
+    if (!holds_cursor(picture.width, picture.height)) {
         return false;
     }
 

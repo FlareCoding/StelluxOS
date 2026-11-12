@@ -6,6 +6,7 @@
 #include "dnd.hpp"
 #include "layers.hpp"
 #include "picture.hpp"
+#include "presenter.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -39,11 +40,26 @@ public:
 
     const dnd_chip& chip() const { return m_chip; }
 
+    /* Counts the draws, so a picture built from the parts knows when it is stale */
+    uint32_t generation() const { return m_generation; }
+
     /* The picture's rect with its hotspot at (`x`, `y`), empty without a picture */
     damage_list::rect picture_at(int32_t x, int32_t y) const;
 
+    /* The chip's rect in `pose`, empty when it shows none */
+    damage_list::rect chip_at(const drag_pose& pose) const;
+
     /* What the parts cover in `pose`, in desktop coordinates */
     damage_list::rect bounds(const drag_pose& pose) const;
+
+    /* What the parts in `pose` and `pointer`, a hardware cursor picture with its hotspot at the pose's pointer,
+     * cover together */
+    damage_list::rect cursor_bounds(const drag_pose& pose, const presenter::cursor_picture& pointer) const;
+
+    /* The parts in `pose` at 1:1 with `pointer` over them as one hardware cursor picture of `cursor_bounds` into
+     * `pixels`, described by `out` with its hotspot on the pointer */
+    void cursor_picture(const drag_pose& pose, const presenter::cursor_picture& pointer, std::vector<uint32_t>& pixels,
+                        presenter::cursor_picture& out) const;
 
     /* The shadow and the picture as `scale` layers, and the chip as a blend, in `pose` in desktop coordinates */
     void pieces(const drag_pose& pose, std::vector<layer_scaled>& scaled, layer_piece& chip) const;
@@ -55,9 +71,9 @@ public:
 private:
     bool draw_shadow(picture_maker& maker);
     damage_list::rect shadow_rect(const damage_list::rect& picture) const;
-    damage_list::rect chip_rect(const drag_pose& pose) const;
 
     picture_maker*                   m_maker = nullptr;
+    uint32_t                         m_generation = 0;
     std::unique_ptr<twinned_picture> m_picture;       /* the source's pixels and the badge, premultiplied */
     std::unique_ptr<twinned_picture> m_shadow;        /* ink in straight alpha */
     std::unique_ptr<twinned_picture> m_chip_picture;  /* the chip with its shadow in straight alpha */
