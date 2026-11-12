@@ -139,6 +139,10 @@ std::vector<std::string> uri_list_paths(std::string_view list);
 /* A PNG's width and height from its first 24 bytes. False when they hold no PNG header. */
 bool png_size(std::string_view header, uint32_t* width, uint32_t* height);
 
+/* Whether a picture of `width` by `height` pixels may be decoded for a preview: at most 16 megapixels, enough for a 5K
+ * display's capture, and 16384 pixels either way */
+bool fits_preview(uint32_t width, uint32_t height);
+
 /* A representation's first `max` bytes, empty when the kernel refuses to map its object */
 std::string read_bytes(const clipboard_rep& rep, uint64_t max);
 

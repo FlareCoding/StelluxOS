@@ -467,6 +467,13 @@ bool png_size(std::string_view header, uint32_t* width, uint32_t* height) {
     return true;
 }
 
+bool fits_preview(uint32_t width, uint32_t height) {
+    constexpr uint64_t PIXELS_MAX = 16ull * 1024 * 1024;
+    constexpr uint32_t SIDE_MAX = 16384;
+    bool is_sized = width > 0 && height > 0 && width <= SIDE_MAX && height <= SIDE_MAX;
+    return is_sized && static_cast<uint64_t>(width) * height <= PIXELS_MAX;
+}
+
 std::string read_bytes(const clipboard_rep& rep, uint64_t max) {
     uint64_t len = std::min(rep.len, max);
     if (len == 0 || rep.object < 0) {
