@@ -686,7 +686,7 @@ private:
     void open_power();
     void take_screenshot(const char* mode);
     void capture_screen();
-    void open_capture();
+    void open_capture(bool has_bar);
     void close_capture();
     void capture_region(const capture_target& target);
     void capture_focused_window();

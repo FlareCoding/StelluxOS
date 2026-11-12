@@ -1984,8 +1984,8 @@ void server::take_screenshot(const char* mode) {
         return;
     }
 
-    if (strcmp(mode, "region") == 0) {
-        open_capture();
+    if (strcmp(mode, "region") == 0 || strcmp(mode, "bar") == 0) {
+        open_capture(strcmp(mode, "bar") == 0);
         return;
     }
 
@@ -1998,8 +1998,8 @@ void server::take_screenshot(const char* mode) {
 }
 
 /* Every served output freezes before anything else draws, so menus and hover states hold still while a region or a
- * window is aimed */
-void server::open_capture() {
+ * window is aimed, with the capture bar on the main output when `has_bar` */
+void server::open_capture(bool has_bar) {
     std::vector<frozen_frame> frames;
     if (freezes() || m_power->active() || !has_memory_to_capture() || !freeze_outputs(frames)) {
         return;
@@ -2024,7 +2024,9 @@ void server::open_capture() {
         windows.push_back({ w, frame, is_decorated ? decor::CORNER_R : 0, w->title, bounds });
     }
 
-    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y, static_cast<uint64_t>(monotonic_ns()));
+    int32_t bar_output = has_bar ? static_cast<int32_t>(m_layout.main_output()) : -1;
+    uint64_t now = static_cast<uint64_t>(monotonic_ns());
+    m_capture.open(std::move(frames), std::move(windows), m_cursor_x, m_cursor_y, now, bar_output);
     move_cursor(m_cursor_x, m_cursor_y, m_capture.cursor_shape());
     m_damage.add_full();
 }
@@ -2123,7 +2125,7 @@ void server::capture_region(const capture_target& target) {
         return;
     }
 
-    encode_capture(pixels, false, capture_kind::region, target.output);
+    encode_capture(pixels, false, target.kind, target.output);
 }
 
 /* A capture touches every served output's frozen frame, then its copy and the encoder's buffers, about three of the

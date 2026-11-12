@@ -13,9 +13,6 @@
 #include <string>
 #include <vector>
 
-/* What a capture took, which its thumbnail names */
-enum class capture_kind { screen, region, window };
-
 /* How long a notice about captures shows unless it says otherwise */
 constexpr uint64_t NOTICE_SHOWN_NS = 3000000000ull;
 
