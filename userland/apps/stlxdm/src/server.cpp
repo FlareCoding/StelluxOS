@@ -23,6 +23,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -52,6 +53,11 @@ constexpr const char* QUICK_ACTIONS_LABEL = "Quick Actions";
 constexpr const char* SCREENSHOT_LABEL = "Screenshot";
 
 constexpr const char* PNG_TYPE = "image/png";
+
+/* A copy's notice shows a moment and names a text by up to 40 bytes of its first line, found in its first 4 KB */
+constexpr uint64_t COPIED_SHOWN_NS = 1200000000ull;
+constexpr size_t COPIED_TEXT_MAX = 40;
+constexpr uint64_t COPIED_READ_MAX = 4096;
 
 /* As many captures may wait to encode as there are cards, each holding a whole output's pixels */
 constexpr size_t CAPTURES_WAITING_MAX = 3;
@@ -2165,8 +2171,9 @@ void server::capture_screen() {
     encode_capture(pixels, false, capture_kind::screen, output);
 }
 
-/* `title` and `detail` on glass at the top of the main output a few seconds, for a capture that ended or never began */
-void server::show_capture_notice(const char* title, const char* detail) {
+/* `title` and `detail` on glass at the top of the main output for `shown_ns`, for a capture that ended or never began
+ * or a copy stlxdm made */
+void server::show_capture_notice(const char* title, const std::string& detail, uint64_t shown_ns) {
     std::vector<chip_piece> line = {
         { title, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT },
         { detail, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_DIM },
@@ -2177,7 +2184,45 @@ void server::show_capture_notice(const char* title, const char* detail) {
     int32_t x = (shown_on.place.w - chip_width(line)) / 2;
     const stlxgfx_surface_t* frost = shown_on.pres ? frost_of(shown_on) : nullptr;
     stlxgfx_surface_t* notice = make_chip_picture(line, frost, x, CAPTURE_HINT_TOP);
-    m_thumbnails.notify(notice, main_output, shown_on.place, static_cast<uint64_t>(monotonic_ns()), m_damage);
+    m_thumbnails.notify(notice, main_output, shown_on.place, static_cast<uint64_t>(monotonic_ns()), m_damage, shown_ns);
+}
+
+/* A text's first line, cut on a character to fit a chip */
+static std::string first_line(const std::string& text) {
+    std::string line = text.substr(0, text.find('\n'));
+    if (line.size() <= COPIED_TEXT_MAX) {
+        return line;
+    }
+
+    size_t cut = COPIED_TEXT_MAX;
+    while (cut > 0 && (static_cast<unsigned char>(line[cut]) & 0xC0) == 0x80) {
+        cut--;
+    }
+
+    return line.substr(0, cut) + "\xE2\x80\xA6";
+}
+
+/* What a copy from the history put on the clipboard: an image as what it is, files by the first one's name, a text by
+ * its first line */
+static std::string copied_words(const clipboard_entry& entry) {
+    if (entry.item.find("image/png")) {
+        return entry.name.empty() ? std::string("an image") : "the " + entry.name + " capture";
+    }
+
+    const clipboard_rep* text = entry.item.find_answer(SWP_MIME_TEXT);
+    std::string line = text ? read_bytes(*text, COPIED_READ_MAX) : std::string();
+    line = line.substr(0, line.find('\n'));
+    if (entry.item.find("text/uri-list")) {
+        return first_line(line.substr(line.find_last_of('/') + 1));
+    }
+
+    return line.empty() ? std::string("to the clipboard") : first_line(line);
+}
+
+/* Says what a copy stlxdm made put on the clipboard, a moment at the top of the main output, as Terminal's pill says
+ * its copies, so a copy that closes the palette still shows it happened */
+void server::show_copied(const std::string& what) {
+    show_capture_notice("Copied", what, COPIED_SHOWN_NS);
 }
 
 /* A capture's thumbnail shows at once, shrunk from its pixels before the encoder takes them, and goes again when no
@@ -2457,12 +2502,15 @@ void server::flush_clipboard() {
 /* A chosen entry becomes current, which watchers hear of only when it was not already, and pasting sends the focused
  * window the paste event after its types */
 void server::choose_clipboard_entry(uint64_t id, bool pastes) {
-    if (m_history.make_current(id, monotonic_ns())) {
+    bool is_moved = m_history.make_current(id, monotonic_ns());
+    if (is_moved) {
         note_clipboard_change();
     }
 
     if (pastes) {
         paste_into_focus();
+    } else if (is_moved) {
+        show_copied(copied_words(*m_history.find(id)));
     }
 }
 
@@ -2572,6 +2620,7 @@ void server::copy_text(const std::string& text) {
     }
 
     replace_clipboard(clipboard_item(make_reps({ { SWP_MIME_TEXT, text.size(), object } }), 0), QUICK_ACTIONS_LABEL);
+    show_copied(first_line(text));
 }
 
 /* Copies a file as File Manager's copies are, so it pastes as a file where files paste and as its path elsewhere */
@@ -2591,6 +2640,10 @@ void server::copy_file(const std::string& path) {
     std::vector<clipboard_rep> reps = make_reps({ { "text/uri-list", list.size(), list_object },
                                                   { SWP_MIME_TEXT, path.size(), text_object } });
     replace_clipboard(clipboard_item(std::move(reps), 0), QUICK_ACTIONS_LABEL);
+
+    struct stat info;
+    bool is_folder = stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+    show_copied(path.substr(path.find_last_of('/') + 1) + (is_folder ? " as a folder" : " as a file"));
 }
 
 /* Sends a message whose one handle, unless `handle` is -1, rides its first byte, so it leaves only from an empty out_q,

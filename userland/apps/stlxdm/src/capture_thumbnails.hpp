@@ -16,6 +16,9 @@
 /* What a capture took, which its thumbnail names */
 enum class capture_kind { screen, region, window };
 
+/* How long a notice about captures shows unless it says otherwise */
+constexpr uint64_t NOTICE_SHOWN_NS = 3000000000ull;
+
 enum class thumbnail_action { none, preview, discard, retry };
 
 /* What a click on a thumbnail asks of the server, and the capture it names */
@@ -72,9 +75,9 @@ public:
     void remove(uint64_t job, damage_list& damage);
     void clear(damage_list& damage);
 
-    /* Shows `chip`, which it takes, at the top middle of output `output` at `place` on the desktop a few seconds */
+    /* Shows `chip`, which it takes, at the top middle of output `output` at `place` on the desktop for `shown_ns` */
     void notify(stlxgfx_surface_t* chip, uint32_t output, const damage_list::rect& place, uint64_t now_ns,
-                damage_list& damage);
+                damage_list& damage, uint64_t shown_ns = NOTICE_SHOWN_NS);
 
     /* Each card says whether its capture is still the clipboard, and goes once its entry leaves the history */
     void follow_clipboard(const clipboard_history& history, damage_list& damage);

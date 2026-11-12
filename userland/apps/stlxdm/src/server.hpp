@@ -691,7 +691,8 @@ private:
     void capture_region(const capture_target& target);
     void capture_focused_window();
     void capture_window_alone(dm_window& w, bool has_shadow);
-    void show_capture_notice(const char* title, const char* detail);
+    void show_capture_notice(const char* title, const std::string& detail, uint64_t shown_ns = NOTICE_SHOWN_NS);
+    void show_copied(const std::string& what);
     bool has_memory_to_capture();
     void encode_capture(stlxgfx_surface_t* pixels, bool keeps_alpha, capture_kind kind, uint32_t output);
     void discard_capture(const thumbnail_click& click);

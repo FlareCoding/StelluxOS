@@ -16,7 +16,6 @@ constexpr uint64_t SHOWN_NS = 6000000000ull;
 constexpr uint64_t AFTER_HOVER_NS = 2000000000ull;
 constexpr uint64_t SLIDE_NS = 200000000ull;
 constexpr uint64_t SLIDE_FRAME_NS = 4000000ull;
-constexpr uint64_t NOTICE_SHOWN_NS = 3000000000ull;
 
 /* A card is its capture fitted inside 240 by 160, never grown, over one caption line, so a wide capture makes a short
  * card and three screens stack to under half a 1080 px display */
@@ -511,7 +510,7 @@ void capture_thumbnails::clear(damage_list& damage) {
 }
 
 void capture_thumbnails::notify(stlxgfx_surface_t* chip, uint32_t output, const damage_list::rect& place,
-                                uint64_t now_ns, damage_list& damage) {
+                                uint64_t now_ns, damage_list& damage, uint64_t shown_ns) {
     if (m_notice) {
         damage.add(m_notice_rect.x, m_notice_rect.y, m_notice_rect.w, m_notice_rect.h);
         stlxgfx_destroy_surface(m_notice);
@@ -525,7 +524,7 @@ void capture_thumbnails::notify(stlxgfx_surface_t* chip, uint32_t output, const 
     int32_t w = static_cast<int32_t>(chip->width);
     m_notice_rect = { place.x + (place.w - w) / 2, place.y + CAPTURE_HINT_TOP, w, static_cast<int32_t>(chip->height) };
     m_notice_output = output;
-    m_notice_until_ns = now_ns + NOTICE_SHOWN_NS;
+    m_notice_until_ns = now_ns + shown_ns;
     damage.add(m_notice_rect.x, m_notice_rect.y, m_notice_rect.w, m_notice_rect.h);
 }
 
