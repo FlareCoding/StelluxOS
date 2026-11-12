@@ -72,6 +72,12 @@ public:
     std::function<void(uint64_t id)> on_clipboard_paste;
     std::function<void(uint64_t id)> on_clipboard_copy;
 
+    /* Fired by Clipboard mode's keys, which leave the palette open: an entry to pin or unpin or remove, or the clearing
+     * of every unpinned one */
+    std::function<void(uint64_t id, bool pinned)> on_clipboard_pin;
+    std::function<void(uint64_t id)> on_clipboard_remove;
+    std::function<void()> on_clipboard_clear;
+
     bool dirty() const {
         return m_host.dirty() || m_dock_host.dirty() || m_popover.dirty();
     }

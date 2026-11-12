@@ -243,6 +243,24 @@ int dm_panels::init(
         }
     };
 
+    m_quick->on_clipboard_pin = [this](uint64_t id, bool pinned) {
+        if (on_clipboard_pin) {
+            on_clipboard_pin(id, pinned);
+        }
+    };
+
+    m_quick->on_clipboard_remove = [this](uint64_t id) {
+        if (on_clipboard_remove) {
+            on_clipboard_remove(id);
+        }
+    };
+
+    m_quick->on_clipboard_clear = [this]() {
+        if (on_clipboard_clear) {
+            on_clipboard_clear();
+        }
+    };
+
     return 0;
 }
 

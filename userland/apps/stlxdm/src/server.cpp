@@ -766,6 +766,21 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         choose_clipboard_entry(id, false);
     };
 
+    out.panels->on_clipboard_pin = [this](uint64_t id, bool pinned) {
+        m_history.set_pinned(id, pinned);
+        m_panels->clipboard_changed();
+    };
+
+    out.panels->on_clipboard_remove = [this](uint64_t id) {
+        m_history.remove(id);
+        tell_clipboard_watchers();
+    };
+
+    out.panels->on_clipboard_clear = [this]() {
+        m_history.clear_unpinned();
+        tell_clipboard_watchers();
+    };
+
     out.panels->on_exec = [](const char* path, const std::vector<std::string>& args) {
         return exec_app(path, args);
     };
