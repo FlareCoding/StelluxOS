@@ -666,3 +666,48 @@ TEST(file_io, readv_and_writev_carry_stdio_shapes_through_files_and_pipes) {
     remove_file(h, "/file_io_vectors");
     mm::mm_context_release(ctx);
 }
+
+TEST(file_io, short_and_empty_staged_calls_move_their_bytes) {
+    sched::task* task = sched::current();
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+
+    uintptr_t lists = map_user(ctx, 1, EAGER_ANON);
+    uintptr_t source = map_user(ctx, 1, EAGER_ANON);
+    uintptr_t target = map_user(ctx, 1, EAGER_ANON);
+    ASSERT_NE(lists, static_cast<uintptr_t>(0));
+    ASSERT_NE(source, static_cast<uintptr_t>(0));
+    ASSERT_NE(target, static_cast<uintptr_t>(0));
+
+    fill_user_with_pattern(ctx, source, PAGE);
+    auto* list = reinterpret_cast<syscall::iovec*>(user_byte(ctx, lists));
+    list[0] = {target, 0};
+    list[1] = {target, 0};
+    uintptr_t pipe_handles = lists + PAGE / 2;
+
+    {
+        user_space_scope scope(ctx);
+        ASSERT_EQ(sys_pipe2(pipe_handles, 0, 0, 0, 0, 0), static_cast<int64_t>(0));
+    }
+
+    auto* pipe_ends = reinterpret_cast<int32_t*>(user_byte(ctx, pipe_handles));
+    uint64_t read_end = static_cast<uint64_t>(pipe_ends[0]);
+    uint64_t write_end = static_cast<uint64_t>(pipe_ends[1]);
+    {
+        user_space_scope scope(ctx);
+        EXPECT_EQ(sys_write(write_end, source, 1, 0, 0, 0), static_cast<int64_t>(1));
+        EXPECT_EQ(sys_read(read_end, target, 1, 0, 0, 0), static_cast<int64_t>(1));
+
+        EXPECT_EQ(sys_write(write_end, source, 3000, 0, 0, 0), static_cast<int64_t>(3000));
+        EXPECT_EQ(sys_read(read_end, target, 3000, 0, 0, 0), static_cast<int64_t>(3000));
+
+        EXPECT_EQ(sys_readv(read_end, lists, 2, 0, 0, 0), static_cast<int64_t>(0));
+        EXPECT_EQ(sys_writev(write_end, lists, 2, 0, 0, 0), static_cast<int64_t>(0));
+    }
+
+    EXPECT_TRUE(user_holds_pattern(ctx, target, 3000, 0));
+
+    (void)resource::close(task, static_cast<resource::handle_t>(read_end));
+    (void)resource::close(task, static_cast<resource::handle_t>(write_end));
+    mm::mm_context_release(ctx);
+}
