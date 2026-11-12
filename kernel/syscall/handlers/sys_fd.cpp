@@ -985,6 +985,10 @@ __PRIVILEGED_CODE static bool try_transfer_without_staging(
 __PRIVILEGED_CODE static int64_t read_to_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    if (count == 0) {
+        return 0;
+    }
+
     int64_t direct = 0;
     if (try_transfer_without_staging(task, fd, buf, count, offset, call_flags, transfer_direction::read, &direct)) {
         return direct;
@@ -1003,7 +1007,12 @@ __PRIVILEGED_CODE static int64_t read_to_user(
     uint8_t* user_ptr = reinterpret_cast<uint8_t*>(buf);
     int64_t total = 0;
 
+    // A short call stages in a heap slot of its own size rather than a fresh page
     size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    if (remaining < stage) {
+        stage = remaining;
+    }
+
     uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(stage));
     if (!kbuf) {
         return syscall::ENOMEM;
@@ -1096,6 +1105,10 @@ DEFINE_SYSCALL4(pread64, fd, buf, count, offset) {
 __PRIVILEGED_CODE static int64_t write_from_user(
     sched::task* task, uint64_t fd, uint64_t buf, uint64_t count, int64_t offset, uint32_t call_flags = 0
 ) {
+    if (count == 0) {
+        return 0;
+    }
+
     int64_t direct = 0;
     if (try_transfer_without_staging(task, fd, buf, count, offset, call_flags, transfer_direction::write, &direct)) {
         return direct;
@@ -1114,7 +1127,12 @@ __PRIVILEGED_CODE static int64_t write_from_user(
     const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(buf);
     int64_t total = 0;
 
+    // A short call stages in a heap slot of its own size rather than a fresh page
     size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    if (remaining < stage) {
+        stage = remaining;
+    }
+
     uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(stage));
     if (!kbuf) {
         return syscall::ENOMEM;
