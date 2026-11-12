@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 constexpr size_t CARDS_MAX = 3;
 constexpr uint64_t SHOWN_NS = 6000000000ull;
@@ -43,6 +44,20 @@ constexpr int32_t TIP_HEIGHT = 24;
 constexpr int32_t TIP_PADDING_X = 8;
 constexpr int32_t TIP_GAP = 8;
 
+/* A capture the clipboard found no memory for says so under its title, its words wrapped after a warning, and offers
+ * Try Again under them */
+constexpr float ERROR_SIZE = 12.5f;
+constexpr int32_t ERROR_LINE = 18;
+constexpr int32_t ERROR_GLYPH = 16;
+constexpr int32_t ERROR_GAP = 6;
+constexpr int32_t RETRY_TOP = 6;
+constexpr int32_t RETRY_LEFT = 2;
+constexpr int32_t RETRY_HEIGHT = 28;
+constexpr int32_t RETRY_PADDING_X = 10;
+constexpr int32_t RETRY_FOOT = 2;
+constexpr const char* NO_MEMORY_NOTE = "Not enough memory for the clipboard to hold it.";
+constexpr const char* RETRY_LABEL = "Try Again";
+
 constexpr const char* PREVIEW_TIP = "Preview";
 constexpr const char* DISCARD_TIP = "Discard, and put back what was copied before";
 constexpr const char* DISCARD_ONLY_TIP = "Discard";
@@ -66,6 +81,7 @@ struct thumbnail_card {
     std::unique_ptr<panel_picture> picture;
     bool                           is_current = true;
     bool                           restores = false; /* whether its Discard would put back the copy before it */
+    bool                           is_failed = false;  /* the clipboard found no memory for it, so it waits for Try Again */
     uint64_t                       shown_ns = 0;
     uint64_t                       deadline_ns = 0;
     int32_t                        slide = 0;       /* how far right of its box it still is as it slides in */
@@ -121,6 +137,23 @@ static std::vector<std::vector<glyph_point>> preview_contours() {
     }
 
     return { almond(7.0f, 5.0f), almond(5.6f, 3.6f), pupil };
+}
+
+/* A disc on the 16 unit grid with an exclamation mark cut out of it */
+static std::vector<std::vector<glyph_point>> warning_contours() {
+    constexpr int32_t SIDES = 24;
+    constexpr float RADIUS = 6.5f;
+    std::vector<glyph_point> disc;
+    for (int32_t i = 0; i < SIDES; i++) {
+        float angle = 6.2831853f * static_cast<float>(i) / SIDES;
+        disc.push_back({ 8.0f + RADIUS * std::cos(angle), 8.0f + RADIUS * std::sin(angle) });
+    }
+
+    return {
+        disc,
+        { { 7.25f, 4.0f }, { 8.75f, 4.0f }, { 8.5f, 9.0f }, { 7.5f, 9.0f } },
+        { { 7.25f, 10.5f }, { 8.75f, 10.5f }, { 8.75f, 12.0f }, { 7.25f, 12.0f } },
+    };
 }
 
 /* A cross on the 16 unit grid as one polygon, a plus turned an eighth, so the evenodd rule keeps its middle */
@@ -199,9 +232,54 @@ static void draw_line(stlxgfx_surface_t* target, const char* face, float size, i
     stlxgfx_draw_text(target, font, x, baseline, text.data(), text.size(), color);
 }
 
-/* A card's height: its image and the caption line under it */
+/* `words` broken at spaces into lines no wider than `width` in `font` */
+static std::vector<std::string> wrapped(const std::string& words, stlxgfx_font* font, int32_t width) {
+    std::vector<std::string> lines;
+    std::string line;
+    size_t start = 0;
+    while (start < words.size()) {
+        size_t end = std::min(words.find(' ', start), words.size());
+        std::string word = words.substr(start, end - start);
+        std::string longer = line.empty() ? word : line + " " + word;
+        if (!line.empty() && stlxgfx_text_width(font, longer.data(), longer.size()) > width) {
+            lines.push_back(line);
+            longer = word;
+        }
+
+        line = longer;
+        start = end + 1;
+    }
+
+    lines.push_back(line);
+    return lines;
+}
+
+/* The no-memory words as a failed card wraps them in the column after its warning */
+static std::vector<std::string> error_lines() {
+    stlxgfx_font* font = shell_font(STLXTHEME_UI_FONT_MEDIUM_PATH, ERROR_SIZE);
+    int32_t width = IMAGE_MAX_W - 2 * CAPTION_LEFT - ERROR_GLYPH - ERROR_GAP;
+    return font ? wrapped(NO_MEMORY_NOTE, font, width) : std::vector<std::string>{ NO_MEMORY_NOTE };
+}
+
+/* A card's height: its image and caption line, and under them a failure's words and Try Again */
 static int32_t card_height(const thumbnail_card& card) {
-    return CARD_PADDING + static_cast<int32_t>(card.image->height) + CAPTION_HEIGHT;
+    int32_t height = CARD_PADDING + static_cast<int32_t>(card.image->height) + CAPTION_HEIGHT;
+    if (card.is_failed) {
+        int32_t lines = static_cast<int32_t>(error_lines().size());
+        height += lines * ERROR_LINE + RETRY_TOP + RETRY_HEIGHT + RETRY_FOOT + CARD_PADDING;
+    }
+
+    return height;
+}
+
+/* Try Again on a failed card's picture content, under the failure's words */
+static damage_list::rect retry_rect(const thumbnail_card& card) {
+    stlxgfx_font* font = shell_font(STLXTHEME_UI_FONT_MEDIUM_PATH, ERROR_SIZE);
+    int32_t label_w = font ? stlxgfx_text_width(font, RETRY_LABEL, strlen(RETRY_LABEL)) : 0;
+    int32_t lines = static_cast<int32_t>(error_lines().size());
+    int32_t top = CARD_PADDING + static_cast<int32_t>(card.image->height) + CAPTION_HEIGHT + lines * ERROR_LINE +
+                  RETRY_TOP;
+    return { CARD_PADDING + RETRY_LEFT, top, label_w + 2 * RETRY_PADDING_X, RETRY_HEIGHT };
 }
 
 /* Where the actions sit on a card's picture content, from the right: close, Discard, then Preview, along the image's top
@@ -245,6 +323,32 @@ static void draw_glyph(stlxgfx_surface_t* target, const stlxgfx_surface_t* glyph
     }
 }
 
+/* The failure's words after its warning from `top` down, then Try Again, lit under the pointer */
+static void draw_failure(stlxgfx_surface_t* content, const stlxgfx_surface_t* warning, const thumbnail_card& card,
+                         int32_t top, bool is_retry_lit) {
+    damage_list::rect mark = { CARD_PADDING + CAPTION_LEFT, top, ERROR_GLYPH, ERROR_LINE };
+    draw_glyph(content, warning, mark);
+
+    std::vector<std::string> lines = error_lines();
+    for (size_t i = 0; i < lines.size(); i++) {
+        int32_t line_top = top + static_cast<int32_t>(i) * ERROR_LINE;
+        draw_line(content, STLXTHEME_UI_FONT_MEDIUM_PATH, ERROR_SIZE, mark.x + ERROR_GLYPH + ERROR_GAP, line_top,
+                  ERROR_LINE, lines[i], STLXTHEME_TEXT);
+    }
+
+    damage_list::rect retry = retry_rect(card);
+    uint32_t w = static_cast<uint32_t>(retry.w);
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, content);
+
+    stlxgfx_ctx_fill_rounded_rect(&ctx, retry.x, retry.y, w, RETRY_HEIGHT, STLXTHEME_CONTROL_RADIUS,
+                                  is_retry_lit ? STLXTHEME_SURFACE_HOVER : STLXTHEME_SURFACE);
+    stlxgfx_ctx_draw_rounded_rect(&ctx, retry.x, retry.y, w, RETRY_HEIGHT, STLXTHEME_CONTROL_RADIUS,
+                                  is_retry_lit ? STLXTHEME_LINE_STRONG : STLXTHEME_LINE);
+    draw_line(content, STLXTHEME_UI_FONT_MEDIUM_PATH, ERROR_SIZE, retry.x + RETRY_PADDING_X, retry.y, RETRY_HEIGHT,
+              RETRY_LABEL, STLXTHEME_TEXT);
+}
+
 /* A round action button at `r`, lit under the pointer */
 static void draw_action(stlxgfx_ctx_t* ctx, stlxgfx_surface_t* target, const damage_list::rect& r, bool is_lit,
                         const stlxgfx_surface_t* glyph) {
@@ -261,12 +365,13 @@ capture_thumbnails::capture_thumbnails()
       m_discard_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, discard_contours())),
       m_discard_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, discard_contours())),
       m_close_glyph(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT_SECONDARY, close_contours())),
-      m_close_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, close_contours())) {
+      m_close_glyph_lit(make_shape_glyph(ACTION_GLYPH, STLXTHEME_TEXT, close_contours())),
+      m_warning_glyph(make_shape_glyph(ERROR_GLYPH, STLXTHEME_DANGER, warning_contours())) {
 }
 
 capture_thumbnails::~capture_thumbnails() {
     for (stlxgfx_surface_t* picture : { m_preview_glyph, m_preview_glyph_lit, m_discard_glyph, m_discard_glyph_lit,
-                                        m_close_glyph, m_close_glyph_lit, m_tip, m_notice }) {
+                                        m_close_glyph, m_close_glyph_lit, m_warning_glyph, m_tip, m_notice }) {
         stlxgfx_destroy_surface(picture);
     }
 }
@@ -343,6 +448,36 @@ const char* capture_thumbnails::kind_name_of(uint64_t job) const {
     for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
         if (card->job == job) {
             return kind_name(card->kind);
+        }
+    }
+
+    return nullptr;
+}
+
+bool capture_thumbnails::failed(uint64_t job, stlxgfx_surface_t* pixels, damage_list& damage) {
+    for (std::unique_ptr<thumbnail_card>& card : m_cards) {
+        if (card->job == job) {
+            card->kept = pixels;
+            card->is_failed = true;
+            lay_out(damage);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+stlxgfx_surface_t* capture_thumbnails::retry(uint64_t job, bool* keeps_alpha, uint64_t now_ns, damage_list& damage) {
+    for (std::unique_ptr<thumbnail_card>& card : m_cards) {
+        if (card->job == job && card->is_failed) {
+            stlxgfx_surface_t* pixels = card->kept;
+            card->kept = nullptr;
+            card->is_failed = false;
+            card->deadline_ns = now_ns + SHOWN_NS;
+
+            *keeps_alpha = card->keeps_alpha;
+            lay_out(damage);
+            return pixels;
         }
     }
 
@@ -458,8 +593,8 @@ void capture_thumbnails::press(int32_t x, int32_t y, uint64_t now_ns, damage_lis
     m_pressed_part = m_hover_part;
 }
 
-/* A release over the part its press took acts: close takes the card down here, and Preview, a click on the image and
- * Discard go to the server */
+/* A release over the part its press took acts: close takes the card down here, and Preview, a click on the image,
+ * Discard and Try Again go to the server */
 thumbnail_click capture_thumbnails::release(int32_t x, int32_t y, uint64_t now_ns, damage_list& damage) {
     pointer_move(x, y, now_ns, damage);
     bool is_click = m_pressed >= 0 && m_pressed == m_hover && m_pressed_part == m_hover_part;
@@ -483,6 +618,10 @@ thumbnail_click capture_thumbnails::release(int32_t x, int32_t y, uint64_t now_n
         return { thumbnail_action::preview, card.job, card.entry };
     }
 
+    if (pressed_part == part::retry) {
+        return { thumbnail_action::retry, card.job, card.entry };
+    }
+
     return pressed_part == part::discard ? discard_of(card.job) : thumbnail_click{};
 }
 
@@ -496,7 +635,7 @@ int64_t capture_thumbnails::timeout_ns(uint64_t now_ns) const {
 
     for (const std::unique_ptr<thumbnail_card>& card : m_cards) {
         int64_t left = card->deadline_ns > now_ns ? static_cast<int64_t>(card->deadline_ns - now_ns) : 0;
-        left = card->slide > 0 ? static_cast<int64_t>(SLIDE_FRAME_NS) : is_held ? -1 : left;
+        left = card->slide > 0 ? static_cast<int64_t>(SLIDE_FRAME_NS) : is_held || card->is_failed ? -1 : left;
         soonest = soonest < 0 ? left : left < 0 ? soonest : std::min(soonest, left);
     }
 
@@ -523,7 +662,7 @@ void capture_thumbnails::tick(uint64_t now_ns, damage_list& damage) {
 
     bool erased = false;
     for (size_t i = m_cards.size(); i-- > 0;) {
-        if (m_cards[i]->deadline_ns <= now_ns) {
+        if (!m_cards[i]->is_failed && m_cards[i]->deadline_ns <= now_ns) {
             erase(i, damage);
             erased = true;
         }
@@ -580,8 +719,8 @@ void capture_thumbnails::lay_out(damage_list& damage) {
 
         int32_t h = card_height(card);
         damage_list::rect box = { card.place.x + card.place.w - CARD_MARGIN - CARD_WIDTH, bottom - h, CARD_WIDTH, h };
-        bool is_moved = box.x != card.glass_box.x || box.y != card.glass_box.y || !card.picture;
-        if (is_moved) {
+        bool is_moved = box.x != card.glass_box.x || box.y != card.glass_box.y || box.h != card.glass_box.h;
+        if (is_moved || !card.picture) {
             damage_card(card, damage);
             card.box = box;
             if (!make_picture(card)) {
@@ -643,14 +782,21 @@ void capture_thumbnails::paint(thumbnail_card& card) {
               CAPTION_HEIGHT, title_of(card), STLXTHEME_TEXT_SECONDARY);
 
     bool is_hovered = m_hover >= 0 && m_cards[static_cast<size_t>(m_hover)].get() == &card;
-    if (is_hovered) {
+    if (card.is_failed) {
+        bool is_retry_lit = is_hovered && m_hover_part == part::retry;
+        draw_failure(content, m_warning_glyph, card, caption_top + CAPTION_HEIGHT, is_retry_lit);
+    }
+
+    if (is_hovered && !card.is_failed) {
         bool is_preview_lit = m_hover_part == part::preview;
         bool is_discard_lit = m_hover_part == part::discard;
         draw_action(&ctx, content, preview_rect(card), is_preview_lit,
                     is_preview_lit ? m_preview_glyph_lit : m_preview_glyph);
         draw_action(&ctx, content, discard_rect(card), is_discard_lit,
                     is_discard_lit ? m_discard_glyph_lit : m_discard_glyph);
+    }
 
+    if (is_hovered) {
         bool is_close_lit = m_hover_part == part::close;
         draw_action(&ctx, content, close_rect(card), is_close_lit, is_close_lit ? m_close_glyph_lit : m_close_glyph);
     }
@@ -689,11 +835,15 @@ capture_thumbnails::part capture_thumbnails::part_at(const thumbnail_card& card,
         return part::close;
     }
 
-    if (::contains(preview_rect(card), local_x, local_y)) {
+    if (card.is_failed && ::contains(retry_rect(card), local_x, local_y)) {
+        return part::retry;
+    }
+
+    if (!card.is_failed && ::contains(preview_rect(card), local_x, local_y)) {
         return part::preview;
     }
 
-    if (::contains(discard_rect(card), local_x, local_y)) {
+    if (!card.is_failed && ::contains(discard_rect(card), local_x, local_y)) {
         return part::discard;
     }
 
