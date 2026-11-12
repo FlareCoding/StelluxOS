@@ -66,6 +66,7 @@ typedef enum {
     STLXCONF_ACTION_QUICK_ACTIONS,
     STLXCONF_ACTION_PASTE,
     STLXCONF_ACTION_CLIPBOARD,
+    STLXCONF_ACTION_SCREENSHOT,
 } stlxconf_action_kind_t;
 
 /* One pinned launcher in the dock, order preserved from the file, args space
@@ -80,8 +81,8 @@ typedef struct {
     bool from_drop_in;     /* owned by a drop-in file, never written back */
 } stlxconf_pin_t;
 
-/* One global key binding. The key string is a plus-separated chord such as ctrl+alt+t, and the action exec runs
- * the path with its space separated args, where stlxdm's own actions need neither. */
+/* One global key binding: a plus-separated chord such as ctrl+alt+t, and exec running the path with its space
+ * separated args or one of stlxdm's own actions, of which screenshot's args name what it captures */
 typedef struct {
     char name[64];
     char key[64];

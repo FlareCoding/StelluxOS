@@ -1537,7 +1537,7 @@ void server::compose_rect(dm_output& out, stlxgfx_surface_t* back,
         m_power->draw_dim(back, local);
     }
 
-    if (out.cursor_in_frames) {
+    if (out.cursor_in_frames && !m_composes_freeze) {
         m_cursor.draw(back, m_cursor_shape, m_cursor_x - ox, m_cursor_y - oy, local);
     }
 }
@@ -1744,6 +1744,50 @@ bool server::compose_capture(dm_output& out) {
     m_power->mark_captured();
 
     return true;
+}
+
+/* Composes `out` whole as its next frame shows it, the pointer left out: on the GPU into a picture the CPU reads, so
+ * windows the CPU cannot read show too, else on the CPU. False without memory or when the compose failed. */
+bool server::freeze_output(dm_output& out, frozen_frame& frozen) {
+    uint32_t width = out.pres->width();
+    uint32_t height = out.pres->height();
+    damage_list::rect whole = { 0, 0, static_cast<int32_t>(width), static_cast<int32_t>(height) };
+    frozen.place = out.place;
+    if (!composes_on_gpu()) {
+        frozen.surface = stlxgfx_create_surface(width, height, 32, 16, 8, 0);
+        if (!frozen.surface) {
+            return false;
+        }
+
+        m_composes_freeze = true;
+        compose_rect(out, frozen.surface, { out.place.x, out.place.y, whole.w, whole.h });
+        m_composes_freeze = false;
+        return true;
+    }
+
+    frozen.gpu_pixels = m_gpu_compositor->make_picture(static_cast<size_t>(width) * height * 4);
+    if (!frozen.gpu_pixels) {
+        return false;
+    }
+
+    frozen.surface = stlxgfx_surface_from_buffer(frozen.gpu_pixels->pixels(), width, height, width * 4, 32, 16, 8, 0);
+    std::vector<damage_list::rect> rects = { whole };
+    m_composes_freeze = true;
+    bool is_drawn = frozen.surface && draw_pictures(out, rects, false);
+    m_composes_freeze = false;
+    if (!is_drawn) {
+        return false;
+    }
+
+    compose_target target;
+    target.address = frozen.gpu_pixels->address();
+    target.pitch = width * 4;
+    compose_result result = m_gpu_compositor->compose(*out.pictures.compose, target, out.pictures.scene, rects);
+
+    /* The top pictures now lack a pointer the frames draw, which the next frame draws again */
+    damage_cursor();
+
+    return !switch_to_cpu_on_failed_compose(result);
 }
 
 /* Takes every output's composes off the GPU when `out` is a main output whose failed desktop rebuild left a backdrop
@@ -1956,7 +2000,7 @@ void server::draw_top_pictures(dm_output& out, const std::vector<damage_list::re
         upper.add_bounds(m_power->overlay_bounds());
     }
 
-    bool draws_pointer = out.cursor_in_frames && !is_capture;
+    bool draws_pointer = out.cursor_in_frames && !is_capture && !m_composes_freeze;
     if (draws_pointer) {
         damage_list::rect pointer = cursor_bounds();
         upper.add_bounds({ pointer.x - ox, pointer.y - oy, pointer.w, pointer.h });

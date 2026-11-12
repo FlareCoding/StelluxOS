@@ -103,6 +103,7 @@ static void check_kinds(void) {
     check(stlxconf_action_kind("quick_actions") == STLXCONF_ACTION_QUICK_ACTIONS, "quick_actions names the palette");
     check(stlxconf_action_kind("paste") == STLXCONF_ACTION_PASTE, "paste names pasting into the focused window");
     check(stlxconf_action_kind("clipboard") == STLXCONF_ACTION_CLIPBOARD, "clipboard names the clipboard history");
+    check(stlxconf_action_kind("screenshot") == STLXCONF_ACTION_SCREENSHOT, "screenshot names a capture");
 
     check(stlxconf_action_kind("Power") == STLXCONF_ACTION_UNKNOWN, "action values compare with case");
     check(stlxconf_action_kind("") == STLXCONF_ACTION_UNKNOWN, "an empty action names nothing");
@@ -114,6 +115,7 @@ static void check_kinds(void) {
     check(strcmp(stlxconf_action_label(STLXCONF_ACTION_PASTE), "Paste") == 0, "pasting has a label");
     check(strcmp(stlxconf_action_label(STLXCONF_ACTION_CLIPBOARD), "Clipboard") == 0,
           "the clipboard history's action has a label");
+    check(strcmp(stlxconf_action_label(STLXCONF_ACTION_SCREENSHOT), "Screenshot") == 0, "a capture has a label");
 }
 
 static void check_read(void) {

@@ -1,6 +1,7 @@
 #include "server.hpp"
 #include "material.hpp"
 #include "offer_intake.hpp"
+#include "shared_object.hpp"
 
 #include "shell/chord.hpp"
 
@@ -43,8 +44,11 @@ constexpr size_t CLIPBOARD_ASKS_MAX = 64;
 /* A retired GPU compositor's timeline is read at least this often */
 constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;
 
-/* The source the clipboard history names for stlxdm's own copies from Quick Actions */
+/* The sources the clipboard history names for stlxdm's own copies, from Quick Actions and from captures */
 constexpr const char* QUICK_ACTIONS_LABEL = "Quick Actions";
+constexpr const char* SCREENSHOT_LABEL = "Screenshot";
+
+constexpr const char* PNG_TYPE = "image/png";
 
 /* The arguments of its own a file opener's drop-in may give before the paths */
 constexpr size_t OPENER_ARGS_MAX = 16;
@@ -644,6 +648,10 @@ int server::serve() {
 
     fcntl(m_listen_fd, F_SETFL, O_NONBLOCK);
 
+    if (!m_capture_encoder.start()) {
+        printf("stlxdm: captures stay off the clipboard, since their encoder could not start\r\n");
+    }
+
     /* The config's autostart entries, or a lone terminal without any */
     if (m_conf->autostart_count > 0) {
         for (uint32_t i = 0; i < m_conf->autostart_count; i++) {
@@ -776,7 +784,8 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
         stlxconf_action_kind_t kind = stlxconf_action_kind(sc.action);
         bool runs_program = kind == STLXCONF_ACTION_EXEC && sc.path[0];
         bool runs_own_action = kind == STLXCONF_ACTION_POWER || kind == STLXCONF_ACTION_QUICK_ACTIONS ||
-                               kind == STLXCONF_ACTION_PASTE || kind == STLXCONF_ACTION_CLIPBOARD;
+                               kind == STLXCONF_ACTION_PASTE || kind == STLXCONF_ACTION_CLIPBOARD ||
+                               kind == STLXCONF_ACTION_SCREENSHOT;
         if (!runs_program && !runs_own_action) {
             continue;
         }
@@ -1887,6 +1896,12 @@ void server::run_shortcut(const dm_hotkey& hotkey) {
         return;
     }
 
+    /* A capture keeps an open palette in the frame */
+    if (hotkey.kind == STLXCONF_ACTION_SCREENSHOT) {
+        take_screenshot(hotkey.args);
+        return;
+    }
+
     if (m_panels->popover_takes_keys()) {
         m_panels->close_popover();
     }
@@ -1922,6 +1937,55 @@ void server::open_power() {
     m_panels->close_popover_now();
     m_power->open();
     m_damage.add_full();
+}
+
+void server::take_screenshot(const char* mode) {
+    if (strcmp(mode, "screen") == 0) {
+        capture_screen();
+        return;
+    }
+
+    printf("stlxdm: a screenshot shortcut names no capture stlxdm takes: '%s'\r\n", mode);
+}
+
+/* The output under the pointer goes to the encoder at once, composed whole as its next frame shows it */
+void server::capture_screen() {
+    int32_t under = m_layout.output_at(m_cursor_x, m_cursor_y);
+    uint32_t output = under >= 0 ? static_cast<uint32_t>(under) : m_layout.main_output();
+    dm_output& out = m_outputs[output];
+    if (!out.pres) {
+        return;
+    }
+
+    frozen_frame frozen;
+    stlxgfx_surface_t* pixels = nullptr;
+    if (freeze_output(out, frozen)) {
+        damage_list::rect whole = { 0, 0, static_cast<int32_t>(out.pres->width()),
+                                    static_cast<int32_t>(out.pres->height()) };
+        pixels = copy_frozen_rect(frozen, whole);
+    }
+
+    if (!pixels) {
+        printf("stlxdm: capturing output %u failed\r\n", output);
+        return;
+    }
+
+    m_capture_encoder.encode({ m_next_capture++, pixels, false });
+}
+
+/* An encoded capture becomes the clipboard as a copy does, the copy it replaces staying in the history */
+void server::pump_captures() {
+    capture_png png;
+    while (m_capture_encoder.take(&png)) {
+        stlxgfx_destroy_surface(png.pixels);
+        if (png.object < 0) {
+            printf("stlxdm: keeping capture %llu on the clipboard failed, errno %d\r\n",
+                   static_cast<unsigned long long>(png.id), png.error);
+            continue;
+        }
+
+        replace_clipboard(clipboard_item({ { PNG_TYPE, png.len, png.object } }, 0), SCREENSHOT_LABEL);
+    }
 }
 
 constexpr size_t OUT_Q_LIMIT = 64 * 1024;
@@ -2144,27 +2208,6 @@ std::string server::client_label(const dm_client& c) const {
     }
 
     return c.app_id;
-}
-
-/* A shared memory object holding `len` bytes of `data`, or -1 with errno set */
-static int make_shared_object(const void* data, size_t len) {
-    int object = memfd_create("stlxdm-clipboard", MFD_CLOEXEC);
-    bool is_sized = object >= 0 && ftruncate(object, static_cast<off_t>(len)) == 0;
-    void* shared = is_sized ? mmap(nullptr, len, PROT_READ | PROT_WRITE, MAP_SHARED, object, 0) : MAP_FAILED;
-    if (shared == MAP_FAILED) {
-        int error = errno;
-        if (object >= 0) {
-            close(object);
-        }
-
-        errno = error;
-        return -1;
-    }
-
-    memcpy(shared, data, len);
-    munmap(shared, len);
-
-    return object;
 }
 
 /* Takes an offer's objects and checks them as they arrive, ending a client whose objects do not hold up, and copies a
