@@ -18,6 +18,7 @@
 #include <stlxqpa/drop.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 static const QSize DEFAULT_WINDOW_SIZE(640, 480);
@@ -654,8 +655,12 @@ void QStelluxWindow::handle_drop_motion(const stlxwin_event& event) {
         stlxwin_drop_types(m_handle, &types);
 
         stlxwin_window* handle = m_handle;
-        m_drop_data = std::make_unique<QStelluxMimeData>([handle](const char* mime_type, char** out_data) {
-            return stlxwin_drop_read(handle, mime_type, out_data);
+        m_drop_data = std::make_unique<QStelluxMimeData>([handle](const char* mime_type) {
+            char* bytes = nullptr;
+            long length = stlxwin_drop_read(handle, mime_type, &bytes);
+            QByteArray data = length > 0 ? QByteArray(bytes, length) : QByteArray();
+            std::free(bytes);
+            return data;
         });
         m_drop_data->show_types(types);
         m_drop_actions = to_qt_actions(event.drop.actions);

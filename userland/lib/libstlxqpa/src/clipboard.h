@@ -25,8 +25,8 @@ QList<representation> representations(const QMimeData* data);
 // kept until its types change
 class QStelluxMimeData : public QMimeData {
 public:
-    // Reads one representation into a malloc'd buffer, returning its length, 0 when there is none, or -1
-    using reader = std::function<long(const char* mime_type, char** out_data)>;
+    // Reads one representation, empty when there is none or the read fails
+    using reader = std::function<QByteArray(const char* mime_type)>;
 
     explicit QStelluxMimeData(reader read);
 
