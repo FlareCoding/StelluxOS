@@ -74,6 +74,7 @@ enum {
     SWP_MSG_ACTIVATE_WINDOW = 0x0111,
 
     SWP_MSG_CLIPBOARD_OFFER = 0x0112,
+    SWP_MSG_CLIPBOARD_WATCH = 0x0113,
 
     SWP_MSG_HELLO_REPLY    = 0x0201,
     SWP_MSG_CONFIGURE      = 0x0202,
@@ -87,6 +88,8 @@ enum {
     SWP_MSG_OUTPUTS        = 0x020A,
     SWP_MSG_WINDOW_OUTPUT  = 0x020B,
     SWP_MSG_LAYOUT_RESULT  = 0x020C,
+
+    SWP_MSG_CLIPBOARD_TYPES = 0x020D,
 };
 
 typedef struct {
@@ -429,6 +432,14 @@ typedef struct {
     uint64_t len;           /* bytes from the object's start, 0 while the clipboard holds no such representation */
 } swp_clipboard_data;
 SWP_STATIC_ASSERT(sizeof(swp_clipboard_data) == 8, "wire layout");
+
+/* The clipboard item's types, sent after a CLIPBOARD_WATCH, which has no payload, and again after every change of the
+ * clipboard until the client disconnects */
+typedef struct {
+    uint32_t count;                                    /* representations, 0 while the clipboard is empty */
+    char     types[SWP_OFFER_TYPES_MAX][SWP_MIME_MAX]; /* in the offer's order, `count` used, the rest zero */
+} swp_clipboard_types;
+SWP_STATIC_ASSERT(sizeof(swp_clipboard_types) == 260, "wire layout");
 
 enum {
     SWP_OUTPUT_LIT     = 1u << 0,  /* the output shows a picture */

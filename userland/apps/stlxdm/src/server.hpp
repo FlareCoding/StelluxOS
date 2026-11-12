@@ -274,6 +274,7 @@ struct dm_client {
     /* The types unanswered CLIPBOARD_GETs ask for, oldest first. An answer's handle must ride its first byte, so
      * answers go out only once out_q is empty. */
     std::deque<std::string> clipboard_asks;
+    bool watches_clipboard = false;  /* sent CLIPBOARD_WATCH, so it hears of every change */
 
     std::vector<std::unique_ptr<dm_window>> windows;
 
@@ -609,6 +610,8 @@ private:
                  uint16_t header_flags = 0);
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
+    void replace_clipboard(clipboard_item item);
+    void send_clipboard_types(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
     void offer_clipboard(dm_client& c, const uint8_t* payload);
     bool take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps);

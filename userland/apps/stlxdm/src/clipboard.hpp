@@ -44,4 +44,7 @@ private:
  * type is not printable ASCII or sets its flags or reserved field. */
 bool read_offer(const swp_offer& offer, std::vector<clipboard_rep>* out);
 
+/* The CLIPBOARD_TYPES that tells a watching client what `item` holds */
+swp_clipboard_types describe_types(const clipboard_item& item);
+
 #endif

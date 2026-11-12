@@ -1682,6 +1682,14 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
         ask_clipboard(c, hdr, payload);
         return;
+    case SWP_MSG_CLIPBOARD_WATCH:
+        if (hdr.length != 0) {
+            break;
+        }
+
+        c.watches_clipboard = true;
+        send_clipboard_types(c);
+        return;
     case SWP_MSG_CAPTURE:
         /* Deferred until the screenshot consumer exists, the wire needs
          * a completion message first */
@@ -1948,6 +1956,21 @@ void server::flush_client(dm_client& c) {
     }
 }
 
+/* Every change of the clipboard comes through here, so each watching client hears of it */
+void server::replace_clipboard(clipboard_item item) {
+    m_clipboard = std::move(item);
+    for (auto& c : m_clients) {
+        if (c->watches_clipboard) {
+            send_clipboard_types(*c);
+        }
+    }
+}
+
+void server::send_clipboard_types(dm_client& c) {
+    swp_clipboard_types m = describe_types(m_clipboard);
+    send_to(c, SWP_MSG_CLIPBOARD_TYPES, &m, sizeof(m));
+}
+
 /* Takes the oldest queued handles in order, one per representation with
  * bytes, and a client that sent too few ends */
 bool server::take_queued_handles(dm_client& c, std::vector<clipboard_rep>& reps) {
@@ -1985,7 +2008,7 @@ void server::set_clipboard(dm_client& c, const uint8_t* payload) {
     }
 
     if (take_queued_handles(c, reps)) {
-        m_clipboard = clipboard_item(std::move(reps), 0);
+        replace_clipboard(clipboard_item(std::move(reps), 0));
     }
 }
 
@@ -2001,7 +2024,7 @@ void server::offer_clipboard(dm_client& c, const uint8_t* payload) {
     }
 
     if (take_queued_handles(c, reps)) {
-        m_clipboard = clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE);
+        replace_clipboard(clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE));
     }
 }
 
@@ -2052,7 +2075,7 @@ void server::copy_text(const std::string& text) {
         return;
     }
 
-    m_clipboard = clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0);
+    replace_clipboard(clipboard_item({ { SWP_MIME_TEXT, text.size(), object } }, 0));
 }
 
 /* Sends the oldest ask's CLIPBOARD_DATA from an empty out_q, queueing
