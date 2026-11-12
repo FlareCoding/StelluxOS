@@ -1,9 +1,12 @@
 #include "clipboard_pane.hpp"
 
+#include "keycap.hpp"
+
 #include <stlxgfx/image.h>
 #include <stlxtheme/theme.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <memory>
@@ -39,6 +42,16 @@ constexpr int32_t FILE_TEXT_LEFT = FILE_ICON_SIZE + 12;
 constexpr int32_t MESSAGE_GAP = 10;
 constexpr int32_t THUMBNAIL_SIZE = ENTRY_ICON_SIZE;
 
+constexpr int32_t CHOICE_HEIGHT = 44;
+constexpr int32_t CHOICE_PADDING_X = 12;
+constexpr int32_t PIN_GLYPH_SIZE = 16;
+
+/* The question Clear Unpinned asks in place, on cream at .03 inside a faint ring */
+constexpr int32_t QUESTION_HEIGHT = 58;
+constexpr int32_t QUESTION_MARGIN = 4;
+constexpr int32_t QUESTION_PADDING_X = 12;
+constexpr uint32_t QUESTION_FILL = 0x08FFF0D7;
+
 /* A preview shows a text's first 64 KB, and a line's first bytes are all the pocket can show */
 constexpr uint64_t PREVIEW_BYTES_MAX = 64 * 1024;
 constexpr size_t TITLE_BYTES_MAX = 256;
@@ -48,11 +61,16 @@ constexpr int32_t PAGE_ENTRIES = 7;
 
 constexpr int64_t NS_PER_MINUTE = 60ll * 1000000000ll;
 
+constexpr uint16_t HID_USAGE_K = 0x0E;
+constexpr uint16_t HID_USAGE_P = 0x13;
 constexpr uint16_t HID_USAGE_ENTER = 0x28;
+constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
 constexpr uint16_t HID_USAGE_PAGE_UP = 0x4B;
+constexpr uint16_t HID_USAGE_DELETE = 0x4C;
 constexpr uint16_t HID_USAGE_PAGE_DOWN = 0x4E;
 constexpr uint16_t HID_USAGE_DOWN = 0x51;
 constexpr uint16_t HID_USAGE_UP = 0x52;
+constexpr uint8_t  MOD_SHIFT = 1u << 0;
 constexpr uint8_t  MOD_CTRL = 1u << 1;
 
 /* The entries under their section heads, scrolled to keep the selected one in view */
@@ -115,10 +133,10 @@ private:
     stlxgfx_surface_t* m_fitted = nullptr;
 };
 
-/* One entry: its icon, its first line or what it is, and where and when it was copied */
+/* One entry: its icon, its first line or what it is, where and when it was copied, and a pin when pinned */
 class clip_row : public ui::widget {
 public:
-    clip_row(const shown_entry& entry, const std::string& detail);
+    clip_row(const shown_entry& entry, const std::string& detail, const stlxgfx_surface_t* pin_glyph);
 
     std::function<void()> on_hover;
     std::function<void()> on_choose;
@@ -152,12 +170,83 @@ public:
 
 private:
     const stlxgfx_surface_t* m_icon;
+    const stlxgfx_surface_t* m_pin_glyph;
     text_picture             m_title;
     text_picture             m_detail;
     bool                     m_is_selected = false;
 };
 
 namespace {
+
+/* One action of Ctrl K's list, and at the right the keys that run it */
+class clip_choice : public ui::widget {
+public:
+    explicit clip_choice(const clip_action& action)
+        : m_label(action.label, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT) {
+        for (size_t at = 0; at < action.keys.size();) {
+            size_t end = std::min(action.keys.find(' ', at), action.keys.size());
+            m_keys.push_back(std::make_unique<keycap>(action.keys.substr(at, end - at)));
+            at = end + 1;
+        }
+    }
+
+    void set_selected(bool is_selected) {
+        if (is_selected != m_is_selected) {
+            m_is_selected = is_selected;
+            invalidate();
+        }
+    }
+
+    ui::size measure(ui::size avail) override {
+        return { avail.w, CHOICE_HEIGHT };
+    }
+
+    void paint(ui::painter& p) override {
+        if (m_is_selected) {
+            p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, STLXTHEME_CONTROL_RADIUS, STLXTHEME_SURFACE_SELECTED);
+        }
+
+        m_label.draw(p, CHOICE_PADDING_X, 0, m_frame.h);
+        int32_t x = m_frame.w - CHOICE_PADDING_X;
+        for (size_t i = m_keys.size(); i-- > 0;) {
+            x -= m_keys[i]->width();
+            m_keys[i]->paint(p, x, (m_frame.h - KEYCAP_HEIGHT) / 2);
+            x -= KEYCAP_GAP;
+        }
+    }
+
+private:
+    text_picture                         m_label;
+    std::vector<std::unique_ptr<keycap>> m_keys;
+    bool                                 m_is_selected = false;
+};
+
+/* Clear Unpinned's question, asked above the entries before anything goes */
+class clip_question : public ui::widget {
+public:
+    explicit clip_question(size_t count)
+        : m_ask("Clear " + std::to_string(count) + (count == 1 ? " unpinned item?" : " unpinned items?"),
+                STLXTHEME_UI_FONT_SEMIBOLD_PATH, STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
+          m_note("Pinned items stay.", STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {}
+
+    ui::size measure(ui::size avail) override {
+        return { avail.w, QUESTION_HEIGHT };
+    }
+
+    void paint(ui::painter& p) override {
+        ui::rect strip = { 0, QUESTION_MARGIN, m_frame.w, QUESTION_HEIGHT - 2 * QUESTION_MARGIN };
+        p.rounded_rect(strip, STLXTHEME_CONTROL_RADIUS, QUESTION_FILL);
+        p.rounded_stroke(strip, STLXTHEME_CONTROL_RADIUS, STLXTHEME_LINE_SUBTLE);
+
+        int32_t top = strip.y + (strip.h - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
+        m_ask.draw(p, QUESTION_PADDING_X, top, ENTRY_TITLE_HEIGHT);
+        m_note.draw(p, QUESTION_PADDING_X, top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+    }
+
+private:
+    text_picture m_ask;
+    text_picture m_note;
+};
 
 /* What shows while nothing is listed, and what pins are for */
 class clip_empty : public ui::widget {
@@ -373,7 +462,7 @@ static std::string text_length(const shown_entry& entry) {
 /* Where an entry came from and when, and that a copy past the budget is kept only while current, or how long a text
  * of more than one line is */
 static std::string detail_of(const shown_entry& entry, int64_t now_ns) {
-    std::string detail = entry.from + ", " + age_text(now_ns - entry.copied_ns);
+    std::string detail = entry.from + ", " + (entry.is_pinned ? "pinned" : age_text(now_ns - entry.copied_ns));
     std::string length = text_length(entry);
     if (entry.is_too_large) {
         detail += ", on the clipboard only";
@@ -393,9 +482,15 @@ static float title_size(const shown_entry& entry) {
     return entry.is_title_text ? ENTRY_TEXT_SIZE : STLXTHEME_BODY_SIZE;
 }
 
-clip_row::clip_row(const shown_entry& entry, const std::string& detail)
+/* A pinned entry's title leaves room for its pin */
+static int32_t title_width(const shown_entry& entry) {
+    return ENTRY_TEXT_W - (entry.is_pinned ? PIN_GLYPH_SIZE + ENTRY_PADDING_RIGHT : 0);
+}
+
+clip_row::clip_row(const shown_entry& entry, const std::string& detail, const stlxgfx_surface_t* pin_glyph)
     : m_icon(entry.icon),
-      m_title(fitted(entry.title, title_face(entry), title_size(entry), ENTRY_TEXT_W), title_face(entry),
+      m_pin_glyph(entry.is_pinned ? pin_glyph : nullptr),
+      m_title(fitted(entry.title, title_face(entry), title_size(entry), title_width(entry)), title_face(entry),
               title_size(entry), STLXTHEME_TEXT),
       m_detail(fitted(detail, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE, ENTRY_TEXT_W), STLXTHEME_UI_FONT_PATH,
                STLXTHEME_CAPTION_SIZE, STLXTHEME_TEXT_SECONDARY) {
@@ -413,6 +508,10 @@ void clip_row::paint(ui::painter& p) {
     int32_t top = (m_frame.h - ENTRY_TITLE_HEIGHT - SUBTITLE_LINE_HEIGHT) / 2;
     m_title.draw(p, ENTRY_TEXT_LEFT, top, ENTRY_TITLE_HEIGHT);
     m_detail.draw(p, ENTRY_TEXT_LEFT, top + ENTRY_TITLE_HEIGHT, SUBTITLE_LINE_HEIGHT);
+    if (m_pin_glyph) {
+        p.image({ m_frame.w - ENTRY_PADDING_RIGHT - PIN_GLYPH_SIZE, top + (ENTRY_TITLE_HEIGHT - PIN_GLYPH_SIZE) / 2 },
+                m_pin_glyph);
+    }
 }
 
 clip_preview::clip_preview()
@@ -661,9 +760,21 @@ void clipboard_thumbnails::keep(const std::vector<const clipboard_entry*>& entri
     });
 }
 
+/* A pushpin on the 16 unit grid: its head, its body, the flared base, and the needle */
+static std::vector<std::vector<glyph_point>> pin_contours() {
+    return { { { 5, 1.5f }, { 11, 1.5f }, { 11, 3 }, { 10, 3 }, { 10, 8 }, { 12.5f, 8 }, { 12.5f, 9.5f },
+               { 8.6f, 9.5f }, { 8.6f, 15 }, { 7.4f, 15 }, { 7.4f, 9.5f }, { 3.5f, 9.5f }, { 3.5f, 8 }, { 6, 8 },
+               { 6, 3 }, { 5, 3 } } };
+}
+
 clipboard_pane::clipboard_pane(clipboard_source source)
     : ui::box(ui::axis::row), m_source(std::move(source)) {
+    m_pin_glyph = make_shape_glyph(PIN_GLYPH_SIZE, STLXTHEME_TEXT_DIM, pin_contours());
     refresh();
+}
+
+clipboard_pane::~clipboard_pane() {
+    stlxgfx_destroy_surface(m_pin_glyph);
 }
 
 void clipboard_pane::refresh() {
@@ -707,8 +818,18 @@ void clipboard_pane::build() {
     m_preview = add<clip_preview>();
     m_preview->s().main = ui::length::flex();
 
+    if (m_is_menu_open) {
+        build_menu();
+        return;
+    }
+
     int64_t now_ns = monotonic_ns();
     int32_t top = 0;
+    if (m_is_asking) {
+        m_list->content()->add<clip_question>(unpinned_count());
+        top += QUESTION_HEIGHT;
+    }
+
     for (size_t i = 0; i < m_entries.size(); i++) {
         bool starts_recent = !m_entries[i].is_pinned && (i == 0 || m_entries[i - 1].is_pinned);
         if (i == 0 && m_entries[i].is_pinned) {
@@ -721,7 +842,7 @@ void clipboard_pane::build() {
             top += HEAD_HEIGHT;
         }
 
-        clip_row* row = m_list->content()->add<clip_row>(m_entries[i], detail_of(m_entries[i], now_ns));
+        clip_row* row = m_list->content()->add<clip_row>(m_entries[i], detail_of(m_entries[i], now_ns), m_pin_glyph);
         m_rows.push_back(row);
         m_row_tops.push_back(top);
         top += ENTRY_HEIGHT;
@@ -739,7 +860,7 @@ void clipboard_pane::build() {
 }
 
 void clipboard_pane::select(size_t index) {
-    if (!m_list || index >= m_entries.size()) {
+    if (!m_list || index >= m_row_tops.size()) {
         return;
     }
 
@@ -748,9 +869,9 @@ void clipboard_pane::select(size_t index) {
         m_rows[i]->set_selected(i == index);
     }
 
-    /* The first entry under a head reveals the head with it */
+    /* The first entry reveals the top of the list, and one under a head reveals the head with it */
     bool follows_head = index == 0 || m_row_tops[index] != m_row_tops[index - 1] + ENTRY_HEIGHT;
-    int32_t reveal_top = follows_head ? m_row_tops[index] - HEAD_HEIGHT : m_row_tops[index];
+    int32_t reveal_top = index == 0 ? 0 : follows_head ? m_row_tops[index] - HEAD_HEIGHT : m_row_tops[index];
     int32_t row_bottom = m_row_tops[index] + ENTRY_HEIGHT;
     int32_t view_h = m_list->frame().h > 0 ? m_list->frame().h : PAGE_ENTRIES * ENTRY_HEIGHT;
     if (reveal_top < m_list->scroll_y()) {
@@ -797,8 +918,117 @@ void clipboard_pane::choose(bool pastes) {
     }
 }
 
-bool clipboard_pane::on_key(const ui::key_event& e) {
+/* Ctrl K's list names the entry it acts on, as "TEXT FROM SHEEN, 9 LINES", and replaces the entries until a choice
+ * or Esc */
+void clipboard_pane::build_menu() {
+    const shown_entry& entry = m_entries[m_selected];
+    std::string head = entry.kind + " from " + entry.from;
+    std::string length = text_length(entry);
+    if (!length.empty()) {
+        head += ", " + length;
+    }
+
+    std::transform(head.begin(), head.end(), head.begin(), [](unsigned char c) {
+        return static_cast<char>(toupper(c));
+    });
+
+    m_list->content()->add<section_head>(head.c_str());
+    for (size_t i = 0; i < m_menu.size(); i++) {
+        m_list->content()->add<clip_choice>(m_menu[i])->set_selected(i == m_menu_choice);
+    }
+
+    m_preview->show(entry, m_source, monotonic_ns(), decode_image(entry));
+}
+
+/* Enter pastes or copies, then come pinning, removing and clearing, each with the key that runs it outside the list */
+std::vector<clip_action> clipboard_pane::actions_of(const shown_entry& entry) {
+    uint64_t id = entry.id;
+    std::vector<clip_action> actions;
+    if (!m_source.focused_app.empty()) {
+        actions.push_back({ "Paste into " + m_source.focused_app, "Enter", [this]() { choose(true); } });
+    }
+
+    actions.push_back({ "Copy", actions.empty() ? "Enter" : "Ctrl Enter", [this]() { choose(false); } });
+    actions.push_back({ entry.is_pinned ? "Unpin" : "Pin", "Ctrl P", [this, id, pinned = entry.is_pinned]() {
+        m_source.pin(id, !pinned);
+    } });
+    actions.push_back({ "Delete", "Delete", [this, id]() { m_source.remove(id); } });
+    if (unpinned_count() > 0) {
+        actions.push_back({ "Clear Unpinned\xE2\x80\xA6", "Ctrl Shift Delete", [this]() {
+            m_is_asking = true;
+            build();
+        } });
+    }
+
+    return actions;
+}
+
+size_t clipboard_pane::unpinned_count() const {
+    return static_cast<size_t>(std::count_if(m_entries.begin(), m_entries.end(), [](const shown_entry& entry) {
+        return !entry.is_pinned;
+    }));
+}
+
+bool clipboard_pane::on_menu_key(const ui::key_event& e) {
     bool is_ctrl = (e.modifiers & MOD_CTRL) != 0;
+    switch (e.usage) {
+    case HID_USAGE_UP:
+    case HID_USAGE_DOWN:
+        m_menu_choice = e.usage == HID_USAGE_UP ? (m_menu_choice + m_menu.size() - 1) % m_menu.size()
+                                                : (m_menu_choice + 1) % m_menu.size();
+        build();
+        return true;
+    case HID_USAGE_ENTER: {
+        clip_action action = m_menu[m_menu_choice];
+        m_is_menu_open = false;
+        build();
+        action.run();
+        return true;
+    }
+    case HID_USAGE_ESCAPE:
+        m_is_menu_open = false;
+        build();
+        return true;
+    default:
+        if (is_ctrl && e.usage == HID_USAGE_K) {
+            m_is_menu_open = false;
+            build();
+            return true;
+        }
+
+        return false;
+    }
+}
+
+/* The question takes Enter, which clears, and Esc, which keeps, and any other key keeps too */
+bool clipboard_pane::on_question_key(const ui::key_event& e) {
+    m_is_asking = false;
+    if (e.usage == HID_USAGE_ENTER) {
+        build();
+        m_source.clear();
+        return true;
+    }
+
+    build();
+    return e.usage == HID_USAGE_ESCAPE;
+}
+
+bool clipboard_pane::on_key(const ui::key_event& e) {
+    if (m_entries.empty()) {
+        return false;
+    }
+
+    if (m_is_menu_open) {
+        return on_menu_key(e);
+    }
+
+    if (m_is_asking) {
+        return on_question_key(e);
+    }
+
+    bool is_ctrl = (e.modifiers & MOD_CTRL) != 0;
+    bool is_shift = (e.modifiers & MOD_SHIFT) != 0;
+    const shown_entry& entry = m_entries[m_selected];
     switch (e.usage) {
     case HID_USAGE_UP:
         move_selection(-1);
@@ -815,9 +1045,33 @@ bool clipboard_pane::on_key(const ui::key_event& e) {
     case HID_USAGE_ENTER:
         choose(!is_ctrl);
         return true;
+    case HID_USAGE_DELETE:
+        if (is_ctrl && is_shift) {
+            m_is_asking = unpinned_count() > 0;
+            build();
+        } else {
+            m_source.remove(entry.id);
+        }
+
+        return true;
     default:
-        return false;
+        break;
     }
+
+    if (is_ctrl && e.usage == HID_USAGE_P) {
+        m_source.pin(entry.id, !entry.is_pinned);
+        return true;
+    }
+
+    if (is_ctrl && e.usage == HID_USAGE_K) {
+        m_menu = actions_of(entry);
+        m_menu_choice = 0;
+        m_is_menu_open = true;
+        build();
+        return true;
+    }
+
+    return false;
 }
 
 std::vector<footer_item> clipboard_pane::footer_actions() const {
@@ -825,11 +1079,25 @@ std::vector<footer_item> clipboard_pane::footer_actions() const {
         return {};
     }
 
-    if (m_source.focused_app.empty()) {
-        return { { "Copy", "Enter" } };
+    if (m_is_asking) {
+        return { { "Clear", "Enter" }, { "Keep", "Esc" } };
     }
 
-    return { { "Paste into " + m_source.focused_app, "Enter" }, { "Copy", "Ctrl Enter" } };
+    if (m_is_menu_open) {
+        return { { "Choose", "Enter" }, { "Back", "Esc" } };
+    }
+
+    std::vector<footer_item> items;
+    if (m_source.focused_app.empty()) {
+        items.push_back({ "Copy", "Enter" });
+    } else {
+        items.push_back({ "Paste into " + m_source.focused_app, "Enter" });
+        items.push_back({ "Copy", "Ctrl Enter" });
+    }
+
+    items.push_back({ m_entries[m_selected].is_pinned ? "Unpin" : "Pin", "Ctrl P" });
+    items.push_back({ "Actions", "Ctrl K" });
+    return items;
 }
 
 /* The count of entries, and the bytes the budget counts against its limit */

@@ -1063,13 +1063,18 @@ bool palette_view::edit_key(const ui::key_event& e) {
     return true;
 }
 
-/* Clipboard mode's keys go to the pane first, then to the chips and Esc, then to the query. Esc closes a palette
- * that opened in Clipboard mode, and otherwise goes back to every kind. */
+/* Clipboard mode's keys go to the chips, then the pane, then Esc and the query. Esc closes a palette Super V opened,
+ * and otherwise goes back to every kind. */
 bool palette_view::on_clipboard_key(const ui::key_event& e) {
     bool is_ctrl = (e.modifiers & CHORD_MOD_CTRL) != 0;
     bool is_chip_key = is_ctrl && e.usage >= HID_USAGE_1 && e.usage < HID_USAGE_1 + CHIP_COUNT;
     if (is_chip_key) {
         narrow(CHIP_MODES[e.usage - HID_USAGE_1]);
+        return true;
+    }
+
+    if (m_clipboard_pane->on_key(e)) {
+        update_footer();
         return true;
     }
 
@@ -1080,11 +1085,6 @@ bool palette_view::on_clipboard_key(const ui::key_event& e) {
     bool backs_out = e.usage == HID_USAGE_ESCAPE || (e.usage == HID_USAGE_BACKSPACE && m_query.empty());
     if (backs_out) {
         narrow(narrow_mode::all);
-        return true;
-    }
-
-    if (m_clipboard_pane->on_key(e)) {
-        update_footer();
         return true;
     }
 
@@ -2482,7 +2482,10 @@ std::unique_ptr<ui::widget> quick_actions::build() {
     view->clipboard = { m_history, &m_thumbnails, &m_conf, &m_launcher_icons, m_text_icon, m_image_icon,
                         m_folder_icon, m_program_icon, m_focused_app, m_history_since,
                         [this](uint64_t id) { on_clipboard_paste(id); },
-                        [this](uint64_t id) { on_clipboard_copy(id); } };
+                        [this](uint64_t id) { on_clipboard_copy(id); },
+                        [this](uint64_t id, bool pinned) { on_clipboard_pin(id, pinned); },
+                        [this](uint64_t id) { on_clipboard_remove(id); },
+                        [this]() { on_clipboard_clear(); } };
     m_shows_clipboard = [shown]() {
         return shown->shows_clipboard();
     };

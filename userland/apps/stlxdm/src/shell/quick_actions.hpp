@@ -51,6 +51,12 @@ public:
     std::function<void(uint64_t id)> on_clipboard_paste;
     std::function<void(uint64_t id)> on_clipboard_copy;
 
+    /* Fired by Clipboard mode's keys with the palette open: an entry to pin or unpin or remove, or clearing every
+     * unpinned one */
+    std::function<void(uint64_t id, bool pinned)> on_clipboard_pin;
+    std::function<void(uint64_t id)> on_clipboard_remove;
+    std::function<void()> on_clipboard_clear;
+
     /* Ticks the rows of the launchers whose bit is set in `running`, from the next opening on */
     void show_running(uint64_t running) { m_running = running; }
 

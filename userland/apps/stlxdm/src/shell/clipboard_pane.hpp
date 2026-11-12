@@ -53,6 +53,16 @@ struct clipboard_source {
 
     std::function<void(uint64_t id)> paste;
     std::function<void(uint64_t id)> copy;
+    std::function<void(uint64_t id, bool pinned)> pin;
+    std::function<void(uint64_t id)> remove;
+    std::function<void()> clear;
+};
+
+/* One thing an entry's Ctrl K list does, with the keys that run it, space separated */
+struct clip_action {
+    std::string           label;
+    std::string           keys;
+    std::function<void()> run;
 };
 
 class clip_list;
@@ -85,11 +95,13 @@ struct shown_entry {
 class clipboard_pane : public ui::box {
 public:
     explicit clipboard_pane(clipboard_source source);
+    ~clipboard_pane() override;
 
     /* Reads the history again, keeping the selected entry selected while it is still listed */
     void refresh();
 
-    /* The clipboard's own keys: moving through the entries, Enter and Ctrl Enter. False for any other key. */
+    /* The clipboard's own keys: moving through the entries, Enter, Ctrl Enter, Ctrl P, Delete, Ctrl Shift Delete,
+     * Ctrl K, and Esc while Ctrl K's list or the clear question is open. False for any other key. */
     bool on_key(const ui::key_event& e);
 
     std::vector<footer_item> footer_actions() const;
@@ -98,10 +110,15 @@ public:
 
 private:
     void build();
+    void build_menu();
     void select(size_t index);
     stlxgfx_surface_t* decode_image(const shown_entry& shown) const;
     void move_selection(int32_t rows);
     void choose(bool pastes);
+    bool on_menu_key(const ui::key_event& e);
+    bool on_question_key(const ui::key_event& e);
+    std::vector<clip_action> actions_of(const shown_entry& entry);
+    size_t unpinned_count() const;
 
     clipboard_source         m_source;
     std::vector<shown_entry> m_entries;
@@ -112,6 +129,14 @@ private:
     /* Each entry's row and where it starts in the list's content */
     std::vector<clip_row*> m_rows;
     std::vector<int32_t>   m_row_tops;
+
+    /* Ctrl K's list in place of the entries, its chosen action, and the question Clear Unpinned asks first */
+    bool                     m_is_menu_open = false;
+    std::vector<clip_action> m_menu;
+    size_t                   m_menu_choice = 0;
+    bool                     m_is_asking = false;
+
+    stlxgfx_surface_t* m_pin_glyph = nullptr;
 };
 
 #endif
