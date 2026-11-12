@@ -740,17 +740,28 @@ int server::build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper) {
 
     out.panels->on_clipboard_pin = [this](uint64_t id, bool pinned) {
         m_history.set_pinned(id, pinned);
-        m_panels->clipboard_changed();
+        note_history_change();
     };
 
+    /* Removing entries changes the current item only when one of them was current, which leaves the clipboard empty */
     out.panels->on_clipboard_remove = [this](uint64_t id) {
+        bool had_current = !m_history.current().empty();
         m_history.remove(id);
-        tell_clipboard_watchers();
+        if (had_current && m_history.current().empty()) {
+            note_clipboard_change();
+        } else {
+            note_history_change();
+        }
     };
 
     out.panels->on_clipboard_clear = [this]() {
+        bool had_current = !m_history.current().empty();
         m_history.clear_unpinned();
-        tell_clipboard_watchers();
+        if (had_current && m_history.current().empty()) {
+            note_clipboard_change();
+        } else {
+            note_history_change();
+        }
     };
 
     out.panels->on_exec = [](const char* path, const std::vector<std::string>& args) {
@@ -800,6 +811,7 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     m_gpu_capture = std::move(next.gpu_capture);
     m_hotkeys = std::move(next.hotkeys);
     m_history.set_limits(m_conf->clipboard_history_items, static_cast<uint64_t>(m_conf->clipboard_history_mb) << 20);
+    note_history_change();
 
     m_backdrop = next.backdrop;
     m_gpu_backdrop = std::move(next.gpu_backdrop);
@@ -1529,6 +1541,7 @@ void server::pump(const std::vector<pollfd>& fds) {
     for (size_t i = 0; i < m_clients.size() && i + 1 < fds.size(); i++) {
         if (fds[i + 1].revents & POLLOUT) {
             flush_client(*m_clients[i]);
+            catch_up_watcher(*m_clients[i]);
             send_clipboard_answers(*m_clients[i]);
             send_drop_answers(*m_clients[i]);
         }
@@ -1883,10 +1896,16 @@ void server::run_shortcut(const dm_hotkey& hotkey) {
     spawn_app(hotkey.path, hotkey.args);
 }
 
-/* The focused window pastes the clipboard as its own paste key would, whatever key that is */
+/* The focused window pastes the clipboard as its own paste key would, whatever key that is, after the types its
+ * client still lacks, which go even behind a full queue since the paste reads them */
 void server::paste_into_focus() {
     if (!m_focus) {
         return;
+    }
+
+    dm_client* c = window_owner(m_focus);
+    if (c && c->watches_clipboard && c->clipboard_generation != m_clipboard_generation) {
+        send_clipboard_types(*c);
     }
 
     swp_event_rec rec;
@@ -2017,8 +2036,10 @@ void server::flush_window_events(dm_client& c, dm_window& w) {
 }
 
 /* Cross-window delivery order within one wakeup is unspecified, only
- * per-window order is promised. */
+ * per-window order is promised. The clipboard's types leave first, and a
+ * paste sends its window's client the types it still lacks. */
 void server::flush_events() {
+    flush_clipboard();
     flush_drag();
 
     for (auto& c : m_clients) {
@@ -2055,34 +2076,55 @@ void server::flush_client(dm_client& c) {
 /* Every copy comes through here, so the history keeps it and each watching client hears of it */
 void server::replace_clipboard(clipboard_item item, std::string label) {
     m_history.copy(std::move(item), std::move(label), monotonic_ns());
-    tell_clipboard_watchers();
+    note_clipboard_change();
 }
 
-/* Each watching client hears of a new current item, and an open Clipboard mode shows it */
-void server::tell_clipboard_watchers() {
+/* The current item changed: each watcher hears of it at the next flush, however many changes come first */
+void server::note_clipboard_change() {
+    m_clipboard_generation++;
+    m_history_changed = true;
+}
+
+/* Only the history's other entries changed, which its views show and watchers never hear of */
+void server::note_history_change() {
+    m_history_changed = true;
+}
+
+/* Each watcher behind the clipboard's generation hears it once and the history's views refresh once, so a client
+ * copying in a loop costs every watcher one message per wakeup instead of one per copy */
+void server::flush_clipboard() {
     for (auto& c : m_clients) {
-        if (c->watches_clipboard) {
-            send_clipboard_types(*c);
-        }
+        catch_up_watcher(*c);
     }
 
-    if (m_panels) {
+    if (m_history_changed && m_panels) {
         m_panels->clipboard_changed();
     }
+
+    m_history_changed = false;
 }
 
 /* A chosen entry becomes current, and pasting sends the focused window the paste event after its types */
 void server::choose_clipboard_entry(uint64_t id, bool pastes) {
     m_history.make_current(id, monotonic_ns());
-    tell_clipboard_watchers();
+    note_clipboard_change();
     if (pastes) {
         paste_into_focus();
+    }
+}
+
+/* A watcher behind the clipboard's generation hears the newest types only from an empty out queue, as answers leave,
+ * so a client copying in a loop never grows the queue of a watcher that stopped reading */
+void server::catch_up_watcher(dm_client& c) {
+    if (c.watches_clipboard && c.clipboard_generation != m_clipboard_generation && c.out_q.empty() && !c.dead) {
+        send_clipboard_types(c);
     }
 }
 
 void server::send_clipboard_types(dm_client& c) {
     swp_clipboard_types m = describe_types(m_history.current());
     send_to(c, SWP_MSG_CLIPBOARD_TYPES, &m, sizeof(m));
+    c.clipboard_generation = m_clipboard_generation;
 }
 
 /* A client's copies carry its launcher's label, as the bar names it, else its app id */
