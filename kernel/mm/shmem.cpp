@@ -39,13 +39,17 @@ static bool ensure_capacity(shmem* s, size_t needed) {
     return true;
 }
 
-static void free_pages_past_size_locked(shmem* s) {
-    for (size_t i = s->m_page_count; i < s->m_capacity; i++) {
+static void free_pages_locked(shmem* s, size_t first, size_t end) {
+    for (size_t i = first; i < end; i++) {
         if (s->m_pages[i] != 0) {
             pmm::free_page(s->m_pages[i]);
             s->m_pages[i] = 0;
         }
     }
+}
+
+static void free_pages_past_size_locked(shmem* s) {
+    free_pages_locked(s, s->m_page_count, s->m_capacity);
 }
 
 void shmem::ref_destroy(shmem* self) {
@@ -128,6 +132,12 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
 
                     pmm::phys_addr_t phys = pmm::alloc_page();
                     if (phys == 0) {
+                        // Without a mapping no page sits past the size, so every page from `old_page_count` on is
+                        // this grow's. With one, they wait past the size for the last mapping to go.
+                        if (s->m_mapping_count == 0) {
+                            free_pages_locked(s, old_page_count, i);
+                        }
+
                         result = SHMEM_ERR_NO_MEM;
                         break;
                     }
@@ -152,7 +162,8 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
             s->m_size = new_size;
         }
 
-        if (s->m_mapping_count == 0) {
+        // Without a mapping only a shrink leaves pages past the size, so a grow never rescans the page array
+        if (new_page_count < old_page_count && s->m_mapping_count == 0) {
             free_pages_past_size_locked(s);
         }
     });

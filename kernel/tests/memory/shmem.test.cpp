@@ -7,6 +7,7 @@
 #include "mm/paging.h"
 #include "mm/pmm.h"
 #include "mm/page_quarantine.h"
+#include "clock/clock.h"
 #include "common/string.h"
 #include "sync/mutex.h"
 
@@ -31,6 +32,11 @@ static int32_t shmem_after_all() {
 }
 
 constexpr size_t PAGE = pmm::PAGE_SIZE;
+
+// The page array's capacity before the timed growth, and the pages that growth reaches, best of `GROWTH_TRIALS`
+constexpr size_t INFLATED_PAGES = 16384;
+constexpr size_t GROWN_PAGES = 1024;
+constexpr uint32_t GROWTH_TRIALS = 3;
 
 BEFORE_ALL(shmem_test, shmem_before_all);
 AFTER_ALL(shmem_test, shmem_after_all);
@@ -285,4 +291,39 @@ TEST(shmem_test, map_shared_rejects_hole) {
 
     mm::mm_context_release(ctx);
     mm::shmem::ref_destroy(s);
+}
+
+TEST(shmem_test, growing_page_by_page_costs_what_sizing_once_costs) {
+    mm::shmem* s = mm::shmem_create(0);
+    ASSERT_NOT_NULL(s);
+    sync::mutex_lock(s->lock);
+
+    // A shrink keeps the page array's capacity, so each grow after it would scan the whole empty tail if grows scanned
+    bool is_resized = mm::shmem_resize_locked(s, INFLATED_PAGES * PAGE) == mm::SHMEM_OK;
+    is_resized = is_resized && mm::shmem_resize_locked(s, 0) == mm::SHMEM_OK;
+
+    uint64_t sized_once_ns = ~uint64_t{0};
+    uint64_t page_by_page_ns = ~uint64_t{0};
+    for (uint32_t trial = 0; is_resized && trial < GROWTH_TRIALS; trial++) {
+        uint64_t start = clock::now_ns();
+        is_resized = mm::shmem_resize_locked(s, GROWN_PAGES * PAGE) == mm::SHMEM_OK;
+        uint64_t elapsed = clock::now_ns() - start;
+        sized_once_ns = elapsed < sized_once_ns ? elapsed : sized_once_ns;
+        is_resized = is_resized && mm::shmem_resize_locked(s, 0) == mm::SHMEM_OK;
+
+        start = clock::now_ns();
+        for (size_t pages = 1; is_resized && pages <= GROWN_PAGES; pages++) {
+            is_resized = mm::shmem_resize_locked(s, pages * PAGE) == mm::SHMEM_OK;
+        }
+
+        elapsed = clock::now_ns() - start;
+        page_by_page_ns = elapsed < page_by_page_ns ? elapsed : page_by_page_ns;
+        is_resized = is_resized && mm::shmem_resize_locked(s, 0) == mm::SHMEM_OK;
+    }
+
+    sync::mutex_unlock(s->lock);
+    mm::shmem::ref_destroy(s);
+
+    EXPECT_TRUE(is_resized);
+    EXPECT_LE(page_by_page_ns, sized_once_ns + sized_once_ns / 2);
 }
