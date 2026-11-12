@@ -8,7 +8,7 @@ HOST_CC ?= clang
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(addprefix $(SRC_DIR)/,tar.c remove.c records.c files.c desktop.c report.c)
+SOURCES   := $(addprefix $(SRC_DIR)/,tar.c remove.c records.c files.c desktop.c report.c cancel.c)
 HEADERS   := $(wildcard $(SRC_DIR)/*.h)
 TESTS     := $(patsubst %.test.c,$(BUILD_DIR)/%,$(wildcard *.test.c))
 

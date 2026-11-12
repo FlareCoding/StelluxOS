@@ -73,8 +73,12 @@ read instead of sentences, one per line on stdout as each happens:
     failed <name> <kind> <reason>       <name> is - when the run failed before its packages
 
 `list` prints the records, then the packages. A failure's kind is `network`,
-`timeout`, `memory`, `conflict`, `verify`, `lock`, `missing` or `io`, and its
-reason is the sentence a terminal shows.
+`timeout`, `memory`, `conflict`, `verify`, `lock`, `missing`, `cancelled` or
+`io`, and its reason is the sentence a terminal shows.
+
+SIGTERM, SIGINT and SIGPIPE cancel `stlxpkg`: an install stops at its next
+64 KB of archive and deletes its staging tree, except from its `commit` on,
+when it places the whole package first, so a package is never half placed.
 
 ## Package format
 
