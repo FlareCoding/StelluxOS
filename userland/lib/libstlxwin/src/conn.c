@@ -52,6 +52,10 @@ _Static_assert(STLXWIN_LAYOUT_STALE == SWP_LAYOUT_STALE, "stlxwin.h names proto.
 _Static_assert(STLXWIN_LAYOUT_INVALID == SWP_LAYOUT_INVALID, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_LAYOUT_OVERLAP == SWP_LAYOUT_OVERLAP, "stlxwin.h names proto.h's outcome");
 _Static_assert(STLXWIN_LAYOUT_APART == SWP_LAYOUT_APART, "stlxwin.h names proto.h's outcome");
+_Static_assert(STLXWIN_OFFER_TYPES_MAX == SWP_OFFER_TYPES_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_MIME_MAX == SWP_MIME_MAX, "stlxwin.h names proto.h's limit");
+_Static_assert(STLXWIN_CLIPBOARD_PRIVATE == SWP_CLIPBOARD_PRIVATE, "stlxwin.h names proto.h's flag");
+_Static_assert(sizeof(stlxwin_clip_types) == sizeof(swp_clipboard_types), "the types copy whole");
 
 /* Blocking exact-count read, used only for the connect handshake */
 static int read_full(int fd, void* dst, size_t len) {
@@ -479,6 +483,32 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
         conn->clip_len = m.len;
         conn->clip_handle = m.len > 0 ? take_queued_handle(conn) : -1;
         conn->clip_pending = 0;
+        return;
+    }
+    case SWP_MSG_CLIPBOARD_TYPES: {
+        swp_clipboard_types m;
+        if (hdr->length != sizeof(m)) {
+            return;
+        }
+
+        memcpy(&m, payload, sizeof(m));
+        if (m.count > SWP_OFFER_TYPES_MAX) {
+            return;
+        }
+
+        for (uint32_t i = 0; i < SWP_OFFER_TYPES_MAX; i++) {
+            m.types[i][SWP_MIME_MAX - 1] = '\0';
+        }
+
+        /* The first answers the watch, which waits for it, and each later one is a change */
+        conn->clip_types = m;
+        if (!conn->has_clip_types) {
+            conn->has_clip_types = 1;
+            return;
+        }
+
+        ev.type = STLXWIN_EVT_CLIPBOARD;
+        stlxwin_evq_push(conn, &ev);
         return;
     }
     case SWP_MSG_MODES: {

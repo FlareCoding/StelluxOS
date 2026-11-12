@@ -223,6 +223,11 @@ void QStelluxIntegration::dispatch_queued_events() {
             continue;
         }
 
+        if (event.type == STLXWIN_EVT_CLIPBOARD) {
+            static_cast<QStelluxClipboard*>(m_clipboard.get())->changed();
+            continue;
+        }
+
         QStelluxWindow* window = m_windows.value(event.window);
         if (window) {
             window->handle_event(event);
