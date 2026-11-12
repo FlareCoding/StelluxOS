@@ -691,6 +691,11 @@ private:
     bool route_drag_key(uint16_t usage, bool down, bool repeat);
     dm_window* drag_target_at(int32_t x, int32_t y);
     void update_drag_target();
+    void enter_launcher(int32_t launcher);
+    void leave_launcher();
+    const std::vector<dock_file>& drag_files();
+    void spring_launcher(uint64_t now);
+    void drop_on_launcher();
     void refresh_drag_action();
     void scroll_under_drag(int32_t x, int32_t y, int16_t wheel);
     void send_drop_enter(dm_window* w);
@@ -756,6 +761,9 @@ private:
     bool has_launcher(const dm_client& c) const;
     damage_list::rect launcher_tile_of(const dm_client& c) const;
     bool unminimize_app_window(const stlxconf_pin_t& pin);
+    bool app_has_window(const stlxconf_pin_t& pin) const;
+    void bring_app_forward(const stlxconf_pin_t& pin);
+    bool open_drop_in_launcher(const stlxconf_pin_t& pin, const std::vector<dock_file>& files);
     void unminimize_windows_without_launcher();
     window_animation* find_animation(const dm_window* w);
     bool animate_window(dm_window* w, window_transition transition, const damage_list::rect& from,

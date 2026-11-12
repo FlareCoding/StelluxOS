@@ -32,6 +32,8 @@ constexpr double SNAP_BACK_PX_PER_MS = 12.0;
 constexpr int64_t SETTLE_SHRINK = PROGRESS_ONE * 4 / 100;
 constexpr int32_t FULL_OPACITY = 255;
 
+constexpr const char* TERMINAL_PROGRAM = "stlxterm";
+
 bool is_one_dnd_action(uint32_t action) {
     return action != 0 && (action & (action - 1)) == 0 && (action & ~DND_ACTIONS) == 0;
 }
@@ -270,4 +272,54 @@ dnd_frame step_dnd_motion(const dnd_motion& motion, uint64_t now_ns, const damag
     }
 
     return frame;
+}
+
+bool is_terminal_program(const char* program) {
+    const char* slash = strrchr(program, '/');
+    return strcmp(slash ? slash + 1 : program, TERMINAL_PROGRAM) == 0;
+}
+
+/* The last name of `path`, the whole of it for the root */
+static std::string last_name(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+
+    return name.empty() ? path : name;
+}
+
+/* `words` cut to what a chip carries, before a character that would not fit whole */
+static std::string fitted_words(std::string words) {
+    size_t end = std::min(words.size(), static_cast<size_t>(SWP_DROP_WORDS_MAX - 1));
+    while (end > 0 && end < words.size() && (static_cast<unsigned char>(words[end]) & 0xC0) == 0x80) {
+        end--;
+    }
+
+    words.resize(end);
+    return words;
+}
+
+dnd_answer launcher_answer(const std::vector<dock_file>& files, const char* program, const char* label) {
+    dnd_answer answer;
+    if (files.empty() || !program[0]) {
+        return answer;
+    }
+
+    std::string words;
+    bool is_one_folder = files.size() == 1 && files.front().is_folder;
+    auto opens = [program](const dock_file& file) { return file.opener == program; };
+    bool opens_all = std::all_of(files.begin(), files.end(), opens);
+    if (is_one_folder && is_terminal_program(program)) {
+        words = std::string("Open ") + label + " in " + last_name(files.front().path);
+    } else if (opens_all) {
+        std::string count = files.size() == 1 ? std::string() : std::to_string(files.size()) + " files ";
+        words = "Open " + count + "in " + label;
+    } else {
+        return answer;
+    }
+
+    answer.actions = SWP_DND_COPY;
+    answer.preferred = SWP_DND_COPY;
+    answer.words_action = SWP_DND_COPY;
+    answer.words = fitted_words(words);
+    return answer;
 }

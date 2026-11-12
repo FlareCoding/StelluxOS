@@ -40,6 +40,15 @@ struct dnd_chip {
     bool operator==(const dnd_chip&) const = default;
 };
 
+/* One dragged file as a dock launcher weighs it: its path, whether it is a folder, and the program that opens files of
+ * its type, empty for none, with that program's own space separated arguments, which come before the paths */
+struct dock_file {
+    std::string path;
+    bool        is_folder = false;
+    std::string opener;
+    std::string opener_args;
+};
+
 /* One running drag, from its START_DRAG until its source hears it finished or cancelled */
 struct dnd_session {
     enum class stage {
@@ -75,6 +84,15 @@ struct dnd_session {
     dm_window* target = nullptr;        /* the window under the pointer that got DROP_ENTER, or that took the drop */
     dnd_answer answer;
     uint32_t   action = 0;              /* what a release does now, 0 for nothing */
+
+    /* The dock launcher under the pointer, which stlxdm answers itself, -1 for none, when resting there brings its
+     * app's window forward, 0 for never, and whether its tile shows dark for the blink just before */
+    int32_t    launcher = -1;
+    uint64_t   spring_ns = 0;
+    bool       is_blinking = false;
+
+    std::vector<dock_file> files;       /* the dragged files, read once a launcher first weighs the drag */
+    bool                   has_files = false;
 
     uint64_t   finish_deadline_ns = 0;  /* while dropped */
 };
@@ -148,5 +166,12 @@ bool has_dnd_motion_ended(const dnd_motion& motion, uint64_t now_ns);
  * at `opacity`, its shadow too. */
 dnd_frame step_dnd_motion(const dnd_motion& motion, uint64_t now_ns, const damage_list::rect& at_pointer,
                           uint32_t opacity);
+
+/* Whether `program` is the terminal, whose launcher opens a dragged folder as its working folder */
+bool is_terminal_program(const char* program);
+
+/* What the dock launcher of `program`, labeled `label`, answers a drag of `files`: a copy when `program` opens every
+ * file, or when it is the terminal and the drag is one folder, with words that say so, else a refusal */
+dnd_answer launcher_answer(const std::vector<dock_file>& files, const char* program, const char* label);
 
 #endif

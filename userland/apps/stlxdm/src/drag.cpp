@@ -1,4 +1,5 @@
 #include "server.hpp"
+#include "shell/palette_parts.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -15,6 +16,17 @@ constexpr size_t DROP_ASKS_MAX = 64;
 constexpr uint16_t HID_FIRST_MODIFIER = 0xE0;
 constexpr uint16_t HID_LAST_MODIFIER = 0xE7;
 constexpr uint16_t HID_USAGE_ESCAPE = 0x29;
+
+/* Resting this long on a launcher brings its app's window forward, its tile dark for the last stretch as a blink */
+constexpr uint64_t DOCK_SPRING_NS = 700000000ull;
+constexpr uint64_t DOCK_BLINK_NS = 100000000ull;
+
+/* A launcher weighs at most this many files, typing each by name and content, from a list of at most this length */
+constexpr size_t DOCK_FILES_MAX = 64;
+constexpr uint64_t DOCK_LIST_BYTES_MAX = 65536;
+
+constexpr const char* URI_LIST = "text/uri-list";
+constexpr const char* FOLDER_TYPE = "inode/directory";
 
 static uint64_t now_ns() {
     timespec ts;
@@ -360,12 +372,13 @@ dm_window* server::drag_target_at(int32_t x, int32_t y) {
     return zone == decor::zone::content ? w : nullptr;
 }
 
-/* Finds the window under the pointer again, telling the one it leaves and the one it enters, which refuses until it
- * answers */
+/* Finds what lies under the pointer again: a window, which hears the drag leave and enter and refuses until it
+ * answers, or a dock launcher, which stlxdm answers itself */
 void server::update_drag_target() {
     dnd_session& s = *m_dnd;
     dm_window* under = drag_target_at(s.x, s.y);
-    if (under == s.target) {
+    int32_t launcher = under ? -1 : m_panels->launcher_at(s.x, s.y);
+    if (under == s.target && launcher == s.launcher) {
         return;
     }
 
@@ -373,8 +386,13 @@ void server::update_drag_target() {
         send_drop_leave(s.target);
     }
 
+    leave_launcher();
     s.target = under;
     s.answer = {};
+    if (launcher >= 0) {
+        enter_launcher(launcher);
+    }
+
     refresh_drag_action();
     if (under) {
         send_drop_enter(under);
@@ -382,10 +400,98 @@ void server::update_drag_target() {
     }
 }
 
-/* The action a release does now, and the chip and opacity that show it */
+/* The launcher's label, else its program's file name */
+static std::string launcher_label(const stlxconf_pin_t& pin) {
+    return pin.label[0] ? pin.label : file_name(pin.path);
+}
+
+/* A drag over a launcher lights its tile and takes the launcher's answer, and while the launcher's app has a window,
+ * resting there brings it forward */
+void server::enter_launcher(int32_t launcher) {
+    dnd_session& s = *m_dnd;
+    const stlxconf_pin_t& pin = m_conf->pins[launcher];
+    s.launcher = launcher;
+    s.answer = launcher_answer(drag_files(), pin.path, launcher_label(pin).c_str());
+
+    s.spring_ns = app_has_window(pin) ? now_ns() + DOCK_SPRING_NS : 0;
+    s.is_blinking = false;
+    m_panels->light_launcher(launcher, true);
+}
+
+void server::leave_launcher() {
+    dnd_session& s = *m_dnd;
+    if (s.launcher >= 0) {
+        m_panels->light_launcher(s.launcher, false);
+    }
+
+    s.launcher = -1;
+    s.spring_ns = 0;
+    s.is_blinking = false;
+}
+
+/* The files the drag's URI list names, read when a launcher first weighs them: each one's folder or type and the
+ * program that opens it. A list too long to weigh quickly names none. */
+const std::vector<dock_file>& server::drag_files() {
+    dnd_session& s = *m_dnd;
+    if (s.has_files) {
+        return s.files;
+    }
+
+    s.has_files = true;
+    const clipboard_rep* list = s.item.find(URI_LIST);
+    if (!list || list->len > DOCK_LIST_BYTES_MAX) {
+        return s.files;
+    }
+
+    std::vector<std::string> paths = uri_list_paths(read_bytes(*list, DOCK_LIST_BYTES_MAX));
+    if (paths.size() > DOCK_FILES_MAX) {
+        return s.files;
+    }
+
+    for (std::string& path : paths) {
+        struct stat st;
+        dock_file file;
+        file.is_folder = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        const char* type = file.is_folder ? FOLDER_TYPE : stlxconf_file_type(path.c_str()).mime_type;
+        const stlxconf_file_handler_t* opener = stlxconf_find_file_opener(m_conf, type, nullptr);
+
+        file.path = std::move(path);
+        file.opener = opener ? opener->path : "";
+        file.opener_args = opener ? opener->args : "";
+        s.files.push_back(std::move(file));
+    }
+
+    return s.files;
+}
+
+/* The tile blinks once just before resting on it brings its app's window forward, and the drag goes on */
+void server::spring_launcher(uint64_t now) {
+    dnd_session& s = *m_dnd;
+    bool rests = s.launcher >= 0 && static_cast<uint32_t>(s.launcher) < m_conf->pin_count && s.spring_ns != 0;
+    if (!rests) {
+        return;
+    }
+
+    if (!s.is_blinking && now + DOCK_BLINK_NS >= s.spring_ns) {
+        s.is_blinking = true;
+        m_panels->light_launcher(s.launcher, false);
+    }
+
+    if (now < s.spring_ns) {
+        return;
+    }
+
+    s.spring_ns = 0;
+    s.is_blinking = false;
+    m_panels->light_launcher(s.launcher, true);
+    bring_app_forward(m_conf->pins[s.launcher]);
+}
+
+/* The action a release does now, over a window or a launcher, and the chip and opacity that show it */
 void server::refresh_drag_action() {
     dnd_session& s = *m_dnd;
-    uint32_t action = s.target ? choose_dnd_action(s.actions, s.answer, s.modifiers) : 0;
+    bool has_target = s.target || s.launcher >= 0;
+    uint32_t action = has_target ? choose_dnd_action(s.actions, s.answer, s.modifiers) : 0;
     dnd_chip chip = chip_for(action, s.answer);
     if (action == s.action && chip == m_drag_look.chip()) {
         return;
@@ -457,6 +563,11 @@ void server::send_drop_leave(dm_window* w) {
 /* A release over a window whose newest answer accepts drops there, and anywhere else cancels */
 void server::drop_drag() {
     dnd_session& s = *m_dnd;
+    if (s.launcher >= 0 && s.action != 0) {
+        drop_on_launcher();
+        return;
+    }
+
     dm_window* w = s.target;
     dm_client* owner = w ? window_owner(w) : nullptr;
     if (!owner || s.action == 0) {
@@ -482,10 +593,26 @@ void server::drop_drag() {
     refresh_cursor_planes();
 }
 
+/* A release on a launcher that accepted opens the files in its program, or the terminal in the folder, and the
+ * picture settles as on a window, which stlxdm finishes for at once */
+void server::drop_on_launcher() {
+    dnd_session& s = *m_dnd;
+    bool is_known = static_cast<uint32_t>(s.launcher) < m_conf->pin_count;
+    bool is_opened = is_known && open_drop_in_launcher(m_conf->pins[s.launcher], s.files);
+
+    s.phase = dnd_session::stage::dropped;
+    s.motion_pending = false;
+    damage_drag();
+    m_drag_motion = settle_motion(frame_of(m_drag_pose), s.x, s.y, now_ns());
+    repose_drag();
+    end_drag(SWP_DRAG_FINISHED, is_opened ? s.action : 0);
+}
+
 /* Tells the source how its drag ended, sends back a picture still at the pointer, and closes the objects held for
  * the drag */
 void server::end_drag(uint32_t state, uint32_t action) {
     dnd_session& s = *m_dnd;
+    leave_launcher();
     if (drag_follows_pointer()) {
         return_drag();
     }
@@ -559,15 +686,33 @@ void server::forget_drag_client(const dm_client& c) {
     }
 }
 
+/* Until a dropped drag's target must finish it, or until a launcher's tile blinks or springs */
 int64_t server::drag_timeout_ns(uint64_t now) const {
-    if (!m_dnd || m_dnd->phase != dnd_session::stage::dropped) {
+    if (!m_dnd) {
         return -1;
     }
 
-    return m_dnd->finish_deadline_ns > now ? static_cast<int64_t>(m_dnd->finish_deadline_ns - now) : 0;
+    const dnd_session& s = *m_dnd;
+    uint64_t due = 0;
+    if (s.phase == dnd_session::stage::dropped) {
+        due = s.finish_deadline_ns;
+    } else if (s.spring_ns != 0) {
+        due = s.is_blinking ? s.spring_ns : s.spring_ns - DOCK_BLINK_NS;
+    }
+
+    if (due == 0) {
+        return -1;
+    }
+
+    return due > now ? static_cast<int64_t>(due - now) : 0;
 }
 
 void server::drag_tick(uint64_t now) {
+    if (m_dnd && m_dnd->phase == dnd_session::stage::dragging) {
+        spring_launcher(now);
+        return;
+    }
+
     bool is_overdue = m_dnd && m_dnd->phase == dnd_session::stage::dropped && now >= m_dnd->finish_deadline_ns;
     if (!is_overdue) {
         return;

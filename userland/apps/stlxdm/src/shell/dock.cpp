@@ -173,6 +173,13 @@ void dock_tile::show_running(bool running, bool focused) {
     }
 }
 
+void dock_tile::show_drop_hover(bool lit) {
+    if (m_hover != lit) {
+        m_hover = lit;
+        invalidate();
+    }
+}
+
 ui::size dock_tile::measure(ui::size) {
     return { TILE_SIZE, TILE_SIZE };
 }

@@ -44,6 +44,9 @@ constexpr int64_t RETIRED_QUERY_INTERVAL_NS = 100000000;
 /* The source the clipboard history names for stlxdm's own copies from Quick Actions */
 constexpr const char* QUICK_ACTIONS_LABEL = "Quick Actions";
 
+/* The arguments of its own a file opener's drop-in may give before the paths */
+constexpr size_t OPENER_ARGS_MAX = 16;
+
 static int64_t monotonic_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -106,6 +109,30 @@ static bool exec_app(const char* path, const std::vector<std::string>& args) {
     printf("stlxdm: spawned %s\r\n", path);
 
     return true;
+}
+
+/* Opens files dropped on a launcher in its program, after the program's own arguments for their type and each path its
+ * own argument, or the terminal in a dropped folder */
+bool server::open_drop_in_launcher(const stlxconf_pin_t& pin, const std::vector<dock_file>& files) {
+    if (files.empty()) {
+        return false;
+    }
+
+    if (is_terminal_program(pin.path) && files.size() == 1 && files.front().is_folder) {
+        return exec_app(pin.path, { "--cwd", files.front().path });
+    }
+
+    char own[sizeof(stlxconf_file_handler_t::args)] = "";
+    strncpy(own, files.front().opener_args.c_str(), sizeof(own) - 1);
+    const char* own_argv[OPENER_ARGS_MAX];
+    int own_argc = stlxconf_split_args(own, own_argv, static_cast<int>(OPENER_ARGS_MAX));
+
+    std::vector<std::string> args(own_argv, own_argv + own_argc);
+    for (const dock_file& file : files) {
+        args.push_back(file.path);
+    }
+
+    return exec_app(pin.path, args);
 }
 
 /* Apps stlxdm spawns inherit the raised limits */
