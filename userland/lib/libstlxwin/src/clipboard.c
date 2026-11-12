@@ -236,3 +236,7 @@ int stlxwin_clipboard_types(stlxwin_conn* conn, stlxwin_offer_types* out) {
 
     return 0;
 }
+
+int stlxwin_clipboard_is_own(stlxwin_conn* conn) {
+    return conn && conn->has_clip_types && (conn->clip_types_flags & SWP_CLIPBOARD_TYPES_OWN) ? 1 : 0;
+}

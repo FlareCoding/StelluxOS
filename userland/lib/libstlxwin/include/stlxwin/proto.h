@@ -429,6 +429,11 @@ enum {
     SWP_HELLO_OUTPUTS  = 1u << 1,  /* an OUTPUTS follows the reply, after any GPU_INFO */
 };
 
+/* CLIPBOARD_TYPES' header flags */
+enum {
+    SWP_CLIPBOARD_TYPES_OWN = 1u << 0,  /* the item is the receiving client's own latest copy, whose formats it keeps */
+};
+
 typedef struct {
     uint32_t proto_version;
     uint32_t format;        /* SWP_FMT_* */

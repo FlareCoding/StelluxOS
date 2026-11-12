@@ -1842,10 +1842,13 @@ void server::drop_client(dm_client& c) {
     forget_mode_client(c);
     forget_drag_client(c);
 
-    /* The client is freed once this returns, so no queued request or staged answer may name it */
+    /* The client is freed once this returns, so no queued request, staged answer or owned copy may name it */
     auto names_client = [&c](const auto& entry) { return entry.client == &c; };
     std::erase_if(m_layout_requests, names_client);
     std::erase_if(m_answers, names_client);
+    if (m_clipboard_owner == &c) {
+        m_clipboard_owner = nullptr;
+    }
 
     while (!c.windows.empty()) {
         destroy_window_tree(c, c.windows.back()->win_id);
@@ -2079,10 +2082,12 @@ void server::replace_clipboard(clipboard_item item, std::string label) {
     note_clipboard_change();
 }
 
-/* The current item changed: each watcher hears of it at the next flush, however many changes come first */
+/* The current item changed: each watcher hears of it at the next flush, however many changes come first, and the
+ * item is no client's own copy unless its copier says so after */
 void server::note_clipboard_change() {
     m_clipboard_generation++;
     m_history_changed = true;
+    m_clipboard_owner = nullptr;
 }
 
 /* Only the history's other entries changed, which its views show and watchers never hear of */
@@ -2121,9 +2126,11 @@ void server::catch_up_watcher(dm_client& c) {
     }
 }
 
+/* The copier of the current item hears that it is its own, so it can answer its own pastes from the copy it made */
 void server::send_clipboard_types(dm_client& c) {
     swp_clipboard_types m = describe_types(m_history.current());
-    send_to(c, SWP_MSG_CLIPBOARD_TYPES, &m, sizeof(m));
+    uint16_t flags = &c == m_clipboard_owner ? SWP_CLIPBOARD_TYPES_OWN : 0;
+    send_to(c, SWP_MSG_CLIPBOARD_TYPES, &m, sizeof(m), flags);
     c.clipboard_generation = m_clipboard_generation;
 }
 
@@ -2189,6 +2196,7 @@ void server::set_clipboard(dm_client& c, const uint8_t* payload) {
 
     if (take_offer(c, reps, true)) {
         replace_clipboard(clipboard_item(std::move(reps), 0), client_label(c));
+        m_clipboard_owner = &c;
     }
 }
 
@@ -2205,6 +2213,7 @@ void server::offer_clipboard(dm_client& c, const uint8_t* payload) {
 
     if (take_offer(c, reps, true)) {
         replace_clipboard(clipboard_item(std::move(reps), m.flags & SWP_CLIPBOARD_PRIVATE), client_label(c));
+        m_clipboard_owner = &c;
     }
 }
 

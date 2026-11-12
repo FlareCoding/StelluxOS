@@ -541,6 +541,7 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
 
         /* The first answers the watch, which waits for it, and each later one is a change */
         conn->clip_types = m;
+        conn->clip_types_flags = hdr->flags;
         if (!conn->has_clip_types) {
             conn->has_clip_types = 1;
             return;
