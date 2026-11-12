@@ -32,6 +32,7 @@ constexpr int32_t ERR_INTR      = -17;
 constexpr int32_t ERR_NODATA    = -18;
 constexpr int32_t ERR_PIPE      = -19;
 constexpr int32_t ERR_TIMEDOUT  = -20;
+constexpr int32_t ERR_FAULT     = -21;
 
 /**
  * @brief Initialize the filesystem subsystem. Registers ramfs,
@@ -66,12 +67,20 @@ file* open(const char* path, uint32_t flags, int32_t* out_err);
 file* open_at(node* base_dir, const char* path, uint32_t flags);
 file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err,
               uint32_t create_mode = DEFAULT_FILE_MODE);
+
 // `flags` carries the caller's O_NONBLOCK and O_APPEND
 ssize_t read(file* f, void* buf, size_t count, uint32_t flags = 0);
 ssize_t write(file* f, const void* buf, size_t count, uint32_t flags = 0);
+
 // Positional I/O leaves the file offset where it was, and its writes ignore O_APPEND
 ssize_t read_at(file* f, void* buf, size_t count, uint64_t offset);
 ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset);
+
+// Transfers between the file and the user buffer `ubuf` with no staging copy, at `offset`, or at the file offset when
+// `offset` is negative. ERR_NOSYS means the file can only be read and written through a kernel buffer.
+ssize_t read_to_user(file* f, void* ubuf, size_t count, int64_t offset, uint32_t flags);
+ssize_t write_from_user(file* f, const void* ubuf, size_t count, int64_t offset, uint32_t flags);
+
 int64_t seek(file* f, int64_t offset, int whence);
 int32_t close(file* f);
 int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);

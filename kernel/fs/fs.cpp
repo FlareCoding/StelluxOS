@@ -93,6 +93,8 @@ ssize_t node::write(file*, const void*, size_t, uint32_t) { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
 ssize_t node::read_at(file*, void*, size_t, uint64_t) { return ERR_SPIPE; }
 ssize_t node::write_at(file*, const void*, size_t, uint64_t) { return ERR_SPIPE; }
+ssize_t node::read_to_user(file*, void*, size_t, int64_t, uint32_t) { return ERR_NOSYS; }
+ssize_t node::write_from_user(file*, const void*, size_t, int64_t, uint32_t) { return ERR_NOSYS; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
 uint32_t node::poll(file*, sync::poll_table*)       { return sync::POLL_IN | sync::POLL_OUT; }
@@ -1029,6 +1031,48 @@ ssize_t write_at(file* f, const void* buf, size_t count, uint64_t offset) {
     ssize_t result;
     RUN_ELEVATED({
         result = f->get_node()->write_at(f, buf, count, offset);
+    });
+
+    return result;
+}
+
+ssize_t read_to_user(file* f, void* ubuf, size_t count, int64_t offset, uint32_t flags) {
+    if (!f) {
+        return ERR_BADF;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (f->access_mode() == O_WRONLY) {
+        return ERR_BADF;
+    }
+
+    ssize_t result;
+    RUN_ELEVATED({
+        result = f->get_node()->read_to_user(f, ubuf, count, offset, flags);
+    });
+
+    return result;
+}
+
+ssize_t write_from_user(file* f, const void* ubuf, size_t count, int64_t offset, uint32_t flags) {
+    if (!f) {
+        return ERR_BADF;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (f->access_mode() == O_RDONLY) {
+        return ERR_BADF;
+    }
+
+    ssize_t result;
+    RUN_ELEVATED({
+        result = f->get_node()->write_from_user(f, ubuf, count, offset, flags);
     });
 
     return result;
