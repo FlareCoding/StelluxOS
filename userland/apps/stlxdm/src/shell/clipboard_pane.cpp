@@ -39,6 +39,7 @@ constexpr int32_t EMPTY_GAP = 6;
 constexpr int32_t FILE_ROW_HEIGHT = 44;
 constexpr int32_t FILE_ICON_SIZE = STLXTHEME_DOCK_ICON_SIZE;
 constexpr int32_t FILE_TEXT_LEFT = FILE_ICON_SIZE + 12;
+constexpr int32_t FILE_SIZE_GAP = 12;
 constexpr int32_t MESSAGE_GAP = 10;
 constexpr int32_t THUMBNAIL_SIZE = ENTRY_ICON_SIZE;
 
@@ -52,10 +53,9 @@ constexpr int32_t QUESTION_MARGIN = 4;
 constexpr int32_t QUESTION_PADDING_X = 12;
 constexpr uint32_t QUESTION_FILL = 0x08FFF0D7;
 
-/* A preview shows a text's first 64 KB, and a line's first bytes are all the pocket can show */
+/* A preview shows a text's first 64 KB, and a row names a text by its first line's first bytes */
 constexpr uint64_t PREVIEW_BYTES_MAX = 64 * 1024;
 constexpr size_t TITLE_BYTES_MAX = 256;
-constexpr size_t LINE_BYTES_MAX = 512;
 constexpr size_t TAB_WIDTH = 4;
 constexpr int32_t PAGE_ENTRIES = 7;
 
@@ -95,12 +95,21 @@ private:
     ui::box* m_content;
 };
 
-/* One file a files entry names, as File Manager's rows show it */
+/* One file a files entry names, as File Manager's rows show it, its name and folder fitted to the pocket */
 struct file_line {
     const stlxgfx_surface_t*      icon;
+    std::string                   name_text;
+    std::string                   folder_text;
     std::unique_ptr<text_picture> name;
     std::unique_ptr<text_picture> folder;
     std::unique_ptr<text_picture> size;
+};
+
+/* One row of the pocket's text, bytes `start` to `end` of one of its lines */
+struct text_row {
+    size_t line;
+    size_t start;
+    size_t end;
 };
 
 /* The selected entry exactly: its kind, where and when it came from, its text, image or files in a pocket, and a line
@@ -116,6 +125,8 @@ public:
 
 private:
     void drop_pictures();
+    void wrap(const ui::rect& inside);
+    int32_t message_height() const;
     void paint_image(ui::painter& p, const ui::rect& inside);
     void paint_files(ui::painter& p, const ui::rect& inside) const;
 
@@ -123,9 +134,16 @@ private:
     text_picture                               m_from;
     text_picture                               m_tag;
     bool                                       m_is_current = false;
-    std::vector<std::unique_ptr<text_picture>> m_message;
-    std::vector<std::unique_ptr<text_picture>> m_lines;
     std::vector<file_line>                     m_files;
+
+    /* The paragraphs above a copy past the budget, the first in semibold, the text's lines with their tabs widened,
+     * and the meta line's parts, laid out at the pocket's width once a paint knows it */
+    std::vector<std::string>                   m_message;
+    std::vector<std::string>                   m_text_lines;
+    std::vector<std::string>                   m_meta_parts;
+    int32_t                                    m_wrapped_w = -1;
+    std::vector<std::unique_ptr<text_picture>> m_message_lines;
+    std::vector<std::unique_ptr<text_picture>> m_rows;
     std::vector<std::unique_ptr<text_picture>> m_meta;
 
     /* An image entry's picture, and that picture fitted to the pocket at its last size */
@@ -299,10 +317,10 @@ static std::string age_text(int64_t age_ns) {
     return hours < 24 ? std::to_string(hours) + " h ago" : std::to_string(hours / 24) + " days ago";
 }
 
-/* A line as the pocket draws it, its tabs widened to the next stop and its end cut past what a row can show */
+/* A line as the pocket draws it, its tabs widened to the next stop */
 static std::string expanded(std::string_view line) {
     std::string out;
-    for (char c : line.substr(0, LINE_BYTES_MAX)) {
+    for (char c : line) {
         if (c == '\t') {
             out.append(TAB_WIDTH - out.size() % TAB_WIDTH, ' ');
         } else if (c != '\r') {
@@ -311,6 +329,78 @@ static std::string expanded(std::string_view line) {
     }
 
     return out;
+}
+
+/* Where a row of at most `row_chars` characters from `start` ends: after its last space or slash when that leaves the
+ * row at least half full, else at the edge, a space just past the edge hanging off the row */
+static size_t row_end(std::string_view line, size_t start, size_t row_chars) {
+    size_t end = start;
+    size_t chars = 0;
+    size_t after_break = start;
+    while (end < line.size() && chars < row_chars) {
+        char c = line[end++];
+        while (end < line.size() && (static_cast<uint8_t>(line[end]) & 0xC0) == 0x80) {
+            end++;
+        }
+
+        chars++;
+        if ((c == ' ' || c == '/') && chars * 2 >= row_chars) {
+            after_break = end;
+        }
+    }
+
+    if (end == line.size()) {
+        return end;
+    }
+
+    if (line[end] == ' ') {
+        return end + 1;
+    }
+
+    return after_break > start ? after_break : end;
+}
+
+/* The first `max_rows` rows of `lines` from `first_line` on, a blank line taking a row of its own */
+static std::vector<text_row> wrap_rows(const std::vector<std::string>& lines, size_t first_line, size_t row_chars,
+                                       size_t max_rows) {
+    std::vector<text_row> rows;
+    for (size_t i = first_line; i < lines.size() && rows.size() < max_rows; i++) {
+        size_t start = 0;
+        do {
+            size_t end = row_end(lines[i], start, row_chars);
+            rows.push_back({ i, start, end });
+            start = end;
+        } while (start < lines[i].size() && rows.size() < max_rows);
+    }
+
+    return rows;
+}
+
+/* Prose broken at its spaces into lines that fit `max_w` pixels in the face, a word wider than a line kept whole */
+static std::vector<std::string> wrapped(const std::string& text, const char* face_path, float em_px, int32_t max_w) {
+    stlxgfx_font* font = shell_font(face_path, em_px);
+    std::vector<std::string> lines;
+    std::string line;
+    for (size_t at = 0; at < text.size();) {
+        size_t end = std::min(text.find(' ', at), text.size());
+        std::string word = text.substr(at, end - at);
+        std::string joined = line.empty() ? word : line + " " + word;
+        bool fits = !font || stlxgfx_text_width(font, joined.data(), joined.size()) <= max_w;
+        if (fits || line.empty()) {
+            line = std::move(joined);
+        } else {
+            lines.push_back(std::move(line));
+            line = std::move(word);
+        }
+
+        at = end + 1;
+    }
+
+    if (!line.empty()) {
+        lines.push_back(std::move(line));
+    }
+
+    return lines;
 }
 
 static size_t line_count(std::string_view text) {
@@ -562,6 +652,7 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
                         stlxgfx_surface_t* image) {
     drop_pictures();
     m_image = image;
+    m_wrapped_w = -1;
 
     std::string age = age_text(now_ns - entry.copied_ns);
     m_kind.set_text(entry.kind);
@@ -571,13 +662,9 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
     m_message.clear();
     if (entry.is_too_large) {
         std::string limit = std::to_string(source.history->byte_limit() >> 20) + " MB";
-        m_message.push_back(std::make_unique<text_picture>(size_text(entry.size) + " is past the " + limit +
-                                                           " the history keeps.", STLXTHEME_UI_FONT_SEMIBOLD_PATH,
-                                                           STLXTHEME_BODY_SIZE, STLXTHEME_TEXT));
-        m_message.push_back(std::make_unique<text_picture>("It stays while it is on the clipboard, and leaves the "
-                                                           "history when something else is copied.",
-                                                           STLXTHEME_UI_FONT_PATH, STLXTHEME_BODY_SIZE,
-                                                           STLXTHEME_TEXT_SECONDARY));
+        m_message.push_back(size_text(entry.size) + " is past the " + limit + " the history keeps.");
+        m_message.push_back("It stays while it is on the clipboard, and leaves the history when something else is "
+                            "copied.");
     }
 
     m_files.clear();
@@ -586,31 +673,79 @@ void clip_preview::show(const shown_entry& entry, const clipboard_source& source
         bool is_there = stat(path.c_str(), &st) == 0;
         std::string folder = path.substr(0, path.rfind('/'));
         std::string size = !is_there ? "gone" : S_ISDIR(st.st_mode) ? "folder" : size_text(st.st_size);
-        m_files.push_back({ file_icon(source, path),
-                            std::make_unique<text_picture>(file_name(path.c_str()), STLXTHEME_UI_FONT_MEDIUM_PATH,
-                                                           STLXTHEME_BODY_SIZE, STLXTHEME_TEXT),
-                            std::make_unique<text_picture>(folder.empty() ? "/" : folder, STLXTHEME_MONO_FONT_PATH,
-                                                           META_SIZE, STLXTHEME_TEXT_DIM),
+        m_files.push_back({ file_icon(source, path), file_name(path.c_str()), folder.empty() ? "/" : folder,
+                            std::make_unique<text_picture>("", STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE,
+                                                           STLXTHEME_TEXT),
+                            std::make_unique<text_picture>("", STLXTHEME_MONO_FONT_PATH, META_SIZE,
+                                                           STLXTHEME_TEXT_DIM),
                             std::make_unique<text_picture>(size, STLXTHEME_UI_FONT_PATH, STLXTHEME_CAPTION_SIZE,
                                                            STLXTHEME_TEXT_SECONDARY) });
     }
 
-    m_lines.clear();
+    m_text_lines.clear();
     std::string_view text = entry.is_image || !entry.files.empty() ? std::string_view() : entry.text;
-    for (size_t at = 0; at < text.size() && m_lines.size() < 32;) {
+    for (size_t at = 0; at < text.size();) {
         size_t end = std::min(text.find('\n', at), text.size());
-        m_lines.push_back(std::make_unique<text_picture>(expanded(text.substr(at, end - at)), STLXTHEME_MONO_FONT_PATH,
-                                                         ENTRY_TEXT_SIZE, STLXTHEME_TERMINAL_TEXT));
+        m_text_lines.push_back(expanded(text.substr(at, end - at)));
         at = end + 1;
     }
 
-    m_meta.clear();
-    for (const std::string& part : meta_parts(entry)) {
-        m_meta.push_back(std::make_unique<text_picture>(part, STLXTHEME_MONO_FONT_PATH, META_SIZE,
-                                                        STLXTHEME_TEXT_DIM));
+    m_meta_parts = meta_parts(entry);
+    invalidate();
+}
+
+/* Only a paint knows the pocket's width, so the message, the text's rows, the files' names and the meta line are laid
+ * out then */
+void clip_preview::wrap(const ui::rect& inside) {
+    m_wrapped_w = inside.w;
+    m_message_lines.clear();
+    for (size_t i = 0; i < m_message.size(); i++) {
+        const char* face = i == 0 ? STLXTHEME_UI_FONT_SEMIBOLD_PATH : STLXTHEME_UI_FONT_PATH;
+        uint32_t color = i == 0 ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY;
+        for (std::string& line : wrapped(m_message[i], face, STLXTHEME_BODY_SIZE, inside.w)) {
+            m_message_lines.push_back(std::make_unique<text_picture>(std::move(line), face, STLXTHEME_BODY_SIZE,
+                                                                     color));
+        }
     }
 
-    invalidate();
+    /* Plex Mono gives every character one advance, so a row holds a count of them */
+    stlxgfx_font* mono = shell_font(STLXTHEME_MONO_FONT_PATH, ENTRY_TEXT_SIZE);
+    int32_t advance = mono ? std::max(1, stlxgfx_text_width(mono, "M", 1)) : 1;
+    size_t row_chars = static_cast<size_t>(std::max(1, inside.w / advance));
+    int32_t rows_h = std::max(0, inside.h - message_height());
+    size_t rows_fit = static_cast<size_t>((rows_h + POCKET_LINE_HEIGHT - 1) / POCKET_LINE_HEIGHT);
+
+    m_rows.clear();
+    for (const text_row& row : wrap_rows(m_text_lines, 0, row_chars, rows_fit)) {
+        std::string shown = m_text_lines[row.line].substr(row.start, row.end - row.start);
+        m_rows.push_back(std::make_unique<text_picture>(std::move(shown), STLXTHEME_MONO_FONT_PATH, ENTRY_TEXT_SIZE,
+                                                        STLXTHEME_TERMINAL_TEXT));
+    }
+
+    for (file_line& file : m_files) {
+        int32_t text_w = inside.w - FILE_TEXT_LEFT - file.size->width() - FILE_SIZE_GAP;
+        file.name->set_text(fitted(file.name_text, STLXTHEME_UI_FONT_MEDIUM_PATH, STLXTHEME_BODY_SIZE, text_w));
+        file.folder->set_text(fitted(file.folder_text, STLXTHEME_MONO_FONT_PATH, META_SIZE, text_w));
+    }
+
+    /* The meta line keeps its parts whole while they fit, and the first that does not ends in an ellipsis */
+    m_meta.clear();
+    int32_t meta_left = m_frame.w - 2 * PREVIEW_PADDING;
+    for (const std::string& part : m_meta_parts) {
+        std::string shown = fitted(part, STLXTHEME_MONO_FONT_PATH, META_SIZE, meta_left);
+        bool is_cut = shown != part;
+        m_meta.push_back(std::make_unique<text_picture>(std::move(shown), STLXTHEME_MONO_FONT_PATH, META_SIZE,
+                                                        STLXTHEME_TEXT_DIM));
+        meta_left -= m_meta.back()->width() + META_GAP;
+        if (is_cut || meta_left <= 0) {
+            break;
+        }
+    }
+}
+
+int32_t clip_preview::message_height() const {
+    int32_t lines_h = static_cast<int32_t>(m_message_lines.size()) * POCKET_LINE_HEIGHT;
+    return m_message_lines.empty() ? 0 : lines_h + MESSAGE_GAP;
 }
 
 /* The image fits the pocket whole and is never shown larger than it is */
@@ -671,31 +806,26 @@ void clip_preview::paint(ui::painter& p) {
 
     ui::rect inside = { pocket.x + POCKET_PADDING, pocket.y + POCKET_PADDING, pocket.w - 2 * POCKET_PADDING,
                         pocket.h - 2 * POCKET_PADDING };
+    if (inside.w != m_wrapped_w) {
+        wrap(inside);
+    }
+
     p.push_clip(inside);
-    for (const std::unique_ptr<text_picture>& line : m_message) {
-        line->draw(p, inside.x, inside.y, POCKET_LINE_HEIGHT);
-        inside.y += POCKET_LINE_HEIGHT;
-        inside.h -= POCKET_LINE_HEIGHT;
+    for (size_t i = 0; i < m_message_lines.size(); i++) {
+        m_message_lines[i]->draw(p, inside.x, inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT,
+                                 POCKET_LINE_HEIGHT);
     }
 
-    if (!m_message.empty()) {
-        inside.y += MESSAGE_GAP;
-        inside.h -= MESSAGE_GAP;
-    }
-
+    inside.y += message_height();
+    inside.h -= message_height();
     if (m_image) {
         paint_image(p, inside);
     } else if (!m_files.empty()) {
         paint_files(p, inside);
     }
 
-    for (size_t i = 0; i < m_lines.size(); i++) {
-        int32_t top = inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT;
-        if (top >= inside.y + inside.h) {
-            break;
-        }
-
-        m_lines[i]->draw(p, inside.x, top, POCKET_LINE_HEIGHT);
+    for (size_t i = 0; i < m_rows.size(); i++) {
+        m_rows[i]->draw(p, inside.x, inside.y + static_cast<int32_t>(i) * POCKET_LINE_HEIGHT, POCKET_LINE_HEIGHT);
     }
 
     p.pop_clip();
