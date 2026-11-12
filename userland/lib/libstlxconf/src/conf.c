@@ -62,6 +62,7 @@ static const char* const ACTION_NAMES[] = {
     [STLXCONF_ACTION_QUICK_ACTIONS] = "quick_actions",
     [STLXCONF_ACTION_PASTE]         = "paste",
     [STLXCONF_ACTION_CLIPBOARD]     = "clipboard",
+    [STLXCONF_ACTION_SCREENSHOT]    = "screenshot",
 };
 
 /* What people read for stlxdm's own actions, where exec is named by its program instead */
@@ -72,6 +73,7 @@ static const char* const ACTION_LABELS[] = {
     [STLXCONF_ACTION_QUICK_ACTIONS] = "Quick Actions",
     [STLXCONF_ACTION_PASTE]         = "Paste",
     [STLXCONF_ACTION_CLIPBOARD]     = "Clipboard",
+    [STLXCONF_ACTION_SCREENSHOT]    = "Screenshot",
 };
 
 #define NAME_COUNT(names) ((int)(sizeof(names) / sizeof((names)[0])))

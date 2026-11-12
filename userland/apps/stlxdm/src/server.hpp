@@ -2,6 +2,8 @@
 #define STLXDM_SERVER_HPP
 
 #include "animation.hpp"
+#include "capture.hpp"
+#include "capture_encoder.hpp"
 #include "clipboard.hpp"
 #include "cursor.hpp"
 #include "damage.hpp"
@@ -521,6 +523,10 @@ public:
         }
     }
 
+    /* Readable while an encoded capture waits, which `pump_captures()` puts on the clipboard */
+    int capture_fd() const { return m_capture_encoder.wake_fd(); }
+    void pump_captures();
+
     /* Shows the focused window's app on the bar and the running apps' ticks
      * on the dock. Call once per wakeup, after input and client messages are
      * handled. */
@@ -618,6 +624,7 @@ private:
     bool compose_on_cpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_on_gpu(dm_output& out, const presenter::target& t, const damage_list& effective);
     bool compose_capture(dm_output& out);
+    bool freeze_output(dm_output& out, frozen_frame& frozen);
     bool switch_to_cpu_on_misfit_backdrop(dm_output& out);
     bool switch_to_cpu_on_failed_compose(compose_result result);
     void note_gpu_frame(dm_output& out);
@@ -649,6 +656,8 @@ private:
     void run_shortcut(const dm_hotkey& hotkey);
     void paste_into_focus();
     void open_power();
+    void take_screenshot(const char* mode);
+    void capture_screen();
     int build_conf_state(dm_conf_state& out, dm_wallpaper& wallpaper);
     void adopt_conf_state(dm_conf_state&& next);
     void refresh_backdrops(bool rebuild_all, dm_wallpaper& wallpaper);
@@ -996,6 +1005,12 @@ private:
     /* The output whose hardware cursor carries the drag's look with the pointer, -1 while the frames draw both */
     int32_t        m_drag_carrier = -1;
     dm_drag_cursor m_drag_cursor;
+
+    /* The encoder of captures, the next capture's number, and whether a compose draws a frozen frame, which leaves
+     * the pointer out */
+    capture_encoder m_capture_encoder;
+    uint64_t        m_next_capture = 1;
+    bool            m_composes_freeze = false;
 
     /* Mode messages in arrival order, and the next request to make, a
      * message's or stlxdm's own, made before any later message */

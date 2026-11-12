@@ -297,6 +297,12 @@ int main() {
             fds.push_back({ images_fd, POLLIN, 0 });
         }
 
+        size_t capture_slot = fds.size();
+        int capture_fd = srv.capture_fd();
+        if (capture_fd >= 0) {
+            fds.push_back({ capture_fd, POLLIN, 0 });
+        }
+
         /* Key repeat, the clock, a trial, a drop's finish, a GPU commit's query, a retired compositor's next timeline
          * read and each output's compose and cursor move deadlines cap the wait */
         uint64_t now = now_ns();
@@ -371,6 +377,10 @@ int main() {
 
         if (images_fd >= 0 && (fds[images_slot].revents & POLLIN)) {
             srv.pump_quick_images();
+        }
+
+        if (capture_fd >= 0 && (fds[capture_slot].revents & POLLIN)) {
+            srv.pump_captures();
         }
 
         srv.pump(fds);
