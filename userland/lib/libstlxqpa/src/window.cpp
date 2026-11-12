@@ -3,6 +3,7 @@
 
 #include <QGuiApplication>
 #include <QHash>
+#include <QKeySequence>
 #include <QPalette>
 #include <QVarLengthArray>
 #include <QWheelEvent>
@@ -441,9 +442,23 @@ void QStelluxWindow::handle_event(const stlxwin_event& event) {
         case STLXWIN_EVT_WINDOW_OUTPUT:
             handle_window_output();
             break;
+        case STLXWIN_EVT_PASTE:
+            paste();
+            break;
         default:
             break;
     }
+}
+
+// The desktop's paste reaches the focus object as the theme's Paste key sequence, through shortcuts first, so every
+// widget pastes its own way. The release carries the held modifiers, which leaves Qt's modifier state as it was.
+void QStelluxWindow::paste() {
+    QList<QKeySequence> bindings = QKeySequence::keyBindings(QKeySequence::Paste);
+    QKeyCombination combination = bindings.isEmpty() ? QKeyCombination(Qt::ControlModifier, Qt::Key_V) : bindings[0][0];
+
+    QWindowSystemInterface::handleKeyEvent(window(), QEvent::KeyPress, combination.key(),
+                                           combination.keyboardModifiers());
+    QWindowSystemInterface::handleKeyEvent(window(), QEvent::KeyRelease, combination.key(), m_modifiers);
 }
 
 void QStelluxWindow::handle_key(const stlxwin_event& event) {

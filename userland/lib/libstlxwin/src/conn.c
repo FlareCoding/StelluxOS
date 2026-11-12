@@ -432,6 +432,7 @@ static void handle_message(stlxwin_conn* conn, const swp_header* hdr,
             case SWP_EV_POPUP_DISMISSED:
                 ev.type = STLXWIN_EVT_POPUP_DISMISSED;
                 break;
+            case SWP_EV_PASTE:      ev.type = STLXWIN_EVT_PASTE; break;
             default:
                 continue;
             }

@@ -39,6 +39,7 @@ private:
     void close_dismissed_popups();
     void handle_key(const stlxwin_event& event);
     void handle_pointer(const stlxwin_event& event);
+    void paste();
     void handle_configure(const stlxwin_event& event);
     void handle_window_output();
     QPointF global_position(const QPointF& local) const;

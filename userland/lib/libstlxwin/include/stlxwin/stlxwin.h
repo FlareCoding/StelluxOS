@@ -109,6 +109,7 @@ typedef enum {
     STLXWIN_EVT_LAYOUT_RESULT,   /* the display manager's answer to a layout request */
     STLXWIN_EVT_WINDOW_OUTPUT,   /* a toplevel's output or position changed, see stlxwin_window_get_output */
     STLXWIN_EVT_CLIPBOARD,       /* the watched clipboard changed, read its types with stlxwin_clipboard_types */
+    STLXWIN_EVT_PASTE,           /* paste the clipboard into the window as its own paste key would */
 } stlxwin_event_type;
 
 #define STLXWIN_MIME_MAX        64u  /* a MIME type's bytes with its NUL */
