@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define STATE_DIR   "/var/lib/stlxpkg"
 #define RECORDS_DIR STATE_DIR "/records"
@@ -35,6 +36,11 @@ int record_delete(const char* name);
  * @brief Whether the path lines `paths` hold `line`, a path as records write it.
  */
 bool record_paths_hold(const char* paths, const char* line);
+
+/**
+ * @brief The bytes the regular files the path lines `paths` name hold.
+ */
+uint64_t record_paths_size(const char* paths);
 
 /**
  * @brief Writes `entry`'s record with the path lines `paths`, replacing the old record in one rename.

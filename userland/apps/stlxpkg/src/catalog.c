@@ -1,4 +1,5 @@
 #include "catalog.h"
+#include "report.h"
 
 #include <stlxhttp/http.h>
 
@@ -35,8 +36,7 @@ static int read_tag(catalog* catalog, const char* location) {
 
     size_t tag_length = end - start;
     if (tag_length == 0 || tag_length >= CATALOG_TAG_MAX || !is_name(location + start, tag_length)) {
-        fprintf(stderr, "stlxpkg: the latest release does not redirect to a release's %s\n", SUMS_NAME);
-        return -1;
+        return fail(FAILURE_NETWORK, "the latest release does not redirect to a release's %s", SUMS_NAME);
     }
 
     memcpy(catalog->tag, location + start, tag_length);
@@ -47,21 +47,16 @@ static int read_tag(catalog* catalog, const char* location) {
 
 static int find_newest_tag(catalog* catalog) {
     stlxhttp_request* request = NULL;
-    int rc = -1;
-    if (stlxhttp_open(STLXPKG_LATEST_URL "/" SUMS_NAME, STLXHTTP_NO_FOLLOW, &request) == STLXHTTP_OK) {
-        rc = read_tag(catalog, stlxhttp_location(request));
-    } else {
-        fprintf(stderr, "stlxpkg: %s\n", stlxhttp_error_message(request));
-    }
-
+    int32_t opened = stlxhttp_open(STLXPKG_LATEST_URL "/" SUMS_NAME, STLXHTTP_NO_FOLLOW, &request);
+    int rc = opened == STLXHTTP_OK ? read_tag(catalog, stlxhttp_location(request)) :
+                                     fail_http(opened, stlxhttp_error_message(request));
     stlxhttp_close(request);
     if (rc != 0) {
         return rc;
     }
 
     if (strncmp(catalog->tag, TAG_PREFIX, strlen(TAG_PREFIX)) != 0) {
-        fprintf(stderr, "stlxpkg: the newest release, %s, is not a package release\n", catalog->tag);
-        return -1;
+        return fail(FAILURE_VERIFY, "the newest release, %s, is not a package release", catalog->tag);
     }
 
     return 0;
@@ -70,8 +65,9 @@ static int find_newest_tag(catalog* catalog) {
 static int download_sums(const catalog* catalog, size_t* length) {
     snprintf(g_url, sizeof(g_url), "%s/%s/%s", STLXPKG_RELEASES_URL, catalog->tag, SUMS_NAME);
     stlxhttp_request* request = NULL;
-    if (stlxhttp_open(g_url, 0, &request) != STLXHTTP_OK) {
-        fprintf(stderr, "stlxpkg: %s\n", stlxhttp_error_message(request));
+    int32_t opened = stlxhttp_open(g_url, 0, &request);
+    if (opened != STLXHTTP_OK) {
+        fail_http(opened, stlxhttp_error_message(request));
         stlxhttp_close(request);
         return -1;
     }
@@ -88,9 +84,9 @@ static int download_sums(const catalog* catalog, size_t* length) {
     }
 
     if (count < 0) {
-        fprintf(stderr, "stlxpkg: %s\n", stlxhttp_error_message(request));
+        fail_http((int32_t)count, stlxhttp_error_message(request));
     } else if (*length == SUMS_MAX) {
-        fprintf(stderr, "stlxpkg: %s's %s is longer than %d bytes\n", catalog->tag, SUMS_NAME, SUMS_MAX);
+        fail(FAILURE_VERIFY, "%s's %s is longer than %d bytes", catalog->tag, SUMS_NAME, SUMS_MAX);
     }
 
     stlxhttp_close(request);
@@ -176,8 +172,7 @@ int catalog_load(catalog* catalog, const char* arch) {
         }
 
         if (*line != '\0' && !take_sums_line(catalog, line, arch)) {
-            fprintf(stderr, "stlxpkg: line %d of %s's %s is malformed\n", line_number, catalog->tag, SUMS_NAME);
-            return -1;
+            return fail(FAILURE_VERIFY, "line %d of %s's %s is malformed", line_number, catalog->tag, SUMS_NAME);
         }
 
         line = end ? end + 1 : line + strlen(line);

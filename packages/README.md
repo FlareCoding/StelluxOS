@@ -60,6 +60,22 @@ package again without the network, and by which an install over an older
 release deletes the paths only that release had. The root filesystem lives
 in RAM, so installed packages last until the next boot.
 
+With `--events` before its command, `stlxpkg` prints facts for a program to
+read instead of sentences, one per line on stdout as each happens:
+
+    record <name> <version>             an install record, read before any network use
+    package <name> <version> <state>    a package of the release, available, installed or update
+    start <name> <version> <length>     an install began, its archive <length> bytes or -1
+    progress <name> <bytes> <length>    at most every 100 ms, and once all <length> arrived
+    commit <name>                       the archive checked out, and its paths move into place
+    installed <name> <version> <bytes>  the bytes of the files it installed
+    removed <name> <version>
+    failed <name> <kind> <reason>       <name> is - when the run failed before its packages
+
+`list` prints the records, then the packages. A failure's kind is `network`,
+`timeout`, `memory`, `conflict`, `verify`, `lock`, `missing` or `io`, and its
+reason is the sentence a terminal shows.
+
 ## Package format
 
 `<name>-<version>-<release>-<arch>.tar.zst`, for example

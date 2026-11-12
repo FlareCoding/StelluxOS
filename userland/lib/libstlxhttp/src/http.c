@@ -411,6 +411,10 @@ const char* stlxhttp_location(const stlxhttp_request* request) {
     return is_redirect(request->reply.status) ? request->reply.location : NULL;
 }
 
+int64_t stlxhttp_content_length(const stlxhttp_request* request) {
+    return request->reply.content_length;
+}
+
 const char* stlxhttp_error_message(const stlxhttp_request* request) {
     return request ? request->message : "out of memory";
 }

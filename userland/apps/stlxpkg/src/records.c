@@ -2,6 +2,7 @@
 
 #include "records.h"
 #include "files.h"
+#include "report.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define LOCK_PATH       STATE_DIR "/lock"
@@ -22,20 +24,17 @@ static char g_path[PATH_MAX];
 
 int records_lock(void) {
     if (make_directories(RECORDS_DIR) != 0) {
-        fprintf(stderr, "stlxpkg: cannot create %s (errno %d)\n", RECORDS_DIR, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot create %s (errno %d)", RECORDS_DIR, errno);
     }
 
     int fd = open(LOCK_PATH, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
-        fprintf(stderr, "stlxpkg: cannot open %s (errno %d)\n", LOCK_PATH, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot open %s (errno %d)", LOCK_PATH, errno);
     }
 
     struct flock lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
     if (fcntl(fd, F_SETLK, &lock) != 0) {
-        fprintf(stderr, "stlxpkg: another stlxpkg is running\n");
-        return -1;
+        return fail(FAILURE_LOCK, "another stlxpkg is running");
     }
 
     return 0;
@@ -117,7 +116,7 @@ int record_read(const char* name, catalog_entry* installed, char** paths) {
     snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, name);
     int found = read_record(g_path, installed, paths);
     if (found < 0) {
-        fprintf(stderr, "stlxpkg: cannot read the record %s\n", g_path);
+        fail(FAILURE_IO, "cannot read the record %s", g_path);
     }
 
     return found;
@@ -126,8 +125,7 @@ int record_read(const char* name, catalog_entry* installed, char** paths) {
 int record_delete(const char* name) {
     snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, name);
     if (unlink(g_path) != 0) {
-        fprintf(stderr, "stlxpkg: cannot delete the record %s (errno %d)\n", g_path, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot delete the record %s (errno %d)", g_path, errno);
     }
 
     return 0;
@@ -148,6 +146,30 @@ bool record_paths_hold(const char* paths, const char* line) {
     return false;
 }
 
+static uint64_t regular_file_size(const char* line, size_t length) {
+    struct stat status;
+    if (length == 0 || length >= sizeof(g_path) || line[length - 1] == '/') {
+        return 0;
+    }
+
+    memcpy(g_path, line, length);
+    g_path[length] = '\0';
+
+    return lstat(g_path, &status) == 0 && S_ISREG(status.st_mode) ? (uint64_t)status.st_size : 0;
+}
+
+uint64_t record_paths_size(const char* paths) {
+    uint64_t size = 0;
+    const char* line = paths ? paths : "";
+    while (*line != '\0') {
+        size_t length = strcspn(line, "\n");
+        size += regular_file_size(line, length);
+        line += line[length] == '\n' ? length + 1 : length;
+    }
+
+    return size;
+}
+
 int record_write(const catalog_entry* entry, const char* paths, size_t length) {
     FILE* file = fopen(NEW_RECORD_PATH, "w");
     bool written = file != NULL;
@@ -160,7 +182,7 @@ int record_write(const catalog_entry* entry, const char* paths, size_t length) {
 
     snprintf(g_path, sizeof(g_path), "%s/%s", RECORDS_DIR, entry->name);
     if (!written || rename(NEW_RECORD_PATH, g_path) != 0) {
-        fprintf(stderr, "stlxpkg: cannot write the record %s (errno %d)\n", g_path, errno);
+        fail(failure_of_errno(errno), "cannot write the record %s (errno %d)", g_path, errno);
         unlink(NEW_RECORD_PATH);
         return -1;
     }
@@ -214,8 +236,7 @@ bool record_find_owner(const char* line, char* owner, size_t size) {
 int records_list(catalog_entry* installed, size_t capacity) {
     DIR* directory = opendir(RECORDS_DIR);
     if (!directory) {
-        fprintf(stderr, "stlxpkg: cannot read %s (errno %d)\n", RECORDS_DIR, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot read %s (errno %d)", RECORDS_DIR, errno);
     }
 
     size_t count = 0;

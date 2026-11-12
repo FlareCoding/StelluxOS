@@ -5,11 +5,13 @@
 #include "files.h"
 #include "records.h"
 #include "remove.h"
+#include "report.h"
 #include "tar.h"
 
 #include <bearssl/bearssl.h>
 #include <stlxhttp/http.h>
 #include <zstd.h>
+#include <zstd_errors.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -19,12 +21,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define STAGING_DIR    STATE_DIR "/staging"
 #define SDK_ROOT       "/usr/sdk"
 #define DOWNLOAD_CHUNK 65536
 #define SHA256_SIZE    32
+#define NS_PER_SECOND  1000000000ull
 
 typedef struct {
     const catalog_entry* entry;
@@ -63,14 +67,20 @@ static bool is_build_package(const char* name) {
     return false;
 }
 
+static uint64_t monotonic_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    return (uint64_t)now.tv_sec * NS_PER_SECOND + (uint64_t)now.tv_nsec;
+}
+
 static int add_path_line(install_job* job, const char* path, bool is_directory) {
     size_t length = strlen(path) + (is_directory ? 2 : 1);
     if (job->paths_length + length >= job->paths_capacity) {
         size_t capacity = 2 * (job->paths_capacity + length);
         char* grown = realloc(job->paths, capacity);
         if (!grown) {
-            fprintf(stderr, "stlxpkg: out of memory\n");
-            return -1;
+            return fail(FAILURE_MEMORY, "out of memory");
         }
 
         job->paths = grown;
@@ -83,17 +93,17 @@ static int add_path_line(install_job* job, const char* path, bool is_directory) 
     return 0;
 }
 
-static void report_conflict(const install_job* job, bool is_directory) {
+static int fail_conflict(const install_job* job, bool is_directory) {
     char line[PATH_MAX + 1];
     char owner[CATALOG_FILE_MAX];
     snprintf(line, sizeof(line), "%s%s", job->real, is_directory ? "/" : "");
     if (record_find_owner(line, owner, sizeof(owner))) {
-        fprintf(stderr, "stlxpkg: %s cannot install %s, which belongs to %s\n", job->entry->name, job->real, owner);
-        return;
+        return fail(FAILURE_CONFLICT, "%s cannot install %s, which belongs to %s", job->entry->name, job->real,
+                    owner);
     }
 
-    fprintf(stderr, "stlxpkg: %s cannot install %s, which is already there and was not installed by stlxpkg\n",
-            job->entry->name, job->real);
+    return fail(FAILURE_CONFLICT, "%s cannot install %s, which is already there and was not installed by stlxpkg",
+                job->entry->name, job->real);
 }
 
 /* A path is free when missing, when a directory and so is the entry, as directories are shared, or when a file the
@@ -105,8 +115,7 @@ static int check_path_free(const install_job* job, bool is_directory) {
             return 0;
         }
 
-        fprintf(stderr, "stlxpkg: cannot check %s (errno %d)\n", job->real, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot check %s (errno %d)", job->real, errno);
     }
 
     bool exists_as_directory = S_ISDIR(status.st_mode);
@@ -118,9 +127,7 @@ static int check_path_free(const install_job* job, bool is_directory) {
         return 0;
     }
 
-    report_conflict(job, exists_as_directory);
-
-    return -1;
+    return fail_conflict(job, exists_as_directory);
 }
 
 static int stage_entry(install_job* job, const tar_entry* entry) {
@@ -148,8 +155,7 @@ static int on_entry(void* context, const tar_entry* entry) {
     int real_length = snprintf(job->real, sizeof(job->real), "%s/%s", job->root, entry->path);
     int staged_length = snprintf(job->staged, sizeof(job->staged), "%s%s", STAGING_DIR, job->real);
     if (real_length >= (int)sizeof(job->real) || staged_length >= (int)sizeof(job->staged)) {
-        fprintf(stderr, "stlxpkg: %s holds a path longer than %d characters\n", job->entry->name, PATH_MAX);
-        return -1;
+        return fail(FAILURE_VERIFY, "%s holds a path longer than %d characters", job->entry->name, PATH_MAX);
     }
 
     if (check_path_free(job, is_directory) != 0 || add_path_line(job, job->real, is_directory) != 0) {
@@ -157,8 +163,7 @@ static int on_entry(void* context, const tar_entry* entry) {
     }
 
     if (stage_entry(job, entry) != 0) {
-        fprintf(stderr, "stlxpkg: cannot stage %s (errno %d)\n", job->real, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot stage %s (errno %d)", job->real, errno);
     }
 
     if (desktop_reads(job->real)) {
@@ -173,8 +178,7 @@ static int on_data(void* context, const uint8_t* bytes, size_t length) {
     while (length > 0) {
         ssize_t count = write(job->file_fd, bytes, length);
         if (count <= 0) {
-            fprintf(stderr, "stlxpkg: cannot stage %s (errno %d)\n", job->real, errno);
-            return -1;
+            return fail(failure_of_errno(errno), "cannot stage %s (errno %d)", job->real, errno);
         }
 
         bytes += count;
@@ -190,14 +194,17 @@ static int on_end_file(void* context) {
     finished = close(job->file_fd) == 0 && finished;
     job->file_fd = -1;
     if (!finished) {
-        fprintf(stderr, "stlxpkg: cannot stage %s (errno %d)\n", job->real, errno);
-        return -1;
+        return fail(failure_of_errno(errno), "cannot stage %s (errno %d)", job->real, errno);
     }
 
     return 0;
 }
 
-static void report_tar_error(const install_job* job, int rc) {
+static int fail_tar(const install_job* job, int rc) {
+    if (rc == TAR_ERR_HANDLER) {
+        return -1;
+    }
+
     const char* problem = "a malformed tar header";
     if (rc == TAR_ERR_TYPE) {
         problem = "an entry that is not a file, a directory or a symlink";
@@ -205,9 +212,7 @@ static void report_tar_error(const install_job* job, int rc) {
         problem = "a path that leaves its root";
     }
 
-    if (rc != TAR_ERR_HANDLER) {
-        fprintf(stderr, "stlxpkg: %s's archive holds %s\n", job->entry->name, problem);
-    }
+    return fail(FAILURE_VERIFY, "%s's archive holds %s", job->entry->name, problem);
 }
 
 /* Decompresses one downloaded chunk into the tar reader. `frame_left` becomes 0 once zstd ended the frame and
@@ -218,15 +223,14 @@ static int unpack_chunk(install_job* job, ZSTD_DCtx* zstd, size_t length, size_t
         ZSTD_outBuffer output = { g_unpacked, sizeof(g_unpacked), 0 };
         *frame_left = ZSTD_decompressStream(zstd, &output, &input);
         if (ZSTD_isError(*frame_left)) {
-            fprintf(stderr, "stlxpkg: %s's archive does not decompress: %s\n", job->entry->name,
-                    ZSTD_getErrorName(*frame_left));
-            return -1;
+            bool is_memory = ZSTD_getErrorCode(*frame_left) == ZSTD_error_memory_allocation;
+            return fail(is_memory ? FAILURE_MEMORY : FAILURE_VERIFY, "%s's archive does not decompress: %s",
+                        job->entry->name, ZSTD_getErrorName(*frame_left));
         }
 
         int rc = tar_feed(&job->tar, g_unpacked, output.pos);
         if (rc != TAR_OK) {
-            report_tar_error(job, rc);
-            return -1;
+            return fail_tar(job, rc);
         }
     }
 
@@ -251,8 +255,7 @@ static int check_archive_end(const install_job* job, br_sha256_context* sha256, 
     }
 
     if (problem) {
-        fprintf(stderr, "stlxpkg: %s's archive %s\n", job->entry->name, problem);
-        return -1;
+        return fail(FAILURE_VERIFY, "%s's archive %s", job->entry->name, problem);
     }
 
     return 0;
@@ -263,13 +266,18 @@ static int stream_archive(install_job* job, stlxhttp_request* request) {
     br_sha256_init(&sha256);
     ZSTD_DCtx* zstd = ZSTD_createDCtx();
     if (!zstd) {
-        fprintf(stderr, "stlxpkg: out of memory\n");
-        return -1;
+        return fail(FAILURE_MEMORY, "out of memory");
     }
 
+    int64_t length = stlxhttp_content_length(request);
+    int64_t done = 0;
     size_t frame_left = 1;
+    report_start(job->entry->name, job->entry->version, length);
+
     int64_t count = stlxhttp_read(request, g_download, sizeof(g_download));
     while (count > 0) {
+        done += count;
+        report_progress(job->entry->name, done, length, monotonic_ns());
         br_sha256_update(&sha256, g_download, (size_t)count);
         if (unpack_chunk(job, zstd, (size_t)count, &frame_left) != 0) {
             break;
@@ -280,7 +288,7 @@ static int stream_archive(install_job* job, stlxhttp_request* request) {
 
     ZSTD_freeDCtx(zstd);
     if (count < 0) {
-        fprintf(stderr, "stlxpkg: %s\n", stlxhttp_error_message(request));
+        fail_http((int32_t)count, stlxhttp_error_message(request));
     }
 
     return count == 0 ? check_archive_end(job, &sha256, frame_left) : -1;
@@ -301,8 +309,7 @@ static int commit_paths(install_job* job) {
         bool placed = is_directory ? make_directories(job->real) == 0 :
                                      make_parent_directories(job->real) == 0 && rename(job->staged, job->real) == 0;
         if (!placed) {
-            fprintf(stderr, "stlxpkg: cannot move %s into place (errno %d)\n", job->real, errno);
-            return -1;
+            return fail(failure_of_errno(errno), "cannot move %s into place (errno %d)", job->real, errno);
         }
 
         line += length + 1;
@@ -316,13 +323,8 @@ static int commit_paths(install_job* job) {
 static int install_archive(install_job* job, const catalog* catalog) {
     catalog_archive_url(catalog, job->entry, g_url, sizeof(g_url));
     stlxhttp_request* request = NULL;
-    int rc = -1;
-    if (stlxhttp_open(g_url, 0, &request) == STLXHTTP_OK) {
-        rc = stream_archive(job, request);
-    } else {
-        fprintf(stderr, "stlxpkg: %s\n", stlxhttp_error_message(request));
-    }
-
+    int32_t opened = stlxhttp_open(g_url, 0, &request);
+    int rc = opened == STLXHTTP_OK ? stream_archive(job, request) : fail_http(opened, stlxhttp_error_message(request));
     stlxhttp_close(request);
     if (job->file_fd >= 0) {
         close(job->file_fd);
@@ -330,6 +332,7 @@ static int install_archive(install_job* job, const catalog* catalog) {
     }
 
     if (rc == 0) {
+        report_commit(job->entry->name);
         rc = record_write(job->entry, job->paths, job->paths_length);
     }
 
@@ -349,8 +352,7 @@ static int install_archive(install_job* job, const catalog* catalog) {
 int install_package(const catalog* catalog, const char* name) {
     const catalog_entry* entry = catalog_find(catalog, name);
     if (!entry) {
-        fprintf(stderr, "stlxpkg: %s has no package %s for this machine\n", catalog->tag, name);
-        return -1;
+        return fail(FAILURE_MISSING, "%s has no package %s for this machine", catalog->tag, name);
     }
 
     catalog_entry installed;
@@ -361,13 +363,14 @@ int install_package(const catalog* catalog, const char* name) {
     }
 
     if (found == 1 && strcmp(installed.sha256, entry->sha256) == 0) {
-        printf("stlxpkg: %s %s is installed\n", name, installed.version);
+        report_say("%s %s is installed", name, installed.version);
+        report_installed(name, installed.version, record_paths_size(old_paths));
         free(old_paths);
         return 0;
     }
 
     if (remove_tree(STAGING_DIR) != 0) {
-        fprintf(stderr, "stlxpkg: cannot delete %s (errno %d)\n", STAGING_DIR, errno);
+        fail(failure_of_errno(errno), "cannot delete %s (errno %d)", STAGING_DIR, errno);
         free(old_paths);
         return -1;
     }
@@ -385,9 +388,9 @@ int install_package(const catalog* catalog, const char* name) {
     tar_handlers handlers = { on_entry, on_data, on_end_file, job };
     tar_init(&job->tar, &handlers);
     if (old_paths) {
-        printf("stlxpkg: upgrading %s %s to %s from %s\n", name, installed.version, entry->version, catalog->tag);
+        report_say("upgrading %s %s to %s from %s", name, installed.version, entry->version, catalog->tag);
     } else {
-        printf("stlxpkg: downloading %s %s from %s\n", name, entry->version, catalog->tag);
+        report_say("downloading %s %s from %s", name, entry->version, catalog->tag);
     }
 
     if (install_archive(job, catalog) != 0) {
@@ -398,7 +401,8 @@ int install_package(const catalog* catalog, const char* name) {
         desktop_reload();
     }
 
-    printf("stlxpkg: installed %s %s%s%s\n", name, entry->version, job->root[0] ? " under " : "", job->root);
+    report_say("installed %s %s%s%s", name, entry->version, job->root[0] ? " under " : "", job->root);
+    report_installed(name, entry->version, record_paths_size(job->paths));
 
     return 0;
 }
