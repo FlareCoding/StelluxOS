@@ -610,6 +610,21 @@ static shown_entry show_entry(const clipboard_source& source, const clipboard_en
     return shown;
 }
 
+/* An entry shown before keeps what it read of its content and takes what can change: its place, pin, source and time,
+ * and a text's icon, which follows its source */
+static shown_entry reshow_entry(const clipboard_source& source, const clipboard_entry& entry, shown_entry shown) {
+    shown.from = entry.label;
+    shown.copied_ns = entry.copied_ns;
+    shown.is_current = source.history->is_current(entry.id);
+    shown.is_pinned = entry.pinned;
+    shown.is_too_large = shown.is_current && entry.item.held() > source.history->byte_limit();
+    if (shown.is_title_text) {
+        shown.icon = icon_for(source, entry.label);
+    }
+
+    return shown;
+}
+
 /* How long a text of more than one line is: its lines, or its size past the 64 KB a preview reads, whose lines alone
  * were counted */
 static std::string text_length(const shown_entry& entry) {
@@ -1048,15 +1063,24 @@ clipboard_pane::~clipboard_pane() {
     stlxgfx_destroy_surface(m_pin_glyph);
 }
 
+/* An entry's content never changes, so a refresh reads only the entries it has not shown before, and the others keep
+ * what they read, taking their place, pin, source and time afresh */
 void clipboard_pane::refresh() {
     uint64_t selected_id = m_selected < m_listed.size() ? listed(m_selected).id : 0;
     std::vector<const clipboard_entry*> entries = m_source.history->entries();
     m_source.thumbnails->keep(entries);
-    m_entries.clear();
+
+    std::vector<shown_entry> shown;
     for (const clipboard_entry* entry : entries) {
-        m_entries.push_back(show_entry(m_source, *entry));
+        auto before = std::find_if(m_entries.begin(), m_entries.end(), [entry](const shown_entry& old) {
+            return old.id == entry->id;
+        });
+
+        shown.push_back(before == m_entries.end() ? show_entry(m_source, *entry)
+                                                  : reshow_entry(m_source, *entry, std::move(*before)));
     }
 
+    m_entries = std::move(shown);
     ask_texts();
     list(selected_id);
 }

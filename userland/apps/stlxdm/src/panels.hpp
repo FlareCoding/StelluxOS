@@ -140,7 +140,13 @@ public:
         m_quick->use_clipboard(history, std::move(since));
     }
 
-    void clipboard_changed() { m_quick->clipboard_changed(); }
+    /* Clipboard mode follows the history while the palette is open or opening, and a closing palette keeps its rows,
+     * so its fade never reorders them */
+    void clipboard_changed() {
+        if (m_popover.panel() == m_quick.get()) {
+            m_quick->clipboard_changed();
+        }
+    }
 
     /* Readable while Quick Actions' file index has news, which `pump_quick_files()` takes */
     int quick_files_fd() const { return m_quick ? m_quick->files_fd() : -1; }

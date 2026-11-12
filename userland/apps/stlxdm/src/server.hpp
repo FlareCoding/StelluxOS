@@ -311,6 +311,7 @@ struct dm_client {
      * answers go out only once out_q is empty. */
     std::deque<std::string> clipboard_asks;
     bool watches_clipboard = false;  /* sent CLIPBOARD_WATCH, so it hears of every change */
+    uint64_t clipboard_generation = 0;  /* the clipboard's generation its last CLIPBOARD_TYPES told */
 
     /* The unanswered DROP_GETs, oldest first, which leave as clipboard answers do */
     std::deque<dm_drop_ask> drop_asks;
@@ -663,8 +664,11 @@ private:
     void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
     void replace_clipboard(clipboard_item item, std::string label);
-    void tell_clipboard_watchers();
+    void note_clipboard_change();
+    void note_history_change();
+    void flush_clipboard();
     void choose_clipboard_entry(uint64_t id, bool pastes);
+    void catch_up_watcher(dm_client& c);
     std::string client_label(const dm_client& c) const;
     void send_clipboard_types(dm_client& c);
     void set_clipboard(dm_client& c, const uint8_t* payload);
@@ -965,6 +969,11 @@ private:
     /* The shared clipboard, last writer wins, the copies it replaced, and when stlxdm began keeping them */
     clipboard_history m_history{ same_content };
     std::string       m_clipboard_since;
+
+    /* Raised by each change of the current item, which watchers catch up to once per flush, and whether the history's
+     * views wait to refresh */
+    uint64_t m_clipboard_generation = 0;
+    bool     m_history_changed = false;
 
     /* The running drag, null while none runs, and what it shows from its start until its picture settles or snaps
      * back: the look, how its picture moves apart from the pointer, and where it shows */
