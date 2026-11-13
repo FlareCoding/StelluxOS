@@ -587,7 +587,7 @@ static void drop_unsent_paste(void) {
 static int handle_key(int master_fd, uint32_t ch, uint16_t usage,
                       uint8_t modifiers) {
     char seq[8];
-    int len = keymap_translate(usage, g_term.app_cursor_keys,
+    int len = keymap_translate(usage, modifiers, g_term.app_cursor_keys,
                                seq, sizeof(seq));
     if (len > 0) {
         send_input(master_fd, seq, (size_t)len);
