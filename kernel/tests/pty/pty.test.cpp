@@ -584,6 +584,110 @@ TEST(pty_test, cooked_erase_backs_over_a_tab) {
     EXPECT_EQ(resource::close(task, hs), resource::OK);
 }
 
+TEST(pty_test, cooked_word_erase_takes_the_blanks_and_the_word_before_them) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // Ctrl W takes the space and the four-column word with an accented e before it, rubbing out five columns
+    EXPECT_EQ(resource::write(task, hm, "ls caf\xc3\xa9 \x17\r", 11), static_cast<ssize_t>(11));
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(4));
+    EXPECT_EQ(string::memcmp(line, "ls \n", 4), 0);
+
+    char echo_buf[32] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(26));
+    EXPECT_EQ(string::memcmp(echo_buf, "ls caf\xc3\xa9 \b \b\b \b\b \b\b \b\b \b\r\n", 26), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, cooked_word_erase_rubs_out_every_column_of_a_tab) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    // The tab after "ab" reaches column 8, so erasing it and "ab" rubs out eight columns
+    EXPECT_EQ(resource::write(task, hm, "ab\t\x17\r", 5), static_cast<ssize_t>(5));
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(1));
+    EXPECT_EQ(string::memcmp(line, "\n", 1), 0);
+
+    char echo_buf[32] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(29));
+    EXPECT_EQ(string::memcmp(echo_buf, "ab\t\b \b\b \b\b \b\b \b\b \b\b \b\b \b\b \b\r\n", 29), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, cooked_word_erase_on_an_empty_line_echoes_nothing) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    EXPECT_EQ(resource::write(task, hm, "\x17x\r", 3), static_cast<ssize_t>(3));
+
+    char line[16] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(2));
+    EXPECT_EQ(string::memcmp(line, "x\n", 2), 0);
+
+    char echo_buf[16] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(echo_buf, "x\r\n", 3), 0);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
 TEST(pty_test, cooked_line_keeps_4095_bytes_and_rings_past_them) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);

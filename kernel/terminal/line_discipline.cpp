@@ -12,9 +12,14 @@ constexpr char LD_CH_QUIT = 0x1C; // ^backslash
 constexpr char LD_CH_SUSP = 0x1A; // ^Z
 
 constexpr char LD_CH_EOF = 0x04; // ^D, termios VEOF
+constexpr char LD_CH_WERASE = 0x17; // ^W, termios VWERASE
 constexpr uint8_t LD_CH_BELL = 0x07;
 constexpr size_t LD_TAB_WIDTH = 8;
 constexpr size_t LD_UTF8_CONTINUATION_MAX = 3;
+
+// A word erase rubs out its echo this many columns per write, each column a backspace, space and backspace
+constexpr size_t LD_RUBOUT_COLUMNS_PER_WRITE = 8;
+constexpr size_t LD_RUBOUT_BYTES_PER_COLUMN = 3;
 
 void ld_init(line_discipline* ld) {
     ld->mode = 0;
@@ -102,6 +107,47 @@ static size_t erase_last_char(line_discipline* ld, uint8_t* echo_seq) {
     return echo_len;
 }
 
+static bool is_blank(char c) {
+    return c == ' ' || c == '\t';
+}
+
+// Drops the blanks that end the line and the word before them, and returns the columns they took. A word is a run
+// of bytes that are not blanks, so it always holds whole UTF-8 characters.
+static size_t erase_last_word(line_discipline* ld) {
+    size_t start = ld->line_len;
+    while (start > 0 && is_blank(ld->line_buf[start - 1])) {
+        start--;
+    }
+
+    while (start > 0 && !is_blank(ld->line_buf[start - 1])) {
+        start--;
+    }
+
+    size_t columns = line_column(ld, ld->line_len) - line_column(ld, start);
+    ld->line_len = start;
+    return columns;
+}
+
+// Rubs out the echo of `columns` columns a few at a time, since a whole word's echo can outgrow a buffer on the stack
+static void echo_rubout(const echo_target* echo, size_t columns) {
+    if (!echo || !echo->write) {
+        return;
+    }
+
+    uint8_t rubout[LD_RUBOUT_COLUMNS_PER_WRITE * LD_RUBOUT_BYTES_PER_COLUMN];
+    for (size_t i = 0; i < sizeof(rubout); i += LD_RUBOUT_BYTES_PER_COLUMN) {
+        rubout[i] = '\b';
+        rubout[i + 1] = ' ';
+        rubout[i + 2] = '\b';
+    }
+
+    while (columns > 0) {
+        size_t chunk = columns < LD_RUBOUT_COLUMNS_PER_WRITE ? columns : LD_RUBOUT_COLUMNS_PER_WRITE;
+        echo->write(echo->ctx, rubout, chunk * LD_RUBOUT_BYTES_PER_COLUMN);
+        columns -= chunk;
+    }
+}
+
 // Ctrl D hands the reader the pending line without an end, or on an empty line queues an end of file:
 // a placeholder byte under a free mark, which ld_read turns into a read of 0
 __PRIVILEGED_CODE static void send_eof(line_discipline* ld, ring_buffer* sink) {
@@ -179,6 +225,11 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
         if (erase_len > 0 && echo && echo->write) {
             echo->write(echo->ctx, erase_seq, erase_len);
         }
+    } else if (c == LD_CH_WERASE) {
+        size_t columns = erase_last_word(ld);
+        if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
+        echo_rubout(echo, columns);
     } else if (c == LD_CH_EOF) {
         send_eof(ld, sink);
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
