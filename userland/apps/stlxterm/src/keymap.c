@@ -1,18 +1,23 @@
 #include "keymap.h"
 
+#include <stlxwin/stlxwin.h>
+
+/* Ctrl W, which line editors take as erasing the word before the cursor */
+#define WORD_ERASE_BYTE '\x17'
+
 static int emit(char *out, int out_size, const char *seq, int len) {
     if (len > out_size) return 0;
     for (int i = 0; i < len; i++) out[i] = seq[i];
     return len;
 }
 
-int keymap_translate(uint16_t usage, int app_cursor,
+int keymap_translate(uint16_t usage, uint8_t modifiers, int app_cursor,
                      char *out, int out_size) {
     if (!out || out_size < 1) return 0;
 
     switch (usage) {
     case 0x29: out[0] = '\x1b'; return 1;  /* Escape */
-    case 0x2A: out[0] = '\b';   return 1;  /* Backspace */
+    case 0x2A: out[0] = (modifiers & STLXWIN_MOD_CTRL) ? WORD_ERASE_BYTE : '\b'; return 1;  /* Backspace */
 
     /* Arrows follow DECCKM: CSI form normally, SS3 form in application mode */
     case 0x4F: return emit(out, out_size, app_cursor ? "\x1bOC" : "\x1b[C", 3);
