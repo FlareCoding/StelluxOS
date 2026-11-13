@@ -191,6 +191,7 @@ host-test:
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxgfx/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxhttp/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxconf/tests
+	$(Q)$(MAKE) --no-print-directory -C userland/apps/shell/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxdm/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxpkg/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxterm/tests

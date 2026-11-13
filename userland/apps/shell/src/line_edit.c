@@ -65,6 +65,23 @@ static void set_line(line_edit_state* s, const char* text) {
     s->cursor_pos = len;
 }
 
+// Words end only at spaces, so a whole path or option erases at once
+static void erase_word_before_cursor(line_edit_state* s) {
+    int start = s->cursor_pos;
+    while (start > 0 && s->line_buf[start - 1] == ' ') {
+        start--;
+    }
+
+    while (start > 0 && s->line_buf[start - 1] != ' ') {
+        start--;
+    }
+
+    memmove(s->line_buf + start, s->line_buf + s->cursor_pos, (size_t)(s->line_len - s->cursor_pos));
+    s->line_len -= s->cursor_pos - start;
+    s->cursor_pos = start;
+    s->line_buf[s->line_len] = '\0';
+}
+
 // A terminal left non-blocking would read as end of input, so the mode is cleared
 static ssize_t read_stdin_byte(unsigned char* c) {
     ssize_t n = read(STDIN_FILENO, c, 1);
@@ -598,6 +615,12 @@ char* line_edit_read(line_edit_state* s, const char* prompt) {
             s->line_len = 0;
             s->cursor_pos = 0;
             s->line_buf[0] = '\0';
+            redraw(s, prompt);
+            continue;
+        }
+
+        if (c == 0x17) { // Ctrl-W: erase the word before the cursor
+            erase_word_before_cursor(s);
             redraw(s, prompt);
             continue;
         }
