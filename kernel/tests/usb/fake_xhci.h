@@ -31,7 +31,6 @@ struct xhci_hcd_test_access {
 
     static void process_events(xhci_hcd& hcd) {
         hcd._process_event_ring();
-        hcd.m_event_ring->finish_processing();
     }
 
     static void stop_requested_endpoints(xhci_hcd& hcd) {
@@ -44,6 +43,10 @@ struct xhci_hcd_test_access {
 
     static void set_task(xhci_hcd& hcd, sched::task* task) {
         hcd.m_task = task;
+    }
+
+    static int32_t send_command(xhci_hcd& hcd, xhci::xhci_trb_t* command) {
+        return hcd._send_command(command);
     }
 
     // The teardown's steps before and after the drivers' `disconnect()`: marking the device's endpoints as
@@ -66,6 +69,7 @@ using drivers::xhci_hcd_test_access;
 using drivers::xhci::xhci_command_completion_trb_t;
 using drivers::xhci::xhci_command_ring;
 using drivers::xhci::xhci_device;
+using drivers::xhci::xhci_device_request_packet;
 using drivers::xhci::xhci_endpoint;
 using drivers::xhci::xhci_event_ring;
 using drivers::xhci::xhci_interrupter_registers;
@@ -87,6 +91,10 @@ struct fake_xhci {
     // The HCD task writes each command right after its cue, so one missing after this bound is never written
     static constexpr uint64_t COMMAND_TIMEOUT_NS = 2000000000ULL;
 
+    // The HCD task rings a control transfer's doorbell right after queuing it, so one missing after this bound is
+    // never rung
+    static constexpr uint64_t TRANSFER_TIMEOUT_NS = 2000000000ULL;
+
     alignas(xhci_hcd) uint8_t  hcd_bytes[sizeof(xhci_hcd)];
     xhci_hcd*                  hcd;
     volatile uint32_t          doorbells[DOORBELL_COUNT];
@@ -105,6 +113,12 @@ struct fake_xhci {
 
     // The command ring entries `complete_command` has completed
     uint32_t commands_completed;
+
+    // A step of the driver that `start_step` runs on a task of its own, what it returned and whether it has ended
+    void                   (*step)(fake_xhci& fake);
+    int32_t                step_result;
+    sched::task*           step_task;
+    sync::atomic<uint32_t> is_step_done;
 };
 
 // A cancel's or a close's stop and dequeue move take the command ring's first two entries
@@ -113,6 +127,9 @@ constexpr uint32_t MOVE_COMMAND = 1;
 
 // A ring's first lap writes cycle bit 1, which a dequeue pointer moved within that lap must carry
 constexpr uint64_t FIRST_LAP_CYCLE = 1;
+
+// The device context index of every device's control endpoint
+constexpr uint8_t CONTROL_DCI = 1;
 
 // Builds the driver, its rings and its device in `fake`, which must be zeroed. False when memory runs out
 inline bool attach_fake_xhci(fake_xhci& fake) {
@@ -317,6 +334,122 @@ inline const xhci_trb_t* transfer_trb(const fake_xhci& fake, uint32_t index, xhc
     xhci_endpoint* ring_owner = endpoint ? endpoint : fake.endpoint;
     const xhci_trb_t* entry = &ring_owner->ring()->get_virtual_base()[index];
     return (entry->control & fake_xhci::CYCLE_BIT) ? entry : nullptr;
+}
+
+// Runs the fake's step as the driver's own task, then marks it ended and ends the task
+inline void run_step(void* arg) {
+    auto* fake = static_cast<fake_xhci*>(arg);
+    xhci_hcd_test_access::set_task(*fake->hcd, sched::current());
+    fake->step(*fake);
+    xhci_hcd_test_access::set_task(*fake->hcd, nullptr);
+    fake->is_step_done.store_release(1);
+    sched::exit(0);
+}
+
+// Runs `step` on a task of its own, lowered as the HCD task is and taken by the driver for its task, while the test
+// plays the controller. False when the task cannot be created
+inline bool start_step(fake_xhci& fake, void (*step)(fake_xhci& fake)) {
+    fake.step = step;
+    fake.is_step_done.store_relaxed(0);
+    fake.step_task = test_helpers::start_pinned_task_on_another_cpu(run_step, &fake, "usb_hcd_step", 0);
+    return fake.step_task != nullptr;
+}
+
+// Waits for the step to end, raising the interrupt after `COMMAND_TIMEOUT_NS` so a driver wait past its deadline wakes
+// and ends. False after `test_helpers::SPIN_TIMEOUT_NS`, when the task and the fake must stay allocated
+inline bool finish_step(fake_xhci& fake) {
+    uint64_t start = clock::now_ns();
+
+    while (!fake.is_step_done.load_acquire()) {
+        uint64_t waited = clock::now_ns() - start;
+        if (waited > test_helpers::SPIN_TIMEOUT_NS) {
+            return false;
+        }
+
+        if (waited > fake_xhci::COMMAND_TIMEOUT_NS) {
+            raise_interrupt(fake);
+            test_helpers::brief_delay();
+        }
+    }
+
+    test_helpers::unpin(fake.step_task);
+    fake.step_task = nullptr;
+
+    return true;
+}
+
+// Whether the driver rang doorbell `slot_id` with `target`, clearing the doorbell when it did so the next ring shows.
+// The driver rings a device's doorbell only with targets above 0
+inline bool take_doorbell(fake_xhci& fake, uint8_t slot_id, uint32_t target) {
+    if (fake.doorbells[slot_id] != target) {
+        return false;
+    }
+
+    fake.doorbells[slot_id] = 0;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    return true;
+}
+
+// Waits up to `timeout_ns` for `take_doorbell` to find doorbell `slot_id` rung with `target`
+inline bool wait_for_doorbell(fake_xhci& fake, uint8_t slot_id, uint32_t target, uint64_t timeout_ns) {
+    uint64_t deadline = clock::now_ns() + timeout_ns;
+
+    while (!take_doorbell(fake, slot_id, target)) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Gives the request of the last control transfer queued on the control endpoint of `device` in `request_out`. False
+// when the ring's first lap holds none
+inline bool read_control_request(xhci_device* device, xhci_device_request_packet* request_out) {
+    const xhci_trb_t* ring = device->ctrl_ring()->get_virtual_base();
+    const xhci_trb_t* setup = nullptr;
+    for (size_t i = 0; ring[i].control & fake_xhci::CYCLE_BIT; i++) {
+        if (ring[i].trb_type == XHCI_TRB_TYPE_SETUP_STAGE) {
+            setup = &ring[i];
+        }
+    }
+
+    if (!setup) {
+        return false;
+    }
+
+    *request_out = reinterpret_cast<const drivers::xhci::xhci_setup_stage_trb_t*>(setup)->request_packet;
+
+    return true;
+}
+
+// Waits for the driver to ring the control endpoint of `device` and gives the request it queued in `request_out`.
+// False when no transfer comes within `TRANSFER_TIMEOUT_NS`
+inline bool take_control_transfer(fake_xhci& fake, xhci_device* device, xhci_device_request_packet* request_out) {
+    uint32_t control_ring = XHCI_DOORBELL_TARGET_CONTROL_EP_RING;
+    if (!wait_for_doorbell(fake, device->slot_id(), control_ring, fake_xhci::TRANSFER_TIMEOUT_NS)) {
+        return false;
+    }
+
+    return read_control_request(device, request_out);
+}
+
+// Completes the last control transfer queued on the control endpoint of `device`, giving an IN transfer the first
+// `reply_length` bytes of `reply`, and raises the interrupt
+inline void complete_control_transfer(fake_xhci& fake, xhci_device* device, const void* reply, uint16_t reply_length) {
+    if (reply_length > 0) {
+        string::memcpy(device->ctrl_transfer_buffer(), reply, reply_length);
+    }
+
+    xhci_transfer_completion_trb_t event = {};
+    event.completion_code = XHCI_TRB_COMPLETION_CODE_SUCCESS;
+    event.trb_type = XHCI_TRB_TYPE_TRANSFER_EVENT;
+    event.endpoint_id = CONTROL_DCI;
+    event.slot_id = device->slot_id();
+
+    post_event(fake, *reinterpret_cast<const xhci_trb_t*>(&event));
+    raise_interrupt(fake);
 }
 
 } // namespace usb_test

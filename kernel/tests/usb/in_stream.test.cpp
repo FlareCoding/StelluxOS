@@ -21,7 +21,7 @@ static constexpr uint8_t  ISOCHRONOUS_IN         = 0x84;
 static constexpr uint8_t  ISOCHRONOUS_ATTRIBUTES = 1;
 static constexpr uint8_t  BULK_OUT               = 0x02;
 
-static constexpr uint32_t MAX_CALLS = 8;
+static constexpr uint32_t MAX_CALLS = usb::MAX_IN_STREAM_READS;
 static constexpr uint32_t MAX_READS = 16;
 
 // What one call of the stream's callback saw
@@ -32,13 +32,14 @@ struct stream_call {
     uint32_t             length;
     uint8_t              last_byte;
     uint32_t             reads_posted; // ring entries written when the call came, finished reads included
-    bool                 was_doorbell_rung;
+    uint32_t             doorbell;     // the slot's doorbell when the call came, which the test may clear first
     bool                 came_after_close;
 };
 
 // File scope, so a call the HCD task makes after a failed test never writes into a stack frame that has returned
 static fake_xhci g_fake;
 static xhci_endpoint* g_interrupt_in;
+static xhci_endpoint* g_bulk_out;
 static xhci_endpoint* g_stream_endpoint;
 static usb::in_stream* g_stream;
 static uint8_t g_context;
@@ -66,10 +67,11 @@ static int32_t attach_controller() {
 
     g_stream_endpoint = g_fake.endpoint;
     g_interrupt_in = add_fake_endpoint(g_fake, INTERRUPT_IN, INTERRUPT_ATTRIBUTES, INTERRUPT_MAX_PACKET);
-    bool has_more_endpoints =
-        g_interrupt_in &&
-        add_fake_endpoint(g_fake, ISOCHRONOUS_IN, ISOCHRONOUS_ATTRIBUTES, fake_xhci::MAX_PACKET) &&
-        add_fake_endpoint(g_fake, BULK_OUT, fake_xhci::BULK_ATTRIBUTES, fake_xhci::MAX_PACKET);
+    xhci_endpoint* isochronous_in =
+        add_fake_endpoint(g_fake, ISOCHRONOUS_IN, ISOCHRONOUS_ATTRIBUTES, fake_xhci::MAX_PACKET);
+    g_bulk_out = add_fake_endpoint(g_fake, BULK_OUT, fake_xhci::BULK_ATTRIBUTES, fake_xhci::MAX_PACKET);
+    bool has_more_endpoints = g_interrupt_in && isochronous_in && g_bulk_out;
+
     return has_more_endpoints ? 0 : -1;
 }
 
@@ -182,7 +184,7 @@ static void record_call(void* context, const uint8_t* data, uint32_t length, usb
             call.reads_posted++;
         }
 
-        call.was_doorbell_rung = g_fake.doorbells[fake_xhci::SLOT_ID] == g_stream_endpoint->dci();
+        call.doorbell = g_fake.doorbells[fake_xhci::SLOT_ID];
         call.came_after_close = g_close_done.load_acquire() != 0;
     }
 
@@ -280,7 +282,8 @@ TEST(usb_in_stream, each_read_is_posted_again_after_its_call_while_the_other_is_
     EXPECT_EQ(read_buffer_phys(g_fake.endpoint, 3), g_fake.endpoint->stream_buffer_phys(1));
 }
 
-// Both reads finish before the HCD task gets a CPU, and the first read is posted again before the second's call
+// Both reads finish before the HCD task gets a CPU. The first read is posted again before the second's call, and
+// its doorbell rings once the pass over the event ring ends
 TEST(usb_in_stream, calls_come_in_completion_order) {
     ASSERT_EQ(open_bulk_stream(), 0);
     g_fake.doorbells[fake_xhci::SLOT_ID] = 0;
@@ -292,13 +295,81 @@ TEST(usb_in_stream, calls_come_in_completion_order) {
 
     EXPECT_EQ(g_calls[0].length, 1u);
     EXPECT_EQ(g_calls[0].last_byte, 'a');
-    EXPECT_FALSE(g_calls[0].was_doorbell_rung);
+    EXPECT_EQ(g_calls[0].doorbell, 0u);
 
     EXPECT_EQ(g_calls[1].length, 2u);
     EXPECT_EQ(g_calls[1].last_byte, 'b');
     EXPECT_EQ(g_calls[1].reads_posted, 3u);
-    EXPECT_TRUE(g_calls[1].was_doorbell_rung);
+    EXPECT_EQ(g_calls[1].doorbell, 0u);
     EXPECT_EQ(read_buffer_phys(g_fake.endpoint, 3), g_fake.endpoint->stream_buffer_phys(1));
+    EXPECT_EQ(g_fake.doorbells[fake_xhci::SLOT_ID], static_cast<uint32_t>(g_fake.endpoint->dci()));
+}
+
+// More reads than the 32 doorbells a pass defers, so the list must hold their endpoint's doorbell once
+static constexpr uint32_t READS_IN_ONE_PASS = 40;
+
+// Every read finished in one pass is posted again during it, and their endpoint's doorbell rings only as it ends
+TEST(usb_in_stream, reads_finished_in_one_pass_ring_their_doorbell_once_the_pass_ends) {
+    ASSERT_EQ(open_bulk_stream(READS_IN_ONE_PASS), 0);
+    g_fake.doorbells[fake_xhci::SLOT_ID] = 0;
+
+    for (uint32_t read = 0; read < READS_IN_ONE_PASS; read++) {
+        finish_read(g_fake.endpoint, PAYLOAD_LENGTH, read, 1, 'a');
+    }
+
+    xhci_hcd_test_access::process_events(*g_fake.hcd);
+    ASSERT_EQ(g_call_count.load_acquire(), READS_IN_ONE_PASS);
+
+    for (uint32_t call = 0; call < READS_IN_ONE_PASS; call++) {
+        EXPECT_EQ(g_calls[call].doorbell, 0u);
+    }
+
+    EXPECT_NOT_NULL(transfer_trb(g_fake, 2 * READS_IN_ONE_PASS - 1));
+    EXPECT_EQ(g_fake.doorbells[fake_xhci::SLOT_ID], static_cast<uint32_t>(g_fake.endpoint->dci()));
+}
+
+// HID's stream misses a service in the pass that finishes a bulk read, and its read posted again rings its doorbell
+// only as the pass ends, after the bulk read's call
+TEST(usb_in_stream, a_read_posted_again_after_a_missed_service_rings_once_the_pass_ends) {
+    ASSERT_EQ(g_fake.hcd->usb_open_in_stream(
+        g_fake.device, INTERRUPT_IN, INTERRUPT_MAX_PACKET, 1, nullptr, nullptr), 0);
+    ASSERT_EQ(open_bulk_stream(), 0);
+    g_fake.doorbells[fake_xhci::SLOT_ID] = 0;
+
+    post_transfer_event(g_fake, 0, INTERRUPT_MAX_PACKET, XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE, g_interrupt_in);
+    finish_read(g_fake.endpoint, PAYLOAD_LENGTH, 0, 1, 'a');
+    xhci_hcd_test_access::process_events(*g_fake.hcd);
+    ASSERT_EQ(g_call_count.load_acquire(), 1u);
+
+    EXPECT_EQ(g_calls[0].doorbell, 0u);
+    EXPECT_NOT_NULL(transfer_trb(g_fake, 1, g_interrupt_in));
+}
+
+static usb::transfer_request g_first_send;
+static usb::transfer_request g_second_send;
+static uint8_t g_send_buffer[PAYLOAD_LENGTH];
+
+// A send that completes in the pass that finishes a bulk read starts the send queued behind it, whose doorbell rings
+// only as the pass ends, after the read's call
+TEST(usb_in_stream, a_send_started_by_a_completion_rings_once_the_pass_ends) {
+    usb::init_transfer_request(g_first_send, BULK_OUT, g_send_buffer, PAYLOAD_LENGTH);
+    usb::init_transfer_request(g_second_send, BULK_OUT, g_send_buffer, PAYLOAD_LENGTH);
+    ASSERT_EQ(usb::submit_transfer_async(&g_fake.usb_device, g_first_send), 0);
+    ASSERT_EQ(usb::submit_transfer_async(&g_fake.usb_device, g_second_send), 0);
+    ASSERT_EQ(open_bulk_stream(), 0);
+    g_fake.doorbells[fake_xhci::SLOT_ID] = 0;
+
+    post_transfer_event(g_fake, 0, 0, XHCI_TRB_COMPLETION_CODE_SUCCESS, g_bulk_out);
+    finish_read(g_fake.endpoint, PAYLOAD_LENGTH, 0, 1, 'a');
+    xhci_hcd_test_access::process_events(*g_fake.hcd);
+    ASSERT_EQ(g_call_count.load_acquire(), 1u);
+
+    EXPECT_EQ(g_calls[0].doorbell, 0u);
+    EXPECT_NOT_NULL(transfer_trb(g_fake, 1, g_bulk_out));
+
+    post_transfer_event(g_fake, 1, 0, XHCI_TRB_COMPLETION_CODE_SUCCESS, g_bulk_out);
+    xhci_hcd_test_access::process_events(*g_fake.hcd);
+    EXPECT_FALSE(g_second_send.pending);
 }
 
 static constexpr uint32_t LAP_READS = 4;
