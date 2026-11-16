@@ -127,6 +127,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::GETPEERNAME, getpeername);
     REGISTER_SYSCALL(linux_nr::SHUTDOWN,    shutdown);
     REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
+    REGISTER_SYSCALL(linux_nr::FLOCK,       flock);
     REGISTER_SYSCALL(linux_nr::GETRANDOM,   getrandom);
     REGISTER_SYSCALL(linux_nr::PSELECT6,    pselect6);
     REGISTER_SYSCALL(linux_nr::PPOLL,       ppoll);
