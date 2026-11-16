@@ -1,7 +1,6 @@
 #include "terminal/console_node.h"
 #include "terminal/terminal.h"
 #include "common/ring_buffer.h"
-#include "serial/serial.h"
 #include "fs/file.h"
 #include "fs/fs.h"
 #include "sync/poll.h"
@@ -27,7 +26,7 @@ ssize_t console_node::read(fs::file*, void* buf, size_t count, uint32_t flags) {
 }
 
 ssize_t console_node::write(fs::file*, const void* buf, size_t count, uint32_t) {
-    serial::write(static_cast<const char*>(buf), count);
+    console_write(static_cast<const char*>(buf), count);
     return static_cast<ssize_t>(count);
 }
 

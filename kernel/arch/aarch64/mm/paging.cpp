@@ -5,7 +5,6 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "hw/mmio.h"
-#include "serial/serial.h"
 #include "sync/spinlock.h"
 
 // Linker symbols for kernel boundaries

@@ -21,20 +21,52 @@ constexpr uint32_t TIOCGPGRP = 0x540F;
 constexpr uint32_t TIOCSPGRP = 0x5410;
 
 /**
+ * @brief Claims the UART built into the platform for the kernel log and
+ * /dev/console. Must be called after boot_services::init() and before anything
+ * logs, since log lines written before the console holds a UART are dropped.
+ * @return OK, or ERR when the UART cannot be reached.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t claim_builtin_uart();
+
+/**
+ * @brief Moves the console UART's register access from the early boot mapping
+ * to the kernel's. Must be called once after mm::init().
+ * @return OK, or ERR when the registers cannot be mapped.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t remap_uart();
+
+/**
+ * @brief Moves the console to the UART of a PCI serial card when one is
+ * present and answers, since many PCs, desktops above all, lack a usable COM1.
+ * Must be called once after pci::init().
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void claim_pci_uart();
+
+/**
+ * @brief Writes to the console's UART. It polls the chip, takes no lock and
+ * allocates no memory, so it works in early boot and while the kernel panics.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void console_write(const char* data, size_t len);
+
+/**
  * @brief Initialize the global console terminal. Creates the input ring
  * buffer, registers as the serial RX callback, enables serial RX
  * interrupts, and creates /dev/console in devfs.
- * Must be called after both irq::init() and fs::init().
+ * Must be called after claim_builtin_uart(), irq::init() and fs::init().
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init();
 
 /**
- * @brief Feed a character into the terminal's line discipline.
- * Matches serial::rx_callback_t signature. Called from ISR context.
+ * @brief Feed a received byte into the terminal's line discipline.
+ * Matches serial::uart::receive_callback signature. Called from ISR context.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void input_char(char c);
+__PRIVILEGED_CODE void input_char(void* context, uint8_t byte);
 
 /**
  * @brief Get the console terminal's input ring buffer.
