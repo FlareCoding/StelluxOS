@@ -29,6 +29,8 @@ public:
     void disconnect() override;
 
     int32_t set_line(const ::serial::line_settings& settings) override;
+    int32_t set_modem_outputs(uint32_t lines) override;
+    int32_t get_modem_inputs(uint32_t* lines) override;
     int32_t send(const uint8_t* data, size_t length) override;
     void cancel_send() override;
 

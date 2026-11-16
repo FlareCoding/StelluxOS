@@ -25,6 +25,11 @@ static constexpr uint64_t NS_PER_SECOND = 1000000000;
 // A wait for the send to end allows this beyond the time its bytes take at the line's speed
 static constexpr uint64_t SEND_DEADLINE_MARGIN_NS = NS_PER_SECOND;
 
+// The modem lines a port drives, and those it reads from the chip
+static constexpr uint32_t MODEM_OUTPUTS = terminal::TIOCM_DTR | terminal::TIOCM_RTS;
+static constexpr uint32_t MODEM_INPUTS = terminal::TIOCM_CTS | terminal::TIOCM_CAR | terminal::TIOCM_RNG |
+                                         terminal::TIOCM_DSR;
+
 namespace {
 
 // A port's node in /dev/serial, which owns the port. It sits in the privileged heap, since `fs::node::ref_destroy`
@@ -88,6 +93,10 @@ private:
 
 static size_t min_size(size_t a, size_t b) {
     return a < b ? a : b;
+}
+
+static bool asks_to_hang_up(const terminal::termios2& settings) {
+    return (settings.c_cflag & terminal::CBAUD) == terminal::B0;
 }
 
 static int32_t driver_result_to_fs(int32_t rc) {
@@ -217,9 +226,12 @@ __PRIVILEGED_CODE int32_t port::open() {
         rc = fs::ERR_BUSY;
     } else if (is_first) {
         rc = driver_result_to_fs(m_driver->set_line(m_line));
+        if (rc == fs::OK && !asks_to_hang_up(m_settings)) {
+            rc = change_modem_outputs(MODEM_OUTPUTS);
+        }
     }
 
-    // The device can leave during the first open's chip request, and then the open fails rather than count a file
+    // The device can leave during the first open's chip requests, and then the open fails rather than count a file
     if (rc == fs::OK) {
         irq = sync::spin_lock_irqsave(m_state_lock);
         if (m_is_gone) {
@@ -261,6 +273,10 @@ __PRIVILEGED_CODE void port::close() {
 
     if (is_last) {
         cancel_started_send();
+        if (m_settings.c_cflag & terminal::HUPCL) {
+            (void)change_modem_outputs(0);
+        }
+
         m_is_exclusive = false;
     }
 
@@ -293,6 +309,10 @@ __PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
         case terminal::TCSETS2:    return apply_settings(arg, sizeof(terminal::termios2), false, false);
         case terminal::TCSETSW2:   return apply_settings(arg, sizeof(terminal::termios2), true, false);
         case terminal::TCSETSF2:   return apply_settings(arg, sizeof(terminal::termios2), true, true);
+        case terminal::TIOCMGET:   return copy_modem_lines_out(arg);
+        case terminal::TIOCMSET:   return take_modem_outputs(cmd, arg);
+        case terminal::TIOCMBIS:   return take_modem_outputs(cmd, arg);
+        case terminal::TIOCMBIC:   return take_modem_outputs(cmd, arg);
         case terminal::TCFLSH:     return flush(arg);
         case terminal::TIOCOUTQ:   return copy_send_length_out(arg);
         case terminal::TIOCGWINSZ: return copy_window_size_out(arg);
@@ -369,6 +389,10 @@ __PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool
 
     if (rc == fs::OK) {
         rc = m_driver ? driver_result_to_fs(m_driver->set_line(line)) : fs::ERR_IO;
+    }
+
+    if (rc == fs::OK && asks_to_hang_up(settings) != asks_to_hang_up(m_settings)) {
+        rc = change_modem_outputs(asks_to_hang_up(settings) ? 0 : MODEM_OUTPUTS);
     }
 
     if (rc == fs::OK) {
@@ -602,6 +626,54 @@ __PRIVILEGED_CODE uint64_t port::send_deadline() {
     uint64_t bits = 1 + line.data_bits + (line.parity_mode == parity::none ? 0 : 1) + line.stop_bits;
     uint64_t character_ns = bits * NS_PER_SECOND / line.baud;
     return clock::now_ns() + unsent * character_ns + SEND_DEADLINE_MARGIN_NS;
+}
+
+// TIOCMGET gives an int of TIOCM bits: DTR and RTS as last set, and the chip's inputs
+__PRIVILEGED_CODE int32_t port::copy_modem_lines_out(uint64_t arg) {
+    sync::mutex_lock(m_control_lock);
+    uint32_t inputs = 0;
+    int32_t rc = m_driver ? driver_result_to_fs(m_driver->get_modem_inputs(&inputs)) : fs::ERR_IO;
+    int32_t lines = static_cast<int32_t>(m_modem_outputs | (inputs & MODEM_INPUTS));
+    sync::mutex_unlock(m_control_lock);
+
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    void* destination = reinterpret_cast<void*>(arg);
+    return mm::uaccess::copy_to_user(destination, &lines, sizeof(lines)) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+}
+
+// TIOCMSET, TIOCMBIS and TIOCMBIC take an int of TIOCM bits, of which the port changes DTR and RTS in one request
+__PRIVILEGED_CODE int32_t port::take_modem_outputs(uint32_t cmd, uint64_t arg) {
+    int32_t asked = 0;
+    const void* source = reinterpret_cast<const void*>(arg);
+    if (mm::uaccess::copy_from_user(&asked, source, sizeof(asked)) != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    sync::mutex_lock(m_control_lock);
+    uint32_t lines = static_cast<uint32_t>(asked);
+    if (cmd == terminal::TIOCMBIS) {
+        lines = m_modem_outputs | lines;
+    } else if (cmd == terminal::TIOCMBIC) {
+        lines = m_modem_outputs & ~lines;
+    }
+
+    int32_t rc = change_modem_outputs(lines & MODEM_OUTPUTS);
+    sync::mutex_unlock(m_control_lock);
+
+    return rc;
+}
+
+// The caller must hold the control lock
+__PRIVILEGED_CODE int32_t port::change_modem_outputs(uint32_t lines) {
+    int32_t rc = m_driver ? driver_result_to_fs(m_driver->set_modem_outputs(lines)) : fs::ERR_IO;
+    if (rc == fs::OK) {
+        m_modem_outputs = lines;
+    }
+
+    return rc;
 }
 
 // Releasing the write lock wakes pollers, since a free lock can make the port writable

@@ -30,12 +30,17 @@ static constexpr uint32_t MULTI_PACKET_BYTES = 200;
 // What serial_test_host.py sends back once QEMU's trace confirms what the test asked it to check
 static constexpr uint8_t ACK = 0x06;
 
+// SET_MODEM_CTRL as QEMU's trace names it, by its request type and code
+static constexpr uint16_t SET_MODEM_CTRL_REQUEST = 0x4001;
+
 // A step a test runs on a task of its own, since chip requests and cancels wait for the controller, and a wait on the
 // test runner's task never wakes
 struct port_step {
     void                 (*run)();
     fs::file*              file;
     uint32_t               flags;
+    uint32_t               cmd;
+    int32_t                value;
     int32_t                result;
     sync::atomic<uint32_t> is_done;
 };
@@ -102,6 +107,18 @@ static void set_speed_step() {
     g_step.result = fs::ioctl(g_step.file, terminal::TCSETS, page.addr);
 }
 
+// A request whose argument is an int at the start of a user page, as TIOCMSET's is, or one that ignores its argument
+static void int_request_step() {
+    test_helpers::user_page page;
+    if (!page.ready()) {
+        return;
+    }
+
+    test_helpers::user_space_scope scope(page.ctx);
+    *page.at<int32_t>(0) = g_step.value;
+    g_step.result = fs::ioctl(g_step.file, g_step.cmd, page.addr);
+}
+
 static fs::file* open_port(uint32_t flags) {
     g_step.file = nullptr;
     g_step.flags = flags;
@@ -111,6 +128,14 @@ static fs::file* open_port(uint32_t flags) {
 static void close_port(fs::file* f) {
     g_step.file = f;
     (void)run_step(close_step);
+}
+
+static int32_t request_with_int(fs::file* f, uint32_t cmd, int32_t value) {
+    g_step.file = f;
+    g_step.cmd = cmd;
+    g_step.value = value;
+    g_step.result = fs::ERR_IO;
+    return run_step(int_request_step) ? g_step.result : fs::ERR_IO;
 }
 
 static int32_t set_speed_115200(fs::file* f) {
@@ -385,6 +410,32 @@ TEST(serial_ftdi_device, a_speed_set_through_termios_reaches_the_chip) {
     uint8_t answer = 0;
     EXPECT_EQ(fs::read(f, &answer, 1, fs::O_NONBLOCK), 1);
     EXPECT_EQ(answer, ACK);
+
+    close_port(f);
+}
+
+// True once the far end answers ACK, having seen the vendor request `request` with `value` in QEMU's trace
+static bool chip_was_given(fs::file* f, uint16_t request, uint16_t value) {
+    stlx_test::print("STLX_SERIAL_HOST control %x %x", request, value);
+    if (!wait_until_readable(f)) {
+        return false;
+    }
+
+    uint8_t answer = 0;
+    return fs::read(f, &answer, 1, fs::O_NONBLOCK) == 1 && answer == ACK;
+}
+
+// A socket has no modem lines, so the far end checks QEMU's trace for values no open or close sends
+TEST(serial_ftdi_device, modem_lines_reach_the_chip) {
+    ask_host("connect");
+    ASSERT_TRUE(wait_until_listed(true));
+    fs::file* f = open_port(fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    EXPECT_EQ(request_with_int(f, terminal::TIOCMSET, terminal::TIOCM_DTR), fs::OK);
+    EXPECT_TRUE(chip_was_given(f, SET_MODEM_CTRL_REQUEST, 0x0301));
+    EXPECT_EQ(request_with_int(f, terminal::TIOCMSET, terminal::TIOCM_RTS), fs::OK);
+    EXPECT_TRUE(chip_was_given(f, SET_MODEM_CTRL_REQUEST, 0x0302));
 
     close_port(f);
 }

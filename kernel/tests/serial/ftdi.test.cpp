@@ -8,6 +8,7 @@
 #include "fs/file.h"
 #include "dynpriv/dynpriv.h"
 #include "tests/serial/fake_port_driver.h"
+#include "terminal/tty.h"
 
 TEST_SUITE(ftdi);
 
@@ -18,6 +19,7 @@ static constexpr uint8_t VENDOR_TO_DEVICE = 0x40;
 static constexpr uint8_t RESET = 0x00;
 static constexpr uint16_t RESET_UART = 0x0000;
 
+static constexpr uint8_t SET_MODEM_CTRL = 0x01;
 static constexpr uint8_t SET_FLOW_CTRL = 0x02;
 static constexpr uint8_t SET_BAUD_RATE = 0x03;
 static constexpr uint8_t SET_DATA = 0x04;
@@ -93,6 +95,7 @@ static fake_chip             s_chip;
 static ftdi*                 s_translator;
 static int32_t               s_rc;
 static serial::line_settings s_settings;
+static uint32_t              s_lines;
 
 // Builds a translator for interface `number` of a chip with `interface_count` interfaces
 static bool attach_translator(uint8_t interface_count, uint8_t number, uint16_t release = FT232BM_RELEASE) {
@@ -130,6 +133,10 @@ static void configure() {
 
 static void set_line() {
     s_rc = s_translator->set_line(s_settings);
+}
+
+static void set_modem_outputs() {
+    s_rc = s_translator->set_modem_outputs(s_lines);
 }
 
 static serial::line_settings settings_of(uint32_t baud, uint8_t data_bits, serial::parity mode, uint8_t stop_bits) {
@@ -462,5 +469,65 @@ TEST(ftdi, a_refused_latency_timer_still_lets_the_line_be_set) {
     expect_request(requests[1], SET_DATA, 0x0008, 1);
     expect_request(requests[2], SET_FLOW_CTRL, 0, 1);
 
+    detach_translator();
+}
+
+// SET_MODEM_CTRL sets each line with the bit that lets it change, for both lines at once
+TEST(ftdi, modem_outputs_set_both_lines_with_their_write_bits) {
+    ASSERT_TRUE(attach_translator(1, 0));
+    ASSERT_TRUE(opened());
+
+    const uint32_t lines[] = {terminal::TIOCM_DTR | terminal::TIOCM_RTS, terminal::TIOCM_DTR, 0};
+    const uint16_t values[] = {0x0303, 0x0301, 0x0300};
+    for (size_t i = 0; i < 3; i++) {
+        chip_request request = {};
+        s_lines = lines[i];
+        EXPECT_TRUE(make_calls(s_chip, set_modem_outputs, &request, 1));
+        EXPECT_EQ(s_rc, serial::OK);
+        expect_request(request, SET_MODEM_CTRL, values[i], 1);
+    }
+
+    detach_translator();
+}
+
+// The modem status byte starting each packet gives the inputs, so reading them sends nothing
+TEST(ftdi, modem_inputs_come_from_the_latest_packets_status_byte) {
+    ASSERT_TRUE(attach_translator(1, 0));
+    ASSERT_TRUE(opened());
+
+    static constexpr uint8_t CTS_AND_DSR[STATUS_BYTES] = {0x31, 0x60};
+    static constexpr uint8_t RI_AND_CD[STATUS_BYTES] = {0xC1, 0x60};
+    uint32_t inputs = 0;
+    s_translator->handle_received(nullptr, CTS_AND_DSR, sizeof(CTS_AND_DSR), FULL_SPEED_PACKET);
+    EXPECT_EQ(s_translator->get_modem_inputs(&inputs), serial::OK);
+    EXPECT_EQ(inputs, terminal::TIOCM_CTS | terminal::TIOCM_DSR);
+
+    s_translator->handle_received(nullptr, RI_AND_CD, sizeof(RI_AND_CD), FULL_SPEED_PACKET);
+    EXPECT_EQ(s_translator->get_modem_inputs(&inputs), serial::OK);
+    EXPECT_EQ(inputs, terminal::TIOCM_RNG | terminal::TIOCM_CAR);
+    EXPECT_TRUE(sent_nothing(s_chip));
+
+    detach_translator();
+}
+
+// A read of several packets leaves the inputs its last packet reports, the latest the chip has given
+TEST(ftdi, modem_inputs_come_from_the_last_packet_of_a_read) {
+    ASSERT_TRUE(attach_translator(1, 0));
+    serial::port* p = serial::register_port(&s_driver, BOARD);
+    ASSERT_NOT_NULL(p);
+
+    size_t read_length = 0;
+    size_t expected_length = 0;
+    const size_t payloads[] = {FULL_SPEED_PACKET - STATUS_BYTES, 0};
+    build_read(payloads, &read_length, &expected_length);
+    g_read_bytes[FULL_SPEED_PACKET] = 0xC1;
+
+    uint32_t inputs = 0;
+    s_translator->handle_received(p, g_read_bytes, read_length, FULL_SPEED_PACKET);
+    EXPECT_EQ(s_translator->get_modem_inputs(&inputs), serial::OK);
+    EXPECT_EQ(inputs, terminal::TIOCM_RNG | terminal::TIOCM_CAR);
+
+    serial::detach(p);
+    serial::unregister_port(p);
     detach_translator();
 }
