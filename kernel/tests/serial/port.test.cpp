@@ -206,10 +206,10 @@ TEST(serial_port, bytes_arriving_while_no_file_is_open_are_dropped) {
 
     char buf[READ_BUFFER_BYTES] = {};
     EXPECT_EQ(read_now(f, buf, sizeof(buf)), static_cast<ssize_t>(fs::ERR_AGAIN));
-    EXPECT_EQ(poll_events(f), 0u);
+    EXPECT_EQ(poll_events(f), sync::POLL_OUT);
 
     receive_text(p, "hello");
-    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT);
     ASSERT_EQ(read_now(f, buf, sizeof(buf)), 5);
     EXPECT_EQ(string::memcmp(buf, "hello", 5), 0);
 
@@ -516,11 +516,11 @@ TEST(serial_port, an_unplug_frees_the_name_at_once_while_open_files_read_what_wa
 
     // The unplugged port stays for its open file
     char buf[READ_BUFFER_BYTES] = {};
-    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT | sync::POLL_HUP);
     ASSERT_EQ(read_now(f, buf, sizeof(buf)), 6);
     EXPECT_EQ(string::memcmp(buf, "queued", 6), 0);
     EXPECT_EQ(read_now(f, buf, sizeof(buf)), 0);
-    EXPECT_EQ(poll_events(f), sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_OUT | sync::POLL_HUP);
 
     unregister_detached_port(p);
     fs::close(f);
@@ -538,14 +538,14 @@ TEST(serial_port, a_failed_port_reads_what_was_queued_then_fails) {
 
     // Readable rather than in error, since only reads fail
     char buf[READ_BUFFER_BYTES] = {};
-    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT);
     ASSERT_EQ(read_now(f, buf, sizeof(buf)), 4);
-    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT);
     EXPECT_EQ(read_now(f, buf, sizeof(buf)), static_cast<ssize_t>(fs::ERR_IO));
 
-    // An unplug then turns the failure into end of file, which a poll reports as a hang-up alone
+    // An unplug then turns the failure into end of file, so a poll reports the hang-up without POLL_IN
     detach_port(p);
-    EXPECT_EQ(poll_events(f), sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_OUT | sync::POLL_HUP);
     EXPECT_EQ(read_now(f, buf, sizeof(buf)), 0);
 
     unregister_detached_port(p);
@@ -563,9 +563,9 @@ TEST(serial_port, a_failed_port_unplugged_with_bytes_queued_is_readable_until_th
     detach_port(p);
 
     char buf[READ_BUFFER_BYTES] = {};
-    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT | sync::POLL_HUP);
     ASSERT_EQ(read_now(f, buf, sizeof(buf)), 4);
-    EXPECT_EQ(poll_events(f), sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_OUT | sync::POLL_HUP);
     EXPECT_EQ(read_now(f, buf, sizeof(buf)), 0);
 
     unregister_detached_port(p);

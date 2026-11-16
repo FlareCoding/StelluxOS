@@ -30,8 +30,8 @@ static constexpr uint32_t MULTI_PACKET_BYTES = 200;
 // What serial_test_host.py sends back once QEMU's trace confirms what the test asked it to check
 static constexpr uint8_t ACK = 0x06;
 
-// A step a test runs on a task of its own, since opens and settings send chip requests, which wait for the controller,
-// and a wait on the test runner's task never wakes
+// A step a test runs on a task of its own, since chip requests and cancels wait for the controller, and a wait on the
+// test runner's task never wakes
 struct port_step {
     void                 (*run)();
     fs::file*              file;
@@ -80,6 +80,10 @@ static void open_step() {
     g_step.file = fs::open(PORT_PATH, g_step.flags);
 }
 
+static void close_step() {
+    fs::close(g_step.file);
+}
+
 // TCGETS, then TCSETS at 115200 baud, through a user page as a program's requests carry their argument
 static void set_speed_step() {
     test_helpers::user_page page;
@@ -102,6 +106,11 @@ static fs::file* open_port(uint32_t flags) {
     g_step.file = nullptr;
     g_step.flags = flags;
     return run_step(open_step) ? g_step.file : nullptr;
+}
+
+static void close_port(fs::file* f) {
+    g_step.file = f;
+    (void)run_step(close_step);
 }
 
 static int32_t set_speed_115200(fs::file* f) {
@@ -145,6 +154,19 @@ static uint32_t poll_events(fs::file* f) {
 static bool wait_until_readable(fs::file* f) {
     uint64_t deadline = clock::now_ns() + READ_TIMEOUT_NS;
     while (!(poll_events(f) & sync::POLL_IN)) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+
+        test_helpers::brief_delay();
+    }
+
+    return true;
+}
+
+static bool wait_until_writable(fs::file* f) {
+    uint64_t deadline = clock::now_ns() + READ_TIMEOUT_NS;
+    while (!(poll_events(f) & sync::POLL_OUT)) {
         if (clock::now_ns() > deadline) {
             return false;
         }
@@ -232,9 +254,9 @@ TEST(serial_ftdi_device, a_port_reads_its_chips_bytes_until_the_chip_leaves) {
     uint8_t last = 0;
     EXPECT_TRUE(read_counting_bytes(f, MULTI_PACKET_BYTES, 1));
     EXPECT_EQ(fs::read(f, &last, 1, fs::O_NONBLOCK), 0);
-    EXPECT_EQ(poll_events(f), sync::POLL_HUP);
+    EXPECT_EQ(poll_events(f), sync::POLL_OUT | sync::POLL_HUP);
 
-    fs::close(f);
+    close_port(f);
 }
 
 TEST(serial_ftdi_device, a_chip_that_comes_back_gets_its_name_and_its_bytes_again) {
@@ -245,8 +267,8 @@ TEST(serial_ftdi_device, a_chip_that_comes_back_gets_its_name_and_its_bytes_agai
 
     ask_host("disconnect");
     ASSERT_TRUE(wait_until_listed(false));
-    EXPECT_EQ(poll_events(old_file), sync::POLL_HUP);
-    fs::close(old_file);
+    EXPECT_EQ(poll_events(old_file), sync::POLL_OUT | sync::POLL_HUP);
+    close_port(old_file);
 
     // The second plug brings a new device and a new bridge driver, whose port must receive as the first one did
     ask_host("connect");
@@ -256,7 +278,31 @@ TEST(serial_ftdi_device, a_chip_that_comes_back_gets_its_name_and_its_bytes_agai
     ask_host_to_send(MULTI_PACKET_BYTES, 1);
     EXPECT_TRUE(read_counting_bytes(new_file, MULTI_PACKET_BYTES, 1));
 
-    fs::close(new_file);
+    close_port(new_file);
+}
+
+// Each send spans several packets of the bulk OUT endpoint, and the second starts only once the chip's completion
+// has reported the first. The far end then sends every byte back for the test to read
+TEST(serial_ftdi_device, written_bytes_reach_the_far_end_of_the_uart) {
+    ask_host("connect");
+    ASSERT_TRUE(wait_until_listed(true));
+    fs::file* f = open_port(fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    uint8_t bytes[2 * MULTI_PACKET_BYTES];
+    for (uint32_t i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = static_cast<uint8_t>(i);
+    }
+
+    stlx_test::print("STLX_SERIAL_HOST echo %u", 2 * MULTI_PACKET_BYTES);
+    EXPECT_EQ(fs::write(f, bytes, MULTI_PACKET_BYTES, fs::O_NONBLOCK), static_cast<ssize_t>(MULTI_PACKET_BYTES));
+    EXPECT_TRUE(wait_until_writable(f));
+    EXPECT_EQ(fs::write(f, bytes + MULTI_PACKET_BYTES, MULTI_PACKET_BYTES, fs::O_NONBLOCK),
+              static_cast<ssize_t>(MULTI_PACKET_BYTES));
+    EXPECT_TRUE(read_counting_bytes(f, 0, MULTI_PACKET_BYTES));
+    EXPECT_TRUE(read_counting_bytes(f, MULTI_PACKET_BYTES, MULTI_PACKET_BYTES));
+
+    close_port(f);
 }
 
 static fs::file* g_listing_poller_file;
@@ -340,5 +386,5 @@ TEST(serial_ftdi_device, a_speed_set_through_termios_reaches_the_chip) {
     EXPECT_EQ(fs::read(f, &answer, 1, fs::O_NONBLOCK), 1);
     EXPECT_EQ(answer, ACK);
 
-    fs::close(f);
+    close_port(f);
 }

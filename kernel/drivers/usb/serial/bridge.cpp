@@ -39,13 +39,21 @@ int32_t bridge::probe(device* dev, interface* iface) {
     }
 
     const endpoint* bulk_in = find_bulk_in(*iface);
+    const endpoint* bulk_out = find_bulk_out(*iface);
     if (!bulk_in) {
         log::warn("usb-serial: %04x:%04x has no bulk IN endpoint for interface %u", dev->vid, dev->pid,
                   iface->interface_number);
         return -1;
     }
 
+    if (!bulk_out) {
+        log::warn("usb-serial: %04x:%04x has no bulk OUT endpoint for interface %u", dev->vid, dev->pid,
+                  iface->interface_number);
+        return -1;
+    }
+
     m_bulk_in_address = bulk_in->address;
+    m_bulk_out_address = bulk_out->address;
     m_packet_size = bulk_in->max_packet_size;
     return 0;
 }
@@ -80,9 +88,10 @@ void bridge::run() {
         ::serial::receive_failed(registered);
     }
 
+    // No send starts once the device has left, and those in flight end with it
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
-        while (!m_is_gone) {
+        while (!m_is_gone || m_sends_in_flight > 0) {
             irq = sync::wait_uninterruptible(m_disconnect_wq, m_lock, irq);
         }
 
@@ -116,6 +125,70 @@ void bridge::disconnect() {
 
 int32_t bridge::set_line(const ::serial::line_settings& settings) {
     return m_translator->set_line(settings);
+}
+
+// The port leaves `data` untouched until the send ends, and the host controller's driver copies it when the transfer
+// starts, so the bridge sends it without a copy of its own
+int32_t bridge::send(const uint8_t* data, size_t length) {
+    if (!count_send_start()) {
+        return ::serial::ERR_IO;
+    }
+
+    init_transfer_request(m_send, m_bulk_out_address, const_cast<uint8_t*>(data), static_cast<uint32_t>(length));
+    set_completion_callback(m_send, handle_send_end, this);
+    if (submit_transfer_async(bound_device(), m_send) != 0) {
+        count_send_end();
+        return ::serial::ERR_IO;
+    }
+
+    return ::serial::OK;
+}
+
+void bridge::cancel_send() {
+    cancel_transfer(bound_device(), m_send);
+}
+
+// A cancel reports the bytes the controller reports taken rather than a failure, so TCOFLUSH or a close never fails
+// the port's later writes
+void bridge::handle_send_end(void* context, transfer_request& request) {
+    auto* self = static_cast<bridge*>(context);
+    bool is_sent = request.status == transfer_status::ok ||
+                   request.status == transfer_status::short_packet ||
+                   request.status == transfer_status::cancelled;
+    ssize_t taken_or_error = is_sent ? static_cast<ssize_t>(request.actual_length) : ::serial::ERR_IO;
+
+    ::serial::send_ended(self->m_port.load_acquire(), taken_or_error);
+    self->count_send_end();
+}
+
+// A send starts only while the port is published and the device attached, so its end always reaches a port and run()
+// waits for every send
+bool bridge::count_send_start() {
+    bool is_counted = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+        if (!m_is_gone && m_port.load_relaxed()) {
+            m_sends_in_flight++;
+            is_counted = true;
+        }
+
+        sync::spin_unlock_irqrestore(m_lock, irq);
+    });
+
+    return is_counted;
+}
+
+// A send's callback can still be returning as the port starts the next send, which a count allows for
+void bridge::count_send_end() {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+        m_sends_in_flight--;
+        if (m_sends_in_flight == 0) {
+            sync::wake_all(m_disconnect_wq);
+        }
+
+        sync::spin_unlock_irqrestore(m_lock, irq);
+    });
 }
 
 void bridge::handle_read(void* context, const uint8_t* data, uint32_t length, transfer_status status) {

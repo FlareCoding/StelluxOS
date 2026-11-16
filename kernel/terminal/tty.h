@@ -20,6 +20,7 @@ constexpr uint32_t TIOCEXCL   = 0x540C;
 constexpr uint32_t TIOCNXCL   = 0x540D;
 constexpr uint32_t TIOCGPGRP  = 0x540F;
 constexpr uint32_t TIOCSPGRP  = 0x5410;
+constexpr uint32_t TIOCOUTQ   = 0x5411;
 constexpr uint32_t TIOCGWINSZ = 0x5413;
 constexpr uint32_t TIOCSWINSZ = 0x5414;
 constexpr uint32_t FIONREAD   = 0x541B;

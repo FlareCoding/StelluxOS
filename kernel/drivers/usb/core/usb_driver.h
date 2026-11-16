@@ -74,6 +74,7 @@ protected:
 
     friend void core::device_configured(drivers::xhci_hcd*, drivers::xhci::xhci_device*,
                                         const usb_device_descriptor&);
+    friend struct class_driver_test_access;
 };
 
 using class_driver_factory = class_driver* (*)(device* dev, interface* iface);

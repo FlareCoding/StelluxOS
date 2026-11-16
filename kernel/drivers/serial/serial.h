@@ -49,17 +49,22 @@ struct identity {
 
 /**
  * A serial port hands the bytes a UART receives to programs through a file
- * named for the board, such as /dev/serial/ft232bm-0001. A driver registers a
- * port for each UART, passes it what the UART receives, and detaches it when
- * the device leaves.
+ * named for the board, such as /dev/serial/ft232bm-0001, and sends what they
+ * write, one send at a time. A driver registers a port for each UART, passes
+ * it what the UART receives, and detaches it when the device leaves.
  */
 class port;
 
+// The most bytes one send carries, the most the xHCI driver moves in one transfer
+constexpr size_t SEND_BYTES = 4096;
+
 /**
- * A port's driver, which applies the settings programs ask the port for. The
- * port makes one call at a time, under its control lock, and a call may sleep,
- * since a chip request ends only at its reply, its deadline or the device's
- * unplug.
+ * A port's driver, which sends what programs write and applies the settings
+ * they ask for. The port calls `send` under its write lock and the other
+ * calls one at a time under its control lock, so `send` can run while
+ * another call does. `send` must return without waiting for the chip, since
+ * non-blocking writes call it. The other calls may sleep until a chip request
+ * ends at its reply, its deadline or the device's unplug.
  */
 class port_driver {
 public:
@@ -73,6 +78,21 @@ public:
      *         ERR_IO when a chip request fails.
      */
     virtual int32_t set_line(const line_settings& settings) = 0;
+
+    /**
+     * @brief Starts sending `length` bytes, at most SEND_BYTES, from `data`,
+     * which the port leaves untouched until `send_ended` reports the send.
+     * Called only with no send in flight.
+     * @return OK, or ERR_IO when the send never started, after which no
+     *         `send_ended` follows.
+     */
+    virtual int32_t send(const uint8_t* data, size_t length) = 0;
+
+    /**
+     * @brief Ends the send in flight and returns once `send_ended` has
+     * reported it, or at once with none in flight.
+     */
+    virtual void cancel_send() = 0;
 };
 
 /**
@@ -114,6 +134,13 @@ void receive(port* p, const uint8_t* data, size_t len);
  * queued, then fail. Never blocks.
  */
 void receive_failed(port* p);
+
+/**
+ * @brief Reports the end of the port's send: the bytes the chip took, all of
+ * them unless the send was cancelled, or ERR_IO when it failed, which fails
+ * every later write and wait for a send. Never blocks.
+ */
+void send_ended(port* p, ssize_t taken_or_error);
 
 /**
  * @brief Takes the port's line out of the listing and its file out of

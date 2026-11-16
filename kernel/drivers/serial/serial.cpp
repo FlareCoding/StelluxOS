@@ -281,6 +281,10 @@ void receive_failed(port* p) {
     RUN_ELEVATED(p->mark_failed());
 }
 
+void send_ended(port* p, ssize_t taken_or_error) {
+    RUN_ELEVATED(p->end_send(taken_or_error));
+}
+
 void detach(port* p) {
     RUN_ELEVATED({
         p->mark_gone();
