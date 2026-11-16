@@ -170,3 +170,43 @@ TEST(usb_control_transfer, a_request_waiting_for_ep0_leaves_the_control_buffer_t
     EXPECT_EQ(s_driver_calls[0].rc, 0);
     EXPECT_EQ(s_driver_calls[1].rc, 0);
 }
+
+static control_transfer_call s_late_call;
+
+// A class driver's request made once teardown has ended EP0's transfers fails without queuing a TD or waiting
+TEST(usb_control_transfer, a_request_after_teardown_fails_without_queuing_a_td) {
+    ASSERT_TRUE(attach_controller());
+    prepare_out_call(s_late_call, FIRST_BYTE);
+    xhci_hcd_test_access::end_control_transfers(*s_fake->hcd, s_fake->device);
+
+    sched::task* late = start_call(run_driver_call, s_late_call);
+    ASSERT_NOT_NULL(late);
+    EXPECT_FALSE(blocks_before_deadline(late));
+
+    // A request that waits instead of failing is ended as teardown ends one, so the test can free the fake
+    xhci_hcd_test_access::end_control_transfers(*s_fake->hcd, s_fake->device);
+    uint32_t doorbell = s_fake->doorbells[fake_xhci::SLOT_ID];
+    bool is_td_queued = control_trb(*s_fake, FIRST_TD) != nullptr;
+
+    detach_when_done(finish_call(late, s_late_call));
+    EXPECT_EQ(s_late_call.rc, -1);
+    EXPECT_EQ(doorbell, 0u);
+    EXPECT_FALSE(is_td_queued);
+}
+
+static control_transfer_call s_waiting_call;
+
+// A class driver's request waiting for its TD when teardown ends EP0's transfers fails
+TEST(usb_control_transfer, a_request_waiting_at_teardown_fails) {
+    ASSERT_TRUE(attach_controller());
+    prepare_out_call(s_waiting_call, FIRST_BYTE);
+
+    sched::task* waiting = start_call(run_driver_call, s_waiting_call);
+    ASSERT_NOT_NULL(waiting);
+    ASSERT_NOT_NULL(wait_for_control_trb(*s_fake, FIRST_TD + TD_TRBS - 1));
+    ASSERT_TRUE(blocks_before_deadline(waiting));
+
+    xhci_hcd_test_access::end_control_transfers(*s_fake->hcd, s_fake->device);
+    detach_when_done(finish_call(waiting, s_waiting_call));
+    EXPECT_EQ(s_waiting_call.rc, -1);
+}

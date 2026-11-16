@@ -130,6 +130,11 @@ struct xhci_hcd_test_access {
     static void end_unplugged_transfers(xhci_hcd& hcd, xhci::xhci_device* device) {
         hcd._clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
     }
+
+    // The teardown's step that ends EP0's waiting transfer as stopped and makes class drivers' later transfers fail
+    static void end_control_transfers(xhci_hcd& hcd, xhci::xhci_device* device) {
+        hcd._end_control_transfers(device);
+    }
 };
 
 } // namespace drivers
