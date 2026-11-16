@@ -178,11 +178,17 @@ file::file(rc::strong_ref<node>&& n, uint32_t flags)
     , m_offset(0)
     , m_access_mode(flags & ACCESS_MODE_MASK)
     , m_private(nullptr)
-    , m_opened(false) {
+    , m_opened(false)
+    , m_whole_file_lock_mode(whole_file_lock_mode::unlocked) {
 }
 
 void file::ref_destroy(file* f) {
     RUN_ELEVATED({
+        // A whole-file lock belongs to the open file description, so it ends with the last reference
+        if (f->m_node) {
+            f->m_node->file_locks().unlock_whole_file(*f);
+        }
+
         if (f->m_node && f->m_opened) {
             f->m_node->on_close(f);
         }

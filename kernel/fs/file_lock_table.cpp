@@ -1,4 +1,5 @@
 #include "fs/file_lock_table.h"
+#include "fs/file.h"
 #include "fs/fs.h"
 #include "mm/heap.h"
 #include "sched/sched.h"
@@ -140,6 +141,8 @@ static void free_entries(record_lock_list& entries) {
 file_lock_table::file_lock_table() {
     m_lock = sync::SPINLOCK_INIT;
     m_locks.init();
+    m_whole_file_shared_holders = 0;
+    m_has_whole_file_exclusive_holder = false;
     m_waiters.init();
 }
 
@@ -275,6 +278,117 @@ __PRIVILEGED_CODE int32_t file_lock_table::acquire(const record_lock& request, b
     free_entries(removed);
 
     return result;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t file_lock_table::try_lock_whole_file(file& holder, whole_file_lock_mode mode) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+
+    if (holder.m_whole_file_lock_mode == mode) {
+        sync::spin_unlock_irqrestore(m_lock, irq);
+        return OK;
+    }
+
+    // Released before the check, so a refused conversion holds nothing and a waiting one blocks no other
+    bool released = set_whole_file_mode(holder, whole_file_lock_mode::unlocked);
+    bool granted = !whole_file_conflicts(holder, mode);
+    if (granted) {
+        set_whole_file_mode(holder, mode);
+    }
+
+    sync::spin_unlock_irqrestore(m_lock, irq);
+
+    if (released) {
+        sync::wake_all(m_waiters);
+    }
+
+    return granted ? OK : ERR_AGAIN;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t file_lock_table::lock_whole_file(file& holder, whole_file_lock_mode mode) {
+    // Trying first releases a converting holder's lock and wakes its waiters before this task can sleep
+    if (try_lock_whole_file(holder, mode) == OK) {
+        return OK;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+
+    while (whole_file_conflicts(holder, mode) && !signals::interrupt_pending(sched::current())) {
+        irq = sync::wait(m_waiters, m_lock, irq);
+    }
+
+    bool granted = !whole_file_conflicts(holder, mode);
+    bool released = false;
+    if (granted) {
+        released = set_whole_file_mode(holder, mode);
+    }
+
+    sync::spin_unlock_irqrestore(m_lock, irq);
+
+    // Another handle to the description may have taken a stronger mode while this task waited
+    if (released) {
+        sync::wake_all(m_waiters);
+    }
+
+    return granted ? OK : ERR_INTR;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void file_lock_table::unlock_whole_file(file& holder) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
+
+    bool released = set_whole_file_mode(holder, whole_file_lock_mode::unlocked);
+
+    sync::spin_unlock_irqrestore(m_lock, irq);
+
+    if (released) {
+        sync::wake_all(m_waiters);
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool file_lock_table::whole_file_conflicts(const file& holder, whole_file_lock_mode mode) const {
+    whole_file_lock_mode held = holder.m_whole_file_lock_mode;
+    uint32_t own_shared_holds = held == whole_file_lock_mode::shared ? 1 : 0;
+    bool others_hold_shared = m_whole_file_shared_holders > own_shared_holds;
+    bool another_holds_exclusive = m_has_whole_file_exclusive_holder && held != whole_file_lock_mode::exclusive;
+
+    if (mode == whole_file_lock_mode::exclusive) {
+        return others_hold_shared || another_holds_exclusive;
+    }
+
+    return another_holds_exclusive;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool file_lock_table::set_whole_file_mode(file& holder, whole_file_lock_mode mode) {
+    whole_file_lock_mode held = holder.m_whole_file_lock_mode;
+    if (held == whole_file_lock_mode::shared) {
+        m_whole_file_shared_holders--;
+    } else if (held == whole_file_lock_mode::exclusive) {
+        m_has_whole_file_exclusive_holder = false;
+    }
+
+    if (mode == whole_file_lock_mode::shared) {
+        m_whole_file_shared_holders++;
+    } else if (mode == whole_file_lock_mode::exclusive) {
+        m_has_whole_file_exclusive_holder = true;
+    }
+
+    holder.m_whole_file_lock_mode = mode;
+
+    return static_cast<uint8_t>(mode) < static_cast<uint8_t>(held);
 }
 
 } // namespace fs
