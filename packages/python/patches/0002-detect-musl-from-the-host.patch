@@ -1,0 +1,15 @@
+Detects musl from configure's host, the system CPython runs on, rather
+than the build machine, so the platform triplet names musl when CPython
+is cross-built for Stellux on a glibc system.
+
+--- a/configure
++++ b/configure
+@@ -6935,7 +6935,7 @@
+ 
+ if $CPP $CPPFLAGS conftest.c >conftest.out 2>/dev/null; then
+   PLATFORM_TRIPLET=`grep -v '^#' conftest.out | grep -v '^ *$' | tr -d ' 	'`
+-  case "$build_os" in
++  case "$host_os" in
+   linux-musl*)
+     PLATFORM_TRIPLET=`echo "$PLATFORM_TRIPLET" | sed 's/linux-gnu/linux-musl/'`
+     ;;

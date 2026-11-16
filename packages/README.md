@@ -109,9 +109,9 @@ Each package is built by the recipe `packages.conf` names, a directory
 under `packages/` with a `build.sh <arch> [package...]` that leaves the
 archives in the cache and a `versions.sh` whose `package_version <name>`
 prints the version-release the recipe builds today. One recipe may emit
-several packages: `toolchain` builds the GCC toolchain and CPython in one
-container run and can emit gcc, binutils and python, leaving in the cache
-only the ones it was asked for.
+several packages: `toolchain` builds the GCC toolchain in one container run
+and can emit gcc and binutils, leaving in the cache only the ones it was
+asked for.
 
 ## The chromium recipe
 
@@ -227,6 +227,19 @@ package, the default tier included, waits for such a runner. Without one,
 machine the builder owns, outside a data center, with Docker. Both
 architectures get the same files, and `PACKAGES="-nvidia-firmware"` leaves
 them out of an image.
+
+## The python recipe
+
+`python` is an `extra` package: CPython cross-built with the tree's own
+compiler against the tree's sysroot, so the interpreter links Stellux's musl
+with its patches. Stellux loads no extension modules, so the interpreter holds
+the modules `packages/python/Modules.Setup.local` builds in, and that file
+disables every other module. A change to musl's patches reaches the package at
+its next release bump. A run takes about 70 seconds per architecture on 4
+cores, plus about 80 seconds for the sysroot on the first run, kept in the
+`stellux-python-work` volume. `JOBS` caps its parallel jobs. The license texts
+of musl, the software CPython records as incorporated and HACL* with its
+KaRaMeL headers are under `/usr/share/licenses/python`.
 
 ## Building and publishing
 
