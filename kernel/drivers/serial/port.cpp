@@ -86,35 +86,16 @@ __PRIVILEGED_CODE static bool copy_out(uint8_t* destination, const uint8_t* sour
     return mm::uaccess::copy_to_user(destination, source, len) == mm::uaccess::OK;
 }
 
-// Copies `text` into `copy`, false when it is longer than PORT_NAME_MAX
-static bool copy_text(const char* text, char (&copy)[PORT_NAME_MAX + 1]) {
-    size_t length = string::strnlen(text, PORT_NAME_MAX + 1);
-    if (length > PORT_NAME_MAX) {
-        return false;
-    }
-
-    string::memcpy(copy, text, length + 1);
-    return true;
-}
-
 __PRIVILEGED_CODE port* port::create(const identity& id) {
     auto* p = heap::ualloc_new<port>();
     if (!p) {
         return nullptr;
     }
 
-    bool is_copied = copy_text(id.chip, p->m_chip) &&
-                     copy_text(id.serial_number, p->m_serial_number) &&
-                     copy_text(id.location, p->m_location);
-    if (!is_copied) {
+    if (!p->copy_identity(id)) {
         heap::ufree_delete(p);
         return nullptr;
     }
-
-    p->m_identity.chip = p->m_chip;
-    p->m_identity.serial_number = p->m_serial_number;
-    p->m_identity.location = p->m_location;
-    p->m_identity.channel = id.channel;
 
     p->m_queue = static_cast<uint8_t*>(heap::ualloc(RECEIVE_QUEUE_BYTES));
     if (!p->m_queue) {
@@ -137,6 +118,35 @@ port::port() {
 
 port::~port() {
     heap::ufree(m_queue);
+    heap::ufree(m_strings);
+}
+
+__PRIVILEGED_CODE bool port::copy_identity(const identity& id) {
+    m_identity = id;
+    const char** fields[] = {
+        &m_identity.chip, &m_identity.serial_number, &m_identity.location, &m_identity.bus, &m_identity.driver,
+        &m_identity.manufacturer, &m_identity.product,
+    };
+
+    size_t strings_bytes = 0;
+    for (const char** field : fields) {
+        strings_bytes += string::strlen(*field) + 1;
+    }
+
+    m_strings = static_cast<char*>(heap::ualloc(strings_bytes));
+    if (!m_strings) {
+        return false;
+    }
+
+    char* copy = m_strings;
+    for (const char** field : fields) {
+        size_t text_bytes = string::strlen(*field) + 1;
+        string::memcpy(copy, *field, text_bytes);
+        *field = copy;
+        copy += text_bytes;
+    }
+
+    return true;
 }
 
 __PRIVILEGED_CODE int32_t port::open() {
@@ -218,6 +228,8 @@ __PRIVILEGED_CODE size_t port::queued_bytes() {
 }
 
 __PRIVILEGED_CODE void port::queue_received(const uint8_t* data, size_t len) {
+    m_received_bytes.fetch_add_relaxed(len);
+
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     if (m_open_files > 0 && !m_is_gone) {
         push_locked(data, len);
@@ -257,7 +269,7 @@ ssize_t port::empty_read_result_locked(bool may_wait) const {
     return may_wait ? fs::ERR_INTR : fs::ERR_AGAIN;
 }
 
-// Copies as many of `len` bytes as fit after the queued ones, dropping the rest
+// Copies as many of `len` bytes as fit after the queued ones, dropping and counting the rest
 void port::push_locked(const uint8_t* data, size_t len) {
     size_t taken = min_size(len, RECEIVE_QUEUE_BYTES - m_queued);
     size_t tail = (m_queue_head + m_queued) % RECEIVE_QUEUE_BYTES;
@@ -266,6 +278,7 @@ void port::push_locked(const uint8_t* data, size_t len) {
     string::memcpy(m_queue + tail, data, before_wrap);
     string::memcpy(m_queue, data + before_wrap, taken - before_wrap);
     m_queued += taken;
+    m_dropped_bytes.fetch_add_release(len - taken);
 }
 
 // Moves up to `len` of the oldest queued bytes into `out`

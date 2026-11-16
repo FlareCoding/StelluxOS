@@ -139,6 +139,12 @@ void bridge::handle_read(void* context, const uint8_t* data, uint32_t length, tr
         .serial_number = dev->serial_number,
         .location = location,
         .channel = m_translator->channel(),
+        .bus = "usb",
+        .driver = m_translator->driver_name(),
+        .vid = dev->vid,
+        .pid = dev->pid,
+        .manufacturer = dev->manufacturer,
+        .product = dev->product,
     };
 
     return ::serial::register_port(id);

@@ -2,6 +2,8 @@
 #define STELLUX_DRIVERS_SERIAL_PORT_H
 
 #include "drivers/serial/port_name.h"
+#include "common/list.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
@@ -26,8 +28,7 @@ public:
     /**
      * @brief Creates a port for `id` and the port's node, which starts with one
      * reference, the registry's. The port keeps a copy of the strings of `id`.
-     * @return The port, or nullptr when memory runs out or a string of `id` is
-     *         longer than PORT_NAME_MAX.
+     * @return The port, or nullptr when memory runs out.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static port* create(const identity& id);
@@ -39,6 +40,17 @@ public:
     held_name& name_record() { return m_name; }
     const char* name() const { return m_name.text; }
     fs::node* node() const { return m_node; }
+
+    // The listing's generation when the port was listed. Callers must write and read it under the registry's lock
+    uint64_t arrival() const { return m_arrival; }
+    void set_arrival(uint64_t generation) { m_arrival = generation; }
+
+    uint64_t received_bytes() const { return m_received_bytes.load_relaxed(); }
+
+    // Read with acquire ordering, so a later `received_bytes` counts every byte this count includes
+    uint64_t dropped_bytes() const { return m_dropped_bytes.load_acquire(); }
+
+    list::node registry_link; // in the registry's list of the ports the listing shows
 
     /**
      * @brief Counts a file opening the port.
@@ -104,14 +116,21 @@ private:
     void push_locked(const uint8_t* data, size_t len);
     size_t pop_locked(uint8_t* out, size_t len);
 
+    /**
+     * Copies the strings of `id` into one block and points `m_identity` at the copies, false when memory runs out.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool copy_identity(const identity& id);
+
     fs::node* m_node = nullptr;
 
-    // The identity's strings, kept here since `m_identity` and the name record's `device` point at them
     identity  m_identity = {};
-    char      m_chip[PORT_NAME_MAX + 1] = {};
-    char      m_serial_number[PORT_NAME_MAX + 1] = {};
-    char      m_location[PORT_NAME_MAX + 1] = {};
+    char*     m_strings = nullptr; // the identity's strings, which `m_identity` and the name record's `device` point at
     held_name m_name = {};
+
+    uint64_t               m_arrival = 0;
+    sync::atomic<uint64_t> m_received_bytes{0}; // every byte the chip delivered, those dropped included
+    sync::atomic<uint64_t> m_dropped_bytes{0};  // the received bytes dropped because the queue was full
 
     sync::spinlock   m_state_lock = sync::SPINLOCK_INIT;
     sync::wait_queue m_read_wq;         // readers and pollers, woken by every change they wait for
@@ -122,6 +141,8 @@ private:
     bool             m_is_gone = false;
     bool             m_has_failed = false;
 };
+
+using port_list = list::head<port, &port::registry_link>;
 
 } // namespace serial
 

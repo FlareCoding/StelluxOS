@@ -31,13 +31,20 @@ struct line_settings {
 };
 
 /**
- * What a serial port is and where it is attached. Its name is made of these.
+ * What a serial port is and where it is attached. Its name is made of the
+ * first four fields, and its line in /dev/sysinfo/serial of all of them.
  */
 struct identity {
-    const char* chip;          // the chip's short name in lowercase letters and digits, such as "cp2102"
-    const char* serial_number; // "" when the device names none
-    const char* location;      // digits and dots in its bus's numbering, such as "1.5.3", or "" when unknown
-    int8_t      channel;       // the port's number on its device, 0 to 25, or -1 on a device with one port
+    const char* chip;              // the chip's short name in lowercase letters and digits, such as "cp2102"
+    const char* serial_number;     // "" when the device names none
+    const char* location;          // digits and dots in its bus's numbering, such as "1.5.3", or "" when unknown
+    int8_t      channel;           // the port's number on its device, 0 to 25, or -1 on a device with one port
+    const char* bus = "";          // the bus the device is on, such as "usb", or "" when unknown
+    const char* driver = "";       // the chip driver's name, such as "cp210x"
+    uint16_t    vid = 0;           // the USB vendor ID, or 0 for a port not on USB
+    uint16_t    pid = 0;           // the USB product ID
+    const char* manufacturer = ""; // "" when the device names none
+    const char* product = "";      // "" when the device names none
 };
 
 /**
@@ -49,24 +56,27 @@ struct identity {
 class port;
 
 /**
- * @brief Creates /dev/serial, where ports appear.
- * @return OK, or ERR_NO_MEMORY.
+ * @brief Creates /dev/serial, where ports appear, and /dev/sysinfo/serial,
+ * which lists them a line each and wakes its pollers as a port arrives or
+ * leaves.
+ * @return OK, or ERR_NO_MEMORY when /dev/serial cannot be created. A listing
+ *         that cannot be added is only logged, since ports work without it.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Adds a port for the UART `id` describes as /dev/serial/<name>, under
- * the first name the naming rules leave free, and keeps a copy of `id`.
- * Allocates and logs, so it must run on the driver's own task.
- * @return The port, or nullptr when memory runs out, a string of `id` is
- *         longer than a name, or no free name fits.
+ * the first name the naming rules leave free, keeps a copy of `id`, and then
+ * lists the port. Allocates and logs, so it must run on the driver's own task.
+ * @return The port, or nullptr when memory runs out or no free name fits.
  */
 port* register_port(const identity& id);
 
 /**
  * @brief Queues bytes the chip received for reads, dropping them while no file
- * has the port open and once the queue is full. Never blocks.
+ * has the port open and once the queue is full. The listing counts every byte
+ * as received and the bytes a full queue cannot hold as dropped. Never blocks.
  */
 void receive(port* p, const uint8_t* data, size_t len);
 
@@ -77,10 +87,10 @@ void receive(port* p, const uint8_t* data, size_t len);
 void receive_failed(port* p);
 
 /**
- * @brief Takes the port's file out of /dev/serial and frees its name, once its
- * device has left. Reads return what is queued, then end of file. A driver
- * must call it exactly once. Never blocks, so a driver's `disconnect()` may
- * call it.
+ * @brief Takes the port's line out of the listing and its file out of
+ * /dev/serial, and frees its name, once its device has left. Reads return what
+ * is queued, then end of file. A driver must call it exactly once. Never
+ * blocks, so a driver's `disconnect()` may call it.
  */
 void detach(port* p);
 

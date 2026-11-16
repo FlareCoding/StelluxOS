@@ -92,6 +92,7 @@ TEST(ftdi, configure_resets_the_uart_and_names_the_chip) {
     EXPECT_TRUE(sent_nothing(s_chip));
 
     EXPECT_STREQ(s_translator->chip_name(), "ft232bm");
+    EXPECT_STREQ(s_translator->driver_name(), "ftdi");
     EXPECT_EQ(s_translator->channel(), -1);
 
     detach_translator();
