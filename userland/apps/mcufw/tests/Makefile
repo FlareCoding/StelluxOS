@@ -9,10 +9,12 @@ HOST_CXX ?= c++
 SRC_DIR    := ../src
 BUILD_DIR  := ../build/host
 OBJECT_DIR := $(BUILD_DIR)/objects
-SOURCES    := $(SRC_DIR)/properties.cpp $(SRC_DIR)/files.cpp $(SRC_DIR)/fqbn.cpp $(SRC_DIR)/cores.cpp \
-              $(SRC_DIR)/boards.cpp $(SRC_DIR)/report.cpp $(SRC_DIR)/arguments.cpp $(SRC_DIR)/boards_command.cpp
-HEADERS    := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hpp $(SRC_DIR)/layout.hpp \
-              $(SRC_DIR)/cores.hpp $(SRC_DIR)/boards.hpp $(SRC_DIR)/failure.hpp $(SRC_DIR)/report.hpp \
+SOURCES    := $(SRC_DIR)/properties.cpp $(SRC_DIR)/files.cpp $(SRC_DIR)/fqbn.cpp $(SRC_DIR)/recipes.cpp \
+              $(SRC_DIR)/versions.cpp $(SRC_DIR)/cores.cpp $(SRC_DIR)/tools.cpp $(SRC_DIR)/boards.cpp \
+              $(SRC_DIR)/requirements.cpp $(SRC_DIR)/report.cpp $(SRC_DIR)/arguments.cpp $(SRC_DIR)/boards_command.cpp
+HEADERS    := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hpp $(SRC_DIR)/recipes.hpp \
+              $(SRC_DIR)/versions.hpp $(SRC_DIR)/layout.hpp $(SRC_DIR)/cores.hpp $(SRC_DIR)/tools.hpp \
+              $(SRC_DIR)/boards.hpp $(SRC_DIR)/requirements.hpp $(SRC_DIR)/failure.hpp $(SRC_DIR)/report.hpp \
               $(SRC_DIR)/arguments.hpp $(SRC_DIR)/commands.hpp
 OBJECTS    := $(patsubst $(SRC_DIR)/%.cpp,$(OBJECT_DIR)/%.o,$(SOURCES))
 TESTS      := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))

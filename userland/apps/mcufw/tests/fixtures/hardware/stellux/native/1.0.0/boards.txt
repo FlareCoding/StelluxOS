@@ -24,6 +24,26 @@ menus.menu.Speed.slow.build.speed=slow
 menus.menu.Speed.turbo.linux=Turbo
 menus.menu.Speed.turbo.build.speed=turbo
 
+beta.name=Beta Board
+beta.build.core=native
+beta.build.sdk=beta-sdk
+
+cross.name=Cross Board
+cross.build.core=native
+cross.compiler.cpp.cmd=xtensa-cross-g++
+
+gamma.name=Gamma Board
+gamma.build.core=native
+gamma.build.sdk=gamma-sdk
+
+versioned.name=Versioned Board
+versioned.build.core=native
+versioned.build.sdk=beta-sdk-2.0
+
+twice.name=Twice Named Tool Board
+twice.build.core=native
+twice.build.sdk=native-gcc
+
 hidden.name=Hidden Board
 hidden.hide=true
 hidden.build.core=native

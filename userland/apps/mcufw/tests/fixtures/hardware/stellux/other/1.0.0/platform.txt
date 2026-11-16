@@ -1,2 +1,5 @@
 name=Stellux Other
 version=1.0.0
+
+runtime.ide.path=/opt/arduino
+software=STELLUX

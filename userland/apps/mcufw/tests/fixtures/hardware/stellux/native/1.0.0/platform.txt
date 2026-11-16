@@ -1,4 +1,11 @@
 name=Stellux Native
 version=1.0.0
 
+compiler.path={runtime.tools.native-gcc.path}/bin/
+compiler.cpp.cmd=g++
+compiler.sdk.path={runtime.tools.{build.sdk}.path}
+
+build.sdk=alpha-sdk
 build.extra_flags=
+
+recipe.cpp.o.pattern="{compiler.path}{compiler.cpp.cmd}" -c {build.extra_flags} "-I{compiler.sdk.path}/include" "{source_file}" -o "{object_file}"

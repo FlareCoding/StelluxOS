@@ -1,10 +1,13 @@
 #ifndef MCUFW_BOARDS_HPP
 #define MCUFW_BOARDS_HPP
 
-// A board chosen among the installed cores with its options
+// A board chosen among the installed cores with its options, and the properties its recipes expand in, layered as
+// arduino-cli 1.6.0 layers them
 
 #include "cores.hpp"
 #include "fqbn.hpp"
+#include "properties.hpp"
+#include "tools.hpp"
 
 #include <string>
 #include <vector>
@@ -26,5 +29,9 @@ std::string requested_fqbn(const selected_board& board);
 
 // The FQBN with every option in effect, in menu order, as a description's `board` event gives it
 std::string full_fqbn(const selected_board& board);
+
+// The core's platform properties, then the board's lines, its options, and the values arduino-cli's `ResolveFQBN`
+// supplies with each located tool's paths. select_board refuses other cores' files, so every path is the board's own.
+property_table board_properties(const selected_board& board, const std::vector<located_tool>& tools);
 
 #endif // MCUFW_BOARDS_HPP

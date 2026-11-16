@@ -87,9 +87,12 @@ static installed_core esp32_core() {
 }
 
 static std::vector<listed_board> two_boards() {
+    board_requirements missing;
+    missing.missing_program = "xtensa-esp32s3-elf-g++";
+    missing.missing_tools.push_back({ "esp32", "esp32s3-libs", "3.3.12" });
     return {
-        { "esp32:esp32:esp32da", "ESP32-WROOM-DA Module" },
-        { "esp32:esp32:esp32s3-octal", "ESP32S3 Dev Module Octal (WROOM2)" },
+        { "esp32:esp32:esp32da", "ESP32-WROOM-DA Module", {} },
+        { "esp32:esp32:esp32s3-octal", "ESP32S3 Dev Module Octal (WROOM2)", missing },
     };
 }
 
@@ -98,16 +101,18 @@ static void check_listing() {
     reporter(false, person.out, person.err).boards_listed(two_boards(), "");
     std::string expected =
         "esp32:esp32:esp32da         ESP32-WROOM-DA Module\n"
-        "esp32:esp32:esp32s3-octal   ESP32S3 Dev Module Octal (WROOM2)\n";
-    check(read_back(person.out) == expected, "a person sees aligned columns");
+        "esp32:esp32:esp32s3-octal   ESP32S3 Dev Module Octal (WROOM2)   "
+        "needs xtensa-esp32s3-elf-g++, esp32:esp32s3-libs 3.3.12\n";
+    check(read_back(person.out) == expected, "a person sees aligned columns and what a board needs");
     check(read_back(person.err).empty(), "a listing writes nothing on stderr");
 
     capture program = open_capture();
     reporter(true, program.out, program.err).boards_listed(two_boards(), "");
     expected =
-        "board\tesp32:esp32:esp32da\tESP32-WROOM-DA Module\n"
-        "board\tesp32:esp32:esp32s3-octal\tESP32S3 Dev Module Octal (WROOM2)\n";
-    check(read_back(program.out) == expected, "a program sees one line per board");
+        "board\tesp32:esp32:esp32da\t-\tESP32-WROOM-DA Module\n"
+        "board\tesp32:esp32:esp32s3-octal\txtensa-esp32s3-elf-g++, esp32:esp32s3-libs 3.3.12\t"
+        "ESP32S3 Dev Module Octal (WROOM2)\n";
+    check(read_back(program.out) == expected, "a program sees one line per board, `-` when it needs nothing");
     fclose(program.err);
 }
 
@@ -132,11 +137,14 @@ static void check_description() {
     installed_core core = esp32_core();
     std::vector<option_setting> defaults = { { "UploadSpeed", "921600" }, { "PartitionScheme", "default" } };
     selected_board board = { &core, &core.boards[0], {}, defaults };
+    board_requirements missing;
+    missing.missing_tools.push_back({ "esp32", "esp32-libs", "3.3.12" });
 
     capture person = open_capture();
-    reporter(false, person.out, person.err).board_described(board);
+    reporter(false, person.out, person.err).board_described(board, missing);
     std::string expected =
         "esp32:esp32:esp32da   ESP32-WROOM-DA Module, from ESP32 Arduino 3.3.12\n"
+        "needs esp32:esp32-libs 3.3.12\n"
         "\n"
         "UploadSpeed      921600 115200\n"
         "PartitionScheme  default defaultffat default_8MB minimal no_fs no_ota noota_3g noota_ffat noota_3gffat "
@@ -148,12 +156,12 @@ static void check_description() {
     fclose(person.err);
 
     capture program = open_capture();
-    reporter(true, program.out, program.err).board_described(board);
+    reporter(true, program.out, program.err).board_described(board, {});
     std::string lines = read_back(program.out);
     fclose(program.err);
 
     std::string first_lines =
-        "board\tesp32:esp32:esp32da:UploadSpeed=921600,PartitionScheme=default\tESP32-WROOM-DA Module\n"
+        "board\tesp32:esp32:esp32da:UploadSpeed=921600,PartitionScheme=default\t-\tESP32-WROOM-DA Module\n"
         "option\tUploadSpeed\t921600\t921600\n"
         "option\tUploadSpeed\t115200\t115200\n"
         "option\tPartitionScheme\tdefault\tDefault 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)\n";
