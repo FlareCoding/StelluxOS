@@ -127,6 +127,14 @@ int32_t bridge::set_line(const ::serial::line_settings& settings) {
     return m_translator->set_line(settings);
 }
 
+int32_t bridge::set_modem_outputs(uint32_t lines) {
+    return m_translator->set_modem_outputs(lines);
+}
+
+int32_t bridge::get_modem_inputs(uint32_t* lines) {
+    return m_translator->get_modem_inputs(lines);
+}
+
 // The port leaves `data` untouched until the send ends, and the host controller's driver copies it when the transfer
 // starts, so the bridge sends it without a copy of its own
 int32_t bridge::send(const uint8_t* data, size_t length) {

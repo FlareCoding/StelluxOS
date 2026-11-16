@@ -58,9 +58,10 @@ public:
 
     /**
      * @brief Counts a file opening the port. The first open sets the chip to
-     * the port's settings, since its settings after setup are unknown.
+     * the port's settings, which are unknown after setup, and raises DTR and
+     * RTS unless the speed is B0.
      * @return fs::OK, fs::ERR_BUSY while the port is held exclusively, or
-     *         fs::ERR_IO once the device has left or the chip request fails.
+     *         fs::ERR_IO once the device has left or a chip request fails.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE int32_t open();
@@ -68,7 +69,8 @@ public:
     /**
      * @brief Counts a file closing. The last close waits for the send in
      * flight up to its deadline, unless a signal is pending, cancels it if it
-     * has not ended, ends exclusive mode and empties the queue.
+     * has not ended, lowers DTR and RTS when HUPCL is set, ends exclusive mode
+     * and empties the queue.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void close();
@@ -166,6 +168,21 @@ private:
     /**
      * @note Privilege: **required**
      */
+    __PRIVILEGED_CODE int32_t copy_modem_lines_out(uint64_t arg);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t take_modem_outputs(uint32_t cmd, uint64_t arg);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t change_modem_outputs(uint32_t lines);
+
+    /**
+     * @note Privilege: **required**
+     */
     __PRIVILEGED_CODE void release_write_lock();
 
     /**
@@ -253,12 +270,13 @@ private:
 
     fs::node* m_node = nullptr;
 
-    // Guards the settings, the window size and exclusive mode across each chip request. The driver pointer changes
-    // only under this lock and the write lock, so a call holding either may use it
+    // Guards the settings, the modem outputs, the window size and exclusive mode across each chip request. The driver
+    // pointer changes only under this lock and the write lock, so a call holding either may use it
     sync::mutex        m_control_lock;
     port_driver*       m_driver = nullptr;
     terminal::termios2 m_settings = {};
     line_settings      m_line = {};          // what each first open sends the chip, never with a speed of 0
+    uint32_t           m_modem_outputs = 0;  // DTR and RTS as last set
     terminal::winsize  m_window_size = {};
     bool               m_is_exclusive = false; // TIOCEXCL, which refuses other opens until the last close
 

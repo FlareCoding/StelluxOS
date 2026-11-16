@@ -36,8 +36,8 @@ static constexpr uint16_t FT232BM_RELEASE = 0x0400;
 static constexpr const char* SERIAL_NUMBER = "BR01";
 static constexpr const char* PORT_PATH = "/dev/serial/ft232bm-br01";
 
-// The first open's chip requests: the latency timer, then the line's three
-static constexpr size_t FIRST_OPEN_REQUESTS = 4;
+// The first open's chip requests: the latency timer, the line's three, then DTR and RTS
+static constexpr size_t FIRST_OPEN_REQUESTS = 5;
 
 static constexpr size_t WRITE_BYTES = 5;
 

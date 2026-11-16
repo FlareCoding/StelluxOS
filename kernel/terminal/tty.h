@@ -23,6 +23,10 @@ constexpr uint32_t TIOCSPGRP  = 0x5410;
 constexpr uint32_t TIOCOUTQ   = 0x5411;
 constexpr uint32_t TIOCGWINSZ = 0x5413;
 constexpr uint32_t TIOCSWINSZ = 0x5414;
+constexpr uint32_t TIOCMGET   = 0x5415;
+constexpr uint32_t TIOCMBIS   = 0x5416;
+constexpr uint32_t TIOCMBIC   = 0x5417;
+constexpr uint32_t TIOCMSET   = 0x5418;
 constexpr uint32_t FIONREAD   = 0x541B;
 
 // The termios2 requests carry the size of their argument, 44 bytes, in bits 16 to 29 and its direction above them
@@ -35,6 +39,14 @@ constexpr uint32_t TCSETSF2 = 0x402C542D;
 constexpr uint64_t TCIFLUSH  = 0;
 constexpr uint64_t TCOFLUSH  = 1;
 constexpr uint64_t TCIOFLUSH = 2;
+
+// The modem lines the TIOCM requests carry: the outputs DTR and RTS, and the inputs CTS, CD, RI and DSR
+constexpr uint32_t TIOCM_DTR = 0x002;
+constexpr uint32_t TIOCM_RTS = 0x004;
+constexpr uint32_t TIOCM_CTS = 0x020;
+constexpr uint32_t TIOCM_CAR = 0x040;
+constexpr uint32_t TIOCM_RNG = 0x080;
+constexpr uint32_t TIOCM_DSR = 0x100;
 
 // The control characters the settings carry, the first 19 of the 32 in musl's termios
 constexpr size_t NCCS = 19;
@@ -99,6 +111,7 @@ constexpr uint32_t OPOST = 0x00000001; // turns on the processing of written byt
 constexpr uint32_t CBAUD   = 0x0000100F; // the output speed's code
 constexpr uint32_t CBAUDEX = 0x00001000; // set in BOTHER and the codes above B38400
 constexpr uint32_t BOTHER  = 0x00001000; // the code whose speed is c_ospeed, or c_ispeed in CIBAUD
+constexpr uint32_t B0      = 0x00000000; // hangs up, lowering DTR and RTS
 constexpr uint32_t B9600   = 0x0000000D;
 constexpr uint32_t B115200 = 0x00001002;
 constexpr uint32_t CSIZE   = 0x00000030; // data bits, one of CS5 to CS8

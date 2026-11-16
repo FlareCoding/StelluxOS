@@ -48,8 +48,10 @@ public:
      */
     virtual void handle_received(::serial::port* p, const uint8_t* data, size_t length, uint16_t packet_size);
 
-    // Does what `::serial::port_driver::set_line` asks, through the chip's own requests
+    // Do what `::serial::port_driver`'s calls of the same names ask of the chip
     virtual int32_t set_line(const ::serial::line_settings& settings) = 0;
+    virtual int32_t set_modem_outputs(uint32_t lines) = 0;
+    virtual int32_t get_modem_inputs(uint32_t* lines) = 0;
 
 protected:
     device*          m_device;

@@ -60,11 +60,11 @@ constexpr size_t SEND_BYTES = 4096;
 
 /**
  * A port's driver, which sends what programs write and applies the settings
- * they ask for. The port calls `send` under its write lock and the other
- * calls one at a time under its control lock, so `send` can run while
- * another call does. `send` must return without waiting for the chip, since
- * non-blocking writes call it. The other calls may sleep until a chip request
- * ends at its reply, its deadline or the device's unplug.
+ * and modem lines they ask for. The port calls `send` under its write lock
+ * and the other calls one at a time under its control lock, so `send` can run
+ * while another call does. `send` must return without waiting for the chip,
+ * since non-blocking writes call it. The other calls may sleep until a chip
+ * request ends at its reply, its deadline or the device's unplug.
  */
 class port_driver {
 public:
@@ -78,6 +78,19 @@ public:
      *         ERR_IO when a chip request fails.
      */
     virtual int32_t set_line(const line_settings& settings) = 0;
+
+    /**
+     * @brief Sets DTR and RTS to the TIOCM_DTR and TIOCM_RTS bits of `lines`,
+     * both in one chip request.
+     * @return OK, or ERR_IO when the chip request fails.
+     */
+    virtual int32_t set_modem_outputs(uint32_t lines) = 0;
+
+    /**
+     * @brief Gives the chip's CTS, DSR, RI and CD as TIOCM bits in `lines`.
+     * @return OK, or ERR_IO when the chip request fails.
+     */
+    virtual int32_t get_modem_inputs(uint32_t* lines) = 0;
 
     /**
      * @brief Starts sending `length` bytes, at most SEND_BYTES, from `data`,

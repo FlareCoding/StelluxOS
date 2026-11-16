@@ -27,6 +27,20 @@ public:
         return set_line_result;
     }
 
+    int32_t set_modem_outputs(uint32_t lines) override {
+        modem_output_calls++;
+        if (control_result == serial::OK) {
+            outputs = lines;
+        }
+
+        return control_result;
+    }
+
+    int32_t get_modem_inputs(uint32_t* lines) override {
+        *lines = inputs;
+        return control_result;
+    }
+
     int32_t send(const uint8_t* data, size_t length) override {
         is_in_send.store_release(1);
         while (send_gate.load_acquire()) {
@@ -79,6 +93,11 @@ public:
         set_line_gate.store_release(0);
         is_in_set_line.store_release(0);
 
+        outputs = 0;
+        inputs = 0;
+        modem_output_calls = 0;
+        control_result = serial::OK;
+
         started_sends.store_relaxed(0);
         sent_length = 0;
         send_result = serial::OK;
@@ -98,6 +117,11 @@ public:
     int32_t                set_line_result = serial::OK;
     sync::atomic<uint32_t> set_line_gate{0};
     sync::atomic<uint32_t> is_in_set_line{0};
+
+    uint32_t outputs = 0;                     // DTR and RTS as last set
+    uint32_t inputs = 0;                      // what get_modem_inputs reports
+    uint32_t modem_output_calls = 0;
+    int32_t  control_result = serial::OK;     // the modem line calls' result
 
     sync::atomic<uint32_t> started_sends{0};
     uint8_t                sent[serial::SEND_BYTES] = {};

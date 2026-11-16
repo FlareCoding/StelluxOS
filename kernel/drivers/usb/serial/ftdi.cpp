@@ -3,6 +3,7 @@
 #include "drivers/usb/core/usb_transfer.h"
 #include "drivers/usb/usb_descriptors.h"
 #include "common/logging.h"
+#include "terminal/tty.h"
 
 namespace usb::serial {
 
@@ -14,6 +15,7 @@ static constexpr uint16_t FT232H_PRODUCT_ID = 0x6014;
 static constexpr uint16_t FTX_PRODUCT_ID = 0x6015;    // the FT-X series, such as FT231X
 
 static constexpr uint8_t REQUEST_RESET = 0x00;
+static constexpr uint8_t REQUEST_SET_MODEM_CTRL = 0x01;
 static constexpr uint8_t REQUEST_SET_FLOW_CTRL = 0x02;
 static constexpr uint8_t REQUEST_SET_BAUD_RATE = 0x03;
 static constexpr uint8_t REQUEST_SET_DATA = 0x04;
@@ -39,6 +41,17 @@ static constexpr uint16_t PARITY_SHIFT = 8;
 static constexpr uint16_t ONE_STOP_BIT = 0;
 static constexpr uint16_t TWO_STOP_BITS = 2;
 static constexpr uint16_t STOP_BITS_SHIFT = 11;
+
+// SET_MODEM_CTRL's value: each line's level, and a bit that lets the request change it
+static constexpr uint16_t MODEM_CTRL_DTR = 1u << 0;
+static constexpr uint16_t MODEM_CTRL_RTS = 1u << 1;
+static constexpr uint16_t MODEM_CTRL_WRITE_BOTH = (1u << 8) | (1u << 9);
+
+// The modem status byte starting each packet
+static constexpr uint8_t MODEM_STATUS_CTS = 1u << 4;
+static constexpr uint8_t MODEM_STATUS_DSR = 1u << 5;
+static constexpr uint8_t MODEM_STATUS_RI = 1u << 6;
+static constexpr uint8_t MODEM_STATUS_CD = 1u << 7;
 
 // SET_FLOW_CTRL's index holds the flow control in its high byte and the UART in its low one
 static constexpr uint16_t FLOW_RTS_CTS = 0x0100;
@@ -145,7 +158,9 @@ static uint16_t parity_code(::serial::parity mode) {
     return PARITY_NONE;
 }
 
-ftdi::ftdi(device* dev, const interface& iface) : translator(dev, iface), m_chip(&UNLISTED_CHIP) {}
+ftdi::ftdi(device* dev, const interface& iface) : translator(dev, iface), m_chip(&UNLISTED_CHIP) {
+    m_modem_status.store_relaxed(0);
+}
 
 int32_t ftdi::configure() {
     if (send_request(REQUEST_RESET, RESET_UART, uart_number()) != 0) {
@@ -173,6 +188,9 @@ int8_t ftdi::channel() const {
 void ftdi::handle_received(::serial::port* p, const uint8_t* data, size_t length, uint16_t packet_size) {
     for (size_t offset = 0; offset < length; offset += packet_size) {
         size_t packet = length - offset < packet_size ? length - offset : packet_size;
+
+        // The modem status byte of the read's last packet is the latest the chip has given
+        m_modem_status.store_relaxed(data[offset]);
         if (packet > STATUS_BYTES) {
             ::serial::receive(p, data + offset + STATUS_BYTES, packet - STATUS_BYTES);
         }
@@ -210,6 +228,43 @@ int32_t ftdi::set_line(const ::serial::line_settings& settings) {
         return ::serial::ERR_IO;
     }
 
+    return ::serial::OK;
+}
+
+int32_t ftdi::set_modem_outputs(uint32_t lines) {
+    uint16_t value = MODEM_CTRL_WRITE_BOTH;
+    if (lines & terminal::TIOCM_DTR) {
+        value |= MODEM_CTRL_DTR;
+    }
+
+    if (lines & terminal::TIOCM_RTS) {
+        value |= MODEM_CTRL_RTS;
+    }
+
+    return send_request(REQUEST_SET_MODEM_CTRL, value, uart_number()) == 0 ? ::serial::OK : ::serial::ERR_IO;
+}
+
+// The chip reports its modem inputs at the start of every packet, so they need no request
+int32_t ftdi::get_modem_inputs(uint32_t* lines) {
+    uint32_t status = m_modem_status.load_relaxed();
+    uint32_t inputs = 0;
+    if (status & MODEM_STATUS_CTS) {
+        inputs |= terminal::TIOCM_CTS;
+    }
+
+    if (status & MODEM_STATUS_DSR) {
+        inputs |= terminal::TIOCM_DSR;
+    }
+
+    if (status & MODEM_STATUS_RI) {
+        inputs |= terminal::TIOCM_RNG;
+    }
+
+    if (status & MODEM_STATUS_CD) {
+        inputs |= terminal::TIOCM_CAR;
+    }
+
+    *lines = inputs;
     return ::serial::OK;
 }
 
