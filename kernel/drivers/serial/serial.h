@@ -9,6 +9,7 @@ namespace serial {
 constexpr int32_t OK              = 0;
 constexpr int32_t ERR_UNSUPPORTED = -2;
 constexpr int32_t ERR_NO_MEMORY   = -3;
+constexpr int32_t ERR_IO          = -4;
 
 enum class parity : uint8_t {
     none,

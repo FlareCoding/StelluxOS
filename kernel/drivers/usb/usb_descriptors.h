@@ -69,6 +69,7 @@ constexpr uint8_t USB_REQTYPE_DIR_IN             = 0x80;
 constexpr uint8_t USB_REQTYPE_DIR_OUT            = 0x00;
 constexpr uint8_t USB_REQTYPE_TYPE_STANDARD      = 0x00;
 constexpr uint8_t USB_REQTYPE_TYPE_CLASS         = 0x20;
+constexpr uint8_t USB_REQTYPE_TYPE_VENDOR        = 0x40;
 constexpr uint8_t USB_REQTYPE_RECIP_DEVICE       = 0x00;
 constexpr uint8_t USB_REQTYPE_RECIP_INTERFACE    = 0x01;
 
