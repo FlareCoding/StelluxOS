@@ -259,6 +259,7 @@ void device_configured(drivers::xhci_hcd* hcd,
     RUN_ELEVATED({
         const class_driver_entry* reg_start = __usb_class_drivers_start;
         const class_driver_entry* reg_end = __usb_class_drivers_end;
+        sched::task* driver_tasks[usb::MAX_INTERFACES] = {};
 
         for (uint8_t i = 0; i < dev->num_interfaces; i++) {
             auto* iface = &dev->interfaces[i];
@@ -294,12 +295,20 @@ void device_configured(drivers::xhci_hcd* hcd,
                 dev->driver_users[i] = 1;
                 sync::spin_unlock_irqrestore(dev->lifetime_lock, dev_irq);
 
-                sched::enqueue(t);
+                driver_tasks[i] = t;
 
                 log::info("usb: bound %s to interface %u (class=0x%02x)",
                            drv->name(), iface->interface_number, iface->interface_class);
 
                 break;
+            }
+        }
+
+        // Driver tasks start once every interface is probed, so none holds EP0 while the HCD task probes another
+        // interface of the device
+        for (sched::task* t : driver_tasks) {
+            if (t) {
+                sched::enqueue(t);
             }
         }
     });

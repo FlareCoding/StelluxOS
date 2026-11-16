@@ -43,6 +43,9 @@ struct test_driver_record {
 
     // The device's handle on its HCD device as the destructor read it, which finalization clears before freeing it
     void* hcd_device_at_destruction;
+
+    // How many drivers of the device's earlier interfaces had a started task when this driver's probe ran
+    sync::atomic<uint32_t> started_tasks_at_probe;
 };
 
 // Two controllers that drive no hardware, so the tests choose every device's slot ID. They are never freed, since a
@@ -82,7 +85,18 @@ public:
         record->is_freed.store_release(1);
     }
 
-    int32_t probe(usb::device*, usb::interface*) override {
+    int32_t probe(usb::device* dev, usb::interface* iface) override {
+        auto iface_index = static_cast<uint8_t>(iface - dev->interfaces);
+        uint32_t started_tasks = 0;
+        for (uint8_t i = 0; i < iface_index; i++) {
+            usb::class_driver* earlier = dev->bound_drivers[i];
+            if (earlier && earlier->task()->state.load_acquire() != sched::TASK_STATE_CREATED) {
+                started_tasks++;
+            }
+        }
+
+        m_record->started_tasks_at_probe.store_release(started_tasks);
+
         return 0;
     }
 
@@ -365,4 +379,22 @@ TEST(usb_core, a_device_outlives_the_destructors_of_both_its_drivers) {
     unpin(last_task);
     EXPECT_EQ(last_to_end.hcd_device_at_destruction, static_cast<void*>(xdev));
     EXPECT_EQ(first_to_end.hcd_device_at_destruction, static_cast<void*>(xdev));
+}
+
+static test_driver_record s_probe_order_records[3];
+
+// The core starts a device's driver tasks only once its last interface is probed, so no interface is probed while the
+// driver of an earlier one runs
+TEST(usb_core, a_devices_driver_tasks_start_after_all_its_interfaces_are_probed) {
+    drivers::xhci::xhci_device* xdev = create_test_device(1, 3);
+    ASSERT_NOT_NULL(xdev);
+
+    configure(s_controller_a, xdev, s_probe_order_records);
+    EXPECT_EQ(s_probe_order_records[1].started_tasks_at_probe.load_acquire(), 0u);
+    EXPECT_EQ(s_probe_order_records[2].started_tasks_at_probe.load_acquire(), 0u);
+
+    unplug(s_controller_a, xdev);
+    for (test_driver_record& record : s_probe_order_records) {
+        end_driver(record);
+    }
 }
