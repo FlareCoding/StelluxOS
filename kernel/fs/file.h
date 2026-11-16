@@ -2,6 +2,7 @@
 #define STELLUX_FS_FILE_H
 
 #include "fs/node.h"
+#include "fs/file_lock_table.h"
 #include "rc/strong_ref.h"
 
 namespace fs {
@@ -34,11 +35,15 @@ public:
     static void ref_destroy(file* f);
 
 private:
+    friend class file_lock_table;
+
     rc::strong_ref<node> m_node;
     int64_t  m_offset;
     uint32_t m_access_mode;
     void*    m_private;
     bool     m_opened;
+
+    whole_file_lock_mode m_whole_file_lock_mode; // Changed only by `file_lock_table`
 };
 
 } // namespace fs
