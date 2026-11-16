@@ -7,7 +7,6 @@ namespace serial {
 
 // Error codes
 constexpr int32_t OK = 0;
-constexpr int32_t ERR_NO_DATA = -1;
 constexpr int32_t ERR_NO_DEVICE = -2;
 
 using rx_callback_t = void (*)(char c);
@@ -40,15 +39,10 @@ void write_char(char c);
 void write(const char* data, size_t len);
 
 /**
- * @brief Read a single byte from the serial port (non-blocking).
- * @return 0-255 on success (the byte read), or ERR_NO_DATA if no data available.
- */
-int32_t read_char();
-
-/**
  * @brief Redirect serial output to a different I/O port.
- * Initializes the new port at 115200 baud and redirects
- * all subsequent I/O to it.
+ * Initializes the new port at 115200 baud and, when a chip answers
+ * there, redirects all subsequent I/O to it. Does nothing on an
+ * architecture without I/O ports.
  * @param port I/O port base address of the new UART (e.g. from a PCI BAR).
  */
 void set_port(uint16_t port);
@@ -74,13 +68,6 @@ __PRIVILEGED_CODE int32_t enable_rx_interrupt();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void on_rx_irq();
-
-/**
- * @brief Get the platform IRQ ID used by the serial port.
- * On x86_64: returns the IDT vector (e.g. 0x24).
- * On AArch64: returns the GIC INTID (e.g. 33 for QEMU virt).
- */
-uint32_t irq_id();
 
 } // namespace serial
 
