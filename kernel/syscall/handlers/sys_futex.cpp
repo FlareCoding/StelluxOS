@@ -54,17 +54,12 @@ static int64_t read_futex_timeout(uint64_t u_timeout, uint64_t* out_ns) {
     return 0;
 }
 
-// Converts an absolute timeout to a monotonic deadline, realtime running a fixed offset ahead.
-// A time already past becomes one nanosecond, since a zero deadline means none.
+// Converts an absolute timeout to a monotonic deadline. A zero deadline means none, so a time at or before boot
+// becomes one nanosecond.
 static int64_t read_futex_deadline(uint64_t u_timeout, bool realtime, uint64_t* out_deadline) {
     if (u_timeout == 0) {
         *out_deadline = 0;
         return 0;
-    }
-
-    uint64_t origin = realtime ? clock::boot_realtime_ns() : 0;
-    if (realtime && origin == 0) {
-        return syscall::EINVAL;
     }
 
     uint64_t ns = 0;
@@ -73,7 +68,11 @@ static int64_t read_futex_deadline(uint64_t u_timeout, bool realtime, uint64_t* 
         return rc;
     }
 
-    *out_deadline = ns > origin ? ns - origin : 1;
+    if (realtime && !clock::monotonic_from_realtime_ns(ns, &ns)) {
+        return syscall::EINVAL;
+    }
+
+    *out_deadline = ns == 0 ? 1 : ns;
     return 0;
 }
 

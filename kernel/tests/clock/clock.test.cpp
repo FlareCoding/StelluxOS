@@ -70,6 +70,32 @@ TEST(clock, deadline_after_ns_saturates_at_uint64_max) {
     EXPECT_LT(a_second_short, ~0ULL);
 }
 
+// A realtime time gives its distance past the boot epoch, a time at or before the epoch gives 0, and UINT64_MAX
+// stays UINT64_MAX while the time just below it stays finite.
+TEST(clock, monotonic_from_realtime_ns_counts_from_the_boot_epoch) {
+    uint64_t origin = clock::boot_realtime_ns();
+    ASSERT_NE(origin, static_cast<uint64_t>(0));
+
+    uint64_t after_boot = 0;
+    uint64_t at_boot = 1;
+    uint64_t before_boot = 1;
+    EXPECT_TRUE(clock::monotonic_from_realtime_ns(origin + SECOND_NS, &after_boot));
+    EXPECT_TRUE(clock::monotonic_from_realtime_ns(origin, &at_boot));
+    EXPECT_TRUE(clock::monotonic_from_realtime_ns(origin - SECOND_NS, &before_boot));
+
+    EXPECT_EQ(after_boot, SECOND_NS);
+    EXPECT_EQ(at_boot, static_cast<uint64_t>(0));
+    EXPECT_EQ(before_boot, static_cast<uint64_t>(0));
+
+    uint64_t at_the_end = 0;
+    uint64_t just_below_the_end = 0;
+    EXPECT_TRUE(clock::monotonic_from_realtime_ns(~0ULL, &at_the_end));
+    EXPECT_TRUE(clock::monotonic_from_realtime_ns(~0ULL - 1, &just_below_the_end));
+
+    EXPECT_EQ(at_the_end, ~0ULL);
+    EXPECT_EQ(just_below_the_end, ~0ULL - 1 - origin);
+}
+
 // --- delay_us_accuracy ---
 // Proves: delay::us(1000) produces ~1ms elapsed (wide tolerance for QEMU).
 

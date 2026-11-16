@@ -868,3 +868,89 @@ TEST(futex, wake_op_faults_a_lazy_second_word_in_and_refuses_a_read_only_one) {
     EXPECT_EQ(user_word(page.ctx, lazy), 5u);
     EXPECT_EQ(user_word(page.ctx, read_only), 0u);
 }
+
+// A bitset wait times out once its own clock passes its absolute timeout: a realtime timeout counts from the boot
+// epoch, a monotonic one is used as it is, and a realtime timeout before boot times out at once
+constexpr uint64_t FUTEX_OP_WAIT_BITSET   = 9;
+constexpr uint64_t FUTEX_CLOCK_REALTIME   = 256;
+constexpr uint64_t FUTEX_BITSET_MATCH_ANY = 0xFFFFFFFF;
+constexpr size_t   TIMED_WORD_AT          = 0;
+constexpr size_t   TIMED_TIMEOUT_AT       = 64;
+constexpr uint64_t TIMED_WAIT_NS          = 50000000;
+constexpr uint64_t TIMED_MAX_OVERRUN_NS   = 2000000000;
+constexpr uint64_t TIMED_NS_PER_SEC       = 1000000000;
+
+struct timed_wait_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+// One bitset wait made from a task of its own, since the test body must never block
+struct timed_wait {
+    test_helpers::user_page* page;
+    uint64_t                 op;
+    int64_t                  result;
+    uint64_t                 returned_ns;
+    sync::atomic<uint32_t>   done;
+};
+
+static timed_wait g_timed_wait;
+
+static void run_timed_wait(void* arg) {
+    auto& wait = *static_cast<timed_wait*>(arg);
+    {
+        test_helpers::user_space_scope scope(wait.page->ctx);
+        wait.result = sys_futex(wait.page->addr + TIMED_WORD_AT, wait.op, 0, wait.page->addr + TIMED_TIMEOUT_AT, 0,
+                                FUTEX_BITSET_MATCH_ANY);
+    }
+
+    wait.returned_ns = clock::now_ns();
+    wait.done.store_release(1);
+    sched::exit(0);
+}
+
+// Waits on the page's zero word until `timeout_ns` on the clock `op` names, false when a kill had to end the wait
+static bool wait_until_on_a_task(test_helpers::user_page& page, uint64_t op, uint64_t timeout_ns) {
+    *page.at<uint32_t>(TIMED_WORD_AT) = 0;
+    *page.at<timed_wait_timespec>(TIMED_TIMEOUT_AT) = {
+        static_cast<int64_t>(timeout_ns / TIMED_NS_PER_SEC), static_cast<int64_t>(timeout_ns % TIMED_NS_PER_SEC),
+    };
+
+    g_timed_wait.page = &page;
+    g_timed_wait.op = op;
+    g_timed_wait.done.store_relaxed(0);
+    sched::task* t = test_helpers::start_pinned_task(run_timed_wait, &g_timed_wait, "ftx_timed");
+    if (!t) {
+        return false;
+    }
+
+    bool finished = test_helpers::finish_or_kill(t, g_timed_wait.done);
+    test_helpers::unpin(t);
+
+    return finished;
+}
+
+TEST(futex, a_bitset_wait_times_out_once_its_clock_passes_the_timeout) {
+    test_helpers::user_page page;
+    ASSERT_TRUE(page.ready());
+
+    uint64_t monotonic_timeout = clock::now_ns() + TIMED_WAIT_NS;
+    ASSERT_TRUE(wait_until_on_a_task(page, FUTEX_OP_WAIT_BITSET, monotonic_timeout));
+    EXPECT_EQ(g_timed_wait.result, syscall::ETIMEDOUT);
+    EXPECT_GE(g_timed_wait.returned_ns, monotonic_timeout);
+    EXPECT_LE(g_timed_wait.returned_ns, monotonic_timeout + TIMED_MAX_OVERRUN_NS);
+
+    uint64_t realtime_timeout = clock::realtime_ns() + TIMED_WAIT_NS;
+    ASSERT_TRUE(wait_until_on_a_task(page, FUTEX_OP_WAIT_BITSET | FUTEX_CLOCK_REALTIME, realtime_timeout));
+
+    uint64_t realtime_returned = clock::boot_realtime_ns() + g_timed_wait.returned_ns;
+    EXPECT_EQ(g_timed_wait.result, syscall::ETIMEDOUT);
+    EXPECT_GE(realtime_returned, realtime_timeout);
+    EXPECT_LE(realtime_returned, realtime_timeout + TIMED_MAX_OVERRUN_NS);
+
+    uint64_t before_boot_started = clock::now_ns();
+    uint64_t before_boot = clock::boot_realtime_ns() - 1;
+    ASSERT_TRUE(wait_until_on_a_task(page, FUTEX_OP_WAIT_BITSET | FUTEX_CLOCK_REALTIME, before_boot));
+    EXPECT_EQ(g_timed_wait.result, syscall::ETIMEDOUT);
+    EXPECT_LE(g_timed_wait.returned_ns - before_boot_started, TIMED_MAX_OVERRUN_NS);
+}

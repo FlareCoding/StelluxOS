@@ -66,6 +66,27 @@ inline uint64_t boot_realtime_ns() { return rtc::boot_unix_ns(); }
  */
 inline uint64_t realtime_ns() { return boot_realtime_ns() + now_ns(); }
 
+/**
+ * @brief The monotonic time at which the realtime clock reads `realtime_ns`,
+ * or 0 when that time came before boot. `UINT64_MAX` gives `UINT64_MAX`, a
+ * deadline the monotonic clock never reaches.
+ * @return False when no RTC gave the realtime clock its offset.
+ */
+inline bool monotonic_from_realtime_ns(uint64_t realtime_ns, uint64_t* out_ns) {
+    uint64_t origin = boot_realtime_ns();
+    if (origin == 0) {
+        return false;
+    }
+
+    if (realtime_ns == ~0ULL) {
+        *out_ns = ~0ULL;
+    } else {
+        *out_ns = realtime_ns > origin ? realtime_ns - origin : 0;
+    }
+
+    return true;
+}
+
 } // namespace clock
 
 #endif // STELLUX_CLOCK_CLOCK_H

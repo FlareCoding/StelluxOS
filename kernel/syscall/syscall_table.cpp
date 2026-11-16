@@ -102,6 +102,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETRES,    clock_getres);
+    REGISTER_SYSCALL(linux_nr::CLOCK_NANOSLEEP, clock_nanosleep);
     REGISTER_SYSCALL(linux_nr::GETTIMEOFDAY,    gettimeofday);
     REGISTER_SYSCALL(linux_nr::UNAME,           uname);
     REGISTER_SYSCALL(linux_nr::SYSINFO,         sysinfo);
