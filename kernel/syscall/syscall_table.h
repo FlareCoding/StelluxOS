@@ -14,6 +14,7 @@ constexpr int64_t ENOENT = -2;
 constexpr int64_t ESRCH  = -3;
 constexpr int64_t EINTR  = -4;
 constexpr int64_t EIO    = -5;
+constexpr int64_t E2BIG  = -7;
 constexpr int64_t EBADF  = -9;
 constexpr int64_t ENOMEM = -12;
 constexpr int64_t EACCES = -13;

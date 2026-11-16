@@ -14,9 +14,11 @@ struct thread_group;
 constexpr int32_t OK         = 0;
 constexpr int32_t ERR_NO_MEM = -1;
 
-// Exec-style string limits shared by proc_create copying and the user stack builder
-constexpr size_t MAX_ARG_STRLEN  = 4096; // bytes per argv/envp string, including NUL
-constexpr size_t MAX_ARG_STRINGS = 512; // strings per argv/envp array
+// Exec-style string limits shared by proc_create copying and the user stack builder. A string may fill an array,
+// since a program may pass a whole command line as one string
+constexpr size_t MAX_ARG_ARRAY_BYTES = 128 * 1024; // bytes per argv/envp array, NULs included
+constexpr size_t MAX_ARG_STRLEN      = MAX_ARG_ARRAY_BYTES; // bytes per argv/envp string, NUL included
+constexpr size_t MAX_ARG_STRINGS     = 4096; // strings per argv/envp array, as many 32-byte strings as fill one
 
 /**
  * One CPU's accounted time in nanoseconds. Time spent in the CPU's idle
