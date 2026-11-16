@@ -1,10 +1,11 @@
 /* versions, run on the build machine: release parts by value, missing parts as 0, prereleases before their release,
- * and build metadata ignored */
+ * build metadata ignored, and the constraints libraries state on their dependencies */
 
 #include "versions.hpp"
 
 #include <cstdint>
 #include <cstdio>
+#include <string>
 
 constexpr uint32_t MAX_REPORTS = 8;
 
@@ -56,10 +57,65 @@ static void check_build_metadata() {
     check(is_same("1.0.0-rc1+a", "1.0.0-rc1+b"), "build metadata does not count between prereleases");
 }
 
+static bool meets(const char* version, const char* constraint) {
+    bool meets_constraint = false;
+    std::string error;
+    return check_constraint(version, constraint, meets_constraint, error) && meets_constraint;
+}
+
+static void check_constraints() {
+    check(meets("1.0.0", "") && meets("0.1", "  "), "an empty constraint meets every version");
+    check(meets("1.17.4", ">=1.14.0") && !meets("1.12.0", ">=1.14.0"), "at least");
+    check(meets("2.5.0", ">=2.3.4 && <3.0.0") && !meets("3.0.0", ">=2.3.4 && <3.0.0"), "a range joined by &&");
+    check(meets("1.0.6", "=1.0.6") && !meets("1.0.7", "=1.0.6"), "exactly");
+    check(meets("0.2", "<0.3.0") && meets("0.6.0", "<=0.6.0") && !meets("1.0", ">1.0"), "the other comparisons");
+
+    check(meets("2.0.0", "=1.0.0 || =2.0.0") && !meets("1.5.0", "=1.0.0 || =2.0.0"), "either side of ||");
+    check(meets("1.5.0", "!=1.0.0") && !meets("1.0.0", "!=1.0.0"), "! negates the term after it");
+    check(meets("3.0.0", "(>=1.0.0 && <2.0.0) || =3.0.0") && !meets("2.5.0", "(>=1.0.0 && <2.0.0) || =3.0.0"),
+          "parentheses group a constraint");
+    check(meets("2.5.0", "=1.0.0 || >=2.0.0 && <3.0.0") && !meets("3.5.0", "=1.0.0 || >=2.0.0 && <3.0.0"),
+          "&& binds before ||");
+    check(meets("1.0.0", "=1.0.0)"), "a closing parenthesis left over ends the constraint, as relaxed-semver reads it");
+}
+
+static void check_compatible() {
+    check(meets("1.9.9", "^1.2.0") && !meets("2.0.0", "^1.2.0") && !meets("1.1.0", "^1.2.0"),
+          "^ keeps a major that is not 0, at or above the bound");
+    check(meets("0.2.9", "^0.2.0") && !meets("0.3.0", "^0.2.0"), "^ keeps the minor when the major is 0");
+    check(meets("0.0.3", "^0.0.3") && !meets("0.0.4", "^0.0.3"), "^ keeps the patch when major and minor are 0");
+}
+
+static void check_constraint_failures() {
+    const char* unreadable[] = { "~1.0", ">= 1.0", "=1.0.a", "=01.0", ">=1.0 &&", "=1.0 | =2.0", "(=1.0", "=" };
+    for (const char* constraint : unreadable) {
+        bool result = false;
+        std::string error;
+        check(!check_constraint("1.0.0", constraint, result, error) &&
+                  error == "cannot read the version constraint \"" + std::string(constraint) + "\"",
+              constraint);
+    }
+}
+
+static void check_semantic_versions() {
+    for (const char* version : { "1", "1.2", "1.2.3", "0.0.0", "1.2.3-rc.1+b5", "2.0.16-rc.2" }) {
+        check(is_semantic_version(version), version);
+    }
+
+    for (const char* version : { "", "01.2", "1.2.3.4", "1.0.a", "1.0.0-01", "1.0.0-", "1..0" }) {
+        check(!is_semantic_version(version), version);
+    }
+}
+
 int main() {
     check_releases();
     check_prereleases();
     check_build_metadata();
+    check_constraints();
+
+    check_compatible();
+    check_constraint_failures();
+    check_semantic_versions();
 
     if (g_failures != 0) {
         printf("versions: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

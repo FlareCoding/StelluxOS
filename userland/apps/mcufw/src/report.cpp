@@ -252,6 +252,20 @@ void reporter::program_missing(const tool_dependency& tool) {
     fprintf(m_out, "The board needs %s, a program only a Stellux package installs.\n", program.c_str());
 }
 
+void reporter::warned(const std::string& reason) {
+    if (!m_events && m_terminal && !m_progress_line.empty()) {
+        fprintf(m_out, "\n");
+        m_progress_line.clear();
+    }
+
+    if (m_events) {
+        event({ "warning", reason });
+        return;
+    }
+
+    fprintf(m_err, "mcufw: %s\n", reason.c_str());
+}
+
 void reporter::failed(const failure& failure) {
     if (!m_events && m_terminal && !m_progress_line.empty()) {
         fprintf(m_out, "\n");

@@ -225,12 +225,25 @@ static void check_installs() {
     fclose(person.err);
 }
 
+static void check_warnings() {
+    capture person = open_capture();
+    reporter(false, person.out, person.err).warned("cannot download the library index");
+    check(read_back(person.out).empty(), "a person's warning leaves stdout alone");
+    check(read_back(person.err) == "mcufw: cannot download the library index\n", "a person's warning goes to stderr");
+
+    capture program = open_capture();
+    reporter(true, program.out, program.err).warned("cannot download the library index");
+    check(read_back(program.out) == "warning\tcannot download the library index\n", "a program sees a warning event");
+    fclose(program.err);
+}
+
 int main() {
     check_listing();
     check_empty_listing();
     check_description();
     check_failures();
     check_installs();
+    check_warnings();
 
     if (g_failures != 0) {
         printf("report: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

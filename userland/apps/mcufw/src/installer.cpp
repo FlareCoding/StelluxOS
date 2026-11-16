@@ -27,6 +27,7 @@ struct staged_unpack {
 
 constexpr const char* STAGING_FOLDER = "staging";
 constexpr const char* STAGED_TOOLS_FOLDER = "tools";
+constexpr const char* STAGED_LIBRARIES_FOLDER = "libraries";
 constexpr const char* DISCARDED_PREFIX = "discarded-";
 constexpr const char* DOWNLOAD_SUFFIX = ".download";
 constexpr uint32_t NEW_FILE_MODE = 0644;
@@ -359,7 +360,7 @@ static bool install_core_or_board(const directory_layout& layout, const std::str
 
 // Downloads an index into a temporary file in the state folder and renames it over the last copy only once the
 // download succeeds
-static bool fetch_package_index(const std::string& path, failure& failed) {
+static bool fetch_index(const std::string& url, const std::string& path, failure& failed) {
     std::string temporary = path + DOWNLOAD_SUFFIX;
     int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, NEW_FILE_MODE);
     if (fd < 0) {
@@ -371,7 +372,7 @@ static bool fetch_package_index(const std::string& path, failure& failed) {
     auto consume = [&](std::string_view bytes, failure& consume_failed) {
         received += bytes.size();
         if (received > INDEX_DOWNLOAD_MAX) {
-            consume_failed = { failure_kind::verify, std::string(PACKAGE_INDEX_URL) + " holds more than " +
+            consume_failed = { failure_kind::verify, url + " holds more than " +
                                                          std::to_string(INDEX_DOWNLOAD_MAX >> 20) + " MiB" };
             return false;
         }
@@ -385,7 +386,7 @@ static bool fetch_package_index(const std::string& path, failure& failed) {
         return true;
     };
 
-    bool fetched = download(PACKAGE_INDEX_URL, "", consume, failed);
+    bool fetched = download(url, "", consume, failed);
     if (close(fd) != 0 && fetched) {
         failed = { failure_kind::io, "cannot write " + temporary + ": " + strerror(errno) };
         fetched = false;
@@ -401,6 +402,119 @@ static bool fetch_package_index(const std::string& path, failure& failed) {
     }
 
     return fetched;
+}
+
+static bool install_library(const directory_layout& layout, const library_install& install,
+                            const archive_download& archive, reporter& report, failure& failed) {
+    const release_name& release = install.release;
+    std::string staged = join_path(join_path(staging_folder(layout), STAGED_LIBRARIES_FOLDER),
+                                   library_folder_name(release.name));
+    if (!unpack_download(archive, release.name, release.version, staged, report, failed)) {
+        return false;
+    }
+
+    std::string discard;
+    std::string error;
+    bool moves_folder = !install.replaced.empty() && install.replaced != install.directory;
+    bool replaced = free_discard_path(layout, discard, error) &&
+                    (!moves_folder || discard_directory(install.replaced, discard, error)) &&
+                    replace_directory(staged, install.directory, discard, error);
+    if (!replaced) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    report.installed(release.name, release.version, false);
+
+    return true;
+}
+
+// The names in the libraries folder, which a new library's folder must not take
+static bool list_library_folders(const directory_layout& layout, std::vector<std::string>& entries,
+                                 std::string& error) {
+    entries.clear();
+    return !is_directory(layout.libraries) || list_directory(layout.libraries, entries, error);
+}
+
+static void report_installed_already(const std::vector<install_target>& targets, const std::vector<library>& installed,
+                                     const std::vector<release_name>& chosen, reporter& report) {
+    for (const install_target& target : targets) {
+        bool is_chosen = false;
+        for (const release_name& release : chosen) {
+            is_chosen = is_chosen || release.name == target.library;
+        }
+
+        for (const library& present : installed) {
+            bool is_target_copy = present.location == library_location::installed && present.name == target.library;
+            if (target.kind == install_kind::library && is_target_copy && !is_chosen) {
+                report.installed(present.name, present.version, true);
+            }
+        }
+    }
+}
+
+// Installs the library targets with the dependencies they need. The library index is read twice, first without
+// downloads to resolve, then for the chosen releases' downloads, so only those are kept.
+static bool install_libraries(const directory_layout& layout, const std::string& index_path,
+                              const std::vector<install_target>& targets, reporter& report, failure& failed) {
+    std::vector<library_release> releases;
+    std::vector<library> installed;
+    std::vector<std::string> entries;
+    std::string error;
+    auto keep = [&](library_release& release, std::string&) {
+        releases.push_back(std::move(release));
+        return true;
+    };
+
+    bool read = read_library_releases(index_path, keep, error) && find_libraries("", layout, installed, error) &&
+                list_library_folders(layout, entries, error);
+    if (!read) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    std::vector<release_name> chosen;
+    std::vector<library_install> installs;
+    bool planned = resolve_libraries(releases, targets, installed, chosen, error) &&
+                   plan_library_installs(chosen, installed, layout.libraries, entries, installs, error);
+    if (!planned) {
+        failed = { failure_kind::library, error };
+        return false;
+    }
+
+    std::vector<archive_download> downloads;
+    if (!read_library_downloads(index_path, chosen, downloads, error)) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    for (size_t i = 0; i < installs.size(); i++) {
+        if (!install_library(layout, installs[i], downloads[i], report, failed)) {
+            return false;
+        }
+    }
+
+    report_installed_already(targets, installed, chosen, report);
+
+    return true;
+}
+
+// Every install fetches the library index, but only a library target fails without it
+static bool fetch_library_index(const std::string& path, const std::vector<install_target>& targets,
+                                reporter& report, failure& failed) {
+    failure library_failed;
+    if (fetch_index(LIBRARY_INDEX_URL, path, library_failed)) {
+        return true;
+    }
+
+    if (needs_library_index(targets)) {
+        failed = library_failed;
+        return false;
+    }
+
+    report.warned(library_failed.reason + ", so the library index stays as it was");
+
+    return true;
 }
 
 // Empties the staging folder at the end of a run, a failure to do so joining any earlier one
@@ -438,19 +552,71 @@ bool install_targets(const directory_layout& layout, const std::vector<install_t
     }
 
     std::string staging = staging_folder(layout);
-    std::string index_path = join_path(layout.state, PACKAGE_INDEX_FILE);
+    std::string package_index = join_path(layout.state, PACKAGE_INDEX_FILE);
+    std::string library_index = join_path(layout.state, LIBRARY_INDEX_FILE);
     std::string error;
     if (!remove_tree(staging, error)) {
         failed = { failure_kind::io, error };
         return false;
     }
 
-    bool installed = fetch_package_index(index_path, failed);
+    bool installed = fetch_index(PACKAGE_INDEX_URL, package_index, failed) &&
+                     fetch_library_index(library_index, targets, report, failed);
     for (size_t i = 0; installed && i < targets.size(); i++) {
-        installed = install_core_or_board(layout, index_path, targets[i], report, failed);
+        switch (targets[i].kind) {
+        case install_kind::core:
+        case install_kind::board:
+            installed = install_core_or_board(layout, package_index, targets[i], report, failed);
+            break;
+        case install_kind::library:
+            break;
+        }
+    }
+
+    if (installed && needs_library_index(targets)) {
+        installed = install_libraries(layout, library_index, targets, report, failed);
     }
 
     return empty_staging(staging, installed, failed);
+}
+
+// Deletes a library's folder. A link a person placed there is deleted, and what it names is kept.
+static bool remove_library(const directory_layout& layout, const std::string& name, reporter& report,
+                           failure& failed) {
+    std::vector<library> installed;
+    std::string error;
+    if (!find_libraries("", layout, installed, error)) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    std::vector<const library*> copies;
+    for (const library& present : installed) {
+        if (present.name == name) {
+            copies.push_back(&present);
+        }
+    }
+
+    if (copies.empty()) {
+        failed = { failure_kind::library, name + " is not installed" };
+        return false;
+    }
+
+    if (copies.size() > 1) {
+        failed = { failure_kind::library, name + " is installed twice, in " + copies[0]->directory + " and " +
+                                              copies[1]->directory + ", so delete one of them by hand" };
+        return false;
+    }
+
+    std::string discard;
+    if (!free_discard_path(layout, discard, error) || !discard_directory(copies[0]->directory, discard, error)) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    report.removed(copies[0]->name, copies[0]->version);
+
+    return true;
 }
 
 static bool remove_core(const directory_layout& layout, const board_request& request, reporter& report,
@@ -495,7 +661,15 @@ bool remove_targets(const directory_layout& layout, const std::vector<install_ta
 
     bool removed = true;
     for (size_t i = 0; removed && i < targets.size(); i++) {
-        removed = remove_core(layout, targets[i].board, report, failed);
+        switch (targets[i].kind) {
+        case install_kind::core:
+        case install_kind::board:
+            removed = remove_core(layout, targets[i].board, report, failed);
+            break;
+        case install_kind::library:
+            removed = remove_library(layout, targets[i].library, report, failed);
+            break;
+        }
     }
 
     removed = removed && remove_unused_data_tools(layout, report, failed);

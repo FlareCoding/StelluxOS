@@ -133,35 +133,39 @@ static bool is_continuation(std::string_view text, size_t at) {
     return at < text.size() && (static_cast<uint8_t>(text[at]) & 0xC0) == 0x80;
 }
 
-// Whether `text` is UTF-8 by Unicode's definition, which refuses overlong forms and surrogates
+size_t utf8_character_size(std::string_view text, size_t at) {
+    uint8_t lead = static_cast<uint8_t>(text[at]);
+    uint8_t second = at + 1 < text.size() ? static_cast<uint8_t>(text[at + 1]) : 0;
+    size_t length = 0;
+    bool second_in_range = true;
+    if (lead < 0x80) {
+        return 1;
+    } else if (lead >= 0xC2 && lead <= 0xDF) {
+        length = 2;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+        length = 3;
+        second_in_range = (lead != 0xE0 || second >= 0xA0) && (lead != 0xED || second <= 0x9F);
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+        length = 4;
+        second_in_range = (lead != 0xF0 || second >= 0x90) && (lead != 0xF4 || second <= 0x8F);
+    } else {
+        return 0;
+    }
+
+    for (size_t i = 1; i < length; i++) {
+        if (!is_continuation(text, at + i)) {
+            return 0;
+        }
+    }
+
+    return second_in_range ? length : 0;
+}
+
 static bool is_utf8(std::string_view text) {
     size_t at = 0;
     while (at < text.size()) {
-        uint8_t lead = static_cast<uint8_t>(text[at]);
-        uint8_t second = at + 1 < text.size() ? static_cast<uint8_t>(text[at + 1]) : 0;
-        size_t length = 0;
-        bool second_in_range = true;
-        if (lead < 0x80) {
-            length = 1;
-        } else if (lead >= 0xC2 && lead <= 0xDF) {
-            length = 2;
-        } else if (lead >= 0xE0 && lead <= 0xEF) {
-            length = 3;
-            second_in_range = (lead != 0xE0 || second >= 0xA0) && (lead != 0xED || second <= 0x9F);
-        } else if (lead >= 0xF0 && lead <= 0xF4) {
-            length = 4;
-            second_in_range = (lead != 0xF0 || second >= 0x90) && (lead != 0xF4 || second <= 0x8F);
-        } else {
-            return false;
-        }
-
-        for (size_t i = 1; i < length; i++) {
-            if (!is_continuation(text, at + i)) {
-                return false;
-            }
-        }
-
-        if (!second_in_range) {
+        size_t length = utf8_character_size(text, at);
+        if (length == 0) {
             return false;
         }
 

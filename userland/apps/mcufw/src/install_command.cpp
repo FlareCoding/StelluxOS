@@ -35,6 +35,19 @@ int run_install(const arguments& parsed, const directory_layout& layout, reporte
     return 0;
 }
 
+// A core or a library without a version, the whole of which a removal deletes
+static bool is_removable(const install_target& target) {
+    switch (target.kind) {
+    case install_kind::core:
+    case install_kind::library:
+        return target.version.empty();
+    case install_kind::board:
+        return false;
+    }
+
+    return false;
+}
+
 int run_remove(const arguments& parsed, const directory_layout& layout, reporter& report) {
     std::vector<install_target> targets;
     if (!parse_targets(parsed, targets, report)) {
@@ -42,8 +55,9 @@ int run_remove(const arguments& parsed, const directory_layout& layout, reporter
     }
 
     for (const install_target& target : targets) {
-        if (target.kind != install_kind::core || !target.version.empty()) {
-            report.failed({ failure_kind::core, "remove takes a core without a version, such as esp32:esp32" });
+        if (!is_removable(target)) {
+            failure_kind kind = target.kind == install_kind::library ? failure_kind::library : failure_kind::core;
+            report.failed({ kind, "remove takes a core or a library without a version, such as esp32:esp32" });
             return 1;
         }
     }

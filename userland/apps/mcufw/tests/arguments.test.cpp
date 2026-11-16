@@ -64,9 +64,9 @@ static void check_usage_errors() {
         { { "flash" }, "unknown command flash" },
         { { "boards", "--json" }, "boards takes no option --json" },
         { { "boards", "esp32da", "esp32s3" }, "boards takes 1 word at most" },
-        { { "install" }, "install needs a core or a board, such as esp32:esp32:esp32da" },
+        { { "install" }, "install needs a board, a core or a library, such as FastLED" },
         { { "remove", "--force" }, "remove takes no option --force" },
-        { { "remove" }, "remove needs a core, such as esp32:esp32" },
+        { { "remove" }, "remove needs a core or a library, such as FastLED" },
     };
 
     for (const usage_error& expected : usage_errors) {

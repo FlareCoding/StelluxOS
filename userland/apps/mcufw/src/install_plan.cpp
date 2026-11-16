@@ -1,8 +1,39 @@
 #include "installer.hpp"
 
+#include "files.hpp"
 #include "versions.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <deque>
+#include <map>
+#include <set>
+
+// Each library's releases the resolver chooses among, newest first
+using release_table = std::map<std::string, std::vector<const library_release*>>;
+
+// A dependency still to settle, with the release that states it
+struct pending_dependency {
+    const library_release*    dependent;
+    const library_dependency* dependency;
+};
+
+// A library target: its newest release or the one it names, which a pinned target keeps in every attempt
+struct library_goal {
+    const library_release* release;
+    bool                   is_pinned;
+};
+
+// The targets' resolution as relaxed-semver's resolver runs it: the first pending dependency takes the newest release
+// meeting it whose dependencies the index lists, backtracking when the rest fail, and failed dependencies move first
+struct library_search {
+    const release_table*                          table = nullptr;
+    std::map<std::string, const library_release*> solution;
+    std::vector<pending_dependency>               pending;
+    std::map<std::string, size_t>                 failures;  // per dependency as `name/constraint`
+    size_t                                        steps = 0;
+    std::string                                   error;     // set when the search must stop
+};
 
 constexpr std::string_view ZIP_EXTENSION = ".zip";
 constexpr std::string_view SHA256_PREFIX = "SHA-256:";
@@ -19,6 +50,9 @@ constexpr size_t ENTRY_NAME_MAX = 255;
 constexpr uint32_t FILE_TYPE_BITS = 0170000;
 constexpr uint32_t SYMBOLIC_LINK_TYPE = 0120000;
 constexpr uint32_t EXECUTABLE_BITS = 0111;
+
+// Backtracking can take exponential time on a hostile index, so the search stops here
+constexpr size_t RESOLUTION_STEPS_MAX = 100000;
 
 static std::vector<std::string_view> split(std::string_view text, char separator) {
     std::vector<std::string_view> parts;
@@ -46,6 +80,12 @@ bool parse_install_target(std::string_view text, install_target& target, std::st
     }
 
     std::vector<std::string_view> parts = split(name, ':');
+    if (parts.size() == 1 && !name.empty()) {
+        target.kind = install_kind::library;
+        target.library = name;
+        return true;
+    }
+
     if (parts.size() == 2 && !parts[0].empty() && !parts[1].empty()) {
         target.kind = install_kind::core;
         target.board.packager = parts[0];
@@ -54,8 +94,7 @@ bool parse_install_target(std::string_view text, install_target& target, std::st
     }
 
     if (parts.size() < 3) {
-        error = std::string(name) + " names no core or board, so name a core as packager:architecture or a board "
-                                    "by its FQBN";
+        error = std::string(name) + " names no library, core or board: a core is packager:architecture with both parts";
         return false;
     }
 
@@ -280,6 +319,463 @@ bool plan_data_tools(const board_requirements& requirements, const std::vector<t
         if (release->is_data) {
             data_tools.push_back(release);
         }
+    }
+
+    return true;
+}
+
+static bool is_installed_copy(const library& present, const std::string& name) {
+    return present.location == library_location::installed && present.name == name;
+}
+
+// An installed library as a message names it, with its version when it states one
+static std::string described(const library& present) {
+    return present.version.empty() ? present.name : present.name + " " + present.version;
+}
+
+// Each library's releases, newest first: the override alone where one is given, else every release the index lists
+static release_table build_table(const std::vector<library_release>& releases,
+                                 const std::map<std::string, const library_release*>& overrides) {
+    release_table table;
+    for (const library_release& release : releases) {
+        if (!overrides.contains(release.name)) {
+            table[release.name].push_back(&release);
+        }
+    }
+
+    for (auto& [name, listed] : table) {
+        std::stable_sort(listed.begin(), listed.end(), [](const library_release* a, const library_release* b) {
+            return compare_versions(a->version, b->version) > 0;
+        });
+    }
+
+    for (const auto& [name, release] : overrides) {
+        table[name] = { release };
+    }
+
+    return table;
+}
+
+static const library_release* find_version(const release_table& table, const std::string& name,
+                                           const std::string& version) {
+    auto listed = table.find(name);
+    if (listed == table.end()) {
+        return nullptr;
+    }
+
+    for (const library_release* release : listed->second) {
+        if (version.empty() || compare_versions(release->version, version) == 0) {
+            return release;
+        }
+    }
+
+    return nullptr;
+}
+
+// The release an installed library stands for: as arduino-cli's --no-overwrite takes it, the index's release of its
+// version or the newest when its version does not read, else its own version without dependencies
+static const library_release* installed_release(const release_table& index, const library& present,
+                                                std::deque<library_release>& unlisted) {
+    if (present.is_legacy || !index.contains(present.name)) {
+        return nullptr;
+    }
+
+    bool has_version = !present.version.empty() && is_semantic_version(present.version);
+    const library_release* listed = find_version(index, present.name, has_version ? present.version : "");
+    if (listed) {
+        return listed;
+    }
+
+    unlisted.push_back({ present.name, present.version, {}, {}, {} });
+
+    return &unlisted.back();
+}
+
+static size_t failure_count(const library_search& search, const pending_dependency& pending) {
+    auto counted = search.failures.find(pending.dependency->name + "/" + pending.dependency->constraint);
+    return counted == search.failures.end() ? 0 : counted->second;
+}
+
+// Whether `release` meets the constraint `pending` states, stopping the search on one it cannot read
+static bool read_constraint(library_search& search, const pending_dependency& pending, const library_release& release,
+                            bool& meets) {
+    std::string error;
+    if (check_constraint(release.version, pending.dependency->constraint, meets, error)) {
+        return true;
+    }
+
+    search.error = pending.dependent->name + " " + pending.dependent->version + "'s dependency on " +
+                   pending.dependency->name + ": " + error;
+
+    return false;
+}
+
+static bool lists_dependencies(const release_table& table, const library_release& release) {
+    for (const library_dependency& dependency : release.dependencies) {
+        if (!table.contains(dependency.name)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool search_releases(library_search& search);
+
+// Settles the first pending dependency on a release already in the solution, which must meet it
+static bool settle_on_chosen(library_search& search, const library_release& chosen) {
+    bool meets = false;
+    if (!read_constraint(search, search.pending.front(), chosen, meets) || !meets) {
+        return false;
+    }
+
+    std::vector<pending_dependency> saved = search.pending;
+    search.pending.erase(search.pending.begin());
+    if (search_releases(search)) {
+        return true;
+    }
+
+    search.pending = saved;
+
+    return false;
+}
+
+static bool search_releases(library_search& search) {
+    if (search.pending.empty()) {
+        return true;
+    }
+
+    if (++search.steps > RESOLUTION_STEPS_MAX) {
+        search.error = "the dependencies take more than " + std::to_string(RESOLUTION_STEPS_MAX) + " steps to resolve";
+        return false;
+    }
+
+    pending_dependency next = search.pending.front();
+    const std::string& name = next.dependency->name;
+    auto chosen = search.solution.find(name);
+    if (chosen != search.solution.end()) {
+        return settle_on_chosen(search, *chosen->second);
+    }
+
+    auto listed = search.table->find(name);
+    std::vector<const library_release*> candidates;
+    if (listed != search.table->end()) {
+        candidates = listed->second;
+    }
+
+    for (const library_release* candidate : candidates) {
+        bool meets = false;
+        if (!read_constraint(search, next, *candidate, meets)) {
+            return false;
+        }
+
+        if (!meets || !lists_dependencies(*search.table, *candidate)) {
+            continue;
+        }
+
+        std::vector<pending_dependency> saved = search.pending;
+        search.solution[name] = candidate;
+        search.pending.erase(search.pending.begin());
+        for (const library_dependency& dependency : candidate->dependencies) {
+            search.pending.push_back({ candidate, &dependency });
+        }
+
+        std::stable_sort(search.pending.begin(), search.pending.end(), [&](const auto& a, const auto& b) {
+            return failure_count(search, a) > failure_count(search, b);
+        });
+
+        if (search_releases(search)) {
+            return true;
+        }
+
+        if (!search.error.empty()) {
+            return false;
+        }
+
+        search.pending = saved;
+        search.solution.erase(name);
+    }
+
+    search.failures[name + "/" + next.dependency->constraint]++;
+
+    return false;
+}
+
+// The releases the targets need with them, found together as relaxed-semver's resolver finds one release's
+static bool search_targets(const release_table& table, const std::vector<library_goal>& goals,
+                           std::map<std::string, const library_release*>& solution, std::string& error) {
+    library_release root = { "the targets", "", {}, {}, {} };
+    for (const library_goal& goal : goals) {
+        root.dependencies.push_back({ goal.release->name, "" });
+    }
+
+    library_search search;
+    search.table = &table;
+    for (const library_dependency& dependency : root.dependencies) {
+        search.pending.push_back({ &root, &dependency });
+    }
+
+    bool solved = search_releases(search);
+    solution = search.solution;
+    error = search.error;
+
+    return solved;
+}
+
+// An installed library the open solution moves, as the failure names it with the install that fixes it, or empty
+static std::string blocking_library(const std::map<std::string, const library_release*>& open_solution,
+                                    const std::map<std::string, const library_release*>& kept,
+                                    const std::vector<library>& installed) {
+    for (const library& present : installed) {
+        auto replacing = open_solution.find(present.name);
+        bool may_block = present.location == library_location::installed && replacing != open_solution.end() &&
+                         kept.contains(present.name);
+        if (!may_block) {
+            continue;
+        }
+
+        for (const auto& [name, dependent] : open_solution) {
+            for (const library_dependency& dependency : dependent->dependencies) {
+                if (dependency.name == present.name && !dependency.constraint.empty()) {
+                    return described(present) + " is installed, but " + name + " " + dependent->version + " needs " +
+                           dependency.constraint + ", so run mcufw install \"" + present.name + "@" +
+                           replacing->second->version + "\"";
+                }
+            }
+        }
+    }
+
+    return {};
+}
+
+// Why the targets have no solution, as arduino-cli first checks the named releases' own dependencies
+static std::string explain_failure(const release_table& index, const std::vector<library_goal>& goals) {
+    for (const library_goal& goal : goals) {
+        for (const library_dependency& dependency : goal.release->dependencies) {
+            if (!index.contains(dependency.name)) {
+                return "the library index lists no library " + dependency.name + ", which " + goal.release->name +
+                       " " + goal.release->version + " depends on";
+            }
+        }
+    }
+
+    std::string targets;
+    for (const library_goal& goal : goals) {
+        targets += (targets.empty() ? "" : ", ") + goal.release->name;
+    }
+
+    return "no library releases meet every dependency of " + targets;
+}
+
+// The index's releases with these fixed: the targets' when `fixes_targets`, else only those given a version, and the
+// installed libraries `kept`
+static release_table attempt_table(const std::vector<library_release>& releases, const std::vector<library_goal>& goals,
+                                   bool fixes_targets, const std::map<std::string, const library_release*>& kept) {
+    std::map<std::string, const library_release*> overrides = kept;
+    for (const library_goal& goal : goals) {
+        if (fixes_targets || goal.is_pinned) {
+            overrides[goal.release->name] = goal.release;
+        }
+    }
+
+    return build_table(releases, overrides);
+}
+
+// Named libraries get their newest release, as arduino-cli installs a named library at its latest. Only when those
+// cannot go together do they take the newest releases that do, as a second arduino-cli install would replace the first.
+static bool find_solution(const std::vector<library_release>& releases, const release_table& index,
+                          const std::vector<library_goal>& goals,
+                          const std::map<std::string, const library_release*>& kept,
+                          const std::vector<library>& installed,
+                          std::map<std::string, const library_release*>& solution, std::string& error) {
+    const std::map<std::string, const library_release*> none;
+    for (bool fixes_targets : { true, false }) {
+        if (search_targets(attempt_table(releases, goals, fixes_targets, kept), goals, solution, error)) {
+            return true;
+        }
+
+        std::map<std::string, const library_release*> open_solution;
+        bool is_open = error.empty() &&
+                       search_targets(attempt_table(releases, goals, fixes_targets, none), goals, open_solution, error);
+        if (!error.empty()) {
+            return false;
+        }
+
+        if (is_open) {
+            error = blocking_library(open_solution, kept, installed);
+            error = error.empty() ? "the installed libraries leave no releases that meet every dependency" : error;
+            return false;
+        }
+    }
+
+    error = explain_failure(index, goals);
+
+    return false;
+}
+
+static bool is_target(const std::vector<library_goal>& goals, const std::string& name) {
+    return std::any_of(goals.begin(), goals.end(), [&](const library_goal& goal) {
+        return goal.release->name == name;
+    });
+}
+
+static bool find_goals(const release_table& index, const std::vector<install_target>& targets,
+                       std::vector<library_goal>& goals, std::string& error) {
+    std::map<std::string, const library_release*> by_name;
+    for (const install_target& target : targets) {
+        if (target.kind != install_kind::library) {
+            continue;
+        }
+
+        const library_release* release = find_version(index, target.library, target.version);
+        if (!release) {
+            error = !index.contains(target.library)
+                        ? "the library index lists no library " + target.library +
+                              ", and a core or board is named with colons, as esp32:esp32:esp32da"
+                        : "the library index lists no " + target.library + " " + target.version;
+            return false;
+        }
+
+        auto [named, is_new] = by_name.emplace(release->name, release);
+        if (!is_new && compare_versions(named->second->version, release->version) != 0) {
+            error = "two different versions of the library " + release->name + " are required: " +
+                    named->second->version + " and " + release->version;
+            return false;
+        }
+
+        if (is_new) {
+            goals.push_back({ release, !target.version.empty() });
+        }
+    }
+
+    return true;
+}
+
+// Fails on an installed library no target names that the solution would move, which mcufw leaves to the person
+static bool check_installed_stay(const std::map<std::string, const library_release*>& solution,
+                                 const std::vector<library_goal>& goals, const std::vector<library>& installed,
+                                 std::string& error) {
+    for (const library& present : installed) {
+        auto chosen = solution.find(present.name);
+        bool is_moved = present.location == library_location::installed && chosen != solution.end() &&
+                        !is_target(goals, present.name) &&
+                        compare_versions(present.version, chosen->second->version) != 0;
+        if (is_moved) {
+            error = described(present) + " is installed, but the libraries being installed need " +
+                    chosen->second->version + ", so run mcufw install \"" + present.name + "@" +
+                    chosen->second->version + "\"";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Each release after the releases it depends on, so a failure partway leaves no library without its dependencies
+static void append_in_order(const std::map<std::string, const library_release*>& solution,
+                            const library_release& release, std::set<std::string>& placed,
+                            std::vector<const library_release*>& ordered) {
+    if (!placed.insert(release.name).second) {
+        return;
+    }
+
+    for (const library_dependency& dependency : release.dependencies) {
+        auto chosen = solution.find(dependency.name);
+        if (chosen != solution.end()) {
+            append_in_order(solution, *chosen->second, placed, ordered);
+        }
+    }
+
+    ordered.push_back(&release);
+}
+
+static bool is_installed_at(const std::vector<library>& installed, const library_release& release) {
+    for (const library& present : installed) {
+        if (is_installed_copy(present, release.name) && compare_versions(present.version, release.version) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool resolve_libraries(const std::vector<library_release>& releases, const std::vector<install_target>& targets,
+                       const std::vector<library>& installed, std::vector<release_name>& chosen, std::string& error) {
+    release_table index = build_table(releases, {});
+    std::vector<library_goal> goals;
+    if (!find_goals(index, targets, goals, error)) {
+        return false;
+    }
+
+    std::map<std::string, const library_release*> kept;
+    std::deque<library_release> unlisted;
+    for (const library& present : installed) {
+        bool may_stay = present.location == library_location::installed && !is_target(goals, present.name);
+        const library_release* stays = may_stay ? installed_release(index, present, unlisted) : nullptr;
+        if (stays) {
+            kept.emplace(present.name, stays);
+        }
+    }
+
+    std::map<std::string, const library_release*> solution;
+    bool solved = find_solution(releases, index, goals, kept, installed, solution, error) &&
+                  check_installed_stay(solution, goals, installed, error);
+    if (!solved) {
+        return false;
+    }
+
+    std::set<std::string> placed;
+    std::vector<const library_release*> ordered;
+    for (const library_goal& goal : goals) {
+        append_in_order(solution, *solution.at(goal.release->name), placed, ordered);
+    }
+
+    chosen.clear();
+    for (const library_release* release : ordered) {
+        if (!is_installed_at(installed, *release)) {
+            chosen.push_back({ release->name, release->version });
+        }
+    }
+
+    return true;
+}
+
+bool needs_library_index(const std::vector<install_target>& targets) {
+    return std::any_of(targets.begin(), targets.end(), [](const install_target& target) {
+        return target.kind == install_kind::library;
+    });
+}
+
+bool plan_library_installs(const std::vector<release_name>& chosen, const std::vector<library>& installed,
+                           const std::string& libraries_folder, const std::vector<std::string>& folder_entries,
+                           std::vector<library_install>& installs, std::string& error) {
+    installs.clear();
+    std::set<std::string> taken(folder_entries.begin(), folder_entries.end());
+    for (const release_name& release : chosen) {
+        std::vector<const library*> copies;
+        for (const library& present : installed) {
+            if (is_installed_copy(present, release.name)) {
+                copies.push_back(&present);
+            }
+        }
+
+        if (copies.size() > 1) {
+            error = release.name + " is installed twice, in " + copies[0]->directory + " and " + copies[1]->directory +
+                    ", so remove one before installing it";
+            return false;
+        }
+
+        std::string folder = library_folder_name(release.name);
+        std::string replaced = copies.empty() ? std::string() : copies[0]->directory;
+        std::string destination = join_path(libraries_folder, folder);
+        if (taken.contains(folder) && replaced != destination) {
+            error = destination + " already holds something other than " + release.name +
+                    ", so mcufw cannot install it there";
+            return false;
+        }
+
+        taken.insert(folder);
+        installs.push_back({ release, destination, replaced });
     }
 
     return true;

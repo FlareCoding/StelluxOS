@@ -1,12 +1,13 @@
 #ifndef MCUFW_INSTALLER_HPP
 #define MCUFW_INSTALLER_HPP
 
-// Installs and removes cores and the data tools their boards need. Each archive streams through SHA-256 and the zip
-// reader into a staged folder, which replaces the installed one by rename only after the archive's checks pass.
+// Installs and removes cores, the data tools their boards need, and libraries. An installed item's archive streams
+// through SHA-256 and the zip reader into a staged folder, which replaces the installed one only after its checks pass.
 
 #include "fqbn.hpp"
 #include "indexes.hpp"
 #include "layout.hpp"
+#include "libraries.hpp"
 #include "report.hpp"
 #include "requirements.hpp"
 #include "zip.hpp"
@@ -15,15 +16,24 @@
 #include <string_view>
 #include <vector>
 
-enum class install_kind { core, board };
+enum class install_kind { core, board, library };
+
+// A library release and where it lands
+struct library_install {
+    release_name release;
+    std::string  directory;  // `<libraries>/<library_folder_name>`
+    std::string  replaced;   // the installed copy's folder, which the install deletes, empty when there is none
+};
 
 struct install_target {
     install_kind  kind;
     board_request board;    // a core's packager and architecture, and for a board its ID and options
-    std::string   version;  // after `@`, empty for the newest release the overrides allow
+    std::string   library;  // a library's name as the index spells it
+    std::string   version;  // after `@`, empty for the newest release the overrides or constraints allow
 };
 
-// `esp32:esp32` names a core and `esp32:esp32:esp32da` a board, each with an optional `@version`
+// `esp32:esp32` names a core, `esp32:esp32:esp32da` a board and `FastLED` a library, any word without a colon, each
+// with an optional `@version`
 bool parse_install_target(std::string_view text, install_target& target, std::string& error);
 
 // Gives the archive's SHA-256 as lowercase hex. Fails, before any download, on an archive with no URL, not a zip by its
@@ -57,16 +67,30 @@ bool choose_core_release(const std::vector<core_release>& releases, const std::s
 bool plan_data_tools(const board_requirements& requirements, const std::vector<tool_release>& tools,
                      std::vector<const tool_release*>& data_tools, std::string& error);
 
+// The library releases to install, dependencies first: the targets resolved together as arduino-cli 1.6.0 resolves one,
+// installed libraries no target names kept. Leaves out releases already installed, and fails naming the fix it knows.
+bool resolve_libraries(const std::vector<library_release>& releases, const std::vector<install_target>& targets,
+                       const std::vector<library>& installed, std::vector<release_name>& chosen, std::string& error);
+
+// Whether a target is a library, the only kind that reads the library index, so the only one a failed fetch of it fails
+bool needs_library_index(const std::vector<install_target>& targets);
+
+// Where each chosen release installs, as arduino-cli 1.6.0 decides: `<libraries>/<library_folder_name>`, replacing the
+// installed copy of its name. Fails before any download on a name installed twice or a place something else holds.
+bool plan_library_installs(const std::vector<release_name>& chosen, const std::vector<library>& installed,
+                           const std::string& libraries_folder, const std::vector<std::string>& folder_entries,
+                           std::vector<library_install>& installs, std::string& error);
+
 // The installed data tools no core's record names, which every install or removal deletes
 std::vector<tool_dependency> unused_data_tools(const std::vector<installed_core>& cores,
                                                const std::vector<tool_dependency>& installed);
 
-// Fetches the package index, then installs each target in order, stopping at the first failure, and keeping the items
-// installed before it. A board installs its core and the data tools its recipes name, and reports missing programs.
+// Fetches both indexes, installs the core and board targets in order, then the library targets with their dependencies.
+// Stops at the first failure, keeping what it installed before, and only warns of a library index it lacks no use for.
 bool install_targets(const directory_layout& layout, const std::vector<install_target>& targets, reporter& report,
                      failure& failed);
 
-// Removes each core, then every data tool no installed core's record names, without the network
+// Removes each core or library, then every data tool no installed core's record names, without the network
 bool remove_targets(const directory_layout& layout, const std::vector<install_target>& targets, reporter& report,
                     failure& failed);
 

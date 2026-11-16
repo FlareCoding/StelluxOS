@@ -55,6 +55,10 @@ private:
 // dropped, text that is not UTF-8 read as ISO 8859-1). A line without `=` fails, the lines before it already set.
 bool parse_properties(std::string_view text, property_table& table, std::string& error);
 
+// The bytes of the UTF-8 character starting at `text[at]`, or 0 when none does by Unicode's definition, which refuses
+// overlong forms and surrogates
+size_t utf8_character_size(std::string_view text, size_t at);
+
 // Reads the file at `path` as parse_properties does
 bool load_properties(const std::string& path, property_table& table, std::string& error);
 
