@@ -1,0 +1,881 @@
+Builds posix_spawn on Stellux's process calls, since Stellux has no clone
+that starts a process in its creator's memory. Every wait but waitid uses
+the process handles posix_spawn keeps, since the kernel has no wait4.
+
+--- a/src/internal/syscall.h
++++ b/src/internal/syscall.h
+@@ -391,14 +391,10 @@
+ #define __sys_open_cp(...) __SYSCALL_DISP(__sys_open_cp,,__VA_ARGS__)
+ #define sys_open_cp(...) __syscall_ret(__sys_open_cp(__VA_ARGS__))
+ 
+-#ifdef SYS_wait4
+-#define __sys_wait4(a,b,c,d) __syscall(SYS_wait4,a,b,c,d)
+-#define __sys_wait4_cp(a,b,c,d) __syscall_cp(SYS_wait4,a,b,c,d)
+-#else
+-hidden long __emulate_wait4(int, int *, int, void *, int);
+-#define __sys_wait4(a,b,c,d) __emulate_wait4(a,b,c,d,0)
+-#define __sys_wait4_cp(a,b,c,d) __emulate_wait4(a,b,c,d,1)
+-#endif
++/* Stellux has no wait4, so children are waited on through the process handles posix_spawn keeps */
++hidden long __wait_spawned_child(int, int *, int, void *, int);
++#define __sys_wait4(a,b,c,d) __wait_spawned_child(a,b,c,d,0)
++#define __sys_wait4_cp(a,b,c,d) __wait_spawned_child(a,b,c,d,1)
+ 
+ #define sys_wait4(a,b,c,d) __syscall_ret(__sys_wait4(a,b,c,d))
+ #define sys_wait4_cp(a,b,c,d) __syscall_ret(__sys_wait4_cp(a,b,c,d))
+--- a/src/process/posix_spawn.c
++++ b/src/process/posix_spawn.c
+@@ -1,219 +1,634 @@
+-#define _GNU_SOURCE
+-#include <spawn.h>
+-#include <sched.h>
+-#include <unistd.h>
+-#include <signal.h>
+-#include <fcntl.h>
+-#include <errno.h>
+-#include <sys/wait.h>
+-#include "syscall.h"
+-#include "lock.h"
+-#include "pthread_impl.h"
+-#include "fdop.h"
+-
+-struct args {
+-	int p[2];
+-	sigset_t oldmask;
+-	const char *path;
+-	const posix_spawn_file_actions_t *fa;
+-	const posix_spawnattr_t *restrict attr;
+-	char *const *argv, *const *envp;
+-};
+-
+-static int __sys_dup2(int old, int new)
+-{
+-#ifdef SYS_dup2
+-	return __syscall(SYS_dup2, old, new);
+-#else
+-	return __syscall(SYS_dup3, old, new, 0);
+-#endif
+-}
+-
+-static int child(void *args_vp)
+-{
+-	int i, ret;
+-	struct sigaction sa = {0};
+-	struct args *args = args_vp;
+-	int p = args->p[1];
+-	const posix_spawn_file_actions_t *fa = args->fa;
+-	const posix_spawnattr_t *restrict attr = args->attr;
+-	sigset_t hset;
+-
+-	close(args->p[0]);
+-
+-	/* All signal dispositions must be either SIG_DFL or SIG_IGN
+-	 * before signals are unblocked. Otherwise a signal handler
+-	 * from the parent might get run in the child while sharing
+-	 * memory, with unpredictable and dangerous results. To
+-	 * reduce overhead, sigaction has tracked for us which signals
+-	 * potentially have a signal handler. */
+-	__get_handler_set(&hset);
+-	for (i=1; i<_NSIG; i++) {
+-		if ((attr->__flags & POSIX_SPAWN_SETSIGDEF)
+-		     && sigismember(&attr->__def, i)) {
+-			sa.sa_handler = SIG_DFL;
+-		} else if (sigismember(&hset, i)) {
+-			if (i-32<3U) {
+-				sa.sa_handler = SIG_IGN;
+-			} else {
+-				__libc_sigaction(i, 0, &sa);
+-				if (sa.sa_handler==SIG_IGN) continue;
+-				sa.sa_handler = SIG_DFL;
+-			}
+-		} else {
+-			continue;
+-		}
+-		__libc_sigaction(i, &sa, 0);
+-	}
+-
+-	if (attr->__flags & POSIX_SPAWN_SETSID)
+-		if ((ret=__syscall(SYS_setsid)) < 0)
+-			goto fail;
+-
+-	if (attr->__flags & POSIX_SPAWN_SETPGROUP)
+-		if ((ret=__syscall(SYS_setpgid, 0, attr->__pgrp)))
+-			goto fail;
+-
+-	/* Use syscalls directly because the library functions attempt
+-	 * to do a multi-threaded synchronized id-change, which would
+-	 * trash the parent's state. */
+-	if (attr->__flags & POSIX_SPAWN_RESETIDS)
+-		if ((ret=__syscall(SYS_setgid, __syscall(SYS_getgid))) ||
+-		    (ret=__syscall(SYS_setuid, __syscall(SYS_getuid))) )
+-			goto fail;
+-
+-	if (fa && fa->__actions) {
+-		struct fdop *op;
+-		int fd;
+-		for (op = fa->__actions; op->next; op = op->next);
+-		for (; op; op = op->prev) {
+-			/* It's possible that a file operation would clobber
+-			 * the pipe fd used for synchronizing with the
+-			 * parent. To avoid that, we dup the pipe onto
+-			 * an unoccupied fd. */
+-			if (op->fd == p) {
+-				ret = __syscall(SYS_dup, p);
+-				if (ret < 0) goto fail;
+-				__syscall(SYS_close, p);
+-				p = ret;
+-			}
+-			switch(op->cmd) {
+-			case FDOP_CLOSE:
+-				__syscall(SYS_close, op->fd);
+-				break;
+-			case FDOP_DUP2:
+-				fd = op->srcfd;
+-				if (fd == p) {
+-					ret = -EBADF;
+-					goto fail;
+-				}
+-				if (fd != op->fd) {
+-					if ((ret=__sys_dup2(fd, op->fd))<0)
+-						goto fail;
+-				} else {
+-					ret = __syscall(SYS_fcntl, fd, F_GETFD);
+-					ret = __syscall(SYS_fcntl, fd, F_SETFD,
+-					                ret & ~FD_CLOEXEC);
+-					if (ret<0)
+-						goto fail;
+-				}
+-				break;
+-			case FDOP_OPEN:
+-				fd = __sys_open(op->path, op->oflag, op->mode);
+-				if ((ret=fd) < 0) goto fail;
+-				if (fd != op->fd) {
+-					if ((ret=__sys_dup2(fd, op->fd))<0)
+-						goto fail;
+-					__syscall(SYS_close, fd);
+-				}
+-				break;
+-			case FDOP_CHDIR:
+-				ret = __syscall(SYS_chdir, op->path);
+-				if (ret<0) goto fail;
+-				break;
+-			case FDOP_FCHDIR:
+-				ret = __syscall(SYS_fchdir, op->fd);
+-				if (ret<0) goto fail;
+-				break;
+-			}
+-		}
+-	}
+-
+-	/* Close-on-exec flag may have been lost if we moved the pipe
+-	 * to a different fd. We don't use F_DUPFD_CLOEXEC above because
+-	 * it would fail on older kernels and atomicity is not needed --
+-	 * in this process there are no threads or signal handlers. */
+-	__syscall(SYS_fcntl, p, F_SETFD, FD_CLOEXEC);
+-
+-	pthread_sigmask(SIG_SETMASK, (attr->__flags & POSIX_SPAWN_SETSIGMASK)
+-		? &attr->__mask : &args->oldmask, 0);
+-
+-	int (*exec)(const char *, char *const *, char *const *) =
+-		attr->__fn ? (int (*)())attr->__fn : execve;
+-
+-	exec(args->path, args->argv, args->envp);
+-	ret = -errno;
+-
+-fail:
+-	/* Since sizeof errno < PIPE_BUF, the write is atomic. */
+-	ret = -ret;
+-	if (ret) {
+-		int r;
+-		do r = __syscall(SYS_write, p, &ret, sizeof ret);
+-		while (r<0 && r!=-EPIPE);
+-	}
+-	_exit(127);
+-}
+-
+-
+-int posix_spawn(pid_t *restrict res, const char *restrict path,
+-	const posix_spawn_file_actions_t *fa,
+-	const posix_spawnattr_t *restrict attr,
+-	char *const argv[restrict], char *const envp[restrict])
+-{
+-	pid_t pid;
+-	char stack[1024+PATH_MAX];
+-	int ec=0, cs;
+-	struct args args;
+-
+-	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
+-
+-	args.path = path;
+-	args.fa = fa;
+-	args.attr = attr ? attr : &(const posix_spawnattr_t){0};
+-	args.argv = argv;
+-	args.envp = envp;
+-	pthread_sigmask(SIG_BLOCK, SIGALL_SET, &args.oldmask);
+-
+-	/* The lock guards both against seeing a SIGABRT disposition change
+-	 * by abort and against leaking the pipe fd to fork-without-exec. */
+-	LOCK(__abort_lock);
+-
+-	if (pipe2(args.p, O_CLOEXEC)) {
+-		UNLOCK(__abort_lock);
+-		ec = errno;
+-		goto fail;
+-	}
+-
+-	pid = __clone(child, stack+sizeof stack,
+-		CLONE_VM|CLONE_VFORK|SIGCHLD, &args);
+-	close(args.p[1]);
+-	UNLOCK(__abort_lock);
+-
+-	if (pid > 0) {
+-		if (read(args.p[0], &ec, sizeof ec) != sizeof ec) ec = 0;
+-		else waitpid(pid, &(int){0}, 0);
+-	} else {
+-		ec = -pid;
+-	}
+-
+-	close(args.p[0]);
+-
+-	if (!ec && res) *res = pid;
+-
+-fail:
+-	pthread_sigmask(SIG_SETMASK, &args.oldmask, 0);
+-	pthread_setcancelstate(cs, 0);
+-
+-	return ec;
+-}
++#define _GNU_SOURCE
++#include <spawn.h>
++#include <unistd.h>
++#include <signal.h>
++#include <pthread.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <poll.h>
++#include <time.h>
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <stlx/proc.h>
++#include <stlx/syscall_nums.h>
++#include "syscall.h"
++#include "lock.h"
++#include "fdop.h"
++
++/* A wait for any child polls every child's handle in one call, and the kernel polls at most 256 at once */
++#define MAX_SPAWNED_CHILDREN 256
++
++/* POSIX lets shell redirections name descriptors 0 to 9, so child handles sit above them */
++#define FIRST_CHILD_HANDLE_FD 10
++
++/* A fresh process starts with every signal at its default action and none blocked, whatever its creator's, and with
++ * every ID 0, which meets SETSIGDEF, RESETIDS and an empty SETSIGMASK. USEVFORK only hints at how to create it. */
++#define SUPPORTED_SPAWN_FLAGS (POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | \
++	POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_USEVFORK)
++
++/* The kernel ignores stop and continue signals, so WUNTRACED and WCONTINUED never have a child to report */
++#define SUPPORTED_WAIT_OPTIONS (WNOHANG | WUNTRACED | WCONTINUED)
++
++/* The resource usage record that wait4 passes to the wait holds two timevals and 14 counters */
++#define RUSAGE_RECORD_LONGS 18
++
++struct spawned_child {
++	pid_t pid;
++	int handle;
++};
++
++/* One file action's effect on a child descriptor slot, which receives nothing after a close */
++struct slot_source {
++	int slot;
++	int fd;                         /* the creator's descriptor whose object the slot receives, or -1 */
++	const struct fdop *open_action; /* the open whose file the slot receives, opened once the child exists */
++	int opener;                     /* the index of an earlier open's source whose file the slot receives, or -1 */
++};
++
++/* Children posix_spawn started that no wait has reaped. The kernel sends no SIGCHLD, so a child stays here until a
++ * wait reaps it, whatever SIGCHLD's action. */
++static struct spawned_child spawned_children[MAX_SPAWNED_CHILDREN];
++static int spawned_child_count;
++static volatile int spawned_children_lock[1];
++
++/* Signals stay blocked while the lock is held, so a signal handler that waits cannot deadlock on it */
++static void lock_spawned_children(sigset_t *saved_mask)
++{
++	__block_app_sigs(saved_mask);
++	LOCK(spawned_children_lock);
++}
++
++static void unlock_spawned_children(sigset_t *saved_mask)
++{
++	UNLOCK(spawned_children_lock);
++	__restore_sigs(saved_mask);
++}
++
++static int record_spawned_child(pid_t pid, int handle)
++{
++	sigset_t saved_mask;
++	int is_recorded = 0;
++
++	lock_spawned_children(&saved_mask);
++
++	if (spawned_child_count < MAX_SPAWNED_CHILDREN) {
++		spawned_children[spawned_child_count] = (struct spawned_child){ .pid = pid, .handle = handle };
++		spawned_child_count++;
++		is_recorded = 1;
++	}
++
++	unlock_spawned_children(&saved_mask);
++
++	return is_recorded;
++}
++
++/* Removes a child and returns its handle, which the caller then owns, or -1 when no child has that pid */
++static int take_spawned_child(pid_t pid)
++{
++	sigset_t saved_mask;
++	int handle = -1;
++
++	lock_spawned_children(&saved_mask);
++
++	for (int i = 0; i < spawned_child_count; i++) {
++		if (spawned_children[i].pid == pid) {
++			handle = spawned_children[i].handle;
++			spawned_children[i] = spawned_children[--spawned_child_count];
++			break;
++		}
++	}
++
++	unlock_spawned_children(&saved_mask);
++
++	return handle;
++}
++
++/* Returns a close-on-exec duplicate of a child's handle, which the caller owns while the record keeps the original,
++ * or -ECHILD when no child has that pid */
++static int duplicate_spawned_child_handle(pid_t pid)
++{
++	sigset_t saved_mask;
++	int duplicate = -ECHILD;
++
++	lock_spawned_children(&saved_mask);
++
++	for (int i = 0; i < spawned_child_count; i++) {
++		if (spawned_children[i].pid == pid) {
++			int handle = spawned_children[i].handle;
++			duplicate = __syscall(SYS_fcntl, handle, F_DUPFD_CLOEXEC, FIRST_CHILD_HANDLE_FD);
++			break;
++		}
++	}
++
++	unlock_spawned_children(&saved_mask);
++
++	return duplicate;
++}
++
++static int list_waited_children(pid_t pid, struct pollfd *fds, pid_t *pids)
++{
++	sigset_t saved_mask;
++	int count = 0;
++
++	lock_spawned_children(&saved_mask);
++
++	for (int i = 0; i < spawned_child_count; i++) {
++		if (pid == -1 || spawned_children[i].pid == pid) {
++			fds[count] = (struct pollfd){ .fd = spawned_children[i].handle, .events = POLLIN };
++			pids[count] = spawned_children[i].pid;
++			count++;
++		}
++	}
++
++	unlock_spawned_children(&saved_mask);
++
++	return count;
++}
++
++static long poll_children(struct pollfd *fds, int count, int nohang, int cp)
++{
++	struct timespec no_wait = { 0 };
++	struct timespec *timeout = nohang ? &no_wait : 0;
++
++	if (cp) {
++		return __syscall_cp(SYS_ppoll, fds, count, timeout, 0, _NSIG/8);
++	}
++
++	return __syscall(SYS_ppoll, fds, count, timeout, 0, _NSIG/8);
++}
++
++/* Hands a collected child's status to the caller. No resource use survives a child's exit, so wait4 reports none, as
++ * getrusage does for children. */
++static long report_child_status(pid_t pid, int wait_status, int *status, void *rusage_record)
++{
++	if (status) {
++		*status = wait_status;
++	}
++
++	if (rusage_record) {
++		memset(rusage_record, 0, RUSAGE_RECORD_LONGS * sizeof(long));
++	}
++
++	return pid;
++}
++
++/* Collects an exited child's status through its handle, which the native wait consumes */
++static long reap_spawned_child(pid_t pid, int handle, int *status, void *rusage_record)
++{
++	int wait_status = 0;
++	long result = __syscall(SYS_PROC_WAIT, handle, &wait_status);
++	if (result < 0) {
++		return result;
++	}
++
++	return report_child_status(pid, wait_status, status, rusage_record);
++}
++
++static void close_waiting_handle(void *handle)
++{
++	__syscall(SYS_close, *(int *)handle);
++}
++
++/* Sleeps in the native wait on a duplicate of the child's handle, so the kernel restarts the wait under SA_RESTART,
++ * while the record keeps the original until the child is collected */
++static long wait_for_spawned_child(pid_t pid, int *status, void *rusage_record, int cp)
++{
++	int wait_status = 0;
++	long result;
++
++	int waiting_handle = duplicate_spawned_child_handle(pid);
++	if (waiting_handle < 0) {
++		return waiting_handle;
++	}
++
++	pthread_cleanup_push(close_waiting_handle, &waiting_handle);
++	if (cp) {
++		result = __syscall_cp(SYS_PROC_WAIT, waiting_handle, &wait_status);
++	} else {
++		result = __syscall(SYS_PROC_WAIT, waiting_handle, &wait_status);
++	}
++
++	pthread_cleanup_pop(0);
++
++	/* The native wait closes the duplicate only when it collects the status */
++	if (result < 0) {
++		__syscall(SYS_close, waiting_handle);
++		return result;
++	}
++
++	/* Two waits for one child both collect its status, and only the one that takes the record reports it */
++	int handle = take_spawned_child(pid);
++	if (handle < 0) {
++		return -ECHILD;
++	}
++
++	__syscall(SYS_close, handle);
++	return report_child_status(pid, wait_status, status, rusage_record);
++}
++
++/* A caught signal ends a wait for any child with EINTR even under SA_RESTART, since the kernel never restarts a poll */
++static long poll_for_exited_child(pid_t pid, int *status, int nohang, void *rusage_record, int cp)
++{
++	struct pollfd fds[MAX_SPAWNED_CHILDREN];
++	pid_t pids[MAX_SPAWNED_CHILDREN];
++
++	/* Only the wait that takes a child off the list reaps it, so an interrupted or cancelled wait loses no child.
++	 * A child spawned during a wait for any child is not polled until a listed child exits or a signal arrives. */
++	while (1) {
++		int count = list_waited_children(pid, fds, pids);
++		if (!count) {
++			return -ECHILD;
++		}
++
++		long ready = poll_children(fds, count, nohang, cp);
++		if (ready < 0) {
++			return ready;
++		}
++
++		if (!ready) {
++			return 0;
++		}
++
++		for (int i = 0; i < count; i++) {
++			int handle = fds[i].revents ? take_spawned_child(pids[i]) : -1;
++			if (handle >= 0) {
++				return reap_spawned_child(pids[i], handle, status, rusage_record);
++			}
++		}
++	}
++}
++
++long __wait_spawned_child(int pid, int *status, int options, void *rusage_record, int cp)
++{
++	if (options & ~SUPPORTED_WAIT_OPTIONS) {
++		return -EINVAL;
++	}
++
++	/* An exited child's process group is no longer known, so a group wait cannot tell which children it covers */
++	if (pid == 0 || pid < -1) {
++		return -ENOTSUP;
++	}
++
++	if (pid > 0 && !(options & WNOHANG)) {
++		return wait_for_spawned_child(pid, status, rusage_record, cp);
++	}
++
++	return poll_for_exited_child(pid, status, options & WNOHANG, rusage_record, cp);
++}
++
++/* The process calls cannot block a signal in a child before it starts, so a child that would start with one blocked,
++ * through SETSIGMASK or by inheriting the calling thread's mask, is refused */
++static int check_attributes(const posix_spawnattr_t *attr)
++{
++	int flags = attr ? attr->__flags : 0;
++	sigset_t starting_mask;
++
++	if (flags & ~SUPPORTED_SPAWN_FLAGS) {
++		return ENOTSUP;
++	}
++
++	if (flags & POSIX_SPAWN_SETSIGMASK) {
++		starting_mask = attr->__mask;
++	} else {
++		pthread_sigmask(SIG_BLOCK, 0, &starting_mask);
++	}
++
++	return sigisemptyset(&starting_mask) ? 0 : ENOTSUP;
++}
++
++static int is_closed(const struct slot_source *source)
++{
++	return source->fd < 0 && !source->open_action && source->opener < 0;
++}
++
++static int is_replaced_later(const struct slot_source *sources, int count, int index)
++{
++	for (int i = index + 1; i < count; i++) {
++		if (sources[i].slot == sources[index].slot) {
++			return 1;
++		}
++	}
++
++	return 0;
++}
++
++/* The kernel gives a child its creator's descriptors 0 to 2, except those marked close-on-exec */
++static int child_inherits(int fd)
++{
++	if (fd > STDERR_FILENO) {
++		return 0;
++	}
++
++	int flags = __syscall(SYS_fcntl, fd, F_GETFD);
++	return flags >= 0 && !(flags & FD_CLOEXEC);
++}
++
++/* Points `source` at what the slot holds after the first count actions, or returns EBADF when one closed it. A file
++ * action may name any descriptor the creator holds, so a slot no action named is the creator's own. */
++static int find_slot_source(const struct slot_source *sources, int count, int slot, struct slot_source *source)
++{
++	for (int i = count - 1; i >= 0; i--) {
++		if (sources[i].slot != slot) {
++			continue;
++		}
++
++		if (is_closed(&sources[i])) {
++			return EBADF;
++		}
++
++		source->fd = sources[i].fd;
++		source->opener = sources[i].open_action ? i : sources[i].opener;
++		return 0;
++	}
++
++	if (__syscall(SYS_fcntl, slot, F_GETFD) < 0) {
++		return EBADF;
++	}
++
++	source->fd = slot;
++	return 0;
++}
++
++/* Plans the file actions, oldest first, as what each child slot ends up holding, so a refused request fails before
++ * the child exists or any file opens */
++static int plan_child_slots(const posix_spawn_file_actions_t *fa, struct slot_source *sources, int *count)
++{
++	const struct fdop *op = fa->__actions;
++
++	while (op->next) {
++		op = op->next;
++	}
++
++	for (; op; op = op->prev) {
++		struct slot_source source = { .slot = op->fd, .fd = -1, .open_action = 0, .opener = -1 };
++		int error = 0;
++
++		switch (op->cmd) {
++		case FDOP_CLOSE:
++			break;
++		case FDOP_DUP2:
++			error = find_slot_source(sources, *count, op->srcfd, &source);
++			break;
++		case FDOP_OPEN:
++			source.open_action = op;
++			break;
++		case FDOP_CHDIR:
++		case FDOP_FCHDIR:
++			/* Nothing can change a child's working directory before it runs */
++			error = ENOTSUP;
++			break;
++		default:
++			error = ENOTSUP;
++		}
++
++		if (error) {
++			return error;
++		}
++
++		sources[(*count)++] = source;
++	}
++
++	/* A slot can be filled but never emptied, so closing a descriptor the child inherits is refused */
++	for (int i = 0; i < *count; i++) {
++		int is_final_close = is_closed(&sources[i]) && !is_replaced_later(sources, *count, i);
++		if (is_final_close && child_inherits(sources[i].slot)) {
++			return ENOTSUP;
++		}
++	}
++
++	return 0;
++}
++
++/* Plans the caller's file actions into an array the caller frees */
++static int plan_file_actions(const posix_spawn_file_actions_t *fa, struct slot_source **sources, int *count)
++{
++	int action_count = 0;
++
++	for (struct fdop *op = fa ? fa->__actions : 0; op; op = op->next) {
++		action_count++;
++	}
++
++	if (!action_count) {
++		return 0;
++	}
++
++	*sources = malloc(action_count * sizeof **sources);
++	if (!*sources) {
++		return ENOMEM;
++	}
++
++	return plan_child_slots(fa, *sources, count);
++}
++
++/* Opens the planned files in the creator's working directory, which the child starts in, then installs what each
++ * slot ends up holding */
++static int give_child_descriptors(int child, struct slot_source *sources, int count)
++{
++	for (int i = 0; i < count; i++) {
++		const struct fdop *action = sources[i].open_action;
++		if (action) {
++			sources[i].fd = __sys_open(action->path, action->oflag | O_CLOEXEC, action->mode);
++			if (sources[i].fd < 0) {
++				return -sources[i].fd;
++			}
++		} else if (sources[i].opener >= 0) {
++			sources[i].fd = sources[sources[i].opener].fd;
++		}
++	}
++
++	for (int i = 0; i < count; i++) {
++		if (sources[i].fd < 0 || is_replaced_later(sources, count, i)) {
++			continue;
++		}
++
++		long result = __syscall(SYS_PROC_SET_HANDLE, child, sources[i].slot, sources[i].fd);
++
++		/* The kernel refuses a slot past the child's descriptor limit with EINVAL, where POSIX reports EBADF */
++		if (result == -EINVAL) {
++			return EBADF;
++		}
++
++		if (result < 0) {
++			return -result;
++		}
++	}
++
++	return 0;
++}
++
++static void close_opened_files(const struct slot_source *sources, int count)
++{
++	for (int i = 0; i < count; i++) {
++		if (sources[i].open_action && sources[i].fd >= 0) {
++			__syscall(SYS_close, sources[i].fd);
++		}
++	}
++}
++
++/* The kernel gives the child its path as argv[0], so only the arguments after argv[0] are passed */
++static int create_child(const char *path, char *const argv[], char *const envp[])
++{
++	char *const *arguments = argv && argv[0] ? argv + 1 : argv;
++	return __syscall(SYS_PROC_CREATE, path, arguments, envp);
++}
++
++/* Writes dir/file into candidate, or file alone for an empty PATH entry, which names the working directory */
++static const char *join_path(char *candidate, const char *dir, size_t dir_length, const char *file)
++{
++	char *name = candidate;
++
++	if (dir_length) {
++		memcpy(candidate, dir, dir_length);
++		candidate[dir_length] = '/';
++		name += dir_length + 1;
++	}
++
++	strcpy(name, file);
++	return candidate;
++}
++
++/* Creates the child from the first directory of PATH that holds file, with execvp's rules and errors */
++static int create_child_from_search_path(const char *file, char *const argv[], char *const envp[])
++{
++	const char *dirs = getenv("PATH");
++	size_t file_length = strnlen(file, NAME_MAX + 1);
++	int saw_eacces = 0;
++
++	if (strchr(file, '/')) {
++		return create_child(file, argv, envp);
++	}
++
++	if (!file_length) {
++		return -ENOENT;
++	}
++
++	if (file_length > NAME_MAX) {
++		return -ENAMETOOLONG;
++	}
++
++	if (!dirs) {
++		dirs = "/usr/local/bin:/bin:/usr/bin";
++	}
++
++	while (1) {
++		size_t dir_length = __strchrnul(dirs, ':') - dirs;
++		char candidate[PATH_MAX];
++
++		if (dir_length + 1 + file_length < sizeof candidate) {
++			int child = create_child(join_path(candidate, dirs, dir_length, file), argv, envp);
++			if (child == -EACCES) {
++				saw_eacces = 1;
++			} else if (child != -ENOENT && child != -ENOTDIR) {
++				return child;
++			}
++		}
++
++		dirs += dir_length;
++		if (!*dirs) {
++			break;
++		}
++
++		dirs++;
++	}
++
++	return saw_eacces ? -EACCES : -ENOENT;
++}
++
++/* A started child dies when the last descriptor holding its handle closes, so the handle moves above the descriptors
++ * programs juggle, with close-on-exec so no later child receives it */
++static int move_child_handle(int child)
++{
++	int moved = __syscall(SYS_fcntl, child, F_DUPFD_CLOEXEC, FIRST_CHILD_HANDLE_FD);
++	__syscall(SYS_close, child);
++	return moved;
++}
++
++/* Records the child before starting it, so a full table refuses the spawn before the child runs */
++static int start_child(int child, const posix_spawnattr_t *attr, pid_t *pid)
++{
++	process_info info;
++	long result = __syscall(SYS_PROC_INFO, child, &info);
++	if (result < 0) {
++		return -result;
++	}
++
++	if (attr && (attr->__flags & POSIX_SPAWN_SETPGROUP)) {
++		result = __syscall(SYS_setpgid, info.pid, attr->__pgrp);
++		if (result < 0) {
++			return -result;
++		}
++	}
++
++	if (!record_spawned_child(info.pid, child)) {
++		return EAGAIN;
++	}
++
++	result = __syscall(SYS_PROC_START, child);
++	if (result < 0) {
++		take_spawned_child(info.pid);
++		return -result;
++	}
++
++	*pid = info.pid;
++	return 0;
++}
++
++static int spawn_planned_child(pid_t *pid, const char *path, const posix_spawnattr_t *attr, char *const argv[],
++	char *const envp[], struct slot_source *sources, int source_count)
++{
++	/* posix_spawnp asks for a PATH search by setting the attributes' __fn to __execvpe */
++	int searches_path = attr && attr->__fn == (void *)__execvpe;
++
++	int child = searches_path ? create_child_from_search_path(path, argv, envp) : create_child(path, argv, envp);
++	if (child < 0) {
++		return -child;
++	}
++
++	child = move_child_handle(child);
++	if (child < 0) {
++		return -child;
++	}
++
++	int error = give_child_descriptors(child, sources, source_count);
++	if (!error) {
++		error = start_child(child, attr, pid);
++	}
++
++	/* Closing the handle of a child that never started destroys the child */
++	if (error) {
++		__syscall(SYS_close, child);
++	}
++
++	return error;
++}
++
++int posix_spawn(pid_t *restrict res, const char *restrict path,
++	const posix_spawn_file_actions_t *fa,
++	const posix_spawnattr_t *restrict attr,
++	char *const argv[restrict], char *const envp[restrict])
++{
++	struct slot_source *sources = 0;
++	int source_count = 0;
++	pid_t pid = 0;
++
++	int error = check_attributes(attr);
++	if (error) {
++		return error;
++	}
++
++	error = plan_file_actions(fa, &sources, &source_count);
++	if (!error) {
++		error = spawn_planned_child(&pid, path, attr, argv, envp, sources, source_count);
++	}
++
++	close_opened_files(sources, source_count);
++	free(sources);
++
++	if (!error && res) {
++		*res = pid;
++	}
++
++	return error;
++}

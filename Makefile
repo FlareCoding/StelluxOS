@@ -549,24 +549,30 @@ MUSL_VERSION := 1.2.5
 MUSL_URL     := https://musl.libc.org/releases/musl-$(MUSL_VERSION).tar.gz
 MUSL_DIR     := userland/musl-$(MUSL_VERSION)
 MUSL_TARBALL := userland/musl-$(MUSL_VERSION).tar.gz
+MUSL_PATCHES := $(sort $(wildcard userland/musl/patches/*.patch))
 
 # LLVM archive tools work on ELF from any host (Apple's ar/ranlib do not).
 MUSL_TOOL_OVERRIDES := AR=$(STLX_AR) RANLIB=$(STLX_RANLIB)
 
+# The patches include libstlx's headers for Stellux's process calls
+MUSL_CFLAGS := -I$(abspath userland/lib/libstlx/include)
+
+# Every run patches a freshly extracted tree, so the build always matches userland/musl/patches/
 musl:
 	@echo "Building musl $(MUSL_VERSION) for x86_64 and aarch64..."
 	@mkdir -p userland
 	@test -f $(MUSL_TARBALL) || \
 		(echo "Downloading musl $(MUSL_VERSION)..." && \
 		 curl -fL --retry 3 -o $(MUSL_TARBALL) $(MUSL_URL))
-	@test -d $(MUSL_DIR) || \
-		(echo "Extracting..." && \
-		 cd userland && tar xf musl-$(MUSL_VERSION).tar.gz)
+	@echo "Extracting and patching..."
+	@rm -rf $(MUSL_DIR)
+	@cd userland && tar xf musl-$(MUSL_VERSION).tar.gz
+	@for p in $(MUSL_PATCHES); do patch -s -p1 -d $(MUSL_DIR) < $$p || exit 1; done
 	@echo ""
 	@echo "Building musl for x86_64..."
 	@mkdir -p $(MUSL_DIR)/build-x86_64
 	cd $(MUSL_DIR)/build-x86_64 && \
-		CC="$(STLX_CC) --target=x86_64-linux-musl" \
+		CC="$(STLX_CC) --target=x86_64-linux-musl" CFLAGS="$(MUSL_CFLAGS)" \
 		../configure --prefix=$(abspath userland/sysroot/x86_64) --disable-shared > /dev/null
 	$(MAKE) -C $(MUSL_DIR)/build-x86_64 $(MUSL_TOOL_OVERRIDES) -j$(NPROC) > /dev/null
 	$(MAKE) -C $(MUSL_DIR)/build-x86_64 $(MUSL_TOOL_OVERRIDES) install > /dev/null
@@ -575,7 +581,7 @@ musl:
 	@echo "Building musl for aarch64..."
 	@mkdir -p $(MUSL_DIR)/build-aarch64
 	cd $(MUSL_DIR)/build-aarch64 && \
-		CC="$(STLX_CC) --target=aarch64-linux-musl" \
+		CC="$(STLX_CC) --target=aarch64-linux-musl" CFLAGS="$(MUSL_CFLAGS)" \
 		../configure --prefix=$(abspath userland/sysroot/aarch64) --disable-shared > /dev/null
 	$(MAKE) -C $(MUSL_DIR)/build-aarch64 $(MUSL_TOOL_OVERRIDES) -j$(NPROC) > /dev/null
 	$(MAKE) -C $(MUSL_DIR)/build-aarch64 $(MUSL_TOOL_OVERRIDES) install > /dev/null
