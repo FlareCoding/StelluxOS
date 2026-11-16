@@ -957,10 +957,10 @@ bool virtio_gpu_driver::has_task_work() {
 __PRIVILEGED_CODE sync::irq_state virtio_gpu_driver::wait_for_wake(sync::irq_state irq) {
     uint64_t deadline_ns = 0;
     if (m_backend.find_stop_deadline(deadline_ns)) {
-        return sync::wait_until(m_work_wq, m_work_lock, irq, deadline_ns);
+        return sync::wait_uninterruptible_until(m_work_wq, m_work_lock, irq, deadline_ns);
     }
 
-    return sync::wait(m_work_wq, m_work_lock, irq);
+    return sync::wait_uninterruptible(m_work_wq, m_work_lock, irq);
 }
 
 bool virtio_gpu_driver::is_on_task() const {
@@ -1363,7 +1363,7 @@ int32_t virtio_gpu_driver::set_mode(uint32_t output, const gfxfb::gfxfb_mode& mo
         m_request = &request;
         sync::wake_one(m_work_wq);
         while (!request.is_done) {
-            irq = sync::wait(m_request_wq, m_work_lock, irq);
+            irq = sync::wait_uninterruptible(m_request_wq, m_work_lock, irq);
         }
 
         sync::spin_unlock_irqrestore(m_work_lock, irq);

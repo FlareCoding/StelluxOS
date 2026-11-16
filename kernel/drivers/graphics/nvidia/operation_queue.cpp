@@ -17,7 +17,7 @@ __PRIVILEGED_CODE int32_t operation_queue::run_on_task(operation& op) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
     while (!op.is_done) {
-        irq = sync::wait(m_done, m_lock, irq);
+        irq = sync::wait_uninterruptible(m_done, m_lock, irq);
     }
 
     sync::spin_unlock_irqrestore(m_lock, irq);

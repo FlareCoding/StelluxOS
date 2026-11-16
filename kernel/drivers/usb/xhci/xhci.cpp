@@ -1218,7 +1218,7 @@ void xhci_hcd::enumerate_hub_port(xhci_device* hub_device, uint8_t hub_port, uin
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
         while (m_hub_events_completed < seq) {
-            irq = sync::wait(m_hub_event_done_wq, m_hub_event_lock, irq);
+            irq = sync::wait_uninterruptible(m_hub_event_done_wq, m_hub_event_lock, irq);
         }
         sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
     });
@@ -2870,8 +2870,7 @@ int32_t xhci_hcd::usb_read_in_stream(xhci_device* device,
                 break;
             }
 
-            irq = sync::wait(state->in_stream.available_wq,
-                             ep->completion_lock(), irq);
+            irq = sync::wait_uninterruptible(state->in_stream.available_wq, ep->completion_lock(), irq);
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
@@ -2948,7 +2947,7 @@ void xhci_hcd::usb_close_in_stream(xhci_device* device,
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             while (state->in_stream.closing) {
-                irq = sync::wait(state->in_stream.available_wq, ep->completion_lock(), irq);
+                irq = sync::wait_uninterruptible(state->in_stream.available_wq, ep->completion_lock(), irq);
             }
 
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -3338,7 +3337,7 @@ int32_t xhci_hcd::_submit_normal_transfer(
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         while (!ep->completed()) {
-            irq = sync::wait(ep->completion_wq(), ep->completion_lock(), irq);
+            irq = sync::wait_uninterruptible(ep->completion_wq(), ep->completion_lock(), irq);
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
@@ -3456,8 +3455,7 @@ int32_t xhci_hcd::usb_control_transfer(
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
         while (!device->ctrl_completed()) {
-            irq = sync::wait(device->ctrl_completion_wq(),
-                             device->ctrl_completion_lock(), irq);
+            irq = sync::wait_uninterruptible(device->ctrl_completion_wq(), device->ctrl_completion_lock(), irq);
         }
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
     });

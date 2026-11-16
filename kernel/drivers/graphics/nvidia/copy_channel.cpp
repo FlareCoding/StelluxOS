@@ -177,7 +177,7 @@ __PRIVILEGED_CODE bool copy_channel::run_fill(uint64_t offset, uint64_t bytes, u
 
     // At most `COPY_SLOTS - 1` fills run, so a slot is rewritten only once a later release shows the GPU fetched it
     while (!m_is_hung && !is_past_deadline(now_ns) && m_submitted - m_completed >= COPY_SLOTS - 1) {
-        irq = sync::wait_until(m_waiters, m_lock, irq, m_deadline_ns);
+        irq = sync::wait_uninterruptible_until(m_waiters, m_lock, irq, m_deadline_ns);
         now_ns = clock::now_ns();
         read_progress();
     }
@@ -189,7 +189,7 @@ __PRIVILEGED_CODE bool copy_channel::run_fill(uint64_t offset, uint64_t bytes, u
     }
 
     while (sequence != 0 && !m_is_hung && !is_past_deadline(now_ns) && m_completed < sequence) {
-        irq = sync::wait_until(m_waiters, m_lock, irq, m_deadline_ns);
+        irq = sync::wait_uninterruptible_until(m_waiters, m_lock, irq, m_deadline_ns);
         now_ns = clock::now_ns();
         read_progress();
     }

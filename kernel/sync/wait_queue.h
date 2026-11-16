@@ -44,9 +44,14 @@ struct wait_queue {
  * the new irq_state. Caller MUST re-check its condition (spurious
  * wakeups are permitted).
  *
+ * A signal that `signals::interrupt_pending()` reports ends the wait at
+ * once, even one sent after the caller's last check, so the caller MUST
+ * stop waiting once that call reports one, or its loop spins. Locks and
+ * other waits a signal must not end use `wait_uninterruptible`.
+ *
  * Usage:
  *   irq_state irq = spin_lock_irqsave(lock);
- *   while (!condition) {
+ *   while (!condition && !signals::interrupt_pending(sched::current())) {
  *       irq = sync::wait(wq, lock, irq);
  *   }
  *   spin_unlock_irqrestore(lock, irq);
@@ -64,7 +69,8 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved);
  *
  * Usage:
  *   irq_state irq = spin_lock_irqsave(lock);
- *   while (!condition && clock::now_ns() < deadline) {
+ *   while (!condition && clock::now_ns() < deadline &&
+ *          !signals::interrupt_pending(sched::current())) {
  *       irq = sync::wait_until(wq, lock, irq, deadline);
  *   }
  *   spin_unlock_irqrestore(lock, irq);
@@ -73,6 +79,22 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved);
  */
 [[nodiscard]] __PRIVILEGED_CODE
 irq_state wait_until(wait_queue& wq, spinlock& lock, irq_state saved, uint64_t deadline_ns);
+
+/**
+ * Block like `wait`, but sleep through signals, for locks and other
+ * waits a signal must not end. A signal's wake counts as a spurious
+ * wakeup, so the next call in the caller's loop sleeps again.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+irq_state wait_uninterruptible(wait_queue& wq, spinlock& lock, irq_state saved);
+
+/**
+ * Block like `wait_until`, but sleep through signals.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+irq_state wait_uninterruptible_until(wait_queue& wq, spinlock& lock, irq_state saved, uint64_t deadline_ns);
 
 /**
  * Wake the first waiting task (FIFO order).

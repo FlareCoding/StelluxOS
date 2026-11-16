@@ -144,6 +144,43 @@ TEST(mutex, lock_blocks_until_unlock) {
     EXPECT_TRUE(spin_wait(g_block_acquired));
 }
 
+// `mutex_lock` never returns on a signal, so a waiter with a kill pending sleeps until the unlock instead of spinning
+
+static sync::mutex g_kill_pending_mtx;
+static sync::atomic<uint32_t> g_kill_pending_acquired;
+
+static void lock_with_a_kill_pending(void*) {
+    RUN_ELEVATED({
+        sched::force_wake_for_kill(sched::current());
+        sync::mutex_lock(g_kill_pending_mtx);
+        g_kill_pending_acquired.store_release(1);
+        sync::mutex_unlock(g_kill_pending_mtx);
+    });
+    sched::exit(0);
+}
+
+TEST(mutex, lock_with_a_kill_pending_sleeps_until_unlock) {
+    g_kill_pending_mtx.init();
+    g_kill_pending_acquired.store_relaxed(0);
+
+    RUN_ELEVATED({
+        sync::mutex_lock(g_kill_pending_mtx);
+    });
+
+    sched::task* t = test_helpers::start_pinned_task_on_another_cpu(lock_with_a_kill_pending, nullptr, "mtx_killed", 0);
+    ASSERT_NOT_NULL(t);
+
+    bool slept = test_helpers::stays_asleep(t);
+
+    RUN_ELEVATED({
+        sync::mutex_unlock(g_kill_pending_mtx);
+    });
+
+    EXPECT_TRUE(spin_wait(g_kill_pending_acquired));
+    test_helpers::unpin(t);
+    EXPECT_TRUE(slept);
+}
+
 // --- multiple_waiters_all_complete ---
 // Test runner holds the mutex, creates 3 waiter tasks that block,
 // then unlocks. Waiters cascade through (each unlock wakes the next).

@@ -18,7 +18,7 @@ void device_driver::wait_for_event() {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_event_lock);
         while (!m_event_pending) {
-            irq = sync::wait(m_event_wq, m_event_lock, irq);
+            irq = sync::wait_uninterruptible(m_event_wq, m_event_lock, irq);
         }
 
         m_event_pending = false;
@@ -30,7 +30,7 @@ void device_driver::wait_for_event_until(uint64_t deadline_ns) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_event_lock);
         while (!m_event_pending && clock::now_ns() < deadline_ns) {
-            irq = sync::wait_until(m_event_wq, m_event_lock, irq, deadline_ns);
+            irq = sync::wait_uninterruptible_until(m_event_wq, m_event_lock, irq, deadline_ns);
         }
 
         m_event_pending = false;

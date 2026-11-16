@@ -3389,7 +3389,7 @@ __PRIVILEGED_CODE engine_head* display_engine::darken_head(
             break;
         }
 
-        irq = sync::wait_until(m_take_down_queue, m_output_lock, irq, deadline_ns);
+        irq = sync::wait_uninterruptible_until(m_take_down_queue, m_output_lock, irq, deadline_ns);
     }
 
     if (m_is_display_failed.load_acquire()) {

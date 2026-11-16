@@ -5,6 +5,8 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "dynpriv/dynpriv.h"
+#include "mm/heap.h"
+#include "signals/signal.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 #include "clock/clock.h"
@@ -598,4 +600,192 @@ TEST(wait_queue, wait_until_past_deadline_returns_at_once) {
     });
 
     EXPECT_LT(elapsed, SHORT_DEADLINE_NS);
+}
+
+constexpr uint64_t NO_DEADLINE = 0;
+
+static sync::wait_queue g_raced_wq;
+static sync::spinlock g_raced_lock;
+static sync::atomic<uint32_t> g_raced_done;
+static uint64_t g_raced_deadline;
+static uint64_t g_raced_ended_at;
+static uint32_t g_raced_state;
+static sched::thread_group* g_raced_group;
+
+// Sends itself a kill between its check for a signal and its wait, where a kill from another CPU would wake nothing
+static void wait_with_a_kill_after_its_check(void*) {
+    sched::task* self = sched::current();
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_raced_lock);
+    while (!signals::interrupt_pending(self)) {
+        sched::force_wake_for_kill(self);
+
+        if (g_raced_deadline == NO_DEADLINE) {
+            irq = sync::wait(g_raced_wq, g_raced_lock, irq);
+        } else {
+            irq = sync::wait_until(g_raced_wq, g_raced_lock, irq, g_raced_deadline);
+        }
+    }
+
+    g_raced_ended_at = clock::now_ns();
+    g_raced_state = self->state.load_acquire();
+    sync::spin_unlock_irqrestore(g_raced_lock, irq);
+
+    g_raced_done.store_release(1);
+    sched::exit(0);
+}
+
+// Marks SIGINT pending between its check for a signal and its wait, as Ctrl-C from another CPU leaves it
+static void wait_with_a_sigint_after_its_check(void*) {
+    sched::task* self = sched::current();
+    self->group = g_raced_group;
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_raced_lock);
+    while (!signals::interrupt_pending(self)) {
+        self->sig.pending.fetch_or_acq_rel(signals::sig_bit(signals::SIGINT));
+        irq = sync::wait(g_raced_wq, g_raced_lock, irq);
+    }
+
+    g_raced_state = self->state.load_acquire();
+    sync::spin_unlock_irqrestore(g_raced_lock, irq);
+
+    self->sig.pending.fetch_and_relaxed(~signals::sig_bit(signals::SIGINT));
+    self->group = nullptr;
+    g_raced_done.store_release(1);
+    sched::exit(0);
+}
+
+static sched::task* start_raced_waiter(void (*entry)(void*), uint64_t deadline_ns) {
+    g_raced_wq.init();
+    g_raced_lock = sync::SPINLOCK_INIT;
+    g_raced_done.store_relaxed(0);
+    g_raced_deadline = deadline_ns;
+    g_raced_ended_at = 0;
+    g_raced_state = sched::TASK_STATE_CREATED;
+
+    return test_helpers::start_pinned_task(entry, nullptr, "wq_raced");
+}
+
+// True when the raced wait left no waiter queued and both of its locks free, as an early return must
+static bool raced_wait_unwound() {
+    bool is_queue_empty = g_raced_wq.waiters.empty();
+    bool is_queue_lock_free = g_raced_wq.lock.now_serving == g_raced_wq.lock.next_ticket;
+    bool is_lock_free = g_raced_lock.now_serving == g_raced_lock.next_ticket;
+
+    return is_queue_empty && is_queue_lock_free && is_lock_free;
+}
+
+// Nothing wakes the queue, so only the wait itself can end on the kill, and it must mark the task running again
+TEST(wait_queue, wait_ends_on_a_kill_after_the_callers_check) {
+    sched::task* t = start_raced_waiter(wait_with_a_kill_after_its_check, NO_DEADLINE);
+    ASSERT_NOT_NULL(t);
+
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_raced_done));
+    test_helpers::unpin(t);
+    EXPECT_EQ(g_raced_state, sched::TASK_STATE_RUNNING);
+    EXPECT_TRUE(raced_wait_unwound());
+}
+
+TEST(wait_queue, wait_until_ends_on_a_kill_after_the_callers_check) {
+    sched::task* t = start_raced_waiter(wait_with_a_kill_after_its_check, clock::now_ns() + LONG_DEADLINE_NS);
+    ASSERT_NOT_NULL(t);
+
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_raced_done));
+    test_helpers::unpin(t);
+    EXPECT_LT(g_raced_ended_at, g_raced_deadline);
+    EXPECT_TRUE(raced_wait_unwound());
+}
+
+// Ctrl-C sends SIGINT, whose default action ends the process, so the wait ends on it as on a kill
+TEST(wait_queue, wait_ends_on_a_sigint_after_the_callers_check) {
+    RUN_ELEVATED(g_raced_group = heap::kalloc_new<sched::thread_group>());
+    ASSERT_NOT_NULL(g_raced_group);
+
+    sched::task* t = start_raced_waiter(wait_with_a_sigint_after_its_check, NO_DEADLINE);
+    ASSERT_NOT_NULL(t);
+
+    EXPECT_TRUE(test_helpers::finish_or_kill(t, g_raced_done));
+    test_helpers::unpin(t);
+    RUN_ELEVATED(heap::kfree_delete(g_raced_group));
+    g_raced_group = nullptr;
+
+    EXPECT_EQ(g_raced_state, sched::TASK_STATE_RUNNING);
+    EXPECT_TRUE(raced_wait_unwound());
+}
+
+// Longer than `stays_asleep` watches, so `wait_for_deadline_ignoring_a_kill` is still asleep while it is watched
+constexpr uint64_t IGNORED_KILL_DEADLINE_NS = 5 * test_helpers::SLEEP_WATCH_NS;
+
+static sync::wait_queue g_ignored_kill_wq;
+static sync::spinlock g_ignored_kill_lock;
+static sync::atomic<uint32_t> g_ignored_kill_go;
+static sync::atomic<uint32_t> g_ignored_kill_done;
+static uint64_t g_ignored_kill_deadline;
+
+// Waits for `g_ignored_kill_go` with a kill pending and never checks for signals, as a mutex waiter does
+static void wait_for_go_ignoring_a_kill(void*) {
+    sched::force_wake_for_kill(sched::current());
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_ignored_kill_lock);
+    while (!g_ignored_kill_go.load_acquire()) {
+        irq = sync::wait_uninterruptible(g_ignored_kill_wq, g_ignored_kill_lock, irq);
+    }
+
+    sync::spin_unlock_irqrestore(g_ignored_kill_lock, irq);
+    g_ignored_kill_done.store_release(1);
+    sched::exit(0);
+}
+
+// Waits for `g_ignored_kill_deadline` the same way
+static void wait_for_deadline_ignoring_a_kill(void*) {
+    sched::force_wake_for_kill(sched::current());
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_ignored_kill_lock);
+    while (clock::now_ns() < g_ignored_kill_deadline) {
+        irq = sync::wait_uninterruptible_until(g_ignored_kill_wq, g_ignored_kill_lock, irq, g_ignored_kill_deadline);
+    }
+
+    sync::spin_unlock_irqrestore(g_ignored_kill_lock, irq);
+    g_ignored_kill_done.store_release(1);
+    sched::exit(0);
+}
+
+static sched::task* start_ignoring_waiter(void (*entry)(void*), uint64_t deadline_ns) {
+    g_ignored_kill_wq.init();
+    g_ignored_kill_lock = sync::SPINLOCK_INIT;
+    g_ignored_kill_go.store_relaxed(0);
+    g_ignored_kill_done.store_relaxed(0);
+    g_ignored_kill_deadline = deadline_ns;
+
+    return test_helpers::start_pinned_task_on_another_cpu(entry, nullptr, "wq_ignore_kill", sched::TASK_FLAG_ELEVATED);
+}
+
+TEST(wait_queue, wait_uninterruptible_sleeps_through_a_kill_until_woken) {
+    sched::task* t = start_ignoring_waiter(wait_for_go_ignoring_a_kill, NO_DEADLINE);
+    ASSERT_NOT_NULL(t);
+
+    bool slept = test_helpers::stays_asleep(t);
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_ignored_kill_lock);
+        g_ignored_kill_go.store_release(1);
+        sync::spin_unlock_irqrestore(g_ignored_kill_lock, irq);
+        sync::wake_one(g_ignored_kill_wq);
+    });
+
+    EXPECT_TRUE(spin_wait(g_ignored_kill_done));
+    test_helpers::unpin(t);
+    EXPECT_TRUE(slept);
+}
+
+TEST(wait_queue, wait_uninterruptible_until_sleeps_through_a_kill_until_its_deadline) {
+    uint64_t deadline_ns = clock::now_ns() + IGNORED_KILL_DEADLINE_NS;
+    sched::task* t = start_ignoring_waiter(wait_for_deadline_ignoring_a_kill, deadline_ns);
+    ASSERT_NOT_NULL(t);
+
+    bool slept = test_helpers::stays_asleep(t);
+
+    EXPECT_TRUE(spin_wait(g_ignored_kill_done));
+    test_helpers::unpin(t);
+    EXPECT_TRUE(slept);
 }

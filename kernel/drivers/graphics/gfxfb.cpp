@@ -496,7 +496,7 @@ int32_t gfxfb_node::on_close(fs::file* f) {
 void gfxfb_node::wait_for_unended_presents(client& owner) {
     sync::irq_state state = sync::spin_lock_irqsave(m_outputs_lock);
     while (holds_unended_present(owner)) {
-        state = sync::wait(owner.event_waiters, m_outputs_lock, state);
+        state = sync::wait_uninterruptible(owner.event_waiters, m_outputs_lock, state);
     }
 
     sync::spin_unlock_irqrestore(m_outputs_lock, state);
