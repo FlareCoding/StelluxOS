@@ -119,7 +119,8 @@ static void check_listing() {
 static void check_empty_listing() {
     capture all = open_capture();
     reporter(false, all.out, all.err).boards_listed({}, "");
-    check(read_back(all.out) == "No installed core defines a board.\n", "no board at all says so");
+    check(read_back(all.out) == "No installed core defines a board. Install a core with mcufw install.\n",
+          "no board at all says so");
     fclose(all.err);
 
     capture matching = open_capture();
@@ -182,11 +183,54 @@ static void check_failures() {
     check(read_back(program.err).empty(), "a program's failure leaves stderr alone");
 }
 
+static void check_installs() {
+    capture program = open_capture();
+    reporter report(true, program.out, program.err);
+    report.install_started("esp32:esp32", "3.3.12", 1000);
+    report.install_progress("esp32:esp32", 100, 1000, 1'000'000'000);
+    report.install_progress("esp32:esp32", 200, 1000, 1'050'000'000);
+    report.install_progress("esp32:esp32", 1000, 1000, 1'060'000'000);
+    report.installed("esp32:esp32", "3.3.12", false);
+    report.removed("esp32:esp32-libs", "3.3.11");
+    report.program_missing({ "esp32", "esp-x32", "2601" });
+    report.program_missing({ "", "xtensa-esp32s3-elf-g++", "" });
+
+    std::string expected =
+        "start\tesp32:esp32\t3.3.12\t1000\n"
+        "progress\tesp32:esp32\t100\t1000\n"
+        "progress\tesp32:esp32\t1000\t1000\n"
+        "installed\tesp32:esp32\t3.3.12\n"
+        "removed\tesp32:esp32-libs\t3.3.11\n"
+        "needs\tesp32:esp-x32\t2601\n"
+        "needs\txtensa-esp32s3-elf-g++\t-\n";
+    check(read_back(program.out) == expected, "progress at most every 100 ms and at the end");
+    fclose(program.err);
+
+    capture person = open_capture();
+    reporter sentences(false, person.out, person.err);
+    sentences.install_started("esp32:esp32", "3.3.12", 51102895);
+    sentences.installed("esp32:esp32", "3.3.12", false);
+    sentences.installed("esp32:esp32-libs", "3.3.12", true);
+    sentences.removed("esp32:esp32-libs", "3.3.11");
+    sentences.program_missing({ "esp32", "esp-x32", "2601" });
+    sentences.program_missing({ "", "xtensa-esp32s3-elf-g++", "" });
+    expected =
+        "Installing esp32:esp32 3.3.12, 51.1 MB\n"
+        "Installed esp32:esp32 3.3.12\n"
+        "esp32:esp32-libs 3.3.12 is installed already\n"
+        "Removed esp32:esp32-libs 3.3.11\n"
+        "The board needs esp32:esp-x32 2601, a program only a Stellux package installs.\n"
+        "The board needs xtensa-esp32s3-elf-g++, a program only a Stellux package installs.\n";
+    check(read_back(person.out) == expected, "a person without a terminal sees whole lines");
+    fclose(person.err);
+}
+
 int main() {
     check_listing();
     check_empty_listing();
     check_description();
     check_failures();
+    check_installs();
 
     if (g_failures != 0) {
         printf("report: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

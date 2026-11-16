@@ -1,8 +1,31 @@
 #include "arguments.hpp"
 
+#include <cstdint>
 #include <string_view>
 
-constexpr size_t BOARDS_OPERANDS_MAX = 1;
+// A command's name and the most operands it takes, with the sentence for too few
+struct command_rule {
+    std::string_view name;
+    command_name     command;
+    size_t           operands_max;
+    std::string_view missing_operand;  // empty when the command needs none
+};
+
+constexpr command_rule COMMAND_RULES[] = {
+    { "boards", command_name::boards, 1, "" },
+    { "install", command_name::install, SIZE_MAX, "install needs a core or a board, such as esp32:esp32:esp32da" },
+    { "remove", command_name::remove, SIZE_MAX, "remove needs a core, such as esp32:esp32" },
+};
+
+static const command_rule* find_rule(std::string_view name) {
+    for (const command_rule& rule : COMMAND_RULES) {
+        if (rule.name == name) {
+            return &rule;
+        }
+    }
+
+    return nullptr;
+}
 
 bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& error) {
     if (argc < 2) {
@@ -10,28 +33,33 @@ bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& erro
         return false;
     }
 
-    std::string_view command = argv[1];
-    if (command != "boards") {
-        error = "unknown command " + std::string(command);
+    const command_rule* rule = find_rule(argv[1]);
+    if (!rule) {
+        error = "unknown command " + std::string(argv[1]);
         return false;
     }
 
     parsed = {};
-    parsed.command = command_name::boards;
+    parsed.command = rule->command;
     for (int index = 2; index < argc; index++) {
         std::string_view word = argv[index];
         if (word == "--events") {
             parsed.events = true;
         } else if (word.starts_with("-")) {
-            error = "boards takes no option " + std::string(word);
+            error = std::string(rule->name) + " takes no option " + std::string(word);
             return false;
         } else {
             parsed.operands.emplace_back(word);
         }
     }
 
-    if (parsed.operands.size() > BOARDS_OPERANDS_MAX) {
-        error = "boards takes one word at most";
+    if (parsed.operands.empty() && !rule->missing_operand.empty()) {
+        error = rule->missing_operand;
+        return false;
+    }
+
+    if (parsed.operands.size() > rule->operands_max) {
+        error = std::string(rule->name) + " takes " + std::to_string(rule->operands_max) + " word at most";
         return false;
     }
 

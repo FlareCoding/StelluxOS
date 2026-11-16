@@ -1,5 +1,5 @@
-/* arguments, run on the build machine: the boards command with its word and `--events`, and the command lines that
- * fail as usage errors */
+/* arguments, run on the build machine: each command with its words and `--events`, and the command lines that fail as
+ * usage errors */
 
 #include "arguments.hpp"
 
@@ -50,6 +50,12 @@ static void check_boards() {
     check(parse({ "boards", "--events", "esp32da" }, parsed, error), "boards parses with a word and --events");
     check(parsed.operands == std::vector<std::string>({ "esp32da" }) && parsed.events,
           "the word and --events are kept");
+
+    check(parse({ "install", "esp32:esp32", "esp32:esp32:esp32da" }, parsed, error) &&
+              parsed.command == command_name::install && parsed.operands.size() == 2,
+          "install takes several targets");
+    check(parse({ "remove", "esp32:esp32" }, parsed, error) && parsed.command == command_name::remove,
+          "remove parses with a target");
 }
 
 static void check_usage_errors() {
@@ -57,7 +63,10 @@ static void check_usage_errors() {
         { {}, "no command given" },
         { { "flash" }, "unknown command flash" },
         { { "boards", "--json" }, "boards takes no option --json" },
-        { { "boards", "esp32da", "esp32s3" }, "boards takes one word at most" },
+        { { "boards", "esp32da", "esp32s3" }, "boards takes 1 word at most" },
+        { { "install" }, "install needs a core or a board, such as esp32:esp32:esp32da" },
+        { { "remove", "--force" }, "remove takes no option --force" },
+        { { "remove" }, "remove needs a core, such as esp32:esp32" },
     };
 
     for (const usage_error& expected : usage_errors) {

@@ -20,6 +20,7 @@
 constexpr uint32_t MAX_REPORTS = 8;
 
 constexpr const char* NATIVE_CORE = "fixtures/hardware/stellux/native/1.0.0";
+constexpr const char* STATE_FOLDER = "../build/host/boards-state";
 constexpr const char* ALPHA_SDK = "fixtures/tools/stellux/alpha-sdk/2.0";
 constexpr const char* NATIVE_GCC = "fixtures/program-tools/stellux/native-gcc/1.0";
 
@@ -86,8 +87,18 @@ static std::string read_back(FILE* file) {
     return text;
 }
 
+static directory_layout hardware_layout(const std::string& hardware) {
+    directory_layout layout;
+    layout.hardware = hardware;
+    return layout;
+}
+
 static directory_layout fixture_layout() {
-    return { "fixtures/hardware", "fixtures/tools", "fixtures/program-tools" };
+    directory_layout layout = hardware_layout("fixtures/hardware");
+    layout.data_tools = "fixtures/tools";
+    layout.program_tools = "fixtures/program-tools";
+    layout.state = STATE_FOLDER;
+    return layout;
 }
 
 static command_output run_command(const directory_layout& layout, const std::string& word, bool events) {
@@ -204,14 +215,15 @@ static void check_menus(const installed_core& native) {
 static void check_loading_failures(const std::string& root) {
     std::vector<installed_core> cores;
     std::string error;
-    directory_layout missing = { join_path(root, "missing"), "", "" };
+    directory_layout missing = hardware_layout(join_path(root, "missing"));
     check(load_installed_cores(missing, cores, error) && cores.empty(), "no hardware folder means no cores");
 
     std::string architecture = join_path(root, "hardware/stellux/twice");
     std::string make_versions = "mkdir -p " + architecture + "/1.0.0 " + architecture + "/2.0.0";
     check(system(make_versions.c_str()) == 0, "the versions are made");
 
-    directory_layout twice = { join_path(root, "hardware"), "", "" };
+    directory_layout twice = hardware_layout(join_path(root, "hardware"));
+    twice.state = STATE_FOLDER;
     check(!load_installed_cores(twice, cores, error), "two versions of one core fail");
     check(error == architecture + " holds more than one version of stellux:twice", "the failure names the core");
 
@@ -222,7 +234,7 @@ static void check_loading_failures(const std::string& root) {
     write_text(join_path(core, "boards.txt"), "");
     write_text(join_path(core, "installed.txt"), "tool.0.packager=stellux\ntool.0.name=sdk\n");
 
-    directory_layout partial = { join_path(root, "records"), "", "" };
+    directory_layout partial = hardware_layout(join_path(root, "records"));
     check(!load_installed_cores(partial, cores, error), "a record naming a tool without its version fails");
     check(error == join_path(core, "installed.txt") + " names tool 0 without its version",
           "the failure names the record, the tool and its missing field");
@@ -399,6 +411,52 @@ static void check_properties(const std::vector<installed_core>& cores, const dir
     check(other.get("software") == "STELLUX", "a core's own software stays");
 }
 
+static void check_install_records(const std::string& root) {
+    std::string core = join_path(root, "recorded/stellux/native/1.0.0");
+    std::string make_core = "mkdir -p " + core;
+    check(system(make_core.c_str()) == 0, "the core is made");
+    write_text(join_path(core, "platform.txt"), "name=Recorded\n");
+    write_text(join_path(core, "boards.txt"), "");
+
+    std::vector<tool_dependency> tools = { { "esp32", "esp-x32", "2601" }, { "arduino", "dfu-util", "0.11.0" } };
+    std::string error;
+    check(write_install_record(core, tools, error), "the record is written");
+
+    std::vector<installed_core> cores;
+    directory_layout layout = hardware_layout(join_path(root, "recorded"));
+    check(load_installed_cores(layout, cores, error) && cores.size() == 1 && cores[0].tools.size() == 2,
+          "and reads back");
+    check(cores.size() == 1 && cores[0].tools[1].packager == "arduino" && cores[0].tools[1].version == "0.11.0",
+          "field for field, in order");
+}
+
+static void check_overrides(const std::string& root) {
+    directory_layout layout;
+    layout.overrides = join_path(root, "overrides");
+    std::vector<std::string> versions;
+    std::string error;
+    check(overridden_versions(layout, "esp32", "esp32", versions, error) && versions.empty(), "no overrides at all");
+
+    std::string folder = join_path(layout.overrides, "esp32/esp32");
+    std::string make_folder = "mkdir -p " + folder;
+    check(system(make_folder.c_str()) == 0, "the overrides are made");
+    for (const char* name : { "3.3.2.txt", "3.3.12.txt", "notes.md", "3.3.11.txt" }) {
+        write_text(join_path(folder, name), "");
+    }
+
+    check(overridden_versions(layout, "esp32", "esp32", versions, error), "the overrides read");
+    check(versions == std::vector<std::string>({ "3.3.12", "3.3.11", "3.3.2" }), "newest first, only versions");
+    check(overridden_versions(layout, "esp32", "other", versions, error) && versions.empty(), "none for another core");
+}
+
+static void check_data_tools(const directory_layout& layout) {
+    std::vector<tool_dependency> tools;
+    std::string error;
+    check(list_data_tools(layout, tools, error) && tools.size() == 1, "the data tools folder lists its tools");
+    check(tools.size() == 1 && tools[0].packager == "stellux" && tools[0].name == "alpha-sdk" &&
+          tools[0].version == "2.0", "as packager, name and version");
+}
+
 static void check_tool_order() {
     std::vector<located_tool> tools = {
         { { "stellux", "sdk", "1.10" }, "/newer" },
@@ -468,6 +526,9 @@ int main() {
     }
 
     check_loading_failures(root);
+    check_install_records(root);
+    check_overrides(root);
+    check_data_tools(fixture_layout());
     check_tool_order();
 
     std::string cleanup = "rm -rf " + root;

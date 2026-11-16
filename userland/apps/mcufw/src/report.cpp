@@ -1,6 +1,7 @@
 #include "report.hpp"
 
 #include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <algorithm>
 
@@ -8,9 +9,13 @@ constexpr size_t LISTING_GAP = 3;
 constexpr size_t MENU_GAP = 2;
 constexpr size_t DESCRIPTION_WIDTH_MAX = 120;
 constexpr const char* NOTHING_NEEDED = "-";
+constexpr const char* NO_VERSION = "-";
+constexpr uint64_t PROGRESS_INTERVAL_NS = 100'000'000;
+constexpr double BYTES_PER_MB = 1e6;
+constexpr const char* CLEAR_TO_END = "\x1b[K";
 
 reporter::reporter(bool events, FILE* out, FILE* err)
-    : m_events(events), m_out(out), m_err(err) {}
+    : m_events(events), m_terminal(isatty(fileno(out)) != 0), m_out(out), m_err(err) {}
 
 static const char* failure_kind_name(failure_kind kind) {
     switch (kind) {
@@ -83,7 +88,7 @@ void reporter::boards_listed(const std::vector<listed_board>& boards, const std:
 
     if (boards.empty()) {
         if (word.empty()) {
-            fprintf(m_out, "No installed core defines a board.\n");
+            fprintf(m_out, "No installed core defines a board. Install a core with mcufw install.\n");
         } else {
             fprintf(m_out, "No installed board matches %s.\n", word.c_str());
         }
@@ -178,7 +183,81 @@ void reporter::board_described(const selected_board& board, const board_requirem
     }
 }
 
+static std::string megabytes(uint64_t bytes) {
+    char text[32];
+    snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / BYTES_PER_MB);
+    return text;
+}
+
+void reporter::install_started(const std::string& item, const std::string& version, uint64_t length) {
+    m_last_progress_ns = 0;
+    if (m_events) {
+        event({ "start", item, version, std::to_string(length) });
+        return;
+    }
+
+    m_progress_line = "Installing " + item + " " + version;
+    fprintf(m_out, "%s, %s%s", m_progress_line.c_str(), megabytes(length).c_str(), m_terminal ? "" : "\n");
+    fflush(m_out);
+}
+
+void reporter::install_progress(const std::string& item, uint64_t done, uint64_t length, uint64_t now_ns) {
+    bool is_due = done == length || now_ns - m_last_progress_ns >= PROGRESS_INTERVAL_NS;
+    if (!is_due) {
+        return;
+    }
+
+    m_last_progress_ns = now_ns;
+    if (m_events) {
+        event({ "progress", item, std::to_string(done), std::to_string(length) });
+        return;
+    }
+
+    if (m_terminal) {
+        fprintf(m_out, "\r%s, %s of %s%s", m_progress_line.c_str(), megabytes(done).c_str(),
+                megabytes(length).c_str(), CLEAR_TO_END);
+        fflush(m_out);
+    }
+}
+
+void reporter::installed(const std::string& item, const std::string& version, bool already_installed) {
+    if (m_events) {
+        event({ "installed", item, version });
+        return;
+    }
+
+    std::string line = already_installed ? item + " " + version + " is installed already"
+                                         : "Installed " + item + " " + version;
+    fprintf(m_out, "%s%s%s\n", m_terminal ? "\r" : "", line.c_str(), m_terminal ? CLEAR_TO_END : "");
+    m_progress_line.clear();
+}
+
+void reporter::removed(const std::string& item, const std::string& version) {
+    if (m_events) {
+        event({ "removed", item, version });
+        return;
+    }
+
+    fprintf(m_out, "Removed %s %s\n", item.c_str(), version.c_str());
+}
+
+void reporter::program_missing(const tool_dependency& tool) {
+    std::string name = tool.packager.empty() ? tool.name : tool.packager + ":" + tool.name;
+    if (m_events) {
+        event({ "needs", name, tool.version.empty() ? NO_VERSION : tool.version });
+        return;
+    }
+
+    std::string program = tool.version.empty() ? name : name + " " + tool.version;
+    fprintf(m_out, "The board needs %s, a program only a Stellux package installs.\n", program.c_str());
+}
+
 void reporter::failed(const failure& failure) {
+    if (!m_events && m_terminal && !m_progress_line.empty()) {
+        fprintf(m_out, "\n");
+        m_progress_line.clear();
+    }
+
     if (m_events) {
         event({ "failed", failure_kind_name(failure.kind), failure.reason });
         return;

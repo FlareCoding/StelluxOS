@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-enum class command_name { boards };
+enum class command_name { boards, install, remove };
 
 struct arguments {
     command_name             command = command_name::boards;

@@ -1,0 +1,67 @@
+{
+  "packages": [
+    {
+      "name": "arduino", "maintainer": "Arduino",
+      "platforms": [
+      ],
+      "tools": [
+        { "name": "CMSIS", "version": "4.5.0", "systems": [
+            {"host": "all", "url": "https://downloads.arduino.cc/CMSIS-4.5.0.tar.bz2", "archiveFileName": "CMSIS-4.5.0.tar.bz2", "checksum": "SHA-256:cd8f7eae9fc7c8b4a1b5e40b89b9666d33953b47d3d2eb81844f5af729fa224d", "size": "31525196"},
+            {"host": "i686-mingw32", "url": "https://downloads.arduino.cc/CMSIS-4.5.0.tar.bz2", "archiveFileName": "CMSIS-4.5.0.tar.bz2", "checksum": "SHA-256:cd8f7eae9fc7c8b4a1b5e40b89b9666d33953b47d3d2eb81844f5af729fa224d", "size": "31525196"}
+        ] }
+      ]
+    },
+    {
+      "name": "esp32", "maintainer": "Espressif Systems",
+      "platforms": [
+        { "name": "esp32", "architecture": "esp32", "version": "3.3.12", "category": "ESP32", "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-core-3.3.12.zip", "archiveFileName": "esp32-core-3.3.12.zip", "checksum": "SHA-256:87401004f279a206781e368b66098a8383b7cf87cce7811a6afd0163503fa78f", "size": "51102895",
+          "toolsDependencies": [
+          {"packager": "arduino", "name": "dfu-util", "version": "0.11.0-arduino5"},
+          {"packager": "esp32", "name": "esp-x32", "version": "2601"},
+          {"packager": "esp32", "name": "esp32-libs", "version": "3.3.12"},
+          {"packager": "esp32", "name": "esptool_py", "version": "5.3.1"}
+          ] },
+        { "name": "esp32", "architecture": "esp32", "version": "3.3.11", "category": "ESP32", "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.11/esp32-core-3.3.11.zip", "archiveFileName": "esp32-core-3.3.11.zip", "checksum": "SHA-256:a18203f2429f5551ec929b80e8129e439df7a3a009b536b305f00b4a1f1bbb62", "size": "46900611",
+          "toolsDependencies": [
+          {"packager": "arduino", "name": "dfu-util", "version": "0.11.0-arduino5"},
+          {"packager": "esp32", "name": "esp-x32", "version": "2601"},
+          {"packager": "esp32", "name": "esp32-libs", "version": "3.3.11"},
+          {"packager": "esp32", "name": "esptool_py", "version": "5.3.1"}
+          ] }
+      ],
+      "tools": [
+        { "name": "esp-x32", "version": "2601", "systems": [
+            {"host": "aarch64-linux-gnu", "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121/xtensa-esp-elf-14.2.0_20260121-aarch64-linux-gnu.tar.gz", "archiveFileName": "xtensa-esp-elf-14.2.0_20260121-aarch64-linux-gnu.tar.gz", "checksum": "SHA-256:f2fdb72b0202916340633624ebecd130f088b2650c0ae2a5071595211d24caba", "size": "329779590"},
+            {"host": "x86_64-pc-linux-gnu", "url": "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121/xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.gz", "archiveFileName": "xtensa-esp-elf-14.2.0_20260121-x86_64-linux-gnu.tar.gz", "checksum": "SHA-256:4e090a6cbf1ff7769684d9a248c9b8bdbe4c0ada098adda54b4c67a91449afa7", "size": "334265784"}
+        ] },
+        { "name": "esp32-libs", "version": "3.3.12", "systems": [
+            {"host": "aarch64-linux-gnu", "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-libs-3.3.12.zip", "archiveFileName": "esp32-libs-3.3.12.zip", "checksum": "SHA-256:4efd0f654c860b018e0ca2f858042ea6a78d8c2d57eef790b0d480d63bb56edc", "size": 48020175},
+            {"host": "i686-mingw32", "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-libs-3.3.12.zip", "archiveFileName": "esp32-libs-3.3.12.zip", "checksum": "SHA-256:4efd0f654c860b018e0ca2f858042ea6a78d8c2d57eef790b0d480d63bb56edc", "size": 48020175},
+            {"host": "x86_64-pc-linux-gnu", "url": "https://github.com/espressif/arduino-esp32/releases/download/3.3.12/esp32-libs-3.3.12.zip", "archiveFileName": "esp32-libs-3.3.12.zip", "checksum": "SHA-256:4efd0f654c860b018e0ca2f858042ea6a78d8c2d57eef790b0d480d63bb56edc", "size": 48020175}
+        ] },
+        { "name": "esptool_py", "version": "5.3.1", "systems": [
+            {"host": "i686-mingw32", "url": "https://github.com/espressif/esptool/releases/download/v5.3.1/esptool-v5.3.1-windows-amd64.zip", "archiveFileName": "esptool-v5.3.1-windows-amd64.zip", "checksum": "SHA-256:2b4a73c45db27426685896f64ce3e557f63a64f43cc100cb65c0cc3486af96d3", "size": "63962426"},
+            {"host": "x86_64-mingw32", "url": "https://github.com/espressif/esptool/releases/download/v5.3.1/esptool-v5.3.1-windows-amd64.zip", "archiveFileName": "esptool-v5.3.1-windows-amd64.zip", "checksum": "SHA-256:2b4a73c45db27426685896f64ce3e557f63a64f43cc100cb65c0cc3486af96d3", "size": "63962426"},
+            {"host": "x86_64-pc-linux-gnu", "url": "https://github.com/espressif/esptool/releases/download/v5.3.1/esptool-v5.3.1-linux-amd64.tar.gz", "archiveFileName": "esptool-v5.3.1-linux-amd64.tar.gz", "checksum": "SHA-256:e9cc641f8e4a0b644b52836d7a6b59f3c6d3261213c5ccc41f8f3c3035d06aa4", "size": "83577947"}
+        ] }
+      ]
+    },
+    {
+      "name": "renesas", "maintainer": "Renesas Electronics Corporation",
+      "platforms": [
+      ],
+      "tools": [
+        { "name": "rl78", "version": "1.1.1", "systems": [
+            {"host": "i686-mingw32", "url": "https://github.com/renesas/ArduinoCore-rl78g22_fpb/releases/download/rl78-2.0.0/win32-tool-rl78g2x-1.1.1.zip", "archiveFileName": "win32-tool-rl78g2x-1.1.1.zip", "checksum": "SHA-256:1a057062b5045397506e72f98a9d27ac796494eadc82ab2b8bf0644a12f2aaae", "size": "194296"}
+        ] },
+        { "name": "windows-flasher", "version": "1.0.0", "systems": [
+            {"host": "i686-mingw32", "url": "https://example.com/flasher-win.zip", "archiveFileName": "flasher-win.zip", "checksum": "SHA-256:1a057062b5045397506e72f98a9d27ac796494eadc82ab2b8bf0644a12f2aaae", "size": "194296"},
+            {"host": "x86_64-mingw32", "url": "https://example.com/flasher-win.zip", "archiveFileName": "flasher-win.zip", "checksum": "SHA-256:1a057062b5045397506e72f98a9d27ac796494eadc82ab2b8bf0644a12f2aaae", "size": "194296"}
+        ] },
+        { "name": "oversized", "version": "1.0.0", "systems": [
+            {"host": "all", "url": "https://example.com/oversized.zip", "archiveFileName": "oversized.zip", "checksum": "SHA-256:1a057062b5045397506e72f98a9d27ac796494eadc82ab2b8bf0644a12f2aaae", "size": "18446744073709551617"}
+        ] }
+      ]
+    }
+  ]
+}
