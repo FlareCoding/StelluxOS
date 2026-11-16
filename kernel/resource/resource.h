@@ -37,6 +37,8 @@ using visit_held_fn = void (*)(resource_object* holder, in_flight_walk& walk);
  * the operations only they have. `poll` subscribes only to wait queues that
  * live as long as the object, and every change in the object's readiness wakes
  * one of them, so a subscription can neither outlive its queue nor miss a change.
+ * `poll` must report `POLL_HUP` or `POLL_ERR` only once a read and a write on the
+ * object both return at once, since select counts either as ready for both.
  * `handle_closed` runs each time a handle table closes a handle to the object, so
  * the object can end what the table held through it, such as record locks.
  * `visit_held` reports, through in_flight_visit, every object this one keeps alive

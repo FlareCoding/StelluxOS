@@ -405,3 +405,95 @@ TEST(select_syscall, pselect6_refuses_a_malformed_signal_mask) {
     EXPECT_EQ(unmapped, syscall::EFAULT);
     EXPECT_FALSE(sched::current()->sig.restore_mask);
 }
+
+constexpr size_t WRITE_SET_AT  = TIMESPEC_AT + 64;
+constexpr size_t EXCEPT_SET_AT = WRITE_SET_AT + FDSET_BYTES;
+
+// The write end of a full pipe whose reader closed polls POLL_ERR without POLL_OUT, so the error alone must
+// mark it writable and exceptional, and leave the read set, which does not hold it, empty
+TEST(select_syscall, a_full_pipe_whose_reader_closed_selects_as_writable_and_exceptional) {
+    selected_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    const uint8_t bytes[256] = {};
+    ssize_t written = 1;
+    while (written > 0) {
+        written = ring_buffer_write(pipe.rb, bytes, sizeof(bytes), true);
+    }
+
+    ring_buffer_close_read(pipe.rb);
+    ASSERT_EQ(ring_buffer_poll_write(pipe.rb, nullptr), sync::POLL_ERR);
+
+    int32_t fd = pipe.write_fd;
+    uint64_t* read_set = pipe.page.at<uint64_t>(0);
+    uint64_t* write_set = pipe.page.at<uint64_t>(WRITE_SET_AT);
+    uint64_t* except_set = pipe.page.at<uint64_t>(EXCEPT_SET_AT);
+    for (size_t i = 0; i < FDSET_BYTES / sizeof(uint64_t); i++) {
+        read_set[i] = 0;
+        write_set[i] = 0;
+        except_set[i] = 0;
+    }
+
+    write_set[fd / WORD_BITS] |= 1ULL << (fd % WORD_BITS);
+    except_set[fd / WORD_BITS] |= 1ULL << (fd % WORD_BITS);
+    *pipe.page.at<select_timeval>(TIMEVAL_AT) = {0, 0};
+
+    int64_t writable = 0;
+    int64_t exceptional = 0;
+    {
+        user_space_scope scope(pipe.page.ctx);
+        writable = sys_select(static_cast<uint64_t>(fd + 1), pipe.page.addr, pipe.page.addr + WRITE_SET_AT, 0,
+                              pipe.page.addr + TIMEVAL_AT, 0);
+        exceptional = sys_select(static_cast<uint64_t>(fd + 1), 0, 0, pipe.page.addr + EXCEPT_SET_AT,
+                                 pipe.page.addr + TIMEVAL_AT, 0);
+    }
+
+    EXPECT_EQ(writable, 1);
+    EXPECT_EQ(exceptional, 1);
+    EXPECT_TRUE((write_set[fd / WORD_BITS] >> (fd % WORD_BITS)) & 1);
+    EXPECT_TRUE((except_set[fd / WORD_BITS] >> (fd % WORD_BITS)) & 1);
+    EXPECT_EQ(read_set[fd / WORD_BITS], 0u);
+}
+
+// The read end of an empty pipe whose writer closed polls POLL_HUP alone, so the hang-up alone must mark it
+// readable and writable, since a read or a write on it returns at once, but not exceptional
+TEST(select_syscall, an_empty_pipe_whose_writer_closed_selects_as_readable_and_writable) {
+    selected_pipe pipe;
+    ASSERT_TRUE(pipe.ready());
+
+    ring_buffer_close_write(pipe.rb);
+    ASSERT_EQ(ring_buffer_poll_read(pipe.rb, nullptr), sync::POLL_HUP);
+
+    int32_t fd = pipe.read_fd;
+    uint64_t* read_set = pipe.page.at<uint64_t>(0);
+    uint64_t* write_set = pipe.page.at<uint64_t>(WRITE_SET_AT);
+    uint64_t* except_set = pipe.page.at<uint64_t>(EXCEPT_SET_AT);
+    for (size_t i = 0; i < FDSET_BYTES / sizeof(uint64_t); i++) {
+        read_set[i] = 0;
+        write_set[i] = 0;
+        except_set[i] = 0;
+    }
+
+    read_set[fd / WORD_BITS] |= 1ULL << (fd % WORD_BITS);
+    write_set[fd / WORD_BITS] |= 1ULL << (fd % WORD_BITS);
+    except_set[fd / WORD_BITS] |= 1ULL << (fd % WORD_BITS);
+    *pipe.page.at<select_timeval>(TIMEVAL_AT) = {0, 0};
+
+    int64_t readable = 0;
+    int64_t writable = 0;
+    int64_t exceptional = 0;
+    {
+        user_space_scope scope(pipe.page.ctx);
+        readable = sys_select(static_cast<uint64_t>(fd + 1), pipe.page.addr, 0, 0, pipe.page.addr + TIMEVAL_AT, 0);
+        writable = sys_select(static_cast<uint64_t>(fd + 1), 0, pipe.page.addr + WRITE_SET_AT, 0,
+                              pipe.page.addr + TIMEVAL_AT, 0);
+        exceptional = sys_select(static_cast<uint64_t>(fd + 1), 0, 0, pipe.page.addr + EXCEPT_SET_AT,
+                                 pipe.page.addr + TIMEVAL_AT, 0);
+    }
+
+    EXPECT_EQ(readable, 1);
+    EXPECT_EQ(writable, 1);
+    EXPECT_EQ(exceptional, 0);
+    EXPECT_TRUE((read_set[fd / WORD_BITS] >> (fd % WORD_BITS)) & 1);
+    EXPECT_TRUE((write_set[fd / WORD_BITS] >> (fd % WORD_BITS)) & 1);
+}

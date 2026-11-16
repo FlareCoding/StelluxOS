@@ -15,9 +15,6 @@ constexpr size_t FD_SETSIZE_MAX = 1024;
 constexpr int64_t NS_PER_SEC = 1000000000LL;
 constexpr int64_t NS_PER_US  = 1000LL;
 
-// Reported whether or not the caller asked for them
-constexpr int16_t ALWAYS_EVENTS = static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL);
-
 struct select_pollfd {
     int32_t fd;
     int16_t events;
@@ -68,7 +65,17 @@ __PRIVILEGED_CODE static int64_t poll_round(sched::task* task, select_pollfd* po
             resource::resource_release(obj);
         }
 
-        pollfds[i].revents = static_cast<int16_t>(mask) & (pollfds[i].events | ALWAYS_EVENTS);
+        // After a hang-up or an error, a read or a write returns at once, so the descriptor is ready for both
+        if (mask & (sync::POLL_HUP | sync::POLL_ERR)) {
+            mask |= sync::POLL_IN | sync::POLL_OUT;
+        }
+
+        // An error also counts as an exceptional condition, as POSIX requires of a socket's pending error
+        if (mask & sync::POLL_ERR) {
+            mask |= sync::POLL_PRI;
+        }
+
+        pollfds[i].revents = static_cast<int16_t>(mask) & pollfds[i].events;
 
         if (pollfds[i].revents) {
             ready++;
@@ -236,7 +243,7 @@ __PRIVILEGED_CODE static int64_t do_select(
 
         int32_t fd = fdmap[i];
 
-        if (kread && (pollfds[i].revents & (sync::POLL_IN | sync::POLL_HUP | sync::POLL_ERR))) {
+        if (kread && (pollfds[i].revents & sync::POLL_IN)) {
             fd_set_bit(kread, fd);
         }
 
