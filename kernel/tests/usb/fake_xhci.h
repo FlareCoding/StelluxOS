@@ -135,6 +135,15 @@ struct xhci_hcd_test_access {
     static void end_control_transfers(xhci_hcd& hcd, xhci::xhci_device* device) {
         hcd._end_control_transfers(device);
     }
+
+    // How long each control transfer or command started afterwards waits before it fails
+    static void set_control_transfer_timeout(xhci_hcd& hcd, uint64_t timeout_ns) {
+        hcd.m_control_transfer_timeout_ns = timeout_ns;
+    }
+
+    static void set_command_timeout(xhci_hcd& hcd, uint64_t timeout_ns) {
+        hcd.m_command_timeout_ns = timeout_ns;
+    }
 };
 
 } // namespace drivers
@@ -925,11 +934,11 @@ inline const xhci_trb_t* command_trb(const fake_xhci& fake, uint32_t index) {
     return (entry->control & fake_xhci::CYCLE_BIT) ? entry : nullptr;
 }
 
-// Answers the Set TR Dequeue Pointer command for EP0, whose new dequeue pointer must be EP0's ring entry `next_entry`
-// with the first lap's cycle bit
-inline void answer_control_move(fake_xhci& fake, uint32_t next_entry) {
+// Answers the Set TR Dequeue Pointer command for EP0 in command ring entry `index`, whose new dequeue pointer must be
+// EP0's ring entry `next_entry` with the first lap's cycle bit
+inline void answer_control_move(fake_xhci& fake, uint32_t next_entry, uint32_t index = MOVE_COMMAND) {
     auto* move = reinterpret_cast<const drivers::xhci::xhci_set_tr_dequeue_ptr_command_trb_t*>(
-        wait_for_command(fake, MOVE_COMMAND)
+        wait_for_command(fake, index)
     );
     ASSERT_NOT_NULL(move);
 
@@ -937,7 +946,7 @@ inline void answer_control_move(fake_xhci& fake, uint32_t next_entry) {
     EXPECT_EQ(move->slot_id, fake_xhci::SLOT_ID);
     EXPECT_EQ(move->endpoint_id, CONTROL_DCI);
     EXPECT_EQ(move->new_dequeue_ptr, control_trb_phys(fake, next_entry) | FIRST_LAP_CYCLE);
-    complete_command(fake, MOVE_COMMAND, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+    complete_command(fake, index, XHCI_TRB_COMPLETION_CODE_SUCCESS);
 }
 
 } // namespace usb_test
