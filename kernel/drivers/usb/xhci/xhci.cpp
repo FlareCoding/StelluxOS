@@ -671,6 +671,15 @@ void xhci_hcd::_process_event_ring() {
     m_pending_doorbell_count = 0;
 }
 
+void xhci_hcd::_wait_us_handling_events(uint64_t duration_us) {
+    uint64_t deadline_ns = clock::now_ns() + duration_us * 1000;
+
+    while (clock::now_ns() < deadline_ns) {
+        wait_for_event_until(deadline_ns);
+        _process_event_ring();
+    }
+}
+
 void xhci_hcd::_process_pending_port_changes() {
     while (m_psc_pending_bitmap != 0) {
         uint32_t bitmap = m_psc_pending_bitmap;
@@ -750,7 +759,7 @@ int32_t xhci_hcd::_reset_port(uint8_t port_index) {
     if (portsc.pp == 0) {
         portsc.pp = 1;
         _write_portsc(port_index, portsc.raw);
-        delay::us(20000); // 20ms power stabilization
+        _wait_us_handling_events(20000); // 20ms power stabilization
         portsc.raw = *_portsc(port_index);
 
         if (portsc.pp == 0) {
@@ -773,32 +782,30 @@ int32_t xhci_hcd::_reset_port(uint8_t port_index) {
     _write_portsc(port_index, portsc.raw);
 
     // Wait for reset completion (PRC for USB2, WRC for USB3)
-    constexpr uint32_t RESET_TIMEOUT_US = 500000; // 500ms
-    constexpr uint32_t POLL_US = 1000;
-    uint32_t elapsed = 0;
+    constexpr uint64_t RESET_TIMEOUT_NS = 500000000; // 500ms
+    constexpr uint64_t POLL_US = 1000;
+    uint64_t reset_deadline_ns = clock::now_ns() + RESET_TIMEOUT_NS;
+    portsc.raw = *_portsc(port_index);
+    bool is_reset_done = usb3 ? portsc.wrc : portsc.prc;
 
-    while (elapsed < RESET_TIMEOUT_US) {
+    while (!is_reset_done && clock::now_ns() < reset_deadline_ns) {
+        _wait_us_handling_events(POLL_US);
         portsc.raw = *_portsc(port_index);
-
-        if (usb3 && portsc.wrc) break;
-        if (!usb3 && portsc.prc) break;
-
-        delay::us(POLL_US);
-        elapsed += POLL_US;
+        is_reset_done = usb3 ? portsc.wrc : portsc.prc;
     }
 
-    if (elapsed >= RESET_TIMEOUT_US) {
+    if (!is_reset_done) {
         log::warn("xhci: port %u reset timed out", port_index);
         return -1;
     }
 
-    delay::us(3000); // Post-reset settling
+    _wait_us_handling_events(3000); // Post-reset settling
 
     // Clear the reset completion and status change bits
     _ack_portsc_changes(port_index,
         (1u << 17) | (1u << 18) | (1u << 19) | (1u << 21)); // CSC|PEC|WRC|PRC
 
-    delay::us(3000);
+    _wait_us_handling_events(3000);
 
     // Verify the port is enabled after reset
     portsc.raw = *_portsc(port_index);
@@ -1508,7 +1515,7 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
         if (rc == 0) break;
 
         _clear_tt_buffer(device);
-        delay::us(10000);
+        _wait_us_handling_events(10000);
     }
 
     if (rc != 0)
@@ -1537,7 +1544,7 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
 
     // USB 2.0 spec Section 9.2.6.3: the device needs a 2 ms recovery interval
     // after SET_ADDRESS completes before it can accept the next SETUP packet.
-    delay::us(10000);
+    _wait_us_handling_events(10000);
 
     // Sync the output device context into the input context
     device->sync_input_ctx();
@@ -1560,7 +1567,7 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
         if (rc == 0) break;
 
         _clear_tt_buffer(device, dev_addr);
-        delay::us(10000);
+        _wait_us_handling_events(10000);
     }
 
     if (rc != 0)
@@ -1600,7 +1607,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
         }
 
         _clear_tt_buffer(device, _device_address(device));
-        delay::us(10000);
+        _wait_us_handling_events(10000);
     }
 
     if (rc != 0) {

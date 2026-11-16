@@ -161,10 +161,8 @@ private:
     pending_doorbell m_pending_doorbells[32] = {};
     uint8_t          m_pending_doorbell_count = 0;
 
-    // Deferred port status change bitmap. PSC events set bits here during
-    // _process_event_ring(); the main loop drains them via
-    // _process_pending_port_changes(). This avoids re-entrant _setup_device
-    // calls when _process_event_ring is invoked from _send_command.
+    // Port changes that passes over the event ring record, handled by `_process_pending_port_changes()` from the main
+    // loop, so no pass sets up or tears down a device, wherever it runs
     uint32_t m_psc_pending_bitmap = 0;
 
     // Set when a cancel or a stream's close asks the HCD task to stop an endpoint
@@ -186,6 +184,9 @@ private:
 
     void _process_event_ring();
     void _process_pending_port_changes();
+
+    // Waits `duration_us` while handling events as they arrive. Must run on the HCD task
+    void _wait_us_handling_events(uint64_t duration_us);
 
     // Command submission
     int32_t _send_command(xhci::xhci_trb_t* trb, xhci::xhci_command_completion_trb_t* out = nullptr);

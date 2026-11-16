@@ -2,10 +2,17 @@
 
 #include "stlx_unit_test.h"
 #include "tests/usb/fake_xhci.h"
+#include "drivers/usb/core/usb_core.h"
 
 TEST_SUITE(xhci_waits);
 
 using namespace usb_test;
+
+// A request the setup test expects the fake controller to serve
+struct expected_request {
+    served_kind kind;
+    uint8_t     code;
+};
 
 // The interrupt IN endpoint whose stream reads during the driver's waits, opened without a callback as HID opens it
 static constexpr uint8_t  INTERRUPT_IN         = 0x83;
@@ -121,4 +128,161 @@ TEST(xhci_waits, a_read_completed_during_a_control_transfer_is_posted_again_befo
     EXPECT_TRUE(is_reposted);
     EXPECT_EQ(g_fake.step_result, 0);
     EXPECT_EQ(g_fake.doorbells[fake_xhci::SLOT_ID], 0u);
+}
+
+static constexpr uint8_t RESET_PORT_INDEX = 1;
+
+// When `reset_root_port` began on the driver's task, which opens the power-on wait's window
+static uint64_t g_reset_start_ns;
+
+// Memory keeps the 0 that acknowledging the reset writes to the write-1-to-clear enable bit, so the reset fails
+static void reset_root_port(fake_xhci& fake) {
+    g_reset_start_ns = clock::now_ns();
+    (void)xhci_hcd_test_access::reset_port(*fake.hcd, RESET_PORT_INDEX);
+}
+
+TEST(xhci_waits, a_read_completed_during_a_port_reset_is_posted_again_before_the_reset_finishes) {
+    drivers::xhci::xhci_portsc_register connected = {};
+    connected.ccs = 1;
+    connected.pp = 1;
+    *portsc(g_fake, RESET_PORT_INDEX) = connected.raw;
+    ASSERT_TRUE(start_step(g_fake, reset_root_port));
+
+    bool is_reset_started = wait_for_port_reset(g_fake, RESET_PORT_INDEX);
+    EXPECT_TRUE(is_reset_started);
+
+    bool is_reposted = false;
+    if (is_reset_started) {
+        is_reposted = complete_read_and_watch_for_repost(REPOST_TIMEOUT_NS);
+        complete_port_reset(g_fake, RESET_PORT_INDEX);
+    }
+
+    ASSERT_TRUE(finish_step(g_fake));
+    EXPECT_TRUE(is_reposted);
+}
+
+// The driver's power-on wait for an unpowered port, and its two settles after a reset
+static constexpr uint64_t POWER_ON_NS = 20000000;
+static constexpr uint64_t SETTLES_NS  = 6000000;
+
+// A busy wait charges the driver's task for the power-on wait or a settle, and a busy poll never blocks
+TEST(xhci_waits, a_port_reset_sleeps_through_its_power_on_wait_polls_and_settles) {
+    drivers::xhci::xhci_portsc_register unpowered = {};
+    unpowered.ccs = 1;
+    *portsc(g_fake, RESET_PORT_INDEX) = unpowered.raw;
+    ASSERT_TRUE(start_step(g_fake, reset_root_port));
+
+    uint64_t polling_cpu_ns = 0;
+    bool is_polling_asleep = wait_for_port_reset(g_fake, RESET_PORT_INDEX) &&
+                             read_blocked_step_cpu_ns(g_fake, &polling_cpu_ns);
+    EXPECT_TRUE(is_polling_asleep);
+
+    uint64_t reset_end_ns = clock::now_ns();
+    complete_port_reset(g_fake, RESET_PORT_INDEX);
+
+    ASSERT_TRUE(finish_step(g_fake));
+    EXPECT_GE(reset_end_ns - g_reset_start_ns - polling_cpu_ns, POWER_ON_NS * 3 / 4);
+    EXPECT_GE(g_fake.step_end_ns - reset_end_ns, SETTLES_NS);
+    EXPECT_GE(g_fake.step_end_ns - reset_end_ns - (g_fake.step_cpu_ns - polling_cpu_ns), SETTLES_NS * 3 / 4);
+}
+
+// The hub port the setup test sets a device up on, of the fake's device acting as a hub of four ports, and the slot
+// the fake controller gives that device
+static constexpr uint8_t SETUP_HUB_PORT = 3;
+static constexpr uint8_t HUB_PORT_COUNT = 4;
+static constexpr uint8_t SETUP_SLOT_ID  = 2;
+
+// Each of setup's pauses: the SET_ADDRESS recovery and the pause before each descriptor retry
+static constexpr uint64_t SETUP_PAUSE_NS = 10000000;
+
+// What setup sends when the device answers each descriptor's first read implausibly
+static constexpr expected_request SETUP_REQUESTS[] = {
+    {served_kind::command, XHCI_TRB_TYPE_ENABLE_SLOT_CMD},
+    {served_kind::command, XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::command, XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::control_transfer, usb::USB_REQUEST_GET_DESCRIPTOR},
+    {served_kind::command, XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD},
+    {served_kind::control_transfer, usb::USB_REQUEST_SET_CONFIGURATION},
+};
+
+static constexpr size_t SETUP_REQUEST_COUNT = sizeof(SETUP_REQUESTS) / sizeof(SETUP_REQUESTS[0]);
+
+// The request each pause ends at: the retry of the first 8 bytes, the whole descriptor after SET_ADDRESS's recovery,
+// and the retries of the whole descriptor and the configuration header
+static constexpr size_t PAUSE_ENDS[] = {3, 5, 6, 8};
+
+// Sets up a high-speed device on the hub port, as the hub driver's report of a connection does
+static void set_up_hub_port(fake_xhci& fake) {
+    xhci_hcd_test_access::setup_hub_device(*fake.hcd, fake.device, SETUP_HUB_PORT, XHCI_USB_SPEED_HIGH_SPEED);
+}
+
+// A busy pause charges the driver's task for the whole pause, while a sleep charges it for almost none of it
+TEST(xhci_waits, device_setup_sleeps_through_the_set_address_recovery_and_its_retry_pauses) {
+    g_fake.device->set_is_hub(true);
+    g_fake.device->set_hub_num_ports(HUB_PORT_COUNT);
+    g_fake.should_answer_first_reads_implausibly = true;
+    ASSERT_TRUE(start_step(g_fake, set_up_hub_port));
+
+    served_log served = {};
+    ASSERT_TRUE(serve_until_step_done(g_fake, SETUP_SLOT_ID, served));
+    ASSERT_EQ(served.count, SETUP_REQUEST_COUNT);
+
+    for (size_t i = 0; i < SETUP_REQUEST_COUNT; i++) {
+        EXPECT_EQ(served.requests[i].kind, SETUP_REQUESTS[i].kind);
+        EXPECT_EQ(served.requests[i].code, SETUP_REQUESTS[i].code);
+    }
+
+    for (size_t end : PAUSE_ENDS) {
+        uint64_t waited_ns = served.requests[end].at_ns - served.requests[end - 1].at_ns;
+        uint64_t ran_ns = served.requests[end].cpu_ns - served.requests[end - 1].cpu_ns;
+        EXPECT_GE(waited_ns, SETUP_PAUSE_NS);
+        EXPECT_GE(waited_ns - ran_ns, SETUP_PAUSE_NS * 3 / 4);
+    }
+
+    xhci_device* new_device = g_fake.device->hub_child(SETUP_HUB_PORT);
+    ASSERT_NOT_NULL(new_device);
+    EXPECT_NOT_NULL(new_device->core_device());
+
+    g_fake.device->set_hub_child(SETUP_HUB_PORT, nullptr);
+    xhci_hcd_test_access::forget_slot_device(*g_fake.hcd, new_device);
+    usb::core::device_disconnected(g_fake.hcd, new_device);
+    usb::core::finalize_disconnected_device(g_fake.hcd, new_device);
+}
+
+// How long `wait_long` waits, twice the time the test gives the read to be posted again
+static constexpr uint64_t LONG_WAIT_US = 1000000;
+
+static sync::atomic<uint32_t> g_is_long_wait_started;
+static uint64_t g_long_wait_ns;
+
+// Marks the wait started, then waits `LONG_WAIT_US` on the driver and records how long the wait took
+static void wait_long(fake_xhci& fake) {
+    uint64_t start_ns = clock::now_ns();
+    g_is_long_wait_started.store_release(1);
+    xhci_hcd_test_access::wait_us_handling_events(*fake.hcd, LONG_WAIT_US);
+    g_long_wait_ns = clock::now_ns() - start_ns;
+}
+
+// The read completes in the wait's first half and must be posted again before that half ends
+TEST(xhci_waits, a_wait_handles_events_as_they_arrive_and_lasts_its_whole_duration) {
+    g_is_long_wait_started.store_relaxed(0);
+    ASSERT_TRUE(start_step(g_fake, wait_long));
+
+    bool is_wait_started = test_helpers::spin_wait(g_is_long_wait_started);
+    EXPECT_TRUE(is_wait_started);
+
+    bool is_reposted = false;
+    if (is_wait_started) {
+        is_reposted = complete_read_and_watch_for_repost(LONG_WAIT_US * 1000 / 2);
+    }
+
+    ASSERT_TRUE(finish_step(g_fake));
+    EXPECT_TRUE(is_reposted);
+    EXPECT_GE(g_long_wait_ns, LONG_WAIT_US * 1000);
 }
