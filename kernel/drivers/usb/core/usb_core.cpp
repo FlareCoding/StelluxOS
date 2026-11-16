@@ -117,28 +117,47 @@ static void finish_claimed_finalization(finalization_ticket ticket) {
     heap::ufree_delete(ticket.dev);
 }
 
+// Ends one user's hold on interface `iface_index`'s driver. The last user destroys the driver and only then drops its
+// count on the device, so the device outlives the destructor
+static void release_driver(usb::device* dev, uint8_t iface_index, usb::class_driver* drv) {
+    bool is_last_user = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+        dev->driver_users[iface_index]--;
+        is_last_user = dev->driver_users[iface_index] == 0;
+        sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+    });
+
+    if (!is_last_user) {
+        return;
+    }
+
+    heap::ufree_delete(drv);
+
+    finalization_ticket ticket = {};
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+        dev->active_driver_count--;
+        ticket = claim_finalization_if_ready_locked(dev);
+        sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+    });
+
+    finish_claimed_finalization(ticket);
+}
+
 static void class_driver_task_entry(void* arg) {
     auto* drv = static_cast<usb::class_driver*>(arg);
     uint8_t iface_index = drv->bound_interface_index();
     auto* dev = drv->bound_device();
     drv->run();
 
-    finalization_ticket ticket = {};
-    if (dev) {
-        RUN_ELEVATED({
-            sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
-            dev->bound_drivers[iface_index] = nullptr;
-            if (dev->active_driver_count > 0) {
-                dev->active_driver_count--;
-            }
-            ticket = claim_finalization_if_ready_locked(dev);
-            sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
-        });
-    }
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+        dev->bound_drivers[iface_index] = nullptr;
+        sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+    });
 
-    heap::ufree_delete(drv);
-
-    finish_claimed_finalization(ticket);
+    release_driver(dev, iface_index, drv);
 
     sched::exit(0);
 }
@@ -272,6 +291,7 @@ void device_configured(drivers::xhci_hcd* hcd,
                 sync::irq_state dev_irq = sync::spin_lock_irqsave(dev->lifetime_lock);
                 dev->active_driver_count++;
                 dev->bound_drivers[i] = drv;
+                dev->driver_users[i] = 1;
                 sync::spin_unlock_irqrestore(dev->lifetime_lock, dev_irq);
 
                 sched::enqueue(t);
@@ -303,15 +323,21 @@ void device_disconnected(drivers::xhci_hcd*,
         for (uint8_t i = 0; i < dev->num_interfaces; i++) {
             taken_drivers[i] = dev->bound_drivers[i];
             dev->bound_drivers[i] = nullptr;
+            if (taken_drivers[i]) {
+                dev->driver_users[i]++;
+            }
         }
 
         sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
     });
 
-    for (usb::class_driver* drv : taken_drivers) {
-        if (drv) {
-            drv->disconnect();
+    for (uint8_t i = 0; i < usb::MAX_INTERFACES; i++) {
+        if (!taken_drivers[i]) {
+            continue;
         }
+
+        taken_drivers[i]->disconnect();
+        release_driver(dev, i, taken_drivers[i]);
     }
 }
 

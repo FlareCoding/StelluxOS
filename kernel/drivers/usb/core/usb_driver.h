@@ -29,6 +29,16 @@ struct class_match {
     uint16_t product_id;          // USB_MATCH_ANY_ID for a class entry
 };
 
+/**
+ * A driver bound to one interface of a USB device. The USB core calls
+ * `probe()` and `disconnect()` on the HCD task and runs `run()` in a task of
+ * its own. On an unplug it calls `disconnect()` at most once, which can be
+ * before `run()` starts, while it runs or just after it returns.
+ *
+ * The driver outlives its `run()` and `disconnect()` calls. Its destructor
+ * can run on the HCD task, and neither it nor `disconnect()` may block,
+ * since the HCD task serves every device on the controller.
+ */
 class class_driver {
 public:
     class_driver(const char* name) : m_name(name) {}

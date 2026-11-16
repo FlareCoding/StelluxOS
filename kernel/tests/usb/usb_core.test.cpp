@@ -15,6 +15,8 @@
 TEST_SUITE(usb_core);
 
 using test_helpers::spin_wait;
+using test_helpers::start_pinned_task_on_another_cpu;
+using test_helpers::unpin;
 
 // USB's diagnostic device class, which no other class driver matches
 constexpr uint8_t TEST_INTERFACE_CLASS = 0xDC;
@@ -23,13 +25,24 @@ constexpr uint8_t TEST_ROOT_PORT = 1;
 
 constexpr uint64_t END_POLL_MS = 1;
 
-// A test driver's state that its test reads and sets, kept apart from the driver, which the core frees once the
-// driver's task ends
+// A test driver's state that its test reads and sets, kept apart from the driver, which the core frees
 struct test_driver_record {
     sync::atomic<uint32_t> is_created;
     sync::atomic<uint32_t> disconnects;
     sync::atomic<uint32_t> may_end;
     sync::atomic<uint32_t> is_freed;
+
+    // Set by a test before configuring, so `disconnect()` or the destructor waits for the test there
+    sync::atomic<uint32_t> holds_disconnect;
+    sync::atomic<uint32_t> holds_destructor;
+
+    sync::atomic<uint32_t> is_disconnecting;      // set once `disconnect()` waits for the test
+    sync::atomic<uint32_t> may_leave_disconnect;
+    sync::atomic<uint32_t> is_destroying;         // set once the destructor waits for the test
+    sync::atomic<uint32_t> may_leave_destructor;
+
+    // The device's handle on its HCD device as the destructor read it, which finalization clears before freeing it
+    void* hcd_device_at_destruction;
 };
 
 // Two controllers that drive no hardware, so the tests choose every device's slot ID. They are never freed, since a
@@ -40,7 +53,16 @@ static drivers::xhci_hcd* s_controller_b;
 // The records that the next test drivers created by the core report to, indexed by their interface's number
 static test_driver_record* s_next_records;
 
-// Counts the core's `disconnect()` calls and runs until its test lets it end
+// Sleeps until `flag` is set. Test drivers wait this way, since a spinning driver task on the test's CPU would starve
+// the test, which runs on that CPU's idle task
+static void sleep_until_set(const sync::atomic<uint32_t>& flag) {
+    while (!flag.load_acquire()) {
+        RUN_ELEVATED(sched::sleep_ms(END_POLL_MS));
+    }
+}
+
+// Counts the core's `disconnect()` calls and runs until its test lets it end. A hold makes `disconnect()` or the
+// destructor wait for the test. Each reads the driver's members first, in case the driver is freed during the wait
 class usb_core_test_driver : public usb::class_driver {
 public:
     usb_core_test_driver(usb::device*, usb::interface* iface)
@@ -49,7 +71,15 @@ public:
     }
 
     ~usb_core_test_driver() override {
-        m_record->is_freed.store_release(1);
+        test_driver_record* record = m_record;
+        usb::device* dev = bound_device();
+        if (record->holds_destructor.load_acquire()) {
+            record->is_destroying.store_release(1);
+            sleep_until_set(record->may_leave_destructor);
+        }
+
+        record->hcd_device_at_destruction = dev ? dev->hcd_device : nullptr;
+        record->is_freed.store_release(1);
     }
 
     int32_t probe(usb::device*, usb::interface*) override {
@@ -57,13 +87,16 @@ public:
     }
 
     void run() override {
-        while (!m_record->may_end.load_acquire()) {
-            RUN_ELEVATED(sched::sleep_ms(END_POLL_MS));
-        }
+        sleep_until_set(m_record->may_end);
     }
 
     void disconnect() override {
-        m_record->disconnects.fetch_add_relaxed(1);
+        test_driver_record* record = m_record;
+        record->disconnects.fetch_add_relaxed(1);
+        if (record->holds_disconnect.load_acquire()) {
+            record->is_disconnecting.store_release(1);
+            sleep_until_set(record->may_leave_disconnect);
+        }
     }
 
 private:
@@ -214,4 +247,122 @@ TEST(usb_core, a_driver_that_ended_before_its_devices_unplug_gets_no_disconnect)
     EXPECT_EQ(running.disconnects.load_acquire(), 1u);
     EXPECT_EQ(ended.disconnects.load_acquire(), 0u);
     end_driver(running);
+}
+
+// The task running interface `iface_index`'s driver of `xdev`, pinned so the test can watch it end, or null when the
+// interface has no driver
+static sched::task* pin_driver_task(drivers::xhci::xhci_device* xdev, uint8_t iface_index) {
+    usb::device* dev = xdev->core_device();
+    if (!dev || !dev->bound_drivers[iface_index]) {
+        return nullptr;
+    }
+
+    sched::task* t = dev->bound_drivers[iface_index]->task();
+    RUN_ELEVATED(t->add_ref());
+
+    return t;
+}
+
+// True when `t` is seen dead, false when `SPIN_TIMEOUT_NS` passes first
+static bool ends_before_deadline(sched::task* t) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (t->state.load_acquire() != sched::TASK_STATE_DEAD) {
+        if (clock::now_ns() > deadline) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static drivers::xhci::xhci_device* s_device_to_disconnect;
+static sync::atomic<uint32_t> s_is_disconnect_done;
+
+// Reports `s_device_to_disconnect` disconnected from controller A, as the HCD task's teardown does, then marks it done
+static void run_disconnect(void*) {
+    usb::core::device_disconnected(s_controller_a, s_device_to_disconnect);
+    s_is_disconnect_done.store_release(1);
+    sched::exit(0);
+}
+
+static test_driver_record s_disconnect_record;
+
+// A driver's `run()` returns while the unplug's `disconnect()` call still runs, and the core frees the driver only
+// once `disconnect()` returns, on the unplugging task
+TEST(usb_core, a_driver_ending_during_its_disconnect_is_freed_after_disconnect_returns) {
+    drivers::xhci::xhci_device* xdev = create_test_device(1, 1);
+    ASSERT_NOT_NULL(xdev);
+    s_disconnect_record.holds_disconnect.store_release(1);
+    configure(s_controller_a, xdev, &s_disconnect_record);
+
+    sched::task* driver_task = pin_driver_task(xdev, 0);
+    ASSERT_NOT_NULL(driver_task);
+    s_device_to_disconnect = xdev;
+    sched::task* disconnect_task = start_pinned_task_on_another_cpu(run_disconnect, nullptr, "usb_disconnect", 0);
+    ASSERT_NOT_NULL(disconnect_task);
+    ASSERT_TRUE(spin_wait(s_disconnect_record.is_disconnecting));
+
+    s_disconnect_record.may_end.store_release(1);
+    EXPECT_TRUE(ends_before_deadline(driver_task));
+    EXPECT_EQ(s_disconnect_record.is_freed.load_acquire(), 0u);
+
+    s_disconnect_record.may_leave_disconnect.store_release(1);
+    EXPECT_TRUE(spin_wait(s_is_disconnect_done));
+    EXPECT_EQ(s_disconnect_record.is_freed.load_acquire(), 1u);
+
+    unpin(driver_task);
+    unpin(disconnect_task);
+    usb::core::finalize_disconnected_device(s_controller_a, xdev);
+}
+
+static test_driver_record s_destructor_record;
+
+// The device's teardown finishes while the destructor of its last driver still runs, and the core keeps the device
+// until the destructor returns
+TEST(usb_core, a_device_outlives_the_destructor_of_its_last_driver) {
+    drivers::xhci::xhci_device* xdev = create_test_device(1, 1);
+    ASSERT_NOT_NULL(xdev);
+    s_destructor_record.holds_destructor.store_release(1);
+    configure(s_controller_a, xdev, &s_destructor_record);
+
+    usb::core::device_disconnected(s_controller_a, xdev);
+    s_destructor_record.may_end.store_release(1);
+    ASSERT_TRUE(spin_wait(s_destructor_record.is_destroying));
+    usb::core::finalize_disconnected_device(s_controller_a, xdev);
+
+    s_destructor_record.may_leave_destructor.store_release(1);
+    EXPECT_TRUE(spin_wait(s_destructor_record.is_freed));
+    EXPECT_EQ(s_destructor_record.hcd_device_at_destruction, static_cast<void*>(xdev));
+}
+
+static test_driver_record s_two_destructor_records[2];
+
+// Both drivers end after the device's teardown, and the destructor of the one that ended last returns first. The core
+// keeps the device until the other destructor returns too
+TEST(usb_core, a_device_outlives_the_destructors_of_both_its_drivers) {
+    test_driver_record& first_to_end = s_two_destructor_records[0];
+    test_driver_record& last_to_end = s_two_destructor_records[1];
+    drivers::xhci::xhci_device* xdev = create_test_device(1, 2);
+    ASSERT_NOT_NULL(xdev);
+    first_to_end.holds_destructor.store_release(1);
+    last_to_end.holds_destructor.store_release(1);
+
+    configure(s_controller_a, xdev, s_two_destructor_records);
+    sched::task* last_task = pin_driver_task(xdev, 1);
+    ASSERT_NOT_NULL(last_task);
+    unplug(s_controller_a, xdev);
+
+    first_to_end.may_end.store_release(1);
+    ASSERT_TRUE(spin_wait(first_to_end.is_destroying));
+    last_to_end.may_end.store_release(1);
+    ASSERT_TRUE(spin_wait(last_to_end.is_destroying));
+
+    last_to_end.may_leave_destructor.store_release(1);
+    EXPECT_TRUE(ends_before_deadline(last_task));
+    first_to_end.may_leave_destructor.store_release(1);
+    EXPECT_TRUE(spin_wait(first_to_end.is_freed));
+
+    unpin(last_task);
+    EXPECT_EQ(last_to_end.hcd_device_at_destruction, static_cast<void*>(xdev));
+    EXPECT_EQ(first_to_end.hcd_device_at_destruction, static_cast<void*>(xdev));
 }
