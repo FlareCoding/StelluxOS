@@ -20,10 +20,10 @@ The same include path may resolve per-arch: `"sched/thread_cpu_context.h"` picks
 
 Pick the weakest mechanism that fits; copy the canonical example:
 
-1. **Common header + per-arch .cpp**, one API, per-arch mechanism. `kernel/clock/clock.h` with `kernel/arch/{x86_64,aarch64}/clock/clock.cpp`. Also: timer, trap, dynpriv, percpu, serial.
+1. **Common header + per-arch .cpp**, one API, per-arch mechanism. `kernel/clock/clock.h` with `kernel/arch/{x86_64,aarch64}/clock/clock.cpp`. Also: timer, trap, dynpriv, percpu, `hw/ioport.h`.
 2. **Arch overlay header**, same include path, per-arch definitions (context/frame types): `"sched/thread_cpu_context.h"`.
 3. **`*_arch.h` contract header**, arch-provided constants/types consumed by COMMON code: `mm/paging_arch.h`, `acpi/madt_arch.h`, `irq/irq_arch.h`, `exec/elf_arch.h`. The suffix means exactly this; never use it for arch-private headers.
-4. **`arch::` facade**, cross-cutting hooks declared once under `kernel/arch/` (`arch_init.h`, `arch_smp.h`, `arch_msi.h`, `arch_signal.h`), implemented by both arch trees.
+4. **`arch::` facade**, cross-cutting hooks declared once under `kernel/arch/` (`arch_init.h`, `arch_smp.h`, `arch_msi.h`, `arch_signal.h`, `arch_uart.h`), implemented by both arch trees.
 5. **Internal named hooks**, a common `*_internal.h` declares functions the arch side implements: `sched_internal.h` -> `sched::arch_*` in `arch/*/sched/sched.cpp`.
 
 ## Placement decision tree

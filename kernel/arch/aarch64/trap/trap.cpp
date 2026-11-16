@@ -9,7 +9,6 @@
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
 #include "smp/ipi.h"
-#include "serial/serial.h"
 #include "hw/hwtimer.h"
 #include "timer/timer.h"
 #include "sched/sched.h"
@@ -144,14 +143,6 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
-    if (irq_id == serial::irq_id()) {
-        serial::on_rx_irq();
-        irq::eoi(ack);
-        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state(tf);
-        return;
-    }
-
     if (arch::msi_handle_irq(irq_id)) {
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state(tf);
@@ -242,14 +233,6 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
 
     if (irq_id == irq::IPI_SGI_INTID) {
         smp::ipi::dispatch();
-        irq::eoi(ack);
-        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        restore_post_trap_elevation_state(tf);
-        return;
-    }
-
-    if (irq_id == serial::irq_id()) {
-        serial::on_rx_irq();
         irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state(tf);

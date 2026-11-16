@@ -50,11 +50,13 @@ direction.
 5. **Work the edges.** What can fail, what is unrecoverable, what invariants
    must hold, and what happens under concurrency.
 
-Worked example, the serial console. The semantics are "write a byte to the
-debug console". The common interface is `serial::` declared in
-`kernel/serial/serial.h`. x86_64 implements it with port I/O and AArch64 with
-MMIO to a PL011, each in its own `arch/<arch>/serial/serial.cpp`. Both feel
-natural, so the abstraction holds. The edges: initialization can fail and
+Worked example, the UART behind the kernel log. The semantics are "write a
+byte to a UART". The chip drivers, `serial::uart::ns16550` and `pl011` in
+`kernel/drivers/serial/uart/`, compile on both architectures: the 16550
+reaches I/O ports through the `hw/ioport.h` facade, which reports none on
+AArch64, and the PL011 uses `hw/mmio.h`. Each architecture's tree names the
+UART its board carries through `arch::builtin_uart()`. Neither driver needs a
+conditional, so the abstraction holds. The edges: initialization can fail and
 returns an error, and the elevation needed for port I/O lives in the logging
 layer above rather than in the primitive.
 

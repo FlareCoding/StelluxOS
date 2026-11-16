@@ -29,6 +29,14 @@ inline void relax() {
     asm volatile("wfe");
 }
 
+/**
+ * @brief Hints that the caller is busy-waiting on a device. Unlike `relax()` on AArch64,
+ * it never waits for an event, so it suits waits that run with interrupts masked.
+ */
+inline void pause() {
+    asm volatile("yield");
+}
+
 inline void send_event() {
     asm volatile("sev" ::: "memory");
 }
