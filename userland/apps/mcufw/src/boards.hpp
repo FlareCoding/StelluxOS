@@ -1,0 +1,30 @@
+#ifndef MCUFW_BOARDS_HPP
+#define MCUFW_BOARDS_HPP
+
+// A board chosen among the installed cores with its options
+
+#include "cores.hpp"
+#include "fqbn.hpp"
+
+#include <string>
+#include <vector>
+
+struct selected_board {
+    const installed_core*       core;           // owned by the caller's list of cores, which must outlive this
+    const board_definition*     definition;
+    std::vector<option_setting> given_options;  // as requested
+    std::vector<option_setting> options;        // every menu's choice: defaults in menu order, then those given
+};
+
+// Finds the board `request` names, by an ID only when one installed core defines it, and fills `board.options`. Fails
+// on an undeclared menu, a menu with no labeled choice, an option no menu holds, or a core or variant given a packager.
+bool select_board(const std::vector<installed_core>& cores, const board_request& request, selected_board& board,
+                  std::string& error);
+
+// The FQBN with the options as given, which `build.fqbn` holds, as arduino-cli's `fqbn.String()` writes it
+std::string requested_fqbn(const selected_board& board);
+
+// The FQBN with every option in effect, in menu order, as a description's `board` event gives it
+std::string full_fqbn(const selected_board& board);
+
+#endif // MCUFW_BOARDS_HPP

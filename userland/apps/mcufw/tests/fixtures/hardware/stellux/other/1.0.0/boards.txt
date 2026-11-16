@@ -1,0 +1,2 @@
+plain.name=Other Plain Board
+plain.build.core=other

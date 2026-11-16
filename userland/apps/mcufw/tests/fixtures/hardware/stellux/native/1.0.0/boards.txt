@@ -1,0 +1,101 @@
+# Three menu declarations of Arduino-ESP32 3.3.12 that esp32da uses, in the release's order, then the fixture's own
+menu.UploadSpeed=Upload Speed
+menu.FlashSize=Flash Size
+menu.PartitionScheme=Partition Scheme
+menu.Speed=CPU Speed
+menu.Debug=Debug Level
+
+plain.name=Plain Board
+plain.build.core=native
+plain.build.variant=plain
+
+menus.name=Board With Menus
+menus.build.core=native
+menus.build.board=MENUS_CUSTOM
+menus.menu.Debug.off=Off
+menus.menu.Debug.off.build.debug=0
+menus.menu.Debug.off.build.speed=debug
+menus.menu.Debug.on=On
+menus.menu.Debug.on.build.debug=1
+menus.menu.Speed.fast.windows=Fast
+menus.menu.Speed.fast.build.speed=fast
+menus.menu.Speed.slow=Slow
+menus.menu.Speed.slow.build.speed=slow
+menus.menu.Speed.turbo.linux=Turbo
+menus.menu.Speed.turbo.build.speed=turbo
+
+hidden.name=Hidden Board
+hidden.hide=true
+hidden.build.core=native
+
+hideupper.name=Hide Upper Board
+hideupper.hide=TRUE
+hideupper.build.core=native
+
+hideempty.name=Hide Empty Board
+hideempty.hide=
+hideempty.build.core=native
+
+hidefalse.name=Hide False Board
+hidefalse.hide=false
+hidefalse.build.core=native
+
+borrowed.name=Borrowed Board
+borrowed.build.core=arduino:arduino
+
+borrowed_variant.name=Borrowed Variant Board
+borrowed_variant.build.core=native
+borrowed_variant.build.variant=arduino:standard
+
+ownref.name=Own Reference Board
+ownref.build.core=stellux:native
+
+undeclared.name=Undeclared Menu Board
+undeclared.build.core=native
+undeclared.menu.Color.red=Red
+
+nolabel.name=No Label Board
+nolabel.build.core=native
+nolabel.menu.Debug.x.windows=X
+
+dotless.name=Dotless Menu Board
+dotless.build.core=native
+dotless.menu.Speed=stray
+
+# boards.txt:2025-2159 of Arduino-ESP32 3.3.12, cut to esp32da's identity and three of its menus
+esp32da.name=ESP32-WROOM-DA Module
+esp32da.build.mcu=esp32
+esp32da.build.core=esp32
+esp32da.build.variant=esp32da
+esp32da.build.board=ESP32_WROOM_DA
+
+esp32da.menu.PartitionScheme.default=Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)
+esp32da.menu.PartitionScheme.default.build.partitions=default
+esp32da.menu.PartitionScheme.default_8MB=8M with spiffs (3MB APP/1.5MB SPIFFS)
+esp32da.menu.PartitionScheme.default_8MB.build.partitions=default_8MB
+esp32da.menu.PartitionScheme.default_8MB.upload.maximum_size=3342336
+esp32da.menu.PartitionScheme.huge_app=Huge APP (3MB No OTA/1MB SPIFFS)
+esp32da.menu.PartitionScheme.huge_app.build.partitions=huge_app
+esp32da.menu.PartitionScheme.huge_app.upload.maximum_size=3145728
+
+esp32da.menu.FlashSize.4M=4MB (32Mb)
+esp32da.menu.FlashSize.4M.build.flash_size=4MB
+esp32da.menu.FlashSize.8M=8MB (64Mb)
+esp32da.menu.FlashSize.8M.build.flash_size=8MB
+esp32da.menu.FlashSize.16M=16MB (128Mb)
+esp32da.menu.FlashSize.16M.build.flash_size=16MB
+
+esp32da.menu.UploadSpeed.921600=921600
+esp32da.menu.UploadSpeed.921600.upload.speed=921600
+esp32da.menu.UploadSpeed.115200=115200
+esp32da.menu.UploadSpeed.115200.upload.speed=115200
+esp32da.menu.UploadSpeed.256000.windows=256000
+esp32da.menu.UploadSpeed.256000.upload.speed=256000
+esp32da.menu.UploadSpeed.230400.windows.upload.speed=256000
+esp32da.menu.UploadSpeed.230400=230400
+esp32da.menu.UploadSpeed.230400.upload.speed=230400
+esp32da.menu.UploadSpeed.460800.linux=460800
+esp32da.menu.UploadSpeed.460800.macosx=460800
+esp32da.menu.UploadSpeed.460800.upload.speed=460800
+esp32da.menu.UploadSpeed.512000.windows=512000
+esp32da.menu.UploadSpeed.512000.upload.speed=512000

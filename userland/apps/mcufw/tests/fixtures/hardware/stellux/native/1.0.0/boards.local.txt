@@ -1,0 +1,1 @@
+plain.build.variant=plain_local

@@ -1,0 +1,1 @@
+build.extra_flags=-DSTELLUX_LOCAL

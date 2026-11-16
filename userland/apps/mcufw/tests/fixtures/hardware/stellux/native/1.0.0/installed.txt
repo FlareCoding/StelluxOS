@@ -1,0 +1,9 @@
+tool.0.packager=stellux
+tool.0.name=native-gcc
+tool.0.version=1.0
+tool.1.packager=stellux
+tool.1.name=alpha-sdk
+tool.1.version=2.0
+tool.2.packager=stellux
+tool.2.name=beta-sdk
+tool.2.version=2.0
