@@ -15,7 +15,7 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
-#include "fs/record_lock_table.h"
+#include "fs/file_lock_table.h"
 #include "clock/clock.h"
 #include "common/string.h"
 
@@ -1743,7 +1743,7 @@ __PRIVILEGED_CODE static void describe_conflicting_lock(
     linux_flock& flock
 ) {
     fs::record_lock conflict = {};
-    if (!f->get_node()->record_locks().find_conflict(request, &conflict)) {
+    if (!f->get_node()->file_locks().find_conflict(request, &conflict)) {
         flock.l_type = F_UNLCK;
         return;
     }
@@ -1775,7 +1775,7 @@ __PRIVILEGED_CODE static int64_t take_record_lock(
         return syscall::EBADF;
     }
 
-    fs::record_lock_table& locks = f->get_node()->record_locks();
+    fs::file_lock_table& locks = f->get_node()->file_locks();
     int32_t result = wait ? locks.lock(request) : locks.try_lock(request);
 
     return map_record_lock_error(result);
@@ -1828,7 +1828,7 @@ __PRIVILEGED_CODE static int64_t run_record_lock_command(
     }
 
     if (is_unlock) {
-        fs::record_lock_table& locks = f->get_node()->record_locks();
+        fs::file_lock_table& locks = f->get_node()->file_locks();
         return map_record_lock_error(locks.unlock(request.owner, request.start, request.end));
     }
 
