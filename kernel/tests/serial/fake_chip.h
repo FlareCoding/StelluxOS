@@ -5,7 +5,9 @@
 #include "stlx_unit_test.h"
 #include "tests/usb/fake_xhci.h"
 #include "drivers/usb/usb_descriptors.h"
+#include "clock/clock.h"
 #include "common/string.h"
+#include "dynpriv/dynpriv.h"
 #include "sync/atomic.h"
 
 namespace serial_test {
@@ -36,8 +38,10 @@ struct chip_reply {
 struct fake_chip {
     fake_xhci*             controller;
     uint32_t               next_trb;       // the EP0 ring entry the next request starts at
+    uint32_t               next_command;   // the command ring entry the next recovery of EP0 starts at
     void                 (*calls)();
     sync::atomic<uint32_t> are_calls_done;
+    sync::atomic<uint32_t> is_recovered;
     bool                   is_call_stuck;  // set once calls outlive their wait, so nothing they reach is freed
 };
 
@@ -55,6 +59,7 @@ inline bool attach_fake_chip(fake_chip& chip) {
     }
 
     chip.next_trb = 0;
+    chip.next_command = 0;
     chip.is_call_stuck = false;
     return true;
 }
@@ -76,9 +81,9 @@ inline void run_fake_chip_calls(void* arg) {
     sched::exit(0);
 }
 
-// Plays the chip for the next request: records it, answers a read with `reply`, and completes it. False when no
-// request arrives
-inline bool answer_request(fake_chip& chip, chip_request& request, const uint8_t* reply, uint16_t reply_length) {
+// Records the next request once all of its stages are queued, and gives the EP0 ring entry of its status stage. False
+// when no request arrives
+inline bool receive_request(fake_chip& chip, chip_request& request, uint32_t* status_trb) {
     using drivers::xhci::xhci_setup_stage_trb_t;
     auto* setup = reinterpret_cast<const xhci_setup_stage_trb_t*>(
         usb_test::wait_for_control_trb(*chip.controller, chip.next_trb)
@@ -93,8 +98,15 @@ inline bool answer_request(fake_chip& chip, chip_request& request, const uint8_t
     request.index = setup->request_packet.wIndex;
     request.length = setup->request_packet.wLength;
 
-    uint32_t status_trb = chip.next_trb + (request.length > 0 ? 2 : 1);
-    if (!usb_test::wait_for_control_trb(*chip.controller, status_trb)) {
+    *status_trb = chip.next_trb + (request.length > 0 ? 2 : 1);
+    return usb_test::wait_for_control_trb(*chip.controller, *status_trb) != nullptr;
+}
+
+// Plays the chip for the next request: records it, answers a read with `reply`, and completes it. False when no
+// request arrives
+inline bool answer_request(fake_chip& chip, chip_request& request, const uint8_t* reply, uint16_t reply_length) {
+    uint32_t status_trb = 0;
+    if (!receive_request(chip, request, &status_trb)) {
         return false;
     }
 
@@ -110,6 +122,66 @@ inline bool answer_request(fake_chip& chip, chip_request& request, const uint8_t
     drivers::xhci_hcd_test_access::process_events(*chip.controller->hcd);
     chip.next_trb = status_trb + 1;
     return true;
+}
+
+// Waits until the stalled request has asked the HCD task to recover EP0. False when the spin times out
+inline bool wait_for_recovery_request(fake_chip& chip) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (clock::now_ns() < deadline) {
+        bool is_requested = false;
+        RUN_ELEVATED({
+            drivers::xhci::xhci_device* device = chip.controller->device;
+            sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+            is_requested = device->ctrl_recovery_requested();
+            sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        });
+
+        if (is_requested) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Runs the HCD task's step that recovers a stalled EP0
+inline void run_recovery_step(void* arg) {
+    auto* chip = static_cast<fake_chip*>(arg);
+    drivers::xhci_hcd_test_access::set_task(*chip->controller->hcd, sched::current());
+    drivers::xhci_hcd_test_access::stop_requested_endpoints(*chip->controller->hcd);
+    chip->is_recovered.store_release(1);
+    sched::exit(0);
+}
+
+// Plays the chip refusing the next request with a stall, then the HCD task's recovery of EP0, which the request waits
+// for before it fails. False when the request or the recovery's commands never come
+inline bool refuse_request(fake_chip& chip, chip_request& request) {
+    uint32_t status_trb = 0;
+    if (!receive_request(chip, request, &status_trb)) {
+        return false;
+    }
+
+    usb_test::post_control_event(*chip.controller, status_trb, XHCI_TRB_COMPLETION_CODE_STALL_ERROR);
+    drivers::xhci_hcd_test_access::process_events(*chip.controller->hcd);
+    chip.next_trb = status_trb + 1;
+    if (!wait_for_recovery_request(chip)) {
+        return false;
+    }
+
+    chip.is_recovered.store_release(0);
+    sched::task* step = test_helpers::start_pinned_task_on_another_cpu(run_recovery_step, &chip, "chip_recovery", 0);
+    if (!step) {
+        return false;
+    }
+
+    // Reset Endpoint takes the entry a stop would, and the move after it sends EP0 past the refused request
+    usb_test::complete_command(*chip.controller, chip.next_command, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+    usb_test::answer_control_move(*chip.controller, chip.next_trb, chip.next_command + 1);
+    chip.next_command += 2;
+
+    bool is_recovered = test_helpers::spin_wait(chip.is_recovered);
+    test_helpers::unpin(step);
+    return is_recovered;
 }
 
 // Starts `calls` on a task of their own, or returns null when none could start

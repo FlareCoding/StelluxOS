@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plays the far end of the FTDI chip QEMU emulates for the kernel's serial port tests.
 
-Usage: serial_test_host.py <serial log> <socket path>
+Usage: serial_test_host.py <serial log> <socket path> <QEMU trace log>
 
 QEMU's usb-serial device is plugged in while a client holds its socket open and unplugged when the client closes it,
 and the client's bytes reach the chip as if received on its UART. The kernel's tests ask for each step with a line on
@@ -9,9 +9,12 @@ the serial log, which this script follows until the tests complete:
 
     STLX_SERIAL_HOST connect                 plugs the chip in
     STLX_SERIAL_HOST send <first> <count>    sends <count> bytes counting up from <first>, wrapping at 256
+    STLX_SERIAL_HOST baud <rate>             sends ACK once QEMU's trace shows the chip set within 3 percent of
+                                             <rate>, or NAK when it does not within a few seconds
     STLX_SERIAL_HOST disconnect              unplugs the chip
 """
 
+import re
 import socket
 import sys
 import time
@@ -22,6 +25,16 @@ POLL_SECONDS = 0.05
 
 # QEMU creates the socket as it starts, so the first connect may come before it exists
 CONNECT_TIMEOUT_SECONDS = 10
+
+# How long QEMU's trace lines may take to arrive
+TRACE_TIMEOUT_SECONDS = 5
+
+ACK = b"\x06"
+NAK = b"\x15"
+
+# The rate is the last number of each usb_serial_set_baud line
+SET_BAUD = re.compile(r"usb_serial_set_baud\b.*?(\d+)\s*$")
+MAX_RATE_ERROR = 0.03
 
 
 def follow_lines(path):
@@ -58,8 +71,32 @@ def counting_bytes(first, count):
     return bytes((first + i) % 256 for i in range(count))
 
 
+# The speed the chip was last set to, as QEMU traces it
+def last_traced_rate(trace_path):
+    try:
+        with open(trace_path, "r", errors="replace") as trace:
+            rates = [int(match.group(1)) for match in map(SET_BAUD.search, trace) if match]
+    except OSError:
+        return None
+
+    return rates[-1] if rates else None
+
+
+def confirm_rate(chip, trace_path, wanted):
+    deadline = time.monotonic() + TRACE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        rate = last_traced_rate(trace_path)
+        if rate is not None and abs(rate - wanted) <= wanted * MAX_RATE_ERROR:
+            chip.sendall(ACK)
+            return
+
+        time.sleep(POLL_SECONDS)
+
+    chip.sendall(NAK)
+
+
 def main():
-    log_path, socket_path = sys.argv[1], sys.argv[2]
+    log_path, socket_path, trace_path = sys.argv[1], sys.argv[2], sys.argv[3]
     chip = None
 
     for line in follow_lines(log_path):
@@ -74,6 +111,8 @@ def main():
             chip = connect(socket_path)
         elif request[0] == "send" and chip is not None:
             chip.sendall(counting_bytes(int(request[1]), int(request[2])))
+        elif request[0] == "baud" and chip is not None:
+            confirm_rate(chip, trace_path, int(request[1]))
         elif request[0] == "disconnect" and chip is not None:
             chip.close()
             chip = None

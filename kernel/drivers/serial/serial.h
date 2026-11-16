@@ -56,6 +56,34 @@ struct identity {
 class port;
 
 /**
+ * A port's driver, which applies the settings programs ask the port for. The
+ * port makes one call at a time, under its control lock, and a call may sleep,
+ * since a chip request ends only at its reply, its deadline or the device's
+ * unplug.
+ */
+class port_driver {
+public:
+    virtual ~port_driver() = default;
+
+    /**
+     * @brief Sets the chip to `settings`, whose speed is never 0, at the
+     * nearest rate the chip makes.
+     * @return OK, ERR_UNSUPPORTED with nothing sent for a rate more than 3
+     *         percent from every rate the chip makes or a field it lacks, or
+     *         ERR_IO when a chip request fails.
+     */
+    virtual int32_t set_line(const line_settings& settings) = 0;
+};
+
+/**
+ * @brief Whether a chip making `made` baud serves a port asked for `asked`,
+ * which holds while they differ by at most 3 percent. A UART misreads a
+ * 10-bit character once the two clocks differ by about 5 percent, so this
+ * leaves room for the far end's error.
+ */
+bool is_rate_within_tolerance(uint32_t made, uint32_t asked);
+
+/**
  * @brief Creates /dev/serial, where ports appear, and /dev/sysinfo/serial,
  * which lists them a line each and wakes its pollers as a port arrives or
  * leaves.
@@ -67,11 +95,12 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Adds a port for the UART `id` describes as /dev/serial/<name>, under
- * the first name the naming rules leave free, keeps a copy of `id`, and then
- * lists the port. Allocates and logs, so it must run on the driver's own task.
+ * the first name the naming rules leave free, keeps a copy of `id`, calls
+ * `driver` until `unregister_port`, and then lists the port. Allocates and
+ * logs, so it must run on the driver's own task.
  * @return The port, or nullptr when memory runs out or no free name fits.
  */
-port* register_port(const identity& id);
+port* register_port(port_driver* driver, const identity& id);
 
 /**
  * @brief Queues bytes the chip received for reads, dropping them while no file
@@ -95,9 +124,10 @@ void receive_failed(port* p);
 void detach(port* p);
 
 /**
- * @brief Drops the registry's reference to a detached port. The driver must
- * call it only after its last call into the port has returned, and the port
- * stays allocated until its last open file closes.
+ * @brief Drops the registry's reference to a detached port, and returns once
+ * no call from the port into the driver is in progress or can follow. The
+ * driver must call it only after its last call into the port has returned,
+ * and the port stays allocated until its last open file closes.
  */
 void unregister_port(port* p);
 

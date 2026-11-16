@@ -1,4 +1,5 @@
 #include "drivers/serial/port.h"
+#include "drivers/serial/settings.h"
 #include "fs/fs.h"
 #include "fs/node.h"
 #include "common/string.h"
@@ -54,13 +55,7 @@ public:
     }
 
     int32_t ioctl(fs::file*, uint32_t cmd, uint64_t arg) override {
-        if (cmd != terminal::FIONREAD) {
-            return fs::ERR_NOSYS;
-        }
-
-        int32_t queued = static_cast<int32_t>(m_port->queued_bytes());
-        void* out = reinterpret_cast<void*>(arg);
-        return mm::uaccess::copy_to_user(out, &queued, sizeof(queued)) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+        return m_port->request(cmd, arg);
     }
 
 private:
@@ -71,6 +66,14 @@ private:
 
 static size_t min_size(size_t a, size_t b) {
     return a < b ? a : b;
+}
+
+static int32_t driver_result_to_fs(int32_t rc) {
+    switch (rc) {
+        case OK:              return fs::OK;
+        case ERR_UNSUPPORTED: return fs::ERR_INVAL;
+        default:              return fs::ERR_IO;
+    }
 }
 
 /**
@@ -86,9 +89,16 @@ __PRIVILEGED_CODE static bool copy_out(uint8_t* destination, const uint8_t* sour
     return mm::uaccess::copy_to_user(destination, source, len) == mm::uaccess::OK;
 }
 
-__PRIVILEGED_CODE port* port::create(const identity& id) {
+__PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
     auto* p = heap::ualloc_new<port>();
     if (!p) {
+        return nullptr;
+    }
+
+    p->m_driver = driver;
+    p->m_settings = default_termios();
+    if (translate_termios(p->m_settings, &p->m_line) != OK) {
+        heap::ufree_delete(p);
         return nullptr;
     }
 
@@ -113,6 +123,7 @@ __PRIVILEGED_CODE port* port::create(const identity& id) {
 }
 
 port::port() {
+    m_control_lock.init();
     m_read_wq.init();
 }
 
@@ -149,27 +160,207 @@ __PRIVILEGED_CODE bool port::copy_identity(const identity& id) {
     return true;
 }
 
+// Opens and closes count files under the control lock, so no other open or close runs during a first open's chip
+// request
 __PRIVILEGED_CODE int32_t port::open() {
+    sync::mutex_lock(m_control_lock);
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    bool is_gone = m_is_gone;
-    if (!is_gone) {
-        m_open_files++;
-    }
-
+    bool is_first = m_open_files == 0;
+    bool was_gone = m_is_gone;
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 
-    return is_gone ? fs::ERR_IO : fs::OK;
+    int32_t rc = fs::OK;
+    if (was_gone || !m_driver) {
+        rc = fs::ERR_IO;
+    } else if (m_is_exclusive) {
+        rc = fs::ERR_BUSY;
+    } else if (is_first) {
+        rc = driver_result_to_fs(m_driver->set_line(m_line));
+    }
+
+    // The device can leave during the first open's chip request, and then the open fails rather than count a file
+    if (rc == fs::OK) {
+        irq = sync::spin_lock_irqsave(m_state_lock);
+        if (m_is_gone) {
+            rc = fs::ERR_IO;
+        } else {
+            m_open_files++;
+        }
+
+        sync::spin_unlock_irqrestore(m_state_lock, irq);
+    }
+
+    sync::mutex_unlock(m_control_lock);
+    return rc;
 }
 
 __PRIVILEGED_CODE void port::close() {
+    sync::mutex_lock(m_control_lock);
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     m_open_files--;
-    if (m_open_files == 0) {
+    bool is_last = m_open_files == 0;
+    if (is_last) {
         m_queue_head = 0;
         m_queued = 0;
     }
 
     sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    if (is_last) {
+        m_is_exclusive = false;
+    }
+
+    sync::mutex_unlock(m_control_lock);
+}
+
+__PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
+    if (cmd == terminal::FIONREAD) {
+        return copy_queued_count_out(arg);
+    }
+
+    if (is_gone()) {
+        return fs::ERR_IO;
+    }
+
+    switch (cmd) {
+        case terminal::TCGETS:     return copy_settings_out(arg, sizeof(terminal::termios));
+        case terminal::TCGETS2:    return copy_settings_out(arg, sizeof(terminal::termios2));
+        case terminal::TCSETS:
+        case terminal::TCSETSW:    return apply_settings(arg, sizeof(terminal::termios), false);
+        case terminal::TCSETSF:    return apply_settings(arg, sizeof(terminal::termios), true);
+        case terminal::TCSETS2:
+        case terminal::TCSETSW2:   return apply_settings(arg, sizeof(terminal::termios2), false);
+        case terminal::TCSETSF2:   return apply_settings(arg, sizeof(terminal::termios2), true);
+        case terminal::TCFLSH:     return flush(arg);
+        case terminal::TIOCGWINSZ: return copy_window_size_out(arg);
+        case terminal::TIOCSWINSZ: return take_window_size(arg);
+        case terminal::TIOCEXCL:   return set_exclusive(true);
+        case terminal::TIOCNXCL:   return set_exclusive(false);
+        case terminal::TCXONC:     return fs::ERR_INVAL;
+        default:                   return fs::ERR_NOSYS;
+    }
+}
+
+__PRIVILEGED_CODE void port::release_driver() {
+    sync::mutex_lock(m_control_lock);
+    m_driver = nullptr;
+    sync::mutex_unlock(m_control_lock);
+}
+
+__PRIVILEGED_CODE bool port::is_gone() {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    bool was_gone = m_is_gone;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    return was_gone;
+}
+
+__PRIVILEGED_CODE void port::drop_queued() {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    m_queue_head = 0;
+    m_queued = 0;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+}
+
+// TCGETS asks for the first bytes of the stored termios2, which have the termios layout, and TCGETS2 for all of it
+__PRIVILEGED_CODE int32_t port::copy_settings_out(uint64_t arg, size_t length) {
+    sync::mutex_lock(m_control_lock);
+    terminal::termios2 settings = m_settings;
+    sync::mutex_unlock(m_control_lock);
+
+    void* destination = reinterpret_cast<void*>(arg);
+    return mm::uaccess::copy_to_user(destination, &settings, length) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+}
+
+// Stores the settings only once the chip takes them, so TCGETS returns what the last applied TCSETS wrote
+__PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool drops_queued) {
+    terminal::termios2 written = {};
+    const void* source = reinterpret_cast<const void*>(arg);
+    if (mm::uaccess::copy_from_user(&written, source, length) != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    sync::mutex_lock(m_control_lock);
+    terminal::termios2 settings = m_settings;
+    string::memcpy(&settings, &written, length);
+
+    line_settings line = {};
+    int32_t rc = translate_termios(settings, &line) == OK ? fs::OK : fs::ERR_INVAL;
+
+    // A chip is never asked for B0's speed of 0, so it keeps the speed it has
+    if (rc == fs::OK && line.baud == 0) {
+        line.baud = m_line.baud;
+    }
+
+    if (rc == fs::OK) {
+        rc = m_driver ? driver_result_to_fs(m_driver->set_line(line)) : fs::ERR_IO;
+    }
+
+    if (rc == fs::OK) {
+        m_settings = settings;
+        m_line = line;
+    }
+
+    sync::mutex_unlock(m_control_lock);
+
+    if (rc == fs::OK && drops_queued) {
+        drop_queued();
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE int32_t port::flush(uint64_t which) {
+    switch (which) {
+        case terminal::TCIFLUSH:
+        case terminal::TCIOFLUSH:
+            drop_queued();
+            return fs::OK;
+        case terminal::TCOFLUSH:
+            return fs::OK;
+        default:
+            return fs::ERR_INVAL;
+    }
+}
+
+// FIONREAD answers with an int
+__PRIVILEGED_CODE int32_t port::copy_queued_count_out(uint64_t arg) {
+    int32_t queued = static_cast<int32_t>(queued_bytes());
+
+    void* destination = reinterpret_cast<void*>(arg);
+    return mm::uaccess::copy_to_user(destination, &queued, sizeof(queued)) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+}
+
+// A port stores the size a program sets, 0 by 0 until then, so isatty() is true for it
+__PRIVILEGED_CODE int32_t port::copy_window_size_out(uint64_t arg) {
+    sync::mutex_lock(m_control_lock);
+    terminal::winsize size = m_window_size;
+    sync::mutex_unlock(m_control_lock);
+
+    void* destination = reinterpret_cast<void*>(arg);
+    return mm::uaccess::copy_to_user(destination, &size, sizeof(size)) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+}
+
+__PRIVILEGED_CODE int32_t port::take_window_size(uint64_t arg) {
+    terminal::winsize size = {};
+    const void* source = reinterpret_cast<const void*>(arg);
+    if (mm::uaccess::copy_from_user(&size, source, sizeof(size)) != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    sync::mutex_lock(m_control_lock);
+    m_window_size = size;
+    sync::mutex_unlock(m_control_lock);
+
+    return fs::OK;
+}
+
+__PRIVILEGED_CODE int32_t port::set_exclusive(bool is_exclusive) {
+    sync::mutex_lock(m_control_lock);
+    m_is_exclusive = is_exclusive;
+    sync::mutex_unlock(m_control_lock);
+
+    return fs::OK;
 }
 
 __PRIVILEGED_CODE ssize_t port::read(void* out, size_t count, uint32_t flags, bool is_user_buffer) {

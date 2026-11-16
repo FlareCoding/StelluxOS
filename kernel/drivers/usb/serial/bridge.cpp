@@ -114,6 +114,10 @@ void bridge::disconnect() {
     });
 }
 
+int32_t bridge::set_line(const ::serial::line_settings& settings) {
+    return m_translator->set_line(settings);
+}
+
 void bridge::handle_read(void* context, const uint8_t* data, uint32_t length, transfer_status status) {
     auto* self = static_cast<bridge*>(context);
     ::serial::port* registered = self->m_port.load_acquire();
@@ -147,7 +151,7 @@ void bridge::handle_read(void* context, const uint8_t* data, uint32_t length, tr
         .product = dev->product,
     };
 
-    return ::serial::register_port(id);
+    return ::serial::register_port(this, id);
 }
 
 } // namespace usb::serial

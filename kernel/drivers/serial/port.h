@@ -2,10 +2,13 @@
 #define STELLUX_DRIVERS_SERIAL_PORT_H
 
 #include "drivers/serial/port_name.h"
+#include "drivers/serial/serial.h"
 #include "common/list.h"
 #include "sync/atomic.h"
+#include "sync/mutex.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
+#include "terminal/tty.h"
 
 namespace fs { class node; }
 namespace sync { struct poll_table; }
@@ -27,11 +30,12 @@ class port {
 public:
     /**
      * @brief Creates a port for `id` and the port's node, which starts with one
-     * reference, the registry's. The port keeps a copy of the strings of `id`.
+     * reference, the registry's. The port calls `driver` and keeps a copy of
+     * the strings of `id`.
      * @return The port, or nullptr when memory runs out.
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE static port* create(const identity& id);
+    __PRIVILEGED_CODE static port* create(port_driver* driver, const identity& id);
 
     port();
     ~port();
@@ -53,17 +57,28 @@ public:
     list::node registry_link; // in the registry's list of the ports the listing shows
 
     /**
-     * @brief Counts a file opening the port.
-     * @return fs::OK, or fs::ERR_IO once the device has left.
+     * @brief Counts a file opening the port. The first open sets the chip to
+     * the port's settings, since its settings after setup are unknown.
+     * @return fs::OK, fs::ERR_BUSY while the port is held exclusively, or
+     *         fs::ERR_IO once the device has left or the chip request fails.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE int32_t open();
 
     /**
-     * @brief Counts a file closing, and empties the queue at the last close.
+     * @brief Counts a file closing. The last close ends exclusive mode and
+     * empties the queue.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void close();
+
+    /**
+     * @brief Carries out a terminal request a program makes with ioctl, with
+     * `arg` as the program passed it, an address in its memory or a number.
+     * @return fs::OK, or the error the program gets.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t request(uint32_t cmd, uint64_t arg);
 
     /**
      * @brief Reads queued bytes into `out`, a user buffer when `is_user_buffer`
@@ -106,7 +121,58 @@ public:
      */
     __PRIVILEGED_CODE void mark_gone();
 
+    /**
+     * @brief Stops calling the driver, once a call in progress returns.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void release_driver();
+
 private:
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool is_gone();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void drop_queued();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t copy_settings_out(uint64_t arg, size_t length);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t apply_settings(uint64_t arg, size_t length, bool drops_queued);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t flush(uint64_t which);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t copy_queued_count_out(uint64_t arg);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t copy_window_size_out(uint64_t arg);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t take_window_size(uint64_t arg);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t set_exclusive(bool is_exclusive);
+
     // True when a read has bytes or an end to report
     bool has_read_result_locked() const;
 
@@ -123,6 +189,14 @@ private:
     __PRIVILEGED_CODE bool copy_identity(const identity& id);
 
     fs::node* m_node = nullptr;
+
+    // Guards the driver, the settings, the window size and exclusive mode across each chip request
+    sync::mutex        m_control_lock;
+    port_driver*       m_driver = nullptr;
+    terminal::termios2 m_settings = {};
+    line_settings      m_line = {};          // what each first open sends the chip, never with a speed of 0
+    terminal::winsize  m_window_size = {};
+    bool               m_is_exclusive = false; // TIOCEXCL, which refuses other opens until the last close
 
     identity  m_identity = {};
     char*     m_strings = nullptr; // the identity's strings, which `m_identity` and the name record's `device` point at
