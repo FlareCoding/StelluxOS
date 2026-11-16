@@ -1,6 +1,7 @@
 #ifndef STELLUX_DRIVERS_USB_CORE_USB_DEVICE_H
 #define STELLUX_DRIVERS_USB_CORE_USB_DEVICE_H
 
+#include "common/list.h"
 #include "sync/spinlock.h"
 
 namespace usb {
@@ -83,6 +84,10 @@ struct device {
     bool finalize_started; // Final release path has claimed ownership.
     class_driver* bound_drivers[MAX_INTERFACES]; // Each interface's driver, until an unplug takes it or its task ends.
     uint8_t driver_users[MAX_INTERFACES]; // Its task until run() returns, and an unplug until disconnect() returns.
+
+    // The registry's link and the generation that counted the device's arrival, both under the registry's lock
+    list::node registry_link;
+    uint64_t   arrival;
 };
 
 } // namespace usb
