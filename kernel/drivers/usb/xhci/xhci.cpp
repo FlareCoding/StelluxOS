@@ -925,15 +925,9 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
             sync::wake_all(ep->completion_wq());
         }
-
-        // Also wake any EP0 waiter
-        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
-        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
-        device->ctrl_result().transfer_length = 0;
-        device->set_ctrl_completed(true);
-        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
-        sync::wake_all(device->ctrl_completion_wq());
     });
+
+    _end_control_transfers(device);
 
     _disable_slot(slot_id); // tolerate failure (device may be gone)
 
@@ -943,6 +937,19 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
     m_port_devices[port_index] = nullptr;
     m_slot_devices[slot_id] = nullptr;
     usb::core::finalize_disconnected_device(this, device);
+}
+
+void xhci_hcd::_end_control_transfers(xhci_device* device) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+
+        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+        device->ctrl_result().transfer_length = 0;
+        device->set_ctrl_completed(true);
+        device->set_ctrl_gone();
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        sync::wake_all(device->ctrl_completion_wq());
+    });
 }
 
 void xhci_hcd::_complete_endpoint_transfer(
@@ -1398,14 +1405,9 @@ void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
             sync::wake_all(ep->completion_wq());
         }
-
-        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
-        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
-        device->ctrl_result().transfer_length = 0;
-        device->set_ctrl_completed(true);
-        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
-        sync::wake_all(device->ctrl_completion_wq());
     });
+
+    _end_control_transfers(device);
 
     _disable_slot(slot_id);
 
@@ -3427,19 +3429,30 @@ int32_t xhci_hcd::usb_control_transfer(
         string::memset(dma_buffer, 0, length > 0 ? length : 1);
     }
 
+    // Teardown marks EP0 gone and completed under this lock, so a transfer that finds EP0 present queues its TD and
+    // rings EP0's doorbell before teardown marks it, and teardown still ends its wait
+    bool is_gone = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
-        device->set_ctrl_completed(false);
+        is_gone = device->ctrl_gone();
+        if (!is_gone) {
+            device->set_ctrl_completed(false);
+            ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
+            if (length > 0) {
+                ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data_trb));
+            }
+
+            ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
+            _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+        }
+
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
     });
 
-    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
-    if (length > 0) {
-        ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data_trb));
+    if (is_gone) {
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        return -1;
     }
-    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
-
-    _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());

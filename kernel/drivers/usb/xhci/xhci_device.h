@@ -95,6 +95,10 @@ public:
     inline void              set_ctrl_completed(bool v) { m_ctrl_completed = v; }
     inline xhci_transfer_completion_trb_t& ctrl_result() { return m_ctrl_result; }
 
+    // Set by teardown under `ctrl_completion_lock()`, after which a class driver's control transfer fails at once
+    inline bool ctrl_gone() const { return m_ctrl_gone; }
+    inline void set_ctrl_gone() { m_ctrl_gone = true; }
+
     // Non-control endpoints (indexed by DCI)
     static constexpr uint8_t MAX_ENDPOINTS = 31;
     xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
@@ -157,6 +161,7 @@ private:
     sync::wait_queue m_ctrl_completion_wq;
     sync::spinlock   m_ctrl_completion_lock;
     bool             m_ctrl_completed = false;
+    bool             m_ctrl_gone = false;
     xhci_transfer_completion_trb_t m_ctrl_result = {};
 
     // Non-control endpoints (DCI 2-31, index 0-1 unused)

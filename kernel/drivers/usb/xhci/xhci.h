@@ -312,6 +312,9 @@ private:
                                            usb::usb_configuration_descriptor* out,
                                            uint8_t config_index = 0);
 
+    // Teardown's step that ends EP0's waiting transfer as stopped and makes class drivers' later transfers fail
+    void _end_control_transfers(xhci::xhci_device* device);
+
     // Normal (interrupt/bulk) transfers
     int32_t _submit_normal_transfer(xhci::xhci_device* device, xhci::xhci_endpoint* ep,
                                     void* buffer, uint32_t length);

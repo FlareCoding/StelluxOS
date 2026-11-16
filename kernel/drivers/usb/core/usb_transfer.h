@@ -106,7 +106,8 @@ int32_t read_in_stream(in_stream* stream,
 void close_in_stream(in_stream* stream);
 
 /**
- * Synchronous control transfer on EP0.
+ * Synchronous control transfer on EP0. Fails at once after the device's
+ * unplug.
  * For IN (device-to-host) data is filled by the device, for OUT
  * (host-to-device) data is sent to the device. Direction is encoded
  * in request_type bit 7 (0=OUT, 1=IN). An IN reply shorter than
