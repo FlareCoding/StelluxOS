@@ -165,13 +165,6 @@ static uint16_t parity_code(::serial::parity mode) {
     return PARITY_NONE;
 }
 
-static void store_le32(uint8_t* bytes, uint32_t value) {
-    bytes[0] = static_cast<uint8_t>(value);
-    bytes[1] = static_cast<uint8_t>(value >> 8);
-    bytes[2] = static_cast<uint8_t>(value >> 16);
-    bytes[3] = static_cast<uint8_t>(value >> 24);
-}
-
 static uint32_t load_le32(const uint8_t* bytes) {
     return static_cast<uint32_t>(bytes[0]) |
            static_cast<uint32_t>(bytes[1]) << 8 |

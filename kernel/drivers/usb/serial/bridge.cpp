@@ -10,6 +10,16 @@ namespace usb::serial {
 static constexpr uint32_t READ_BYTES = 256;
 static constexpr uint32_t POSTED_READS = 32;
 
+static const interface* find_interface(const device& dev, uint8_t number) {
+    for (uint8_t i = 0; i < dev.num_interfaces; i++) {
+        if (dev.interfaces[i].interface_number == number) {
+            return &dev.interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
 // A read holds whole packets, since a full packet past its end halts the endpoint
 static uint32_t round_up_to_packets(uint32_t bytes, uint16_t packet_size) {
     return (bytes + packet_size - 1) / packet_size * packet_size;
@@ -19,7 +29,7 @@ bridge::bridge(translator* chip_translator) : class_driver("usb-serial"), m_tran
     m_disconnect_wq.init();
 }
 
-// The stream lives only inside run(), so a bridge the USB core frees on the HCD task never waits for one to close
+// The streams live only inside run(), so a bridge the USB core frees on the HCD task never waits for one to close
 bridge::~bridge() {
     heap::ufree_delete(m_translator);
 }
@@ -38,17 +48,18 @@ int32_t bridge::probe(device* dev, interface* iface) {
         return -1;
     }
 
-    const endpoint* bulk_in = find_bulk_in(*iface);
-    const endpoint* bulk_out = find_bulk_out(*iface);
+    const interface* data_interface = find_interface(*dev, m_translator->data_interface_number());
+    const endpoint* bulk_in = data_interface ? find_bulk_in(*data_interface) : nullptr;
+    const endpoint* bulk_out = data_interface ? find_bulk_out(*data_interface) : nullptr;
     if (!bulk_in) {
-        log::warn("usb-serial: %04x:%04x has no bulk IN endpoint for interface %u", dev->vid, dev->pid,
-                  iface->interface_number);
+        log::warn("usb-serial: %04x:%04x has no bulk IN endpoint on interface %u", dev->vid, dev->pid,
+                  m_translator->data_interface_number());
         return -1;
     }
 
     if (!bulk_out) {
-        log::warn("usb-serial: %04x:%04x has no bulk OUT endpoint for interface %u", dev->vid, dev->pid,
-                  iface->interface_number);
+        log::warn("usb-serial: %04x:%04x has no bulk OUT endpoint on interface %u", dev->vid, dev->pid,
+                  m_translator->data_interface_number());
         return -1;
     }
 
@@ -88,6 +99,10 @@ void bridge::run() {
         ::serial::receive_failed(registered);
     }
 
+    if (is_published) {
+        m_translator->open_streams();
+    }
+
     // No send starts once the device has left, and those in flight end with it
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
@@ -101,6 +116,7 @@ void bridge::run() {
     // The stream's last call has returned once the close does, so no call reaches the port after it is unregistered
     close_in_stream(m_stream);
     m_stream = nullptr;
+    m_translator->close_streams();
 
     if (registered) {
         ::serial::unregister_port(registered);

@@ -12,8 +12,8 @@
 namespace usb::serial {
 
 /**
- * Turns one interface of a USB bridge chip, which carries a board's UART over
- * USB, into a serial port, with a translator for the chip, which it owns.
+ * Turns one interface of a USB serial device, such as a bridge chip, into a
+ * serial port, with a translator for the device, which it owns.
  * Reads stay posted on the bulk IN endpoint from the port's registration to
  * the unplug, since a chip left with none posted can resend its last packet.
  * The bridge is also the port's driver. It sends the port's bytes on the bulk

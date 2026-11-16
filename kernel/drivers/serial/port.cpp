@@ -677,7 +677,10 @@ __PRIVILEGED_CODE int32_t port::drain(bool waits_for_last_character) {
     ssize_t pending = 1;
     while (rc == fs::OK && pending > 0) {
         pending = chip_tx_pending();
-        if (pending < 0 || (pending > 0 && clock::now_ns() >= deadline_ns)) {
+        if (pending == TX_UNKNOWN) {
+            rc = sleep_until(min_ns(chip_empty_ns(TX_UNKNOWN), deadline_ns));
+            pending = 0;
+        } else if (pending < 0 || (pending > 0 && clock::now_ns() >= deadline_ns)) {
             rc = fs::ERR_IO;
         } else if (pending > 0) {
             has_held_bytes = true;
@@ -701,10 +704,11 @@ __PRIVILEGED_CODE ssize_t port::chip_tx_pending() {
     return pending;
 }
 
-// When the chip should have sent what it holds
+// When the chip should have sent what it holds, or for a chip that cannot tell, every byte it took
 __PRIVILEGED_CODE uint64_t port::chip_empty_ns(ssize_t pending) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    uint64_t empty_ns = clock::now_ns() + static_cast<uint64_t>(pending) * m_character_ns;
+    uint64_t empty_ns = pending == TX_UNKNOWN ? m_chip_empty_ns
+                                              : clock::now_ns() + static_cast<uint64_t>(pending) * m_character_ns;
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 
     return empty_ns;

@@ -13,10 +13,10 @@ void translator::handle_received(::serial::port* p, const uint8_t* data, size_t 
     ::serial::receive(p, data, length);
 }
 
-static const endpoint* find_bulk(const interface& iface, bool is_in) {
+static const endpoint* find_endpoint(const interface& iface, uint8_t transfer_type, bool is_in) {
     for (uint8_t i = 0; i < iface.num_endpoints; i++) {
         const endpoint& ep = iface.endpoints[i];
-        if (ep.transfer_type == USB_ENDPOINT_TYPE_BULK && ep.is_in() == is_in && ep.max_packet_size > 0) {
+        if (ep.transfer_type == transfer_type && ep.is_in() == is_in && ep.max_packet_size > 0) {
             return &ep;
         }
     }
@@ -25,11 +25,15 @@ static const endpoint* find_bulk(const interface& iface, bool is_in) {
 }
 
 const endpoint* find_bulk_in(const interface& iface) {
-    return find_bulk(iface, true);
+    return find_endpoint(iface, USB_ENDPOINT_TYPE_BULK, true);
 }
 
 const endpoint* find_bulk_out(const interface& iface) {
-    return find_bulk(iface, false);
+    return find_endpoint(iface, USB_ENDPOINT_TYPE_BULK, false);
+}
+
+const endpoint* find_interrupt_in(const interface& iface) {
+    return find_endpoint(iface, USB_ENDPOINT_TYPE_INTERRUPT, true);
 }
 
 uint32_t modem_inputs_from_status(uint8_t status) {
@@ -51,6 +55,13 @@ uint32_t modem_inputs_from_status(uint8_t status) {
     }
 
     return inputs;
+}
+
+void store_le32(uint8_t* bytes, uint32_t value) {
+    bytes[0] = static_cast<uint8_t>(value);
+    bytes[1] = static_cast<uint8_t>(value >> 8);
+    bytes[2] = static_cast<uint8_t>(value >> 16);
+    bytes[3] = static_cast<uint8_t>(value >> 24);
 }
 
 } // namespace usb::serial
