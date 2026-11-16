@@ -160,7 +160,7 @@ __PRIVILEGED_CODE static void wait_for_due() {
             break;
         }
 
-        irq = sync::wait(state.worker_wq, state.lock, irq);
+        irq = sync::wait_uninterruptible(state.worker_wq, state.lock, irq);
     }
 
     sync::spin_unlock_irqrestore(state.lock, irq);

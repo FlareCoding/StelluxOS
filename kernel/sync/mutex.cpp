@@ -25,7 +25,7 @@ __PRIVILEGED_CODE void mutex_lock(mutex& m) {
     while (m.owner.load_relaxed() != nullptr) {
         MUTEX_ASSERT(!(self->exec.flags & sched::TASK_FLAG_IDLE),
                      "idle task blocked on contended mutex");
-        irq = wait(m.wq, m.lock, irq);
+        irq = wait_uninterruptible(m.wq, m.lock, irq);
     }
 
     m.owner.store_relaxed(self);

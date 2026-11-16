@@ -43,7 +43,7 @@ int32_t await_transfer(transfer_request& req) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(req.lock);
         while (req.pending) {
-            irq = sync::wait(req.complete_wq, req.lock, irq);
+            irq = sync::wait_uninterruptible(req.complete_wq, req.lock, irq);
         }
         sync::spin_unlock_irqrestore(req.lock, irq);
     });

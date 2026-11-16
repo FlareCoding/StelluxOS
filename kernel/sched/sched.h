@@ -158,7 +158,7 @@ __PRIVILEGED_CODE void wake(task* t);
 /**
  * @brief Mark a task for termination and wake it if blocked.
  * Fire-and-forget: the target is force-woken now or observes the kill
- * at its next killable blocking attempt (sleep, futex, poll).
+ * at its next killable blocking attempt (sleep, futex, poll, sync::wait, sync::wait_until).
  * Same pin and spin rules as wake.
  * @note Privilege: **required**
  */

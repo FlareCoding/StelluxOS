@@ -1125,7 +1125,12 @@ static sched::task* start_close(task_close& request, fs::file* file) {
     request.file = file;
     request.done.store_relaxed(0);
 
-    return test_helpers::start_pinned_task(close_on_a_task, &request, "gfxfb_close");
+    return test_helpers::start_pinned_task_on_another_cpu(
+        close_on_a_task,
+        &request,
+        "gfxfb_close",
+        sched::TASK_FLAG_ELEVATED
+    );
 }
 
 // True when `file`'s close, run on a task of its own, returns before the tests' deadline, so a close that never returns
@@ -4508,7 +4513,7 @@ TEST(gfxfb, a_closing_file_waits_for_its_unended_presents) {
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
     RUN_ELEVATED(sched::force_wake_for_kill(closer));
-    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    ASSERT_TRUE(test_helpers::stays_asleep(closer));
     EXPECT_EQ(g_waiting_close.done.load_acquire(), static_cast<uint32_t>(0));
     EXPECT_EQ(request_small_buffer(rival, page).handle, static_cast<uint32_t>(0));
 
@@ -4618,7 +4623,7 @@ TEST(gfxfb, a_closing_controller_presents_each_output_its_base_buffer) {
     end_present(test, 0, gfxfb::GFXFB_PRESENT_LATCHED);
     ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
     RUN_ELEVATED(sched::force_wake_for_kill(closer));
-    ASSERT_TRUE(test_helpers::blocks_before_deadline(closer));
+    ASSERT_TRUE(test_helpers::stays_asleep(closer));
     EXPECT_EQ(g_controller_close.done.load_acquire(), static_cast<uint32_t>(0));
     ASSERT_TRUE(creates_before_deadline(rival, page, fs::ERR_BUSY));
 

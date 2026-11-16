@@ -122,7 +122,7 @@ __PRIVILEGED_CODE static void claim_drain() {
 
     sync::irq_state irq = sync::spin_lock_irqsave(g_drain_wait_lock);
     while (!try_claim_drain()) {
-        irq = sync::wait(g_drain_waiters, g_drain_wait_lock, irq);
+        irq = sync::wait_uninterruptible(g_drain_waiters, g_drain_wait_lock, irq);
     }
 
     sync::spin_unlock_irqrestore(g_drain_wait_lock, irq);

@@ -20,7 +20,7 @@ struct mutex {
 };
 
 /**
- * Acquire the mutex. Blocks if held by another task.
+ * Acquire the mutex. Blocks if held by another task. A signal never ends the wait.
  * Must not be called from IRQ context or by the idle task.
  * @note Privilege: **required**
  */

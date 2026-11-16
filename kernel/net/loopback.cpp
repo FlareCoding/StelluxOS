@@ -103,7 +103,7 @@ __PRIVILEGED_CODE int32_t loopback_interface::start() {
 __PRIVILEGED_CODE void loopback_interface::take_pending(packet_list& out) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_lock);
     while (m_pending.empty()) {
-        irq = sync::wait(m_wq, m_lock, irq);
+        irq = sync::wait_uninterruptible(m_wq, m_lock, irq);
     }
 
     while (packet* pkt = m_pending.pop_front()) {

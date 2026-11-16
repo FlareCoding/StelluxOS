@@ -91,7 +91,7 @@ __PRIVILEGED_CODE static void reaper_main(void*) {
         if (!list) {
             sync::irq_state irq = sync::spin_lock_irqsave(g_wait_lock);
             while (g_queue_head.load_acquire() == nullptr) {
-                irq = sync::wait(g_wait_queue, g_wait_lock, irq);
+                irq = sync::wait_uninterruptible(g_wait_queue, g_wait_lock, irq);
             }
             sync::spin_unlock_irqrestore(g_wait_lock, irq);
             continue;
