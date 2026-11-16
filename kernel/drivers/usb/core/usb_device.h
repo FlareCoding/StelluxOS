@@ -9,6 +9,9 @@ class class_driver;
 
 constexpr uint8_t MAX_INTERFACES = 16;
 
+// A string descriptor holds at most 126 UTF-16 code units
+constexpr size_t MAX_STRING_LENGTH = 126;
+
 struct endpoint {
     uint8_t  address;         // bEndpointAddress (e.g. 0x81 = EP1 IN)
     uint8_t  transfer_type;   // 0=control, 1=isochronous, 2=bulk, 3=interrupt
@@ -35,10 +38,17 @@ struct device {
     uint16_t vid;
     uint16_t pid;
     uint16_t bcd_usb;
+    uint16_t bcd_device;
     uint8_t  device_class;
     uint8_t  device_subclass;
     uint8_t  device_protocol;
     uint8_t  speed;
+
+    // The device's strings in printable ASCII, empty when the device names none or a read fails, and written
+    // only before any driver binds, so they need no lock
+    char manufacturer[MAX_STRING_LENGTH + 1];
+    char product[MAX_STRING_LENGTH + 1];
+    char serial_number[MAX_STRING_LENGTH + 1];
 
     // Active configuration
     uint8_t  config_value;

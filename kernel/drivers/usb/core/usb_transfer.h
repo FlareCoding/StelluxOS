@@ -65,7 +65,8 @@ void close_interrupt_in_stream(interrupt_in_stream* stream);
  * Synchronous control transfer on EP0.
  * For IN (device-to-host) data is filled by the device, for OUT
  * (host-to-device) data is sent to the device. Direction is encoded
- * in request_type bit 7 (0=OUT, 1=IN).
+ * in request_type bit 7 (0=OUT, 1=IN). An IN reply shorter than
+ * `length` leaves the rest of `data` zeroed.
  * @return 0 on success, negative on failure.
  */
 int32_t control_transfer(device* dev,
