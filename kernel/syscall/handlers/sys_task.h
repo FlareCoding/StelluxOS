@@ -15,7 +15,6 @@ DECLARE_SYSCALL(set_tid_address);
 DECLARE_SYSCALL(clone);
 DECLARE_SYSCALL(sched_yield);
 DECLARE_SYSCALL(sched_getaffinity);
-DECLARE_SYSCALL(nanosleep);
 DECLARE_SYSCALL(setpgid);
 DECLARE_SYSCALL(getpgid);
 

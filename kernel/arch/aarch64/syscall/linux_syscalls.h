@@ -54,6 +54,7 @@ constexpr uint64_t FUTEX            = 98;
 constexpr uint64_t NANOSLEEP        = 101;
 constexpr uint64_t CLOCK_GETTIME    = 113;
 constexpr uint64_t CLOCK_GETRES     = 114;
+constexpr uint64_t CLOCK_NANOSLEEP  = 115;
 constexpr uint64_t SCHED_GETAFFINITY = 123;
 constexpr uint64_t SCHED_YIELD      = 124;
 constexpr uint64_t KILL             = 129;

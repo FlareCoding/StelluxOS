@@ -14,6 +14,9 @@ constexpr uint64_t CLOCK_REALTIME_COARSE    = 5;
 constexpr uint64_t CLOCK_MONOTONIC_COARSE   = 6;
 constexpr uint64_t CLOCK_BOOTTIME           = 7;
 
+// With this flag, clock_nanosleep reads its request as a time on the clock rather than a duration
+constexpr uint64_t TIMER_ABSTIME = 1;
+
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 constexpr int64_t COARSE_RES_NS = 10000000; // 10 ms at 100 Hz tick
 
@@ -45,6 +48,17 @@ struct kernel_timezone {
 
 static uint64_t get_monotonic_ns() {
     return clock::now_ns();
+}
+
+// The nanoseconds a valid timespec names, or UINT64_MAX when they do not fit
+static uint64_t timespec_to_ns(const kernel_timespec& ts) {
+    uint64_t sec = static_cast<uint64_t>(ts.tv_sec);
+    uint64_t nsec = static_cast<uint64_t>(ts.tv_nsec);
+    if (sec > (~0ULL - nsec) / NS_PER_SEC) {
+        return ~0ULL;
+    }
+
+    return sec * NS_PER_SEC + nsec;
 }
 
 /**
@@ -183,6 +197,63 @@ DEFINE_SYSCALL2(clock_getres, clock_id, u_tp) {
     }
 
     return 0;
+}
+
+DEFINE_SYSCALL4(clock_nanosleep, clock_id, u_flags, u_req, u_rem) {
+    bool is_realtime = false;
+    switch (clock_id) {
+    case CLOCK_MONOTONIC:
+    case CLOCK_BOOTTIME:
+        break;
+    case CLOCK_REALTIME:
+        is_realtime = true;
+        break;
+    default:
+        return syscall::EINVAL;
+    }
+
+    if ((u_flags & ~TIMER_ABSTIME) != 0) {
+        return syscall::EINVAL;
+    }
+
+    kernel_timespec req;
+    if (mm::uaccess::copy_from_user(&req, reinterpret_cast<const void*>(u_req), sizeof(req)) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= static_cast<int64_t>(NS_PER_SEC)) {
+        return syscall::EINVAL;
+    }
+
+    // A caller retries an absolute sleep with the same request, so only a relative one reports the time left
+    if (u_flags & TIMER_ABSTIME) {
+        uint64_t deadline_ns = timespec_to_ns(req);
+        if (is_realtime && !clock::monotonic_from_realtime_ns(deadline_ns, &deadline_ns)) {
+            return syscall::EINVAL;
+        }
+
+        return sched::sleep_until_ns(deadline_ns) == 0 ? 0 : syscall::EINTR;
+    }
+
+    uint64_t left_ns = sched::sleep_ns(timespec_to_ns(req));
+    if (left_ns == 0) {
+        return 0;
+    }
+
+    if (u_rem != 0) {
+        kernel_timespec rem;
+        rem.tv_sec = static_cast<int64_t>(left_ns / NS_PER_SEC);
+        rem.tv_nsec = static_cast<int64_t>(left_ns % NS_PER_SEC);
+        if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(u_rem), &rem, sizeof(rem)) != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
+    }
+
+    return syscall::EINTR;
+}
+
+DEFINE_SYSCALL2(nanosleep, u_req, u_rem) {
+    return sys_clock_nanosleep(CLOCK_REALTIME, 0, u_req, u_rem, 0, 0);
 }
 
 DEFINE_SYSCALL2(gettimeofday, u_tv, u_tz) {

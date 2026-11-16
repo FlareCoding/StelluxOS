@@ -94,6 +94,7 @@ constexpr uint64_t GETDENTS64       = 217;
 constexpr uint64_t SET_TID_ADDRESS  = 218;
 constexpr uint64_t CLOCK_GETTIME    = 228;
 constexpr uint64_t CLOCK_GETRES     = 229;
+constexpr uint64_t CLOCK_NANOSLEEP  = 230;
 constexpr uint64_t EXIT_GROUP       = 231;
 constexpr uint64_t EPOLL_WAIT       = 232;
 constexpr uint64_t EPOLL_CTL        = 233;
