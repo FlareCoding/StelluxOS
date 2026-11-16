@@ -111,7 +111,12 @@ public:
     // Called synchronously from the hub driver's probe() which runs on the HCD task.
     int32_t configure_as_hub(xhci::xhci_device* device, uint8_t num_ports, uint8_t tt_think_time, bool mtt);
 
+    // The number that the locations of the controller's devices start with, from `usb::core::next_controller_number`
+    uint8_t controller_number() const { return m_controller_number; }
+
 private:
+    uint8_t m_controller_number = 0;
+
     // Host controller MMIO virtual base address and mapped size
     uintptr_t m_xhc_base = 0;
     size_t    m_xhc_bar_size = 0;

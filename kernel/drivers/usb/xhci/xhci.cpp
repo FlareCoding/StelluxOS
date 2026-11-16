@@ -24,6 +24,8 @@ static_assert(usb::MAX_IN_STREAM_READS <= 64);
 namespace drivers {
 
 int32_t xhci_hcd::attach() {
+    m_controller_number = usb::core::next_controller_number();
+
     // Enable PCI memory space + bus mastering before any MMIO access
     RUN_ELEVATED({
         dev().enable();

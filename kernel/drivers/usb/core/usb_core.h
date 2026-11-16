@@ -30,6 +30,13 @@ void device_disconnected(drivers::xhci_hcd* hcd,
 void finalize_disconnected_device(drivers::xhci_hcd* hcd,
                                   drivers::xhci::xhci_device* xdev);
 
+/**
+ * Hands out host controller numbers from 1, one per call. Controllers attach
+ * one at a time at boot, in PCI order, and each takes its number before any
+ * step of its attach that can fail, so the number is its place in that order.
+ */
+uint8_t next_controller_number();
+
 } // namespace usb::core
 
 #endif // STELLUX_DRIVERS_USB_CORE_USB_CORE_H
