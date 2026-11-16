@@ -1,5 +1,6 @@
 #include "drivers/serial/port.h"
 #include "drivers/serial/settings.h"
+#include "clock/clock.h"
 #include "fs/fs.h"
 #include "fs/node.h"
 #include "common/string.h"
@@ -15,6 +16,8 @@ namespace serial {
 // Reads copy out through a buffer of this size on the stack, since a copy to a program can fault and so must run
 // outside the state lock
 static constexpr size_t READ_CHUNK_BYTES = 256;
+
+static constexpr uint64_t NS_PER_VTIME = 100000000;
 
 namespace {
 
@@ -101,6 +104,8 @@ __PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
         heap::ufree_delete(p);
         return nullptr;
     }
+
+    p->take_read_settings(p->m_settings);
 
     if (!p->copy_identity(id)) {
         heap::ufree_delete(p);
@@ -299,6 +304,7 @@ __PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool
     if (rc == fs::OK) {
         m_settings = settings;
         m_line = line;
+        take_read_settings(settings);
     }
 
     sync::mutex_unlock(m_control_lock);
@@ -365,11 +371,19 @@ __PRIVILEGED_CODE int32_t port::set_exclusive(bool is_exclusive) {
 
 __PRIVILEGED_CODE ssize_t port::read(void* out, size_t count, uint32_t flags, bool is_user_buffer) {
     bool may_wait = (flags & fs::O_NONBLOCK) == 0;
+    uint64_t started_ns = clock::now_ns();
     uint8_t chunk[READ_CHUNK_BYTES];
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    while (!has_read_result_locked() && may_wait && !signals::interrupt_pending(sched::current())) {
-        irq = sync::wait(m_read_wq, m_state_lock, irq);
+    while (may_wait && !is_read_ready_locked(count) && !signals::interrupt_pending(sched::current())) {
+        uint64_t deadline_ns = read_deadline_locked(started_ns);
+        if (deadline_ns == 0) {
+            irq = sync::wait(m_read_wq, m_state_lock, irq);
+        } else if (clock::now_ns() < deadline_ns) {
+            irq = sync::wait_until(m_read_wq, m_state_lock, irq, deadline_ns);
+        } else {
+            break;
+        }
     }
 
     ssize_t empty_result = empty_read_result_locked(may_wait);
@@ -403,7 +417,7 @@ __PRIVILEGED_CODE uint32_t port::poll(sync::poll_table* pt) {
     // A failed stream only makes reads fail, so the port reports readable rather than an error, until an unplug
     // turns those reads into end of file
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    bool is_readable = m_queued > 0 || (m_has_failed && !m_is_gone);
+    bool is_readable = m_queued >= min_readable_bytes_locked() || (m_has_failed && !m_is_gone);
     bool is_gone = m_is_gone;
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 
@@ -422,8 +436,9 @@ __PRIVILEGED_CODE void port::queue_received(const uint8_t* data, size_t len) {
     m_received_bytes.fetch_add_relaxed(len);
 
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    if (m_open_files > 0 && !m_is_gone) {
+    if (m_open_files > 0 && !m_is_gone && m_is_receiving) {
         push_locked(data, len);
+        m_last_receive_ns = clock::now_ns();
         sync::wake_all(m_read_wq);
     }
 
@@ -444,10 +459,45 @@ __PRIVILEGED_CODE void port::mark_gone() {
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 }
 
-bool port::has_read_result_locked() const {
-    return m_queued > 0 || m_is_gone || m_has_failed;
+__PRIVILEGED_CODE void port::take_read_settings(const terminal::termios2& settings) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    m_read_min = settings.c_cc[terminal::VMIN];
+    m_read_timeout_ns = settings.c_cc[terminal::VTIME] * NS_PER_VTIME;
+    m_is_receiving = (settings.c_cflag & terminal::CREAD) != 0;
+    sync::wake_all(m_read_wq);
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
 }
 
+bool port::is_read_ready_locked(size_t count) const {
+    if (m_is_gone || m_has_failed) {
+        return true;
+    }
+
+    // With VMIN and VTIME both 0 a read returns what is queued at once, possibly nothing
+    if (m_read_min == 0) {
+        return m_queued > 0 || m_read_timeout_ns == 0;
+    }
+
+    return m_queued >= min_size(m_read_min, count);
+}
+
+size_t port::min_readable_bytes_locked() const {
+    return (m_read_timeout_ns == 0 && m_read_min > 1) ? m_read_min : 1;
+}
+
+uint64_t port::read_deadline_locked(uint64_t started_ns) const {
+    if (m_read_timeout_ns == 0) {
+        return 0;
+    }
+
+    if (m_read_min == 0) {
+        return started_ns + m_read_timeout_ns;
+    }
+
+    return m_queued > 0 ? m_last_receive_ns + m_read_timeout_ns : 0;
+}
+
+// A blocking read ends with nothing queued on a signal, or with VMIN 0 once VTIME passes
 ssize_t port::empty_read_result_locked(bool may_wait) const {
     if (m_is_gone) {
         return 0;
@@ -457,7 +507,11 @@ ssize_t port::empty_read_result_locked(bool may_wait) const {
         return fs::ERR_IO;
     }
 
-    return may_wait ? fs::ERR_INTR : fs::ERR_AGAIN;
+    if (!may_wait) {
+        return fs::ERR_AGAIN;
+    }
+
+    return signals::interrupt_pending(sched::current()) ? fs::ERR_INTR : 0;
 }
 
 // Copies as many of `len` bytes as fit after the queued ones, dropping and counting the rest
