@@ -30,8 +30,9 @@ static constexpr uint32_t MULTI_PACKET_BYTES = 200;
 // What serial_test_host.py sends back once QEMU's trace confirms what the test asked it to check
 static constexpr uint8_t ACK = 0x06;
 
-// SET_MODEM_CTRL as QEMU's trace names it, by its request type and code
+// The vendor requests QEMU's trace names by their request type and code: SET_MODEM_CTRL and SET_DATA
 static constexpr uint16_t SET_MODEM_CTRL_REQUEST = 0x4001;
+static constexpr uint16_t SET_DATA_REQUEST = 0x4004;
 
 // A step a test runs on a task of its own, since chip requests and cancels wait for the controller, and a wait on the
 // test runner's task never wakes
@@ -436,6 +437,21 @@ TEST(serial_ftdi_device, modem_lines_reach_the_chip) {
     EXPECT_TRUE(chip_was_given(f, SET_MODEM_CTRL_REQUEST, 0x0301));
     EXPECT_EQ(request_with_int(f, terminal::TIOCMSET, terminal::TIOCM_RTS), fs::OK);
     EXPECT_TRUE(chip_was_given(f, SET_MODEM_CTRL_REQUEST, 0x0302));
+
+    close_port(f);
+}
+
+// A socket has no breaks, so the far end checks QEMU's trace for a value no open or close sends. Ending the break
+// sends the value an open sends, so it goes unchecked
+TEST(serial_ftdi_device, breaks_reach_the_chip) {
+    ask_host("connect");
+    ASSERT_TRUE(wait_until_listed(true));
+    fs::file* f = open_port(fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    EXPECT_EQ(request_with_int(f, terminal::TIOCSBRK, 0), fs::OK);
+    EXPECT_TRUE(chip_was_given(f, SET_DATA_REQUEST, 0x4008));
+    EXPECT_EQ(request_with_int(f, terminal::TIOCCBRK, 0), fs::OK);
 
     close_port(f);
 }

@@ -135,6 +135,14 @@ int32_t bridge::get_modem_inputs(uint32_t* lines) {
     return m_translator->get_modem_inputs(lines);
 }
 
+int32_t bridge::set_break(bool on) {
+    return m_translator->set_break(on);
+}
+
+ssize_t bridge::tx_pending() {
+    return m_translator->tx_pending();
+}
+
 // The port leaves `data` untouched until the send ends, and the host controller's driver copies it when the transfer
 // starts, so the bridge sends it without a copy of its own
 int32_t bridge::send(const uint8_t* data, size_t length) {

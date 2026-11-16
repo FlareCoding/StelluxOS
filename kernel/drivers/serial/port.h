@@ -57,9 +57,9 @@ public:
     list::node registry_link; // in the registry's list of the ports the listing shows
 
     /**
-     * @brief Counts a file opening the port. The first open sets the chip to
-     * the port's settings, which are unknown after setup, and raises DTR and
-     * RTS unless the speed is B0.
+     * @brief Counts a file opening the port. The first open ends any break a
+     * last close could not end, sets the chip to the port's settings, which
+     * are unknown after setup, and raises DTR and RTS unless the speed is B0.
      * @return fs::OK, fs::ERR_BUSY while the port is held exclusively, or
      *         fs::ERR_IO once the device has left or a chip request fails.
      * @note Privilege: **required**
@@ -67,10 +67,10 @@ public:
     __PRIVILEGED_CODE int32_t open();
 
     /**
-     * @brief Counts a file closing. The last close waits for the send in
-     * flight up to its deadline, unless a signal is pending, cancels it if it
-     * has not ended, lowers DTR and RTS when HUPCL is set, ends exclusive mode
-     * and empties the queue.
+     * @brief Counts a file closing. The last close ends any break, drains up
+     * to the drain's deadline unless a signal is pending, cancels the send if
+     * it has not ended, lowers DTR and RTS when HUPCL is set, ends exclusive
+     * mode and empties the queue.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void close();
@@ -163,7 +163,47 @@ private:
     /**
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE uint64_t send_deadline();
+    __PRIVILEGED_CODE uint64_t drain_deadline();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t drain(bool waits_for_last_character);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE ssize_t chip_tx_pending();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE uint64_t chip_empty_ns(ssize_t pending);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool is_chip_sending();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t sleep_until(uint64_t wake_ns);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t drain_then_break(uint64_t break_ns);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t hold_break(uint64_t break_ns);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t set_break_request(bool on);
 
     /**
      * @note Privilege: **required**
@@ -179,6 +219,11 @@ private:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE int32_t change_modem_outputs(uint32_t lines);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t change_break(bool on);
 
     /**
      * @note Privilege: **required**
@@ -213,7 +258,7 @@ private:
     /**
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE int32_t apply_settings(uint64_t arg, size_t length, bool waits_for_send, bool drops_queued);
+    __PRIVILEGED_CODE int32_t apply_settings(uint64_t arg, size_t length, bool drains_first, bool drops_queued);
 
     /**
      * @note Privilege: **required**
@@ -247,6 +292,13 @@ private:
      */
     __PRIVILEGED_CODE void take_read_settings(const terminal::termios2& settings);
 
+    /**
+     * @brief Copies the time one character of `line` takes into the field the
+     * state lock guards, which `end_send` and drains count with.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void take_character_time(const line_settings& line);
+
     // True when a read of `count` bytes may return without waiting further
     bool is_read_ready_locked(size_t count) const;
 
@@ -270,13 +322,14 @@ private:
 
     fs::node* m_node = nullptr;
 
-    // Guards the settings, the modem outputs, the window size and exclusive mode across each chip request. The driver
-    // pointer changes only under this lock and the write lock, so a call holding either may use it
+    // Guards the settings, the modem outputs, the break, the window size and exclusive mode across each chip request.
+    // The driver pointer changes only under this lock and the write lock, so a call holding either may use it
     sync::mutex        m_control_lock;
     port_driver*       m_driver = nullptr;
     terminal::termios2 m_settings = {};
     line_settings      m_line = {};          // what each first open sends the chip, never with a speed of 0
     uint32_t           m_modem_outputs = 0;  // DTR and RTS as last set
+    bool               m_is_breaking = false;
     terminal::winsize  m_window_size = {};
     bool               m_is_exclusive = false; // TIOCEXCL, which refuses other opens until the last close
 
@@ -288,8 +341,8 @@ private:
     sync::atomic<uint64_t> m_received_bytes{0}; // every byte the chip delivered, those dropped included
     sync::atomic<uint64_t> m_dropped_bytes{0};  // the received bytes dropped because the queue was full
 
-    // Held from each copy into the staging buffer to its send's start, and while TCSETSW, TCSETSF or the last close
-    // waits for the send to end, so no new send starts meanwhile
+    // Held from each copy into the staging buffer to its send's start, and from each drain to the end of the settings
+    // change or break that follows it, so no send starts meanwhile
     sync::mutex m_write_lock;
     uint8_t*    m_staging = nullptr; // SEND_BYTES, which the send in flight reads until it ends
 
@@ -311,6 +364,8 @@ private:
     bool             m_has_send_failed = false;
     bool             m_is_send_failure_logged = false;
     bool             m_is_cancelling = false; // a cancel is running, so no send starts
+    uint64_t         m_character_ns = 0; // one character's time at the line's speed
+    uint64_t         m_chip_empty_ns = 0; // when the chip will have sent every byte it took, at the line's speed
 };
 
 using port_list = list::head<port, &port::registry_link>;

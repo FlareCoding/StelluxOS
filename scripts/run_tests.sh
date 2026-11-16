@@ -46,7 +46,7 @@ trap cleanup EXIT
 FTDI_DEVICE=(-chardev socket,id=ftdi,path="$FTDI_SOCKET",server=on,wait=off
              -device usb-serial,chardev=ftdi,serial=FT0001)
 
-# A socket has no line settings or modem lines, so QEMU's trace of the chip's requests shows them instead
+# A socket has no line settings, modem lines or breaks, so QEMU's trace of the chip's requests shows them instead
 FTDI_DEVICE+=(-trace usb_serial_set_baud -trace usb_serial_handle_control -D "$FTDI_TRACE")
 
 # The drivers tier binds a driver to every PCI device it can, so the aarch64 machine carries no virtio-net card,

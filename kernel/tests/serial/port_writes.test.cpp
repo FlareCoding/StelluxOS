@@ -41,14 +41,14 @@ static constexpr const char* PORT_PATH = "/dev/serial/wrchip-5555";
 // More than one send carries
 static constexpr size_t TWO_SENDS_BYTES = serial::SEND_BYTES + 904;
 
-// The speed code of 3 Mbaud, at which a send's bytes take little of a deadline that adds a second to them
+// The speed code of 3 Mbaud, at which a send's bytes take little of a drain's deadline, which adds a second to them
 static constexpr uint32_t B3000000 = 0x100D;
 
-// Far longer than a few bytes take at 9600 baud, and far shorter than the second a send's deadline adds to them
+// Far longer than a few bytes take at 9600 baud, and far shorter than the second a drain's deadline adds to them
 static constexpr uint64_t LONGER_THAN_THE_BYTES_NS = 50000000;
 
-// What a wait for the send allows beyond its bytes' time
-static constexpr uint64_t SEND_DEADLINE_MARGIN_NS = 1000000000;
+// What a drain allows beyond the unsent bytes' time
+static constexpr uint64_t DRAIN_DEADLINE_MARGIN_NS = 1000000000;
 
 // Longer than any wake a poller waits for, so one still waiting this long has missed its wake
 static constexpr uint64_t POLL_WAIT_MS = 2000;
@@ -519,8 +519,8 @@ TEST(serial_port_writes, tcsetsw_fails_with_eio_at_its_deadline) {
     fs::close(f);
 }
 
-// The last close waits for the send up to its deadline, then cancels it, so a chip that stops taking bytes holds the
-// close no longer than that
+// The last close drains up to its deadline, then cancels the send, so a chip that stops taking bytes holds the close
+// no longer than that
 TEST(serial_port_writes, the_last_close_cancels_a_send_past_its_deadline) {
     fs::file* f = open_port();
     ASSERT_NOT_NULL(f);
@@ -536,7 +536,7 @@ TEST(serial_port_writes, the_last_close_cancels_a_send_past_its_deadline) {
 
     EXPECT_EQ(g_driver.cancels, 1u);
     EXPECT_FALSE(g_driver.is_sending);
-    EXPECT_GE(g_call.took_ns, SEND_DEADLINE_MARGIN_NS);
+    EXPECT_GE(g_call.took_ns, DRAIN_DEADLINE_MARGIN_NS);
 }
 
 TEST(serial_port_writes, a_close_that_is_not_the_last_leaves_the_send_alone) {
@@ -584,7 +584,7 @@ TEST(serial_port_writes, a_last_close_with_a_kill_pending_cancels_the_send_at_on
 
     EXPECT_TRUE(finish_call(g_call, closer));
     EXPECT_EQ(g_driver.cancels, 1u);
-    EXPECT_LT(g_call.took_ns, SEND_DEADLINE_MARGIN_NS);
+    EXPECT_LT(g_call.took_ns, DRAIN_DEADLINE_MARGIN_NS);
 }
 
 // The driver may run nothing of the port's once unregister_port returns, so it waits for a send still starting in the
