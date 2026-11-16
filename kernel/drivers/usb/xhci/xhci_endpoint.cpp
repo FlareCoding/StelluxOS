@@ -117,6 +117,12 @@ void xhci_endpoint::destroy() {
         m_dma_buffer_phys = 0;
     }
 
+    if (m_stream_buffers) {
+        free_xhci_memory(m_stream_buffers);
+        m_stream_buffers = nullptr;
+        m_stream_buffers_phys = 0;
+    }
+
     if (m_ring) {
         m_ring->destroy();
         heap::ufree_delete(m_ring);
@@ -126,6 +132,23 @@ void xhci_endpoint::destroy() {
 
 endpoint_async_state* xhci_endpoint::ensure_async_state() {
     return m_async_state;
+}
+
+uint8_t* xhci_endpoint::install_stream_buffers(uint8_t* buffers, uintptr_t buffers_phys, uint32_t stride) {
+    uint8_t* replaced = m_stream_buffers;
+    m_stream_buffers = buffers;
+    m_stream_buffers_phys = buffers_phys;
+    m_stream_buffer_stride = stride;
+    return replaced;
+}
+
+uint32_t xhci_endpoint::stream_buffer_stride(uint32_t length) {
+    uint32_t stride = 1;
+    while (stride < length) {
+        stride *= 2;
+    }
+
+    return stride;
 }
 
 } // namespace drivers::xhci
