@@ -62,6 +62,10 @@ int32_t ftdi::configure() {
     return ::serial::OK;
 }
 
+const char* ftdi::driver_name() const {
+    return FAMILY_NAME;
+}
+
 // A chip with several UARTs has an interface for each
 int8_t ftdi::channel() const {
     return m_device->num_interfaces > 1 ? static_cast<int8_t>(m_interface->interface_number) : -1;

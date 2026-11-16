@@ -33,6 +33,9 @@ public:
     // The chip's short name, which starts its port's name, such as "ft232bm", known once `configure` succeeds
     virtual const char* chip_name() const = 0;
 
+    // The translator's name, which the listing shows as the port's driver, such as "ftdi"
+    virtual const char* driver_name() const = 0;
+
     // The port's number on its device, as `::serial::identity::channel` counts it
     virtual int8_t channel() const { return -1; }
 

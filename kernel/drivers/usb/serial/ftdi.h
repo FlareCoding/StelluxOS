@@ -14,6 +14,7 @@ public:
 
     int32_t configure() override;
     const char* chip_name() const override { return m_chip_name; }
+    const char* driver_name() const override;
     int8_t channel() const override;
     void handle_received(::serial::port* p, const uint8_t* data, size_t length, uint16_t packet_size) override;
 
