@@ -19,9 +19,10 @@ void device_configured(drivers::xhci_hcd* hcd,
 
 /**
  * Called by the HCD when a device is being torn down (disconnect or detach).
- * Notifies bound class drivers via disconnect() and marks the device pending
- * teardown. Final release happens later once both the HCD and the class-driver
- * tasks have dropped their references.
+ * Calls each bound driver's `disconnect()` and marks the device pending
+ * teardown. A driver whose `run()` has returned is destroyed here, before
+ * the HCD ends the device's transfers. Final release happens later once both
+ * the HCD and the class-driver tasks have dropped their references.
  */
 void device_disconnected(drivers::xhci_hcd* hcd,
                          drivers::xhci::xhci_device* xdev);

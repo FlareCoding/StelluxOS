@@ -78,6 +78,7 @@ struct device {
     bool hcd_teardown_complete; // HCD is done dereferencing hcd_device.
     bool finalize_started; // Final release path has claimed ownership.
     class_driver* bound_drivers[MAX_INTERFACES]; // Each interface's driver, until an unplug takes it or its task ends.
+    uint8_t driver_users[MAX_INTERFACES]; // Its task until run() returns, and an unplug until disconnect() returns.
 };
 
 } // namespace usb
