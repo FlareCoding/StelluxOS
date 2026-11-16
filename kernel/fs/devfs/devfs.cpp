@@ -6,11 +6,15 @@
 #include "common/string.h"
 #include "mm/heap.h"
 #include "common/logging.h"
+#include "sync/poll.h"
 
 namespace devfs {
 
 constexpr size_t SNAPSHOT_INITIAL_CAPACITY = 4096;
 constexpr size_t U64_DECIMAL_DIGITS_MAX    = 20;
+
+// A snapshot's generation before its first read from offset zero, which no counter holds, since counting starts at 1
+constexpr uint64_t NO_SNAPSHOT = 0;
 
 class devfs_dir_node : public fs::dir_node {
 public:
@@ -148,6 +152,21 @@ __PRIVILEGED_CODE int32_t remove_char_device(fs::node* dev_node) {
     return OK;
 }
 
+void generation_counter::init() {
+    m_value.store_relaxed(1);
+    m_change_wq.init();
+}
+
+__PRIVILEGED_CODE uint64_t generation_counter::advance() {
+    uint64_t generation = m_value.fetch_add_release(1) + 1;
+    sync::wake_all(m_change_wq);
+    return generation;
+}
+
+__PRIVILEGED_CODE void generation_counter::subscribe(sync::poll_table& pt) {
+    sync::poll_subscribe(pt, m_change_wq);
+}
+
 int32_t text_snapshot_node::open(fs::file* f, uint32_t) {
     auto* snap = heap::ualloc_new<snapshot>();
     if (!snap) {
@@ -160,7 +179,9 @@ int32_t text_snapshot_node::open(fs::file* f, uint32_t) {
         return fs::ERR_NOMEM;
     }
 
+    snap->lock.init();
     snap->capacity = SNAPSHOT_INITIAL_CAPACITY;
+    snap->generation.store_relaxed(NO_SNAPSHOT);
 
     f->set_private_data(snap);
     return fs::OK;
@@ -207,16 +228,28 @@ ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t)
         return fs::ERR_BADF;
     }
 
+    sync::mutex_lock(snap->lock);
+    ssize_t result = read_locked(f, snap, buf, count);
+    sync::mutex_unlock(snap->lock);
+
+    return result;
+}
+
+ssize_t text_snapshot_node::read_locked(fs::file* f, snapshot* snap, void* buf, size_t count) {
     int64_t off = f->offset();
     if (off < 0) {
         return fs::ERR_INVAL;
     }
 
     if (off == 0) {
+        // Read before `fill`, so a change made while it runs leaves the snapshot stale
+        uint64_t generation = m_generation ? m_generation->current() : NO_SNAPSHOT;
         int32_t rc = fill(snap);
         if (rc != fs::OK) {
             return rc;
         }
+
+        snap->generation.store_release(generation);
     }
 
     size_t offset = static_cast<size_t>(off);
@@ -231,6 +264,44 @@ ssize_t text_snapshot_node::read(fs::file* f, void* buf, size_t count, uint32_t)
     string::memcpy(buf, snap->text + offset, count);
     f->set_offset(static_cast<int64_t>(offset + count));
     return static_cast<ssize_t>(count);
+}
+
+int64_t text_snapshot_node::seek(fs::file* f, int64_t offset, int whence) {
+    bool is_rewind = whence == fs::SEEK_SET && offset == 0;
+    bool is_query = whence == fs::SEEK_CUR && offset == 0;
+    if (!is_rewind && !is_query) {
+        return fs::ERR_INVAL;
+    }
+
+    auto* snap = static_cast<snapshot*>(f->private_data());
+    if (!snap) {
+        return fs::ERR_BADF;
+    }
+
+    sync::mutex_lock(snap->lock);
+    if (is_rewind) {
+        f->set_offset(0);
+    }
+
+    int64_t result = f->offset();
+    sync::mutex_unlock(snap->lock);
+
+    return result;
+}
+
+uint32_t text_snapshot_node::poll(fs::file* f, sync::poll_table* pt) {
+    if (!m_generation) {
+        return fs::node::poll(f, pt);
+    }
+
+    // Subscribed before the generation is read, so a change after the read still wakes the poller
+    if (pt) {
+        m_generation->subscribe(*pt);
+    }
+
+    auto* snap = static_cast<snapshot*>(f->private_data());
+    bool is_stale = !snap || snap->generation.load_acquire() != m_generation->current();
+    return is_stale ? sync::POLL_IN : 0;
 }
 
 static size_t append_bytes(char* buf, size_t cap, size_t pos, const char* bytes, size_t length) {
