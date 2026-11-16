@@ -259,3 +259,86 @@ TEST(sleep, sleep_same_deadline) {
 
     ASSERT_TRUE(spin_wait_ge(g_same_done_count, 4));
 }
+
+// Proves: sleep_until_ns sleeps until its deadline and not much longer, reporting no time left, and returns at once
+// for a deadline already passed.
+
+constexpr uint64_t UNTIL_SLEEP_NS = 50000000ULL;
+constexpr uint64_t UNTIL_MAX_OVERRUN_NS = 2000000000ULL;
+
+static sync::atomic<uint32_t> g_until_done;
+static uint64_t g_until_deadline;
+static uint64_t g_until_started;
+static uint64_t g_until_woke;
+static uint64_t g_until_left;
+
+static void until_sleeper_fn(void*) {
+    g_until_started = clock::now_ns();
+    RUN_ELEVATED({
+        g_until_left = sched::sleep_until_ns(g_until_deadline);
+    });
+    g_until_woke = clock::now_ns();
+    g_until_done.store_release(1);
+    sched::exit(0);
+}
+
+// Runs sleep_until_ns to `deadline` on a task of its own, false when the task did not start or return in time
+static bool sleep_until_on_a_task(uint64_t deadline) {
+    g_until_done.store_relaxed(0);
+    g_until_left = 1;
+    g_until_deadline = deadline;
+
+    sched::task* t = test_helpers::start_pinned_task(until_sleeper_fn, nullptr, "sleep_until");
+    if (!t) {
+        return false;
+    }
+
+    bool finished = spin_wait(g_until_done);
+    test_helpers::unpin(t);
+
+    return finished;
+}
+
+TEST(sleep, sleep_until_ns_wakes_once_its_deadline_passes) {
+    ASSERT_TRUE(sleep_until_on_a_task(clock::now_ns() + UNTIL_SLEEP_NS));
+
+    EXPECT_EQ(g_until_left, static_cast<uint64_t>(0));
+    EXPECT_GE(g_until_woke, g_until_deadline);
+    EXPECT_LE(g_until_woke, g_until_deadline + UNTIL_MAX_OVERRUN_NS);
+}
+
+TEST(sleep, sleep_until_ns_returns_at_once_for_a_passed_deadline) {
+    ASSERT_TRUE(sleep_until_on_a_task(clock::now_ns() - 1));
+
+    EXPECT_EQ(g_until_left, static_cast<uint64_t>(0));
+    EXPECT_LE(g_until_woke - g_until_started, UNTIL_MAX_OVERRUN_NS);
+}
+
+// Proves: a duration ending past UINT64_MAX nanoseconds since boot sleeps until a kill instead of wrapping.
+
+static sync::atomic<uint32_t> g_endless_done;
+static uint64_t g_endless_left;
+
+static void endless_sleeper_fn(void*) {
+    RUN_ELEVATED({
+        g_endless_left = sched::sleep_ns(~0ULL);
+    });
+    g_endless_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(sleep, sleep_ns_ending_past_the_clock_range_lasts_until_a_kill) {
+    g_endless_done.store_relaxed(0);
+    g_endless_left = 0;
+
+    sched::task* t = test_helpers::start_pinned_task(endless_sleeper_fn, nullptr, "sleep_endless");
+    ASSERT_NOT_NULL(t);
+    bool slept = test_helpers::stays_asleep(t);
+    RUN_ELEVATED(sched::force_wake_for_kill(t));
+    bool finished = spin_wait(g_endless_done);
+    test_helpers::unpin(t);
+
+    EXPECT_TRUE(slept);
+    ASSERT_TRUE(finished);
+    EXPECT_GT(g_endless_left, static_cast<uint64_t>(0));
+}

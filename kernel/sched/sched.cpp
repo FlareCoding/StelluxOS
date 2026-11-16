@@ -622,17 +622,22 @@ __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
         return 0;
     }
 
+    return sleep_until_ns(clock::deadline_after_ns(ns));
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t sleep_until_ns(uint64_t deadline_ns) {
     task* self = current();
-    if (self->exec.flags & TASK_FLAG_IDLE) {
+    if ((self->exec.flags & TASK_FLAG_IDLE) || clock::now_ns() >= deadline_ns) {
         return 0;
     }
 
-    uint64_t deadline = clock::now_ns() + ns;
-
     prepare_to_block_task();
-    timer::schedule_sleep(self, deadline);
+    timer::schedule_sleep(self, deadline_ns);
 
-    while (!block_task_interrupted() && clock::now_ns() < deadline) {
+    while (!block_task_interrupted() && clock::now_ns() < deadline_ns) {
         yield();
         prepare_to_block_task();
     }
@@ -641,7 +646,7 @@ __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
     timer::cancel_sleep(self);
 
     uint64_t now = clock::now_ns();
-    return deadline > now ? deadline - now : 0;
+    return deadline_ns > now ? deadline_ns - now : 0;
 }
 
 __PRIVILEGED_CODE void sleep_us(uint64_t us) {

@@ -288,11 +288,23 @@ __PRIVILEGED_CODE uint64_t read_process_cpu_time_ns(const task* t);
  * timer interrupt when the deadline expires.
  * Must not be called from the idle task.
  * @param ns Duration in nanoseconds. If 0, yields without blocking.
- * @return Nanoseconds left if interrupted by a kill or fatal signal,
- *   0 if the full duration elapsed.
+ * @return Nanoseconds left when `signals::interrupt_pending` ended the sleep
+ *   early, 0 if the full duration elapsed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns);
+
+/**
+ * @brief Block the current task until `clock::now_ns()` reaches `deadline_ns`.
+ * Returns at once when the deadline has passed. The clock never reaches
+ * `UINT64_MAX`, so a sleep to that deadline lasts until interrupted.
+ * Must not be called from the idle task.
+ * @param deadline_ns Nanoseconds since boot.
+ * @return Nanoseconds left when `signals::interrupt_pending` ended the sleep
+ *   early, 0 once the deadline passed.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t sleep_until_ns(uint64_t deadline_ns);
 
 /**
  * @note Privilege: **required**
