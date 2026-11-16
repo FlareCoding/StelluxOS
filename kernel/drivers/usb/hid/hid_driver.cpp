@@ -169,7 +169,7 @@ int32_t hid_driver::probe(usb::device* dev, usb::interface* iface) {
     }
 
     rc = usb::open_in_stream(
-        dev, ep->address, m_payload_length, &m_stream);
+        dev, ep->address, m_payload_length, 1, nullptr, nullptr, &m_stream);
     if (rc != 0) {
         log::error("hid: failed to open interrupt stream on EP 0x%02x", ep->address);
         return -1;

@@ -61,7 +61,7 @@ AFTER_EACH(usb_transfer_cancel, detach_controller);
 
 // Runs the step, then marks it done and ends its task
 static void run_stop_step(void*) {
-    xhci_hcd_test_access::stop_cancelled_transfers(*g_fake.hcd);
+    xhci_hcd_test_access::stop_requested_endpoints(*g_fake.hcd);
     g_hcd_task_done.store_release(1);
     sched::exit(0);
 }

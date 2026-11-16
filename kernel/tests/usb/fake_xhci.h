@@ -34,12 +34,26 @@ struct xhci_hcd_test_access {
         hcd.m_event_ring->finish_processing();
     }
 
-    static void stop_cancelled_transfers(xhci_hcd& hcd) {
-        hcd._stop_cancelled_transfers();
+    static void stop_requested_endpoints(xhci_hcd& hcd) {
+        hcd._stop_requested_endpoints();
     }
 
     static bool is_event_pending(xhci_hcd& hcd) {
         return hcd.m_event_pending;
+    }
+
+    static void set_task(xhci_hcd& hcd, sched::task* task) {
+        hcd.m_task = task;
+    }
+
+    // The teardown's steps before and after the drivers' `disconnect()`: marking the device's endpoints as
+    // disconnecting, then ending their transfers and streams
+    static void mark_unplugged(xhci_hcd& hcd, xhci::xhci_device* device) {
+        hcd._mark_async_endpoints_for_device_disconnecting(device);
+    }
+
+    static void end_unplugged_transfers(xhci_hcd& hcd, xhci::xhci_device* device) {
+        hcd._clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
     }
 };
 
@@ -93,7 +107,7 @@ struct fake_xhci {
     uint32_t commands_completed;
 };
 
-// A cancel's stop and dequeue move take the command ring's first two entries
+// A cancel's or a close's stop and dequeue move take the command ring's first two entries
 constexpr uint32_t STOP_COMMAND = 0;
 constexpr uint32_t MOVE_COMMAND = 1;
 

@@ -63,6 +63,9 @@ void cancel_transfer(device* dev, transfer_request& req) {
 int32_t open_in_stream(device* dev,
                        uint8_t endpoint_addr,
                        uint32_t payload_length,
+                       uint32_t read_count,
+                       in_stream_callback on_payload,
+                       void* context,
                        in_stream** out_stream) {
     if (!out_stream) {
         return -1;
@@ -74,18 +77,19 @@ int32_t open_in_stream(device* dev,
         return -1;
     }
 
+    // Allocated before the stream opens, so an open that fails has made no call
+    auto* stream = heap::ualloc_new<in_stream>();
+    if (!stream) {
+        return -1;
+    }
+
     auto* hcd = static_cast<drivers::xhci_hcd*>(dev->hcd);
     auto* xdev = static_cast<drivers::xhci::xhci_device*>(dev->hcd_device);
     int32_t rc = hcd->usb_open_in_stream(
-        xdev, endpoint_addr, payload_length);
+        xdev, endpoint_addr, payload_length, read_count, on_payload, context);
     if (rc != 0) {
+        heap::ufree_delete(stream);
         return rc;
-    }
-
-    auto* stream = heap::ualloc_new<in_stream>();
-    if (!stream) {
-        hcd->usb_close_in_stream(xdev, endpoint_addr);
-        return -1;
     }
 
     stream->dev = dev;

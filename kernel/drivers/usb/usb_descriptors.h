@@ -45,6 +45,12 @@ constexpr uint8_t USB_CLASS_MASS_STORAGE   = 0x08;
 constexpr uint8_t USB_CLASS_HUB            = 0x09;
 constexpr uint8_t USB_CLASS_VENDOR         = 0xFF;
 
+// USB Endpoint Transfer Types (bmAttributes bits 1:0)
+constexpr uint8_t USB_ENDPOINT_TYPE_CONTROL     = 0x00;
+constexpr uint8_t USB_ENDPOINT_TYPE_ISOCHRONOUS = 0x01;
+constexpr uint8_t USB_ENDPOINT_TYPE_BULK        = 0x02;
+constexpr uint8_t USB_ENDPOINT_TYPE_INTERRUPT   = 0x03;
+
 // USB Standard Request Codes (bRequest)
 constexpr uint8_t USB_REQUEST_GET_DESCRIPTOR     = 0x06;
 constexpr uint8_t USB_REQUEST_SET_CONFIGURATION  = 0x09;

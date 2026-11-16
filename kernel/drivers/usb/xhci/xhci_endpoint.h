@@ -30,6 +30,15 @@ struct in_stream_state {
     uint32_t next_seq = 1;
     uint32_t dropped = 0;
     sync::wait_queue available_wq;
+
+    // Called with each read in place of the payload queue, and kept until the stream's last call returns
+    usb::in_stream_callback on_payload = nullptr;
+    void*                   context    = nullptr;
+
+    // How many reads a stream with a callback keeps posted, the TRB each was last posted at, and a bit per posted read
+    uint32_t read_count = 0;
+    uint64_t read_trbs[usb::MAX_IN_STREAM_READS] = {};
+    uint64_t posted_reads = 0;
 };
 
 struct endpoint_async_state {
@@ -40,10 +49,10 @@ struct endpoint_async_state {
     bool disconnecting = false;
     bool active_request_cancelled = false;
 
-    // Set from a cancel until the HCD task's stop ends, keeping new requests off the ring, and cleared only there
+    // Set from a cancel or a stream's close until its stop or an unplug clears it, keeping requests off the ring
     bool stopping = false;
 
-    // Set when a cancel's stop or dequeue move fails, since the ring may then still hold the cancelled request
+    // Set when the ring may hold transfers no one tracks, after a failed stop or move or a stream's failed read
     bool stop_failed = false;
 
     in_stream_state in_stream = {};
@@ -74,6 +83,18 @@ public:
     inline void*     dma_buffer() { return m_dma_buffer; }
     inline uintptr_t dma_buffer_phys() const { return m_dma_buffer_phys; }
 
+    // The buffers of a stream with a callback's reads, one every stride bytes
+    inline uint8_t*  stream_buffer(uint32_t index) { return m_stream_buffers + index * m_stream_buffer_stride; }
+    inline uintptr_t stream_buffer_phys(uint32_t index) const {
+        return m_stream_buffers_phys + index * m_stream_buffer_stride;
+    }
+
+    // Installs `buffers` as the stream buffers, `stride` bytes apart, and gives back the buffers they replace
+    uint8_t* install_stream_buffers(uint8_t* buffers, uintptr_t buffers_phys, uint32_t stride);
+
+    // The power of two from 1 to a page that holds `length`, so no read's buffer crosses a page
+    static uint32_t stream_buffer_stride(uint32_t length);
+
     // Completion state accessors (used by xhci_hcd for event dispatch)
     inline sync::spinlock&   completion_lock() { return m_completion_lock; }
     inline sync::wait_queue& completion_wq() { return m_completion_wq; }
@@ -96,6 +117,9 @@ private:
 
     void*     m_dma_buffer = nullptr;
     uintptr_t m_dma_buffer_phys = 0;
+    uint8_t*  m_stream_buffers = nullptr;
+    uintptr_t m_stream_buffers_phys = 0;
+    uint32_t  m_stream_buffer_stride = 0;
 
     sync::wait_queue m_completion_wq;
     sync::spinlock   m_completion_lock;

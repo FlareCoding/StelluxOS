@@ -81,7 +81,10 @@ public:
                              usb::transfer_request& request);
     int32_t usb_open_in_stream(xhci::xhci_device* device,
                                uint8_t endpoint_addr,
-                               uint32_t payload_length);
+                               uint32_t payload_length,
+                               uint32_t read_count,
+                               usb::in_stream_callback on_payload,
+                               void* context);
     int32_t usb_read_in_stream(xhci::xhci_device* device,
                                uint8_t endpoint_addr,
                                void* buffer,
@@ -163,7 +166,7 @@ private:
     // calls when _process_event_ring is invoked from _send_command.
     uint32_t m_psc_pending_bitmap = 0;
 
-    // Set when a cancel asks the HCD task to stop an endpoint
+    // Set when a cancel or a stream's close asks the HCD task to stop an endpoint
     sync::atomic<bool> m_endpoint_stop_pending{false};
 
     friend struct xhci_hcd_test_access;
@@ -230,6 +233,11 @@ private:
                                 xhci::xhci_endpoint* ep,
                                 xhci::endpoint_async_state& state,
                                 bool defer_doorbell = false);
+    uint64_t _post_in_stream_read(xhci::xhci_endpoint* ep, xhci::endpoint_async_state& state, uintptr_t buffer_phys);
+    void _post_in_stream_read_again(xhci::xhci_device* device,
+                                    xhci::xhci_endpoint* ep,
+                                    xhci::endpoint_async_state& state,
+                                    uint32_t read);
     bool _queue_in_stream_payload(xhci::in_stream_state& stream,
                                   const uint8_t* data,
                                   uint32_t length,
@@ -240,10 +248,15 @@ private:
                              xhci::xhci_endpoint* ep,
                              xhci::endpoint_async_state& state,
                              const xhci::xhci_transfer_completion_trb_t* event);
-    void _stop_cancelled_transfers();
-    bool _stop_cancelled_transfer(xhci::xhci_device* device,
+    void _complete_callback_in_stream(xhci::xhci_device* device,
+                                      xhci::xhci_endpoint* ep,
+                                      xhci::endpoint_async_state& state,
+                                      const xhci::xhci_transfer_completion_trb_t* event);
+    void _stop_requested_endpoints();
+    bool _stop_requested_endpoint(xhci::xhci_device* device,
                                   xhci::xhci_endpoint* ep,
                                   xhci::endpoint_async_state& state);
+    void _end_in_stream(xhci::xhci_endpoint* ep, xhci::endpoint_async_state& state, usb::transfer_status status);
     void _mark_async_endpoints_for_device_disconnecting(xhci::xhci_device* device);
     void _clear_async_endpoint_state(xhci::xhci_device* device,
                                      xhci::xhci_endpoint* ep,
