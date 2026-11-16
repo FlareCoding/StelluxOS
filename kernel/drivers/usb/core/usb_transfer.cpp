@@ -6,7 +6,7 @@
 
 namespace usb {
 
-struct interrupt_in_stream {
+struct in_stream {
     device* dev = nullptr;
     uint8_t endpoint_addr = 0;
 };
@@ -60,10 +60,10 @@ void cancel_transfer(device* dev, transfer_request& req) {
     hcd->usb_cancel_transfer(xdev, req);
 }
 
-int32_t open_interrupt_in_stream(device* dev,
-                                 uint8_t endpoint_addr,
-                                 uint32_t payload_length,
-                                 interrupt_in_stream** out_stream) {
+int32_t open_in_stream(device* dev,
+                       uint8_t endpoint_addr,
+                       uint32_t payload_length,
+                       in_stream** out_stream) {
     if (!out_stream) {
         return -1;
     }
@@ -76,15 +76,15 @@ int32_t open_interrupt_in_stream(device* dev,
 
     auto* hcd = static_cast<drivers::xhci_hcd*>(dev->hcd);
     auto* xdev = static_cast<drivers::xhci::xhci_device*>(dev->hcd_device);
-    int32_t rc = hcd->usb_open_interrupt_in_stream(
+    int32_t rc = hcd->usb_open_in_stream(
         xdev, endpoint_addr, payload_length);
     if (rc != 0) {
         return rc;
     }
 
-    auto* stream = heap::ualloc_new<interrupt_in_stream>();
+    auto* stream = heap::ualloc_new<in_stream>();
     if (!stream) {
-        hcd->usb_close_interrupt_in_stream(xdev, endpoint_addr);
+        hcd->usb_close_in_stream(xdev, endpoint_addr);
         return -1;
     }
 
@@ -94,21 +94,21 @@ int32_t open_interrupt_in_stream(device* dev,
     return 0;
 }
 
-int32_t read_interrupt_in_stream(interrupt_in_stream* stream,
-                                 void* buffer,
-                                 uint32_t buffer_len,
-                                 uint32_t* out_length) {
+int32_t read_in_stream(in_stream* stream,
+                       void* buffer,
+                       uint32_t buffer_len,
+                       uint32_t* out_length) {
     if (!stream || !stream->dev || !stream->dev->hcd || !stream->dev->hcd_device) {
         return -1;
     }
 
     auto* hcd = static_cast<drivers::xhci_hcd*>(stream->dev->hcd);
     auto* xdev = static_cast<drivers::xhci::xhci_device*>(stream->dev->hcd_device);
-    return hcd->usb_read_interrupt_in_stream(
+    return hcd->usb_read_in_stream(
         xdev, stream->endpoint_addr, buffer, buffer_len, out_length);
 }
 
-void close_interrupt_in_stream(interrupt_in_stream* stream) {
+void close_in_stream(in_stream* stream) {
     if (!stream) {
         return;
     }
@@ -116,7 +116,7 @@ void close_interrupt_in_stream(interrupt_in_stream* stream) {
     if (stream->dev && stream->dev->hcd && stream->dev->hcd_device) {
         auto* hcd = static_cast<drivers::xhci_hcd*>(stream->dev->hcd);
         auto* xdev = static_cast<drivers::xhci::xhci_device*>(stream->dev->hcd_device);
-        hcd->usb_close_interrupt_in_stream(xdev, stream->endpoint_addr);
+        hcd->usb_close_in_stream(xdev, stream->endpoint_addr);
     }
 
     heap::ufree_delete(stream);

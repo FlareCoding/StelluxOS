@@ -48,17 +48,19 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
     m_async_state->async_enabled = false;
     m_async_state->disconnecting = false;
     m_async_state->active_request_cancelled = false;
-    m_async_state->interrupt_in_stream.active = false;
-    m_async_state->interrupt_in_stream.closing = false;
-    m_async_state->interrupt_in_stream.payload_length = 0;
-    m_async_state->interrupt_in_stream.queue_depth = 0;
-    m_async_state->interrupt_in_stream.payloads = nullptr;
-    m_async_state->interrupt_in_stream.payload_storage = nullptr;
-    m_async_state->interrupt_in_stream.head = 0;
-    m_async_state->interrupt_in_stream.count = 0;
-    m_async_state->interrupt_in_stream.next_seq = 1;
-    m_async_state->interrupt_in_stream.dropped = 0;
-    m_async_state->interrupt_in_stream.available_wq.init();
+
+    m_async_state->in_stream.active = false;
+    m_async_state->in_stream.closing = false;
+    m_async_state->in_stream.payload_length = 0;
+    m_async_state->in_stream.queue_depth = 0;
+    m_async_state->in_stream.payloads = nullptr;
+    m_async_state->in_stream.payload_storage = nullptr;
+
+    m_async_state->in_stream.head = 0;
+    m_async_state->in_stream.count = 0;
+    m_async_state->in_stream.next_seq = 1;
+    m_async_state->in_stream.dropped = 0;
+    m_async_state->in_stream.available_wq.init();
 
     m_ring = heap::ualloc_new<xhci_transfer_ring>();
     if (!m_ring) {
@@ -95,14 +97,14 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
 
 void xhci_endpoint::destroy() {
     if (m_async_state) {
-        if (m_async_state->interrupt_in_stream.payload_storage) {
-            heap::ufree(m_async_state->interrupt_in_stream.payload_storage);
-            m_async_state->interrupt_in_stream.payload_storage = nullptr;
+        if (m_async_state->in_stream.payload_storage) {
+            heap::ufree(m_async_state->in_stream.payload_storage);
+            m_async_state->in_stream.payload_storage = nullptr;
         }
 
-        if (m_async_state->interrupt_in_stream.payloads) {
-            heap::ufree(m_async_state->interrupt_in_stream.payloads);
-            m_async_state->interrupt_in_stream.payloads = nullptr;
+        if (m_async_state->in_stream.payloads) {
+            heap::ufree(m_async_state->in_stream.payloads);
+            m_async_state->in_stream.payloads = nullptr;
         }
 
         heap::ufree_delete(m_async_state);

@@ -658,11 +658,11 @@ void xhci_hcd::_process_event_ring() {
                 if (ep->async_state()) {
                     auto* state = ep->async_state();
                     if (state->async_enabled) {
-                        if (state->interrupt_in_stream.active ||
-                            state->interrupt_in_stream.closing ||
-                            state->interrupt_in_stream.payloads ||
-                            state->interrupt_in_stream.payload_storage) {
-                            _complete_interrupt_in_stream(dev, ep, *state, e);
+                        if (state->in_stream.active ||
+                            state->in_stream.closing ||
+                            state->in_stream.payloads ||
+                            state->in_stream.payload_storage) {
+                            _complete_in_stream(dev, ep, *state, e);
                         } else if (state->active_request) {
                             _complete_async_request(dev, ep, *state, e);
                         }
@@ -1880,7 +1880,7 @@ int32_t xhci_hcd::_start_async_request(xhci_device* device,
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state.disconnecting || state.interrupt_in_stream.active ||
+        if (state.disconnecting || state.in_stream.active ||
             state.active_request != &request || !ep->ring() ||
             !ep->ring()->can_enqueue(1)) {
             rc = -1;
@@ -1917,7 +1917,7 @@ void xhci_hcd::_kick_async_request_queue(xhci_device* device,
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             if (!state.disconnecting &&
                 !state.stopping &&
-                !state.interrupt_in_stream.active &&
+                !state.in_stream.active &&
                 !state.active_request &&
                 state.pending_head) {
                 next = state.pending_head;
@@ -2022,25 +2022,25 @@ void xhci_hcd::_complete_async_request(xhci_device* device,
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         if (!state.active_request && !state.pending_head && !state.stopping &&
-            !state.interrupt_in_stream.active &&
-            !state.interrupt_in_stream.closing &&
-            !state.interrupt_in_stream.payloads &&
-            !state.interrupt_in_stream.payload_storage) {
+            !state.in_stream.active &&
+            !state.in_stream.closing &&
+            !state.in_stream.payloads &&
+            !state.in_stream.payload_storage) {
             state.async_enabled = false;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
 }
 
-int32_t xhci_hcd::_queue_interrupt_in_stream_td(xhci_device* device,
-                                                xhci_endpoint* ep,
-                                                xhci::endpoint_async_state& state,
-                                                bool defer_doorbell) {
-    if (!device || !ep || !state.interrupt_in_stream.active) {
+int32_t xhci_hcd::_queue_in_stream_td(xhci_device* device,
+                                      xhci_endpoint* ep,
+                                      xhci::endpoint_async_state& state,
+                                      bool defer_doorbell) {
+    if (!device || !ep || !state.in_stream.active) {
         return -1;
     }
 
-    uint32_t length = state.interrupt_in_stream.payload_length;
+    uint32_t length = state.in_stream.payload_length;
     if (length == 0 || length > paging::PAGE_SIZE_4KB) {
         return -1;
     }
@@ -2080,12 +2080,12 @@ int32_t xhci_hcd::_queue_interrupt_in_stream_td(xhci_device* device,
     return 0;
 }
 
-bool xhci_hcd::_queue_interrupt_in_stream_payload(xhci::interrupt_in_stream_state& stream,
-                                                  const uint8_t* data,
-                                                  uint32_t length,
-                                                  uint16_t mfindex,
-                                                  uint64_t queued_t_us,
-                                                  uint32_t* seq_out) {
+bool xhci_hcd::_queue_in_stream_payload(xhci::in_stream_state& stream,
+                                        const uint8_t* data,
+                                        uint32_t length,
+                                        uint16_t mfindex,
+                                        uint64_t queued_t_us,
+                                        uint32_t* seq_out) {
     if (!stream.active || !stream.payloads || !stream.payload_storage || stream.queue_depth == 0) {
         return false;
     }
@@ -2115,15 +2115,15 @@ bool xhci_hcd::_queue_interrupt_in_stream_payload(xhci::interrupt_in_stream_stat
     return true;
 }
 
-void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
-                                             xhci_endpoint* ep,
-                                             xhci::endpoint_async_state& state,
-                                             const xhci::xhci_transfer_completion_trb_t* event) {
+void xhci_hcd::_complete_in_stream(xhci_device* device,
+                                   xhci_endpoint* ep,
+                                   xhci::endpoint_async_state& state,
+                                   const xhci::xhci_transfer_completion_trb_t* event) {
     bool was_closing = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state.interrupt_in_stream.closing) {
-            state.interrupt_in_stream.closing = false;
+        if (state.in_stream.closing) {
+            state.in_stream.closing = false;
             was_closing = true;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -2132,7 +2132,7 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
         return;
     }
 
-    if (!state.interrupt_in_stream.active) {
+    if (!state.in_stream.active) {
         return;
     }
 
@@ -2140,10 +2140,10 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
         // The xHC found no TD at the scheduled polling interval. This is
         // recoverable: re-arm with an immediate doorbell so the endpoint
         // resumes at the next interval without killing the stream.
-        if (_queue_interrupt_in_stream_td(device, ep, state, false) != 0) {
+        if (_queue_in_stream_td(device, ep, state, false) != 0) {
             RUN_ELEVATED({
                 sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-                state.interrupt_in_stream.active = false;
+                state.in_stream.active = false;
                 sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
             });
         }
@@ -2154,15 +2154,15 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
         event->completion_code != XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-            state.interrupt_in_stream.active = false;
-            state.interrupt_in_stream.closing = false;
+            state.in_stream.active = false;
+            state.in_stream.closing = false;
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
-            sync::wake_all(state.interrupt_in_stream.available_wq);
+            sync::wake_all(state.in_stream.available_wq);
         });
         return;
     }
 
-    uint32_t requested = state.interrupt_in_stream.payload_length;
+    uint32_t requested = state.in_stream.payload_length;
     uint32_t residual = event->transfer_length;
     uint32_t actual = residual <= requested ? (requested - residual) : 0;
     if (actual > requested) {
@@ -2172,9 +2172,9 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
     barrier::dma_read();
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state.interrupt_in_stream.active) {
-            _queue_interrupt_in_stream_payload(
-                state.interrupt_in_stream,
+        if (state.in_stream.active) {
+            _queue_in_stream_payload(
+                state.in_stream,
                 static_cast<const uint8_t*>(ep->dma_buffer()),
                 actual,
                 static_cast<uint16_t>(_read_mfindex()),
@@ -2184,15 +2184,15 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
 
-    if (_queue_interrupt_in_stream_td(device, ep, state, true) != 0) {
+    if (_queue_in_stream_td(device, ep, state, true) != 0) {
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-            state.interrupt_in_stream.active = false;
+            state.in_stream.active = false;
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
         });
     }
 
-    RUN_ELEVATED(sync::wake_one(state.interrupt_in_stream.available_wq));
+    RUN_ELEVATED(sync::wake_one(state.in_stream.available_wq));
 }
 
 void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
@@ -2219,12 +2219,12 @@ void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
         state->active_request_cancelled = false;
 
         state->stopping = false;
-        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
-            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
-            state->interrupt_in_stream.active = false;
-            state->interrupt_in_stream.closing = false;
-            state->interrupt_in_stream.head = 0;
-            state->interrupt_in_stream.count = 0;
+        if (state->in_stream.active || state->in_stream.closing ||
+            state->in_stream.payloads || state->in_stream.payload_storage) {
+            state->in_stream.active = false;
+            state->in_stream.closing = false;
+            state->in_stream.head = 0;
+            state->in_stream.count = 0;
             wake_stream = true;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -2241,7 +2241,7 @@ void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
     }
 
     if (wake_stream) {
-        RUN_ELEVATED(sync::wake_all(state->interrupt_in_stream.available_wq));
+        RUN_ELEVATED(sync::wake_all(state->in_stream.available_wq));
     }
 }
 
@@ -2297,10 +2297,10 @@ int32_t xhci_hcd::usb_submit_transfer_async(xhci_device* device,
     bool start_now = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state->disconnecting || state->stop_failed || state->interrupt_in_stream.active ||
-            state->interrupt_in_stream.closing ||
-            state->interrupt_in_stream.payloads ||
-            state->interrupt_in_stream.payload_storage ||
+        if (state->disconnecting || state->stop_failed || state->in_stream.active ||
+            state->in_stream.closing ||
+            state->in_stream.payloads ||
+            state->in_stream.payload_storage ||
             request.pending || request.next != nullptr || request.hcd_private != nullptr) {
             rc = -1;
         } else {
@@ -2393,10 +2393,10 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             if (!state->active_request && !state->pending_head &&
-                !state->interrupt_in_stream.active &&
-                !state->interrupt_in_stream.closing &&
-                !state->interrupt_in_stream.payloads &&
-                !state->interrupt_in_stream.payload_storage) {
+                !state->in_stream.active &&
+                !state->in_stream.closing &&
+                !state->in_stream.payloads &&
+                !state->in_stream.payload_storage) {
                 state->async_enabled = false;
             }
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -2496,10 +2496,10 @@ bool xhci_hcd::_stop_cancelled_transfer(xhci_device* device,
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         if (!state.active_request && !state.pending_head &&
-            !state.interrupt_in_stream.active &&
-            !state.interrupt_in_stream.closing &&
-            !state.interrupt_in_stream.payloads &&
-            !state.interrupt_in_stream.payload_storage) {
+            !state.in_stream.active &&
+            !state.in_stream.closing &&
+            !state.in_stream.payloads &&
+            !state.in_stream.payload_storage) {
             state.async_enabled = false;
         }
 
@@ -2509,9 +2509,9 @@ bool xhci_hcd::_stop_cancelled_transfer(xhci_device* device,
     return is_on_ring;
 }
 
-int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
-                                               uint8_t endpoint_addr,
-                                               uint32_t payload_length) {
+int32_t xhci_hcd::usb_open_in_stream(xhci_device* device,
+                                     uint8_t endpoint_addr,
+                                     uint32_t payload_length) {
     if (!device) {
         return -1;
     }
@@ -2528,8 +2528,8 @@ int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
     }
 
     constexpr uint8_t STREAM_QUEUE_DEPTH = 2;
-    auto* payloads = static_cast<xhci::interrupt_in_payload*>(
-        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * sizeof(xhci::interrupt_in_payload)));
+    auto* payloads = static_cast<xhci::in_stream_payload*>(
+        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * sizeof(xhci::in_stream_payload)));
     auto* storage = static_cast<uint8_t*>(
         heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * payload_length));
     if (!payloads || !storage) {
@@ -2542,29 +2542,32 @@ int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         if (state->disconnecting || state->active_request || state->pending_head ||
-            state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
-            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
+            state->in_stream.active || state->in_stream.closing ||
+            state->in_stream.payloads || state->in_stream.payload_storage) {
             rc = -1;
         } else {
             state->async_enabled = true;
-            state->interrupt_in_stream.active = true;
-            state->interrupt_in_stream.closing = false;
-            state->interrupt_in_stream.payload_length = payload_length;
-            state->interrupt_in_stream.queue_depth = STREAM_QUEUE_DEPTH;
-            state->interrupt_in_stream.payloads = payloads;
-            state->interrupt_in_stream.payload_storage = storage;
-            state->interrupt_in_stream.head = 0;
-            state->interrupt_in_stream.count = 0;
-            state->interrupt_in_stream.next_seq = 1;
-            state->interrupt_in_stream.dropped = 0;
-            state->interrupt_in_stream.available_wq.init();
+            state->in_stream.active = true;
+            state->in_stream.closing = false;
+
+            state->in_stream.payload_length = payload_length;
+            state->in_stream.queue_depth = STREAM_QUEUE_DEPTH;
+            state->in_stream.payloads = payloads;
+            state->in_stream.payload_storage = storage;
+
+            state->in_stream.head = 0;
+            state->in_stream.count = 0;
+            state->in_stream.next_seq = 1;
+            state->in_stream.dropped = 0;
+            state->in_stream.available_wq.init();
+
             for (uint8_t i = 0; i < STREAM_QUEUE_DEPTH; i++) {
-                state->interrupt_in_stream.payloads[i].data =
+                state->in_stream.payloads[i].data =
                     storage + (static_cast<size_t>(i) * payload_length);
-                state->interrupt_in_stream.payloads[i].seq = 0;
-                state->interrupt_in_stream.payloads[i].mfindex = 0xffff;
-                state->interrupt_in_stream.payloads[i].len = 0;
-                state->interrupt_in_stream.payloads[i].queued_t_us = 0;
+                state->in_stream.payloads[i].seq = 0;
+                state->in_stream.payloads[i].mfindex = 0xffff;
+                state->in_stream.payloads[i].len = 0;
+                state->in_stream.payloads[i].queued_t_us = 0;
             }
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -2576,20 +2579,20 @@ int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
         return rc;
     }
 
-    rc = _queue_interrupt_in_stream_td(device, ep, *state, false);
+    rc = _queue_in_stream_td(device, ep, *state, false);
     if (rc != 0) {
-        usb_close_interrupt_in_stream(device, endpoint_addr);
+        usb_close_in_stream(device, endpoint_addr);
         return rc;
     }
 
     return 0;
 }
 
-int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
-                                               uint8_t endpoint_addr,
-                                               void* buffer,
-                                               uint32_t buffer_len,
-                                               uint32_t* out_length) {
+int32_t xhci_hcd::usb_read_in_stream(xhci_device* device,
+                                     uint8_t endpoint_addr,
+                                     void* buffer,
+                                     uint32_t buffer_len,
+                                     uint32_t* out_length) {
     if (!device || !buffer || buffer_len == 0) {
         return -1;
     }
@@ -2606,24 +2609,28 @@ int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         while (true) {
-            if (!state->interrupt_in_stream.active) {
+            if (!state->in_stream.active) {
                 break;
             }
-            if (state->interrupt_in_stream.count > 0) {
-                auto& payload = state->interrupt_in_stream.payloads[state->interrupt_in_stream.head];
-                state->interrupt_in_stream.head = static_cast<uint8_t>(
-                    (state->interrupt_in_stream.head + 1) %
-                    state->interrupt_in_stream.queue_depth);
-                state->interrupt_in_stream.count--;
+
+            if (state->in_stream.count > 0) {
+                auto& payload = state->in_stream.payloads[state->in_stream.head];
+                state->in_stream.head = static_cast<uint8_t>(
+                    (state->in_stream.head + 1) %
+                    state->in_stream.queue_depth);
+                state->in_stream.count--;
+
                 actual = payload.len < buffer_len ? payload.len : buffer_len;
                 string::memset(buffer, 0, buffer_len);
                 if (actual > 0) {
                     string::memcpy(buffer, payload.data, actual);
                 }
+
                 got_payload = true;
                 break;
             }
-            irq = sync::wait(state->interrupt_in_stream.available_wq,
+
+            irq = sync::wait(state->in_stream.available_wq,
                              ep->completion_lock(), irq);
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
@@ -2640,8 +2647,8 @@ int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
     return 0;
 }
 
-void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
-                                             uint8_t endpoint_addr) {
+void xhci_hcd::usb_close_in_stream(xhci_device* device,
+                                   uint8_t endpoint_addr) {
     if (!device) {
         return;
     }
@@ -2654,28 +2661,30 @@ void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
     auto* state = ep->async_state();
 
     uint8_t* storage = nullptr;
-    xhci::interrupt_in_payload* payloads = nullptr;
+    xhci::in_stream_payload* payloads = nullptr;
     bool need_stop = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
-            state->interrupt_in_stream.payload_storage || state->interrupt_in_stream.payloads) {
-            need_stop = state->interrupt_in_stream.active;
-            state->interrupt_in_stream.active = false;
-            state->interrupt_in_stream.closing = true;
-            storage = state->interrupt_in_stream.payload_storage;
-            payloads = state->interrupt_in_stream.payloads;
-            state->interrupt_in_stream.payload_storage = nullptr;
-            state->interrupt_in_stream.payloads = nullptr;
-            state->interrupt_in_stream.payload_length = 0;
-            state->interrupt_in_stream.queue_depth = 0;
-            state->interrupt_in_stream.head = 0;
-            state->interrupt_in_stream.count = 0;
-            state->interrupt_in_stream.next_seq = 1;
-            state->interrupt_in_stream.dropped = 0;
+        if (state->in_stream.active || state->in_stream.closing ||
+            state->in_stream.payload_storage || state->in_stream.payloads) {
+            need_stop = state->in_stream.active;
+            state->in_stream.active = false;
+            state->in_stream.closing = true;
+
+            storage = state->in_stream.payload_storage;
+            payloads = state->in_stream.payloads;
+            state->in_stream.payload_storage = nullptr;
+            state->in_stream.payloads = nullptr;
+
+            state->in_stream.payload_length = 0;
+            state->in_stream.queue_depth = 0;
+            state->in_stream.head = 0;
+            state->in_stream.count = 0;
+            state->in_stream.next_seq = 1;
+            state->in_stream.dropped = 0;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
-        sync::wake_all(state->interrupt_in_stream.available_wq);
+        sync::wake_all(state->in_stream.available_wq);
     });
 
     if (need_stop) {
@@ -2684,7 +2693,7 @@ void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        state->interrupt_in_stream.closing = false;
+        state->in_stream.closing = false;
         if (!state->active_request && !state->pending_head) {
             state->async_enabled = false;
         }

@@ -35,7 +35,7 @@ private:
     uint16_t         m_binding_count = 0;
     bool            m_disconnected = false;
     uint32_t        m_payload_length = 0;
-    usb::interrupt_in_stream* m_stream = nullptr;
+    usb::in_stream* m_stream = nullptr;
 
     const usb::endpoint* find_interrupt_in_endpoint() const;
     uint32_t max_input_report_bytes(const usb::endpoint& ep) const;

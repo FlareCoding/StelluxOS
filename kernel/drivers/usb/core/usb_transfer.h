@@ -37,7 +37,7 @@ struct transfer_request {
     void* hcd_private = nullptr;
 };
 
-struct interrupt_in_stream;
+struct in_stream;
 
 void init_transfer_request(transfer_request& req,
                            uint8_t endpoint_addr,
@@ -49,17 +49,17 @@ int32_t submit_transfer_async(device* dev, transfer_request& req);
 int32_t await_transfer(transfer_request& req);
 void cancel_transfer(device* dev, transfer_request& req);
 
-int32_t open_interrupt_in_stream(device* dev,
-                                 uint8_t endpoint_addr,
-                                 uint32_t payload_length,
-                                 interrupt_in_stream** out_stream);
+int32_t open_in_stream(device* dev,
+                       uint8_t endpoint_addr,
+                       uint32_t payload_length,
+                       in_stream** out_stream);
 
-int32_t read_interrupt_in_stream(interrupt_in_stream* stream,
-                                 void* buffer,
-                                 uint32_t buffer_len,
-                                 uint32_t* out_length);
+int32_t read_in_stream(in_stream* stream,
+                       void* buffer,
+                       uint32_t buffer_len,
+                       uint32_t* out_length);
 
-void close_interrupt_in_stream(interrupt_in_stream* stream);
+void close_in_stream(in_stream* stream);
 
 /**
  * Synchronous control transfer on EP0.

@@ -10,7 +10,7 @@
 
 namespace drivers::xhci {
 
-struct interrupt_in_payload {
+struct in_stream_payload {
     uint32_t seq = 0;
     uint16_t mfindex = 0xffff;
     uint16_t len = 0;
@@ -18,12 +18,12 @@ struct interrupt_in_payload {
     uint8_t* data = nullptr;
 };
 
-struct interrupt_in_stream_state {
+struct in_stream_state {
     bool active = false;
     bool closing = false;
     uint32_t payload_length = 0;
     uint8_t queue_depth = 0;
-    interrupt_in_payload* payloads = nullptr;
+    in_stream_payload* payloads = nullptr;
     uint8_t* payload_storage = nullptr;
     uint8_t head = 0;
     uint8_t count = 0;
@@ -46,7 +46,7 @@ struct endpoint_async_state {
     // Set when a cancel's stop or dequeue move fails, since the ring may then still hold the cancelled request
     bool stop_failed = false;
 
-    interrupt_in_stream_state interrupt_in_stream = {};
+    in_stream_state in_stream = {};
 };
 
 class xhci_endpoint {
