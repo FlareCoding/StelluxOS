@@ -3391,12 +3391,6 @@ int32_t xhci_hcd::usb_control_transfer(
 
     bool is_in = (req.transfer_direction != 0);
 
-    if (length > 0 && !is_in && data) {
-        string::memcpy(dma_buffer, data, length);
-    } else {
-        string::memset(dma_buffer, 0, length > 0 ? length : 1);
-    }
-
     xhci_setup_stage_trb_t setup = {};
     setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
     setup.request_packet = req;
@@ -3425,8 +3419,13 @@ int32_t xhci_hcd::usb_control_transfer(
     status.ioc = 1;
     status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
 
-    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
     RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+
+    if (length > 0 && !is_in && data) {
+        string::memcpy(dma_buffer, data, length);
+    } else {
+        string::memset(dma_buffer, 0, length > 0 ? length : 1);
+    }
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
@@ -3460,12 +3459,12 @@ int32_t xhci_hcd::usb_control_transfer(
         return -1;
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
-
     if (data && length > 0 && is_in) {
         barrier::dma_read();
         string::memcpy(data, dma_buffer, length);
     }
+
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
 
     return 0;
 }
