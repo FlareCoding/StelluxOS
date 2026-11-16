@@ -694,9 +694,10 @@ void xhci_hcd::_process_pending_port_changes() {
             if (portsc.csc && portsc.ccs) {
                 _setup_device(i);
             } else if (portsc.csc && !portsc.ccs) {
+                // Acknowledged first, so a device back during the teardown raises a connect change of its own
+                _ack_portsc_changes(i, PORTSC_RW1C_BITS);
                 log::info("xhci: device disconnected from port %u", i + 1);
                 _teardown_device(i);
-                _ack_portsc_changes(i, PORTSC_RW1C_BITS);
             }
         }
     }
@@ -1073,10 +1074,12 @@ void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
 
 void xhci_hcd::_setup_device(uint8_t port_index) {
     uint8_t port_id = port_index + 1; // 1-based for logging and slot context
+    xhci_device* recorded_device = m_port_devices[port_index];
 
-    // Idempotent: skip if this port already has a device
-    if (m_port_devices[port_index]) {
-        return;
+    if (recorded_device) {
+        log::info("xhci: port %u connected again before its disconnect was handled, replacing slot %u",
+                  port_id, recorded_device->slot_id());
+        _teardown_device(port_index);
     }
 
     // Reset the port
@@ -1259,9 +1262,11 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
         return;
     }
 
-    // Don't re-enumerate if already present
-    if (hub_device->hub_child(hub_port)) {
-        return;
+    xhci_device* recorded_device = hub_device->hub_child(hub_port);
+    if (recorded_device) {
+        log::info("xhci: hub slot %u port %u connected again before its disconnect was handled, replacing slot %u",
+                  hub_device->slot_id(), hub_port, recorded_device->slot_id());
+        _teardown_hub_device(hub_device, hub_port);
     }
 
     // Enable a device slot

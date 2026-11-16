@@ -40,8 +40,20 @@ struct xhci_hcd_test_access {
         return hcd.m_slot_devices[slot_id];
     }
 
+    static void record_slot_device(xhci_hcd& hcd, xhci::xhci_device* device) {
+        hcd.m_slot_devices[device->slot_id()] = device;
+    }
+
     static void forget_slot_device(xhci_hcd& hcd, xhci::xhci_device* device) {
         hcd.m_slot_devices[device->slot_id()] = nullptr;
+    }
+
+    static xhci::xhci_device* port_device(xhci_hcd& hcd, uint8_t port_index) {
+        return hcd.m_port_devices[port_index];
+    }
+
+    static void record_port_device(xhci_hcd& hcd, uint8_t port_index, xhci::xhci_device* device) {
+        hcd.m_port_devices[port_index] = device;
     }
 
     static void process_events(xhci_hcd& hcd) {
@@ -74,6 +86,39 @@ struct xhci_hcd_test_access {
 
     static void setup_hub_device(xhci_hcd& hcd, xhci::xhci_device* hub, uint8_t hub_port, uint8_t speed) {
         hcd._setup_hub_device(hub, hub_port, speed);
+    }
+
+    static void setup_device(xhci_hcd& hcd, uint8_t port_index) {
+        hcd._setup_device(port_index);
+    }
+
+    // Records a change on root port `port_index` as a pass over the event ring does, then handles it as the main loop
+    // does
+    static void process_port_change(xhci_hcd& hcd, uint8_t port_index) {
+        hcd.m_psc_pending_bitmap |= 1u << port_index;
+        hcd._process_pending_port_changes();
+    }
+
+    // Takes the oldest hub event and counts it handled, as the main loop does once it has acted on one. False when none
+    // is queued
+    static bool take_hub_event(xhci_hcd& hcd, xhci::hub_event* event_out) {
+        bool has_event = false;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(hcd.m_hub_event_lock);
+            if (hcd.m_hub_event_head != hcd.m_hub_event_tail) {
+                *event_out = hcd.m_hub_events[hcd.m_hub_event_head];
+                hcd.m_hub_event_head = (hcd.m_hub_event_head + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+                has_event = true;
+            }
+
+            sync::spin_unlock_irqrestore(hcd.m_hub_event_lock, irq);
+        });
+
+        if (has_event) {
+            hcd._complete_hub_event();
+        }
+
+        return has_event;
     }
 
     // The teardown's steps before and after the drivers' `disconnect()`: marking the device's endpoints as
@@ -175,13 +220,18 @@ struct fake_xhci {
     // implausibly, and the reads it has answered so
     bool    should_answer_first_reads_implausibly;
     uint8_t implausibly_answered_reads;
+
+    // The root ports whose acknowledgment of every change the fake controller has logged, a bit per port
+    uint8_t acknowledged_ports;
 };
 
-// The kinds of request the fake controller serves while it plays a newly connected device
+// The kinds of request the fake controller serves while it plays a newly connected device, and the driver's
+// acknowledgment of every change on a root port, which it logs as it sees one
 enum class served_kind : uint8_t {
     command,
     port_reset,
     control_transfer,
+    port_acknowledgment,
 };
 
 // A request the fake controller served, with the step task's CPU time and the clock once the task blocked on it
@@ -320,6 +370,24 @@ inline xhci_endpoint* add_fake_endpoint(fake_xhci& fake, uint8_t address, uint8_
 
     fake.device->set_endpoint(endpoint->dci(), endpoint);
     return endpoint;
+}
+
+// A high-speed device on root port 1 in slot `slot_id`, recorded in the driver's slot table for it to tear down.
+// Null when memory runs out
+inline xhci_device* add_fake_device(fake_xhci& fake, uint8_t slot_id) {
+    auto* device = heap::ualloc_new<xhci_device>();
+    if (!device) {
+        return nullptr;
+    }
+
+    if (device->init(fake_xhci::ROOT_PORT, slot_id, XHCI_USB_SPEED_HIGH_SPEED, false) != 0) {
+        heap::ufree_delete(device);
+        return nullptr;
+    }
+
+    xhci_hcd_test_access::record_slot_device(*fake.hcd, device);
+
+    return device;
 }
 
 // The physical address of transfer ring entry `index` of `endpoint`, the bulk IN endpoint unless given
@@ -587,15 +655,21 @@ inline bool take_control_transfer(fake_xhci& fake, xhci_device* device, xhci_dev
     return read_control_request(device, request_out);
 }
 
-// Completes the last control transfer queued on the control endpoint of `device`, giving an IN transfer the first
-// `reply_length` bytes of `reply`, and raises the interrupt
-inline void complete_control_transfer(fake_xhci& fake, xhci_device* device, const void* reply, uint16_t reply_length) {
+// Completes the last control transfer queued on the control endpoint of `device` with `completion_code`, success
+// unless given, giving an IN transfer the first `reply_length` bytes of `reply`, and raises the interrupt
+inline void complete_control_transfer(
+    fake_xhci& fake,
+    xhci_device* device,
+    const void* reply,
+    uint16_t reply_length,
+    uint8_t completion_code = XHCI_TRB_COMPLETION_CODE_SUCCESS
+) {
     if (reply_length > 0) {
         string::memcpy(device->ctrl_transfer_buffer(), reply, reply_length);
     }
 
     xhci_transfer_completion_trb_t event = {};
-    event.completion_code = XHCI_TRB_COMPLETION_CODE_SUCCESS;
+    event.completion_code = completion_code;
     event.trb_type = XHCI_TRB_TYPE_TRANSFER_EVENT;
     event.endpoint_id = CONTROL_DCI;
     event.slot_id = device->slot_id();
@@ -675,6 +749,22 @@ inline void spoil_answer(
     }
 }
 
+// Logs each root port that shows its config error change bit for the first time, which in memory only the driver's
+// acknowledgment of every change sets. Only reads, so no write of the fake's undoes one of the driver's
+inline void record_port_acknowledgments(fake_xhci& fake, served_log& served) {
+    for (uint8_t i = 0; i < fake_xhci::PORT_COUNT; i++) {
+        drivers::xhci::xhci_portsc_register port_status;
+        port_status.raw = *portsc(fake, i);
+        bool is_logged = fake.acknowledged_ports & (1u << i);
+        if (!port_status.cec || is_logged || served.count >= MAX_SERVED_REQUESTS) {
+            continue;
+        }
+
+        fake.acknowledged_ports |= 1u << i;
+        served.requests[served.count++] = {served_kind::port_acknowledgment, 0, i, 0, clock::now_ns()};
+    }
+}
+
 // Completes the next command the driver queued, if it has queued one, handing `*next_slot_id` to an Enable Slot and
 // incrementing it. False when the driver does not block on the command
 inline bool serve_command(fake_xhci& fake, uint8_t* next_slot_id, served_log& served) {
@@ -683,6 +773,10 @@ inline bool serve_command(fake_xhci& fake, uint8_t* next_slot_id, served_log& se
     if ((control & fake_xhci::CYCLE_BIT) == 0) {
         return true;
     }
+
+    // A port acknowledged before this command shows it by now, so the log keeps the driver's order
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    record_port_acknowledgments(fake, served);
 
     // Of the commands setup and teardown send, all but Enable Slot name their slot ID in the control word's top byte
     uint8_t type = static_cast<uint8_t>((control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT);
