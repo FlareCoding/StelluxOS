@@ -66,6 +66,7 @@ fetch_source() {
 
 mkdir -p "$TOP" "$SOURCES_DIR"
 fetch_source "$PYTHON_URL" "$PYTHON_SHA256"
+fetch_source "$ZLIB_URL" "$ZLIB_SHA256"
 fetch_source "$MUSL_URL" "$MUSL_SHA256"
 fetch_source "$LLVM_URL" "$LLVM_SHA256"
 

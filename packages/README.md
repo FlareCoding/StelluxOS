@@ -238,8 +238,8 @@ disables every other module. A change to musl's patches reaches the package at
 its next release bump. A run takes about 70 seconds per architecture on 4
 cores, plus about 80 seconds for the sysroot on the first run, kept in the
 `stellux-python-work` volume. `JOBS` caps its parallel jobs. The license texts
-of musl, the software CPython records as incorporated and HACL* with its
-KaRaMeL headers are under `/usr/share/licenses/python`.
+of musl, zlib, the software CPython records as incorporated and HACL* with
+its KaRaMeL headers are under `/usr/share/licenses/python`.
 
 ## Building and publishing
 

@@ -2,6 +2,7 @@
 
 array arraymodule.c
 _bisect _bisectmodule.c
+_contextvars _contextvarsmodule.c
 _csv _csv.c
 _heapq _heapqmodule.c
 _json _json.c
@@ -19,21 +20,21 @@ _socket socketmodule.c
 termios termios.c
 unicodedata unicodedata.c
 
-# datetime, base64/binascii, and hashlib support
+# datetime, base64/binascii, zlib, and hashlib support
 _datetime _datetimemodule.c
 binascii binascii.c
+zlib zlibmodule.c
 _md5 md5module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_MD5.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
 _sha1 sha1module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA1.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
 _sha2 sha2module.c -I$(srcdir)/Modules/_hacl/include Modules/_hacl/libHacl_Hash_SHA2.a
 _sha3 sha3module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA3.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
+_blake2 _blake2/blake2module.c _blake2/blake2b_impl.c _blake2/blake2s_impl.c
 
 # Every module not built in is disabled, since CPython builds an unlisted module shared and the recipe links only
 # static programs
 *disabled*
 
 _asyncio
-_blake2
-_contextvars
 _codecs_cn
 _codecs_hk
 _codecs_iso2022
@@ -87,5 +88,4 @@ _testinternalcapi
 _testmultiphase
 _xxtestfuzz
 xxsubtype
-zlib
 

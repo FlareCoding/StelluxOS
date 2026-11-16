@@ -7,9 +7,7 @@ ac_cv_header_dlfcn_h=no
 ac_cv_func_shl_load=no
 ac_cv_header_dl_h=no
 
-# No external compression/database/crypto libs initially
-ac_cv_header_zlib_h=no
-ac_cv_lib_z_compress=no
+# No compression library besides zlib, and no database, crypto or FFI library
 ac_cv_header_lzma_h=no
 ac_cv_lib_lzma_lzma_code=no
 ac_cv_header_bzlib_h=no

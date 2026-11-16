@@ -6,6 +6,11 @@ PYTHON_VER="3.12.8"
 PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz"
 PYTHON_SHA256="c909157bb25ec114e5869124cc2a9c4a4d4c1e957ca4ff553f1edc692101154e"
 
+# zlib, built static for CPython's zlib and binascii modules, checked against the SHA-256 zlib.net publishes
+ZLIB_VER="1.3.2"
+ZLIB_URL="https://zlib.net/fossils/zlib-$ZLIB_VER.tar.gz"
+ZLIB_SHA256="bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+
 # The tree's make targets build the sysroot from these, which build.sh holds to the
 # Makefile's versions. The checksums verify downloads the Makefile leaves unverified.
 MUSL_VER="1.2.5"

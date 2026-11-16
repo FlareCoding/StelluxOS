@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs inside the python recipe's container: builds the Stellux sysroot, then CPython for ARCH against it, and packs
-# the interpreter, its stdlib and their license texts into /out.
+# Runs inside the python recipe's container: builds the Stellux sysroot, then zlib and CPython for ARCH against it,
+# and packs the interpreter, its stdlib and their license texts into /out.
 #
 # Usage: container.sh <x86_64|aarch64>, with the tree in /in and the sources in /sources
 set -eu
@@ -15,6 +15,8 @@ SRC="/work/src/$ARCH"
 BUILD="/work/build/$ARCH"
 ROOT="/work/root/$ARCH"
 PYTHON_SRC="$SRC/Python-$PYTHON_VER"
+ZLIB_SRC="$SRC/zlib-$ZLIB_VER"
+DEPS="$BUILD/deps"
 PYTHON_BIN="python${PYTHON_VER%.*}"
 STDLIB="$ROOT/usr/lib/$PYTHON_BIN"
 LICENSES="$ROOT/usr/share/licenses/python"
@@ -81,9 +83,20 @@ unpack_sources() {
     rm -rf "$SRC" "$BUILD"
     mkdir -p "$SRC" "$BUILD/python/Modules"
     tar -C "$SRC" -xf "/sources/Python-$PYTHON_VER.tar.xz"
+    tar -C "$SRC" -xf "/sources/zlib-$ZLIB_VER.tar.gz"
     for patch in /recipe/patches/*.patch; do
         patch -s -d "$PYTHON_SRC" -p1 < "$patch"
     done
+}
+
+# zlib built as a static library into DEPS, for CPython's zlib and binascii modules to link
+build_zlib() {
+    echo "=== python: building zlib $ZLIB_VER for $ARCH ==="
+    cd "$ZLIB_SRC"
+    run_logged "$BUILD/zlib-configure.log" env CC="$TOOLS/cc" AR=llvm-ar RANLIB=llvm-ranlib CFLAGS=-O2 \
+        ./configure --static --prefix="$DEPS"
+    run_logged "$BUILD/zlib-make.log" make -j"$JOBS" install
+    cd /work
 }
 
 build_python() {
@@ -96,6 +109,8 @@ build_python() {
         CC="$TOOLS/cc" \
         AR=llvm-ar \
         CFLAGS="-std=c11 -O2 -D_GNU_SOURCE -D__STELLUX__ -fno-stack-protector" \
+        ZLIB_CFLAGS="-I$DEPS/include" \
+        ZLIB_LIBS="-L$DEPS/lib -lz" \
         PKG_CONFIG=false \
         ac_cv_file__dev_ptmx=no \
         ac_cv_file__dev_ptc=no \
@@ -140,7 +155,7 @@ print_hacl_notice() {
 }
 
 # The interpreter and its stdlib, with the license texts of the code built into the interpreter: the software CPython
-# records as incorporated, HACL*'s hash code and its KaRaMeL headers, and musl
+# records as incorporated, HACL*'s hash code and its KaRaMeL headers, musl and zlib
 install_package() {
     rm -rf "$ROOT"
     run_logged "$BUILD/install.log" make -C "$BUILD/python" DESTDIR="$ROOT" altbininstall libinstall
@@ -156,10 +171,11 @@ install_package() {
     mkdir -p "$ROOT/bin"
     ln -sf "/usr/bin/$PYTHON_BIN" "$ROOT/bin/python3"
 
-    mkdir -p "$LICENSES/cpython" "$LICENSES/hacl" "$LICENSES/musl"
+    mkdir -p "$LICENSES/cpython" "$LICENSES/hacl" "$LICENSES/musl" "$LICENSES/zlib"
     cp "$PYTHON_SRC/Doc/license.rst" "$LICENSES/cpython/"
     print_hacl_notice > "$LICENSES/hacl/LICENSE"
     tar -xzf "/sources/musl-$MUSL_VER.tar.gz" -O "musl-$MUSL_VER/COPYRIGHT" > "$LICENSES/musl/COPYRIGHT"
+    cp "$ZLIB_SRC/LICENSE" "$LICENSES/zlib/"
 
     if ! echo "$APACHE_LICENSE_SHA256  $APACHE_LICENSE" | sha256sum -c --status -; then
         echo "python: $APACHE_LICENSE is missing or differs from the text APACHE_LICENSE_SHA256 pins" >&2
@@ -186,6 +202,7 @@ package() {
 build_sysroot
 write_compiler_driver
 unpack_sources
+build_zlib
 build_python
 install_package
 package
