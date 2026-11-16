@@ -12,6 +12,10 @@
 #define TIER_MM_ALLOC 3
 #define TIER_SCHED    4
 
+// Suites that need the PCI drivers. The runner attaches them before this tier's first suite and never detaches them,
+// so every earlier tier runs without them
+#define TIER_DRIVERS  5
+
 namespace stlx_test {
 
 struct test_entry {

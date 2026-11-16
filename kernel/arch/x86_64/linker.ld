@@ -111,6 +111,8 @@ SECTIONS {
         KEEP(*(.stlx_unit_test.2.*))
         KEEP(*(.stlx_unit_test.3.*))
         KEEP(*(.stlx_unit_test.4.*))
+        __stlx_unit_test_drivers_start = .;
+        KEEP(*(.stlx_unit_test.5.*))
         __stlx_unit_test_end = .;
     } :data
 

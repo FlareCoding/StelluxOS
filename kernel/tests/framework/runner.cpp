@@ -3,9 +3,12 @@
 #include "common/logging.h"
 #include "common/varargs.h"
 #include "common/string.h"
+#include "drivers/pci_driver.h"
+#include "dynpriv/dynpriv.h"
 
 extern "C" {
 extern const stlx_test::test_entry __stlx_unit_test_start[];
+extern const stlx_test::test_entry __stlx_unit_test_drivers_start[];
 extern const stlx_test::test_entry __stlx_unit_test_end[];
 extern const stlx_test::suite_hooks __stlx_unit_test_hooks_start[];
 extern const stlx_test::suite_hooks __stlx_unit_test_hooks_end[];
@@ -68,10 +71,25 @@ static hook_fn find_hook(const char* suite_name, hook_type type) {
     return nullptr;
 }
 
+// True when test `i` begins a suite, which the drivers tier's first test always does, so a drivers suite never
+// shares a name's count with the suite before it
+static bool starts_suite(const test_entry* tests, size_t i, size_t first_driver_test) {
+    return i == first_driver_test || string::strcmp(tests[i].suite_name, tests[i - 1].suite_name) != 0;
+}
+
+static void attach_pci_drivers() {
+    int32_t rc = drivers::OK;
+    RUN_ELEVATED(rc = drivers::init());
+    if (rc != drivers::OK) {
+        log::raw("  # drivers::init failed: %d", rc);
+    }
+}
+
 int32_t run_all() {
     const auto* tests_begin = __stlx_unit_test_start;
     const auto* tests_end   = __stlx_unit_test_end;
     const size_t total_tests = static_cast<size_t>(tests_end - tests_begin);
+    const size_t first_driver_test = static_cast<size_t>(__stlx_unit_test_drivers_start - tests_begin);
 
     if (total_tests == 0) {
         log::raw("KTAP version 1");
@@ -83,8 +101,7 @@ int32_t run_all() {
     // Count unique suites
     size_t suite_count = 1;
     for (size_t i = 1; i < total_tests; i++) {
-        if (string::strcmp(tests_begin[i].suite_name,
-                          tests_begin[i - 1].suite_name) != 0) {
+        if (starts_suite(tests_begin, i, first_driver_test)) {
             suite_count++;
         }
     }
@@ -96,18 +113,23 @@ int32_t run_all() {
     uint32_t total_failed = 0;
     uint32_t suite_number = 1;
 
+    bool are_drivers_attached = false;
     size_t i = 0;
     while (i < total_tests) {
+        if (!are_drivers_attached && i >= first_driver_test) {
+            attach_pci_drivers();
+            are_drivers_attached = true;
+        }
+
         const char* suite_name = tests_begin[i].suite_name;
 
         // Count tests in this suite
         size_t suite_start = i;
         size_t suite_test_count = 0;
-        while (i < total_tests &&
-               string::strcmp(tests_begin[i].suite_name, suite_name) == 0) {
+        do {
             suite_test_count++;
             i++;
-        }
+        } while (i < total_tests && !starts_suite(tests_begin, i, first_driver_test));
 
         // Suite KTAP header
         log::raw("  KTAP version 1");
