@@ -155,7 +155,8 @@ private:
     sync::spinlock   m_hub_event_lock;
     sync::wait_queue m_hub_event_done_wq;
 
-    // Deferred endpoint doorbells, rung after event processing finishes.
+    // Doorbells that completions ring, deferred to the end of the pass over the event ring that handles the
+    // completions, and rung once per endpoint
     struct pending_doorbell { uint8_t slot_id; uint8_t target; };
     pending_doorbell m_pending_doorbells[32] = {};
     uint8_t          m_pending_doorbell_count = 0;

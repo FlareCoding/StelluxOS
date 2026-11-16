@@ -187,44 +187,13 @@ void xhci_hcd::run() {
     // for boot-attached devices.
     _scan_ports();
 
-    // Flush deferred doorbells accumulated during _scan_ports().
-    // Transfer events processed re-entrantly inside _send_command()
-    // defer their re-arm doorbells, which would otherwise be discarded
-    // by the m_pending_doorbell_count = 0 reset at the top of the loop.
-    for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
-        _ring_doorbell(m_pending_doorbells[i].slot_id,
-                       m_pending_doorbells[i].target);
-    }
-    m_pending_doorbell_count = 0;
-
     while (true) {
         wait_for_event();
 
-        m_pending_doorbell_count = 0;
         _process_event_ring();
-        m_event_ring->finish_processing();
-
-        for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
-            _ring_doorbell(m_pending_doorbells[i].slot_id,
-                           m_pending_doorbells[i].target);
-        }
-
         _process_pending_port_changes();
         _process_hub_events();
         _stop_requested_endpoints();
-
-        // Hub event processing (and the device enumeration / class-driver
-        // probing it triggers) can call _process_event_ring() internally,
-        // which may complete interrupt-in stream TDs and queue deferred
-        // doorbells. Flush any that accumulated during that work so the
-        // next interrupt TD is actually scheduled on the hardware ring.
-        if (m_pending_doorbell_count > 0) {
-            for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
-                _ring_doorbell(m_pending_doorbells[i].slot_id,
-                               m_pending_doorbells[i].target);
-            }
-            m_pending_doorbell_count = 0;
-        }
     }
 }
 
@@ -692,6 +661,14 @@ void xhci_hcd::_process_event_ring() {
             break;
         }
     }
+
+    m_event_ring->finish_processing();
+
+    for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+        _ring_doorbell(m_pending_doorbells[i].slot_id, m_pending_doorbells[i].target);
+    }
+
+    m_pending_doorbell_count = 0;
 }
 
 void xhci_hcd::_process_pending_port_changes() {
@@ -729,7 +706,6 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
 
     // Fast path: check if completion already arrived
     _process_event_ring();
-    m_event_ring->finish_processing();
 
     if (!m_cmd_state.completed) {
         constexpr uint64_t CMD_TIMEOUT_MS = 5000;
@@ -738,7 +714,6 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
         while (!m_cmd_state.completed && clock::now_ns() < deadline) {
             wait_for_event();
             _process_event_ring();
-            m_event_ring->finish_processing();
         }
     }
 
@@ -863,6 +838,12 @@ uint32_t xhci_hcd::_read_mfindex() const {
 }
 
 void xhci_hcd::_queue_deferred_doorbell(uint8_t slot_id, uint8_t target) {
+    for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+        if (m_pending_doorbells[i].slot_id == slot_id && m_pending_doorbells[i].target == target) {
+            return;
+        }
+    }
+
     if (m_pending_doorbell_count >= (sizeof(m_pending_doorbells) / sizeof(m_pending_doorbells[0]))) {
         _ring_doorbell(slot_id, target);
         return;
@@ -2035,7 +2016,7 @@ void xhci_hcd::_complete_async_request(xhci_device* device,
     }
 
     _finish_request(*request, status, actual);
-    _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
+    _kick_async_request_queue(device, ep, state, true);
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         if (!state.active_request && !state.pending_head && !state.stopping &&
@@ -2163,10 +2144,9 @@ void xhci_hcd::_complete_in_stream(xhci_device* device,
     }
 
     if (event->completion_code == XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE) {
-        // The xHC found no TD at the scheduled polling interval. This is
-        // recoverable: re-arm with an immediate doorbell so the endpoint
-        // resumes at the next interval without killing the stream.
-        if (_queue_in_stream_td(device, ep, state, false) != 0) {
+        // The xHC found no TD at the scheduled polling interval, which the read posted again recovers from at the next
+        // interval without ending the stream
+        if (_queue_in_stream_td(device, ep, state, true) != 0) {
             RUN_ELEVATED({
                 sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
                 state.in_stream.active = false;
@@ -2338,7 +2318,7 @@ void xhci_hcd::_post_in_stream_read_again(xhci_device* device,
     });
 
     if (is_posted) {
-        _ring_doorbell(device->slot_id(), ep->dci());
+        _queue_deferred_doorbell(device->slot_id(), ep->dci());
     }
 }
 
@@ -3198,12 +3178,10 @@ int32_t xhci_hcd::_send_control_transfer(
     uint64_t deadline = clock::now_ns() + XFER_TIMEOUT_MS * 1000000ULL;
 
     _process_event_ring();
-    m_event_ring->finish_processing();
 
     while (!device->ctrl_completed() && clock::now_ns() < deadline) {
         wait_for_event();
         _process_event_ring();
-        m_event_ring->finish_processing();
     }
 
     if (!device->ctrl_completed()) {
