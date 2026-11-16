@@ -1,7 +1,7 @@
 #!/bin/sh
-# The toolchain recipe: one Docker build of the GCC toolchain and CPython for an
-# architecture, leaving the archives of the packages asked for in the cache, or of
-# all three when none is named, so a pinned sibling in the cache is never replaced.
+# The toolchain recipe: one Docker build of the GCC toolchain for an architecture,
+# leaving the archives of the packages asked for in the cache, or of both when none
+# is named, so a pinned sibling in the cache is never replaced.
 #
 # Usage: packages/toolchain/build.sh <x86_64|aarch64> [package...]
 set -eu
@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 arch="${1:?usage: build.sh <x86_64|aarch64> [package...]}"
 shift
-packages="${*:-gcc binutils python}"
+packages="${*:-gcc binutils}"
 TOP="$REPO_ROOT/userland/toolchain/packages"
 SOURCES_CACHE="$TOP/sources"
 IMAGE_TAG="stellux-toolchain"
@@ -41,18 +41,6 @@ fi
 git -C "$TOP/mcm" fetch -q origin "$MCM_COMMIT" 2>/dev/null || true
 git -C "$TOP/mcm" checkout -q "$MCM_COMMIT"
 
-# Sources built outside musl-cross-make are fetched and verified here,
-# once, and shared with every architecture through the cache
-python_tarball="$SOURCES_CACHE/Python-$PYTHON_VER.tar.xz"
-if [ ! -f "$python_tarball" ]; then
-    curl -fsSL --retry 3 -o "$python_tarball.tmp" "$PYTHON_URL"
-    mv "$python_tarball.tmp" "$python_tarball"
-fi
-echo "$PYTHON_SHA256  $python_tarball" | shasum -a 256 -c - > /dev/null || {
-    echo "toolchain: $python_tarball does not match its pinned checksum" >&2
-    exit 1
-}
-
 work="$TOP/work/$arch"
 echo "=== toolchain: building $arch ==="
 
@@ -77,10 +65,6 @@ for d in "$SCRIPT_DIR"/patches/*/; do
     mkdir -p "$work/mcm-stage2/patches/$name"
     cp "$d"/* "$work/mcm-stage2/patches/$name/"
 done
-
-mkdir -p "$work/python"
-cp "$python_tarball" "$SCRIPT_DIR"/python/* "$work/python/"
-cp "$SCRIPT_DIR"/patches/python-"$PYTHON_VER"/*.patch "$work/python/"
 
 docker run --rm -v "$work:/host" \
     -e "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \

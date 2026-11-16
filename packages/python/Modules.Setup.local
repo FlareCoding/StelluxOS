@@ -27,9 +27,12 @@ _sha1 sha1module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA1.c -D_B
 _sha2 sha2module.c -I$(srcdir)/Modules/_hacl/include Modules/_hacl/libHacl_Hash_SHA2.a
 _sha3 sha3module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA3.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
 
+# Every module not built in is disabled, since CPython builds an unlisted module shared and the recipe links only
+# static programs
 *disabled*
 
 _asyncio
+_blake2
 _contextvars
 _codecs_cn
 _codecs_hk
@@ -41,8 +44,10 @@ _crypt
 _decimal
 _elementtree
 _lsprof
+_multibytecodec
 _multiprocessing
 _opcode
+_pickle
 _posixshmem
 _posixsubprocess
 _queue
