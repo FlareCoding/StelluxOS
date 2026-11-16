@@ -1,6 +1,11 @@
 #include "cores.hpp"
 
 #include "files.hpp"
+#include "versions.hpp"
+
+#include <algorithm>
+
+constexpr std::string_view OVERRIDE_SUFFIX = ".txt";
 
 // The menus the board's lines use among those boards.txt declares, in declaration order. A choice is a first-level key
 // of the menu's subtree that holds a label, so a key labeled only for another system is no choice.
@@ -112,22 +117,6 @@ static bool load_core(const std::string& packager, const std::string& architectu
     return !is_file(record) || read_install_record(record, core.tools, error);
 }
 
-static bool list_subdirectories(const std::string& path, std::vector<std::string>& names, std::string& error) {
-    std::vector<std::string> entries;
-    if (!list_directory(path, entries, error)) {
-        return false;
-    }
-
-    names.clear();
-    for (const std::string& entry : entries) {
-        if (is_directory(join_path(path, entry))) {
-            names.push_back(entry);
-        }
-    }
-
-    return true;
-}
-
 bool load_installed_cores(const directory_layout& layout, std::vector<installed_core>& cores, std::string& error) {
     cores.clear();
     if (!is_directory(layout.hardware)) {
@@ -171,6 +160,44 @@ bool load_installed_cores(const directory_layout& layout, std::vector<installed_
             cores.push_back(std::move(core));
         }
     }
+
+    return true;
+}
+
+bool write_install_record(const std::string& directory, const std::vector<tool_dependency>& tools, std::string& error) {
+    std::string text;
+    for (size_t index = 0; index < tools.size(); index++) {
+        std::string prefix = "tool." + std::to_string(index) + ".";
+        text += prefix + "packager=" + tools[index].packager + "\n";
+        text += prefix + "name=" + tools[index].name + "\n";
+        text += prefix + "version=" + tools[index].version + "\n";
+    }
+
+    return write_new_file(join_path(directory, INSTALL_RECORD_NAME), text, error);
+}
+
+bool overridden_versions(const directory_layout& layout, const std::string& packager, const std::string& architecture,
+                         std::vector<std::string>& versions, std::string& error) {
+    versions.clear();
+    std::string directory = join_path(join_path(layout.overrides, packager), architecture);
+    if (!is_directory(layout.overrides) || !is_directory(directory)) {
+        return true;
+    }
+
+    std::vector<std::string> names;
+    if (!list_directory(directory, names, error)) {
+        return false;
+    }
+
+    for (const std::string& name : names) {
+        if (name.size() > OVERRIDE_SUFFIX.size() && name.ends_with(OVERRIDE_SUFFIX)) {
+            versions.push_back(name.substr(0, name.size() - OVERRIDE_SUFFIX.size()));
+        }
+    }
+
+    std::sort(versions.begin(), versions.end(), [](const std::string& a, const std::string& b) {
+        return compare_versions(a, b) > 0;
+    });
 
     return true;
 }

@@ -51,4 +51,12 @@ struct installed_core {
 // the first core that does not load, such as one holding two versions or a file that does not parse.
 bool load_installed_cores(const directory_layout& layout, std::vector<installed_core>& cores, std::string& error);
 
+// Writes the install record into `directory`, the core's staged folder, failing when the archive put one there
+bool write_install_record(const std::string& directory, const std::vector<tool_dependency>& tools, std::string& error);
+
+// The versions of core `packager:architecture` that the image has overrides for, newest first. Fails when the core's
+// folder of overrides exists but cannot be listed.
+bool overridden_versions(const directory_layout& layout, const std::string& packager, const std::string& architecture,
+                         std::vector<std::string>& versions, std::string& error);
+
 #endif // MCUFW_CORES_HPP

@@ -8,5 +8,7 @@
 #include "report.hpp"
 
 int run_boards(const arguments& parsed, const directory_layout& layout, reporter& report);
+int run_install(const arguments& parsed, const directory_layout& layout, reporter& report);
+int run_remove(const arguments& parsed, const directory_layout& layout, reporter& report);
 
 #endif // MCUFW_COMMANDS_HPP

@@ -6,7 +6,10 @@
 #include <cstdio>
 
 constexpr int USAGE_STATUS = 2;
-constexpr const char* USAGE = "usage: mcufw boards [<word>] [--events]\n";
+constexpr const char* USAGE =
+    "usage: mcufw boards [<word>] [--events]\n"
+    "       mcufw install <core or board>[@<version>]... [--events]\n"
+    "       mcufw remove <core>... [--events]\n";
 
 int main(int argc, char** argv) {
     arguments parsed;
@@ -17,8 +20,13 @@ int main(int argc, char** argv) {
     }
 
     reporter report(parsed.events, stdout, stderr);
+    directory_layout layout = system_layout();
     switch (parsed.command) {
     case command_name::boards:
-        return run_boards(parsed, system_layout(), report);
+        return run_boards(parsed, layout, report);
+    case command_name::install:
+        return run_install(parsed, layout, report);
+    case command_name::remove:
+        return run_remove(parsed, layout, report);
     }
 }

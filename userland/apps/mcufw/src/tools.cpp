@@ -52,3 +52,35 @@ void set_tool_paths(const std::vector<located_tool>& tools, property_table& prop
         properties.set("runtime.tools." + dependency.name + "-" + dependency.version + ".path", tool.directory);
     }
 }
+
+bool list_data_tools(const directory_layout& layout, std::vector<tool_dependency>& tools, std::string& error) {
+    tools.clear();
+    std::vector<std::string> packagers;
+    if (!is_directory(layout.data_tools)) {
+        return true;
+    }
+
+    if (!list_subdirectories(layout.data_tools, packagers, error)) {
+        return false;
+    }
+
+    for (const std::string& packager : packagers) {
+        std::vector<std::string> names;
+        if (!list_subdirectories(join_path(layout.data_tools, packager), names, error)) {
+            return false;
+        }
+
+        for (const std::string& name : names) {
+            std::vector<std::string> versions;
+            if (!list_subdirectories(join_path(join_path(layout.data_tools, packager), name), versions, error)) {
+                return false;
+            }
+
+            for (const std::string& version : versions) {
+                tools.push_back({ packager, name, version });
+            }
+        }
+    }
+
+    return true;
+}

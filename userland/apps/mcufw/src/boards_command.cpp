@@ -2,6 +2,8 @@
 
 #include "boards.hpp"
 #include "cores.hpp"
+#include "file_lock.hpp"
+#include "files.hpp"
 #include "requirements.hpp"
 #include "tools.hpp"
 
@@ -111,8 +113,15 @@ static int list_boards(const std::vector<installed_core>& cores, const directory
 
 // A word holding an option names one board with those options, so it is described or its failure reported
 int run_boards(const arguments& parsed, const directory_layout& layout, reporter& report) {
-    std::vector<installed_core> cores;
+    file_lock lock;
     std::string error;
+    if (!make_directories(layout.state, error) ||
+        !lock.acquire(join_path(layout.state, STATE_LOCK_NAME), lock_mode::shared, error)) {
+        report.failed({ failure_kind::lock, error });
+        return 1;
+    }
+
+    std::vector<installed_core> cores;
     if (!load_installed_cores(layout, cores, error)) {
         report.failed({ failure_kind::core, error });
         return 1;

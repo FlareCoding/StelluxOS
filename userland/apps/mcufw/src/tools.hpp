@@ -22,4 +22,7 @@ std::vector<located_tool> locate_tools(const std::vector<tool_dependency>& tools
 // arduino-cli's `ToolDependencies.Sort` sorts them, so the newest of two versions of one tool takes the shorter key
 void set_tool_paths(const std::vector<located_tool>& tools, property_table& properties);
 
+// The data tools in the data tools folder
+bool list_data_tools(const directory_layout& layout, std::vector<tool_dependency>& tools, std::string& error);
+
 #endif // MCUFW_TOOLS_HPP

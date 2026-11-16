@@ -15,6 +15,9 @@ constexpr size_t READ_CHUNK_BYTES = 16 * 1024;
 // The directories musl's `execvp` and `posix_spawnp` search when `PATH` is unset
 constexpr const char* DEFAULT_PROGRAM_PATH = "/usr/local/bin:/bin:/usr/bin";
 
+constexpr mode_t DIRECTORY_MODE = 0755;
+constexpr mode_t FILE_MODE = 0644;
+
 std::string join_path(std::string_view directory, std::string_view name) {
     if (directory.empty()) {
         return std::string(name);
@@ -119,6 +122,22 @@ bool list_directory(const std::string& path, std::vector<std::string>& names, st
     return true;
 }
 
+bool list_subdirectories(const std::string& path, std::vector<std::string>& names, std::string& error) {
+    std::vector<std::string> entries;
+    if (!list_directory(path, entries, error)) {
+        return false;
+    }
+
+    names.clear();
+    for (const std::string& entry : entries) {
+        if (is_directory(join_path(path, entry))) {
+            names.push_back(entry);
+        }
+    }
+
+    return true;
+}
+
 static bool is_executable_file(const std::string& path) {
     return is_file(path) && access(path.c_str(), X_OK) == 0;
 }
@@ -143,4 +162,142 @@ std::string find_program(const std::string& word) {
 
         directories.remove_prefix(colon + 1);
     }
+}
+
+bool make_directories(const std::string& path, std::string& error) {
+    size_t end = 0;
+    while (end != std::string::npos) {
+        end = path.find('/', end + 1);
+        std::string prefix = path.substr(0, end);
+        if (prefix.empty() || is_directory(prefix)) {
+            continue;
+        }
+
+        if (mkdir(prefix.c_str(), DIRECTORY_MODE) != 0) {
+            int mkdir_error = errno;
+            if (mkdir_error != EEXIST || !is_directory(prefix)) {
+                error = describe_errno("cannot create", prefix, mkdir_error);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool remove_tree(const std::string& path, std::string& error) {
+    struct stat status;
+    if (lstat(path.c_str(), &status) != 0) {
+        if (errno == ENOENT) {
+            return true;
+        }
+
+        error = describe_errno("cannot inspect", path, errno);
+        return false;
+    }
+
+    if (S_ISDIR(status.st_mode)) {
+        std::vector<std::string> names;
+        if (!list_directory(path, names, error)) {
+            return false;
+        }
+
+        for (const std::string& name : names) {
+            if (!remove_tree(join_path(path, name), error)) {
+                return false;
+            }
+        }
+    }
+
+    if ((S_ISDIR(status.st_mode) ? rmdir(path.c_str()) : unlink(path.c_str())) != 0) {
+        error = describe_errno("cannot delete", path, errno);
+        return false;
+    }
+
+    return true;
+}
+
+bool write_all(int fd, const std::string& path, std::string_view bytes, std::string& error) {
+    while (!bytes.empty()) {
+        ssize_t count = write(fd, bytes.data(), bytes.size());
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (count < 0) {
+            error = describe_errno("cannot write", path, errno);
+            return false;
+        }
+
+        bytes.remove_prefix(static_cast<size_t>(count));
+    }
+
+    return true;
+}
+
+bool write_new_file(const std::string& path, std::string_view text, std::string& error) {
+    int fd = -1;
+    if (!create_new_file(path, FILE_MODE, fd, error)) {
+        return false;
+    }
+
+    bool written = write_all(fd, path, text, error);
+    if (close(fd) != 0 && written) {
+        error = describe_errno("cannot write", path, errno);
+        written = false;
+    }
+
+    return written;
+}
+
+bool create_new_file(const std::string& path, uint32_t mode, int& fd, std::string& error) {
+    fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, static_cast<mode_t>(mode));
+    if (fd < 0) {
+        error = describe_errno("cannot create", path, errno);
+        return false;
+    }
+
+    return true;
+}
+
+static bool exists(const std::string& path) {
+    struct stat status;
+    return lstat(path.c_str(), &status) == 0;
+}
+
+bool discard_directory(const std::string& path, const std::string& discard, std::string& error) {
+    if (!exists(path)) {
+        return true;
+    }
+
+    if (rename(path.c_str(), discard.c_str()) != 0) {
+        error = describe_errno("cannot move aside", path, errno);
+        return false;
+    }
+
+    return remove_tree(discard, error);
+}
+
+bool replace_directory(const std::string& staged, const std::string& installed, const std::string& discard,
+                       std::string& error) {
+    if (!make_directories(parent_directory(installed), error)) {
+        return false;
+    }
+
+    bool had_installed = exists(installed);
+    if (had_installed && rename(installed.c_str(), discard.c_str()) != 0) {
+        error = describe_errno("cannot move aside", installed, errno);
+        return false;
+    }
+
+    if (rename(staged.c_str(), installed.c_str()) != 0) {
+        error = describe_errno("cannot move into place", staged, errno);
+        if (had_installed && rename(discard.c_str(), installed.c_str()) != 0) {
+            error += ", and " + describe_errno("cannot move back", discard, errno);
+        }
+
+        return false;
+    }
+
+    return remove_tree(discard, error);
 }
