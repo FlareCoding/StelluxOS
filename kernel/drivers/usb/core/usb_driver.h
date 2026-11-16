@@ -48,14 +48,12 @@ public:
     const char* name() const { return m_name; }
     sched::task* task() const { return m_task; }
     device* bound_device() const { return m_bound_device; }
-    uint8_t bound_slot_id() const { return m_bound_slot_id; }
     uint8_t bound_interface_index() const { return m_bound_interface_index; }
 
 protected:
     const char* m_name;
     sched::task* m_task = nullptr;
     device* m_bound_device = nullptr;
-    uint8_t m_bound_slot_id = 0;
     uint8_t m_bound_interface_index = 0xff;
 
     friend void core::device_configured(drivers::xhci_hcd*, drivers::xhci::xhci_device*,
