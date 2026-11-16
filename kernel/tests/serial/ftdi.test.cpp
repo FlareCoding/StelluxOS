@@ -16,6 +16,7 @@ using namespace serial_test;
 using usb::serial::ftdi;
 
 static constexpr uint8_t VENDOR_TO_DEVICE = 0x40;
+static constexpr uint8_t VENDOR_FROM_DEVICE = 0xC0;
 static constexpr uint8_t RESET = 0x00;
 static constexpr uint16_t RESET_UART = 0x0000;
 
@@ -23,6 +24,7 @@ static constexpr uint8_t SET_MODEM_CTRL = 0x01;
 static constexpr uint8_t SET_FLOW_CTRL = 0x02;
 static constexpr uint8_t SET_BAUD_RATE = 0x03;
 static constexpr uint8_t SET_DATA = 0x04;
+static constexpr uint8_t GET_MODEM_STATUS = 0x05;
 static constexpr uint8_t SET_LATENCY_TIMER = 0x09;
 static constexpr uint16_t LATENCY_TIMER_MS = 1;
 static constexpr size_t SET_LINE_REQUESTS = 3;
@@ -96,6 +98,8 @@ static ftdi*                 s_translator;
 static int32_t               s_rc;
 static serial::line_settings s_settings;
 static uint32_t              s_lines;
+static bool                  s_is_on;
+static ssize_t               s_pending;
 
 // Builds a translator for interface `number` of a chip with `interface_count` interfaces
 static bool attach_translator(uint8_t interface_count, uint8_t number, uint16_t release = FT232BM_RELEASE) {
@@ -137,6 +141,14 @@ static void set_line() {
 
 static void set_modem_outputs() {
     s_rc = s_translator->set_modem_outputs(s_lines);
+}
+
+static void set_break() {
+    s_rc = s_translator->set_break(s_is_on);
+}
+
+static void tx_pending() {
+    s_pending = s_translator->tx_pending();
 }
 
 static serial::line_settings settings_of(uint32_t baud, uint8_t data_bits, serial::parity mode, uint8_t stop_bits) {
@@ -529,5 +541,51 @@ TEST(ftdi, modem_inputs_come_from_the_last_packet_of_a_read) {
 
     serial::detach(p);
     serial::unregister_port(p);
+    detach_translator();
+}
+
+// A break sets SET_DATA's bit 14 in the format set_line last sent, and a later set_line keeps it while the break lasts
+TEST(ftdi, a_break_sets_a_bit_in_the_character_format) {
+    ASSERT_TRUE(attach_translator(1, 0));
+
+    chip_request line[SET_LINE_REQUESTS];
+    EXPECT_TRUE(set_line_after_open(settings_of(9600, 7, serial::parity::even, 2), line));
+
+    chip_request request = {};
+    s_is_on = true;
+    EXPECT_TRUE(make_calls(s_chip, set_break, &request, 1));
+    EXPECT_EQ(s_rc, serial::OK);
+    expect_request(request, SET_DATA, 0x5207, 1);
+
+    s_settings = settings_of(9600, 8, serial::parity::none, 1);
+    EXPECT_TRUE(make_calls(s_chip, set_line, line, SET_LINE_REQUESTS));
+    expect_request(line[1], SET_DATA, 0x4008, 1);
+
+    s_is_on = false;
+    EXPECT_TRUE(make_calls(s_chip, set_break, &request, 1));
+    expect_request(request, SET_DATA, 0x0008, 1);
+
+    detach_translator();
+}
+
+// GET_MODEM_STATUS tells only whether the transmitter is empty, so until it is the chip may hold its whole buffer
+TEST(ftdi, tx_pending_reports_the_transmit_buffer_until_the_transmitter_is_empty) {
+    ASSERT_TRUE(attach_translator(2, 1, FT2232H_RELEASE));
+    ASSERT_TRUE(configure_translator());
+
+    static constexpr uint8_t SENDING[2] = {0x31, 0x20};
+    static constexpr uint8_t EMPTY[2] = {0x31, 0x60};
+    chip_request request = {};
+    EXPECT_TRUE(make_calls(s_chip, tx_pending, &request, 1, SENDING, sizeof(SENDING)));
+    EXPECT_EQ(s_pending, static_cast<ssize_t>(4096));
+
+    EXPECT_EQ(request.request_type, VENDOR_FROM_DEVICE);
+    EXPECT_EQ(request.request, GET_MODEM_STATUS);
+    EXPECT_EQ(request.index, 2u);
+    EXPECT_EQ(request.length, 2u);
+
+    EXPECT_TRUE(make_calls(s_chip, tx_pending, &request, 1, EMPTY, sizeof(EMPTY)));
+    EXPECT_EQ(s_pending, static_cast<ssize_t>(0));
+
     detach_translator();
 }

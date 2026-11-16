@@ -52,6 +52,8 @@ public:
     virtual int32_t set_line(const ::serial::line_settings& settings) = 0;
     virtual int32_t set_modem_outputs(uint32_t lines) = 0;
     virtual int32_t get_modem_inputs(uint32_t* lines) = 0;
+    virtual int32_t set_break(bool on) = 0;
+    virtual ssize_t tx_pending() = 0;
 
 protected:
     device*          m_device;

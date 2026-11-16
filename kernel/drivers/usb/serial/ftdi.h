@@ -23,6 +23,8 @@ public:
     int32_t set_line(const ::serial::line_settings& settings) override;
     int32_t set_modem_outputs(uint32_t lines) override;
     int32_t get_modem_inputs(uint32_t* lines) override;
+    int32_t set_break(bool on) override;
+    ssize_t tx_pending() override;
 
 private:
     void ask_for_latency_timer();
@@ -31,7 +33,9 @@ private:
 
     const ftdi_chip*       m_chip;
     bool                   m_has_asked_for_latency_timer = false;
-    sync::atomic<uint32_t> m_modem_status; // the latest packet's modem status byte
+    uint16_t               m_character_format; // SET_DATA's value as set_line last sent it, less the break
+    bool                   m_is_breaking = false;
+    sync::atomic<uint32_t> m_modem_status;     // the latest packet's modem status byte
 };
 
 } // namespace usb::serial

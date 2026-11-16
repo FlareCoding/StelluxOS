@@ -18,12 +18,19 @@ namespace serial {
 // outside the state lock
 static constexpr size_t READ_CHUNK_BYTES = 256;
 
-static constexpr uint64_t NS_PER_VTIME = 100000000;
+// VTIME and TCSBRKP count tenths of a second
+static constexpr uint64_t NS_PER_TENTH = 100000000;
 
 static constexpr uint64_t NS_PER_SECOND = 1000000000;
 
-// A wait for the send to end allows this beyond the time its bytes take at the line's speed
-static constexpr uint64_t SEND_DEADLINE_MARGIN_NS = NS_PER_SECOND;
+// A drain allows this beyond the time the unsent bytes take at the line's speed, for its chip requests
+static constexpr uint64_t DRAIN_DEADLINE_MARGIN_NS = NS_PER_SECOND;
+
+// TCSBRK's break, and TCSBRKP's for an argument of 0
+static constexpr uint64_t BREAK_NS = 250000000;
+
+// The longest break TCSBRKP may ask for, 5 s as a chip request's deadline, since the break holds the write lock
+static constexpr uint64_t MAX_TCSBRKP_TENTHS = 50;
 
 // The modem lines a port drives, and those it reads from the chip
 static constexpr uint32_t MODEM_OUTPUTS = terminal::TIOCM_DTR | terminal::TIOCM_RTS;
@@ -95,8 +102,22 @@ static size_t min_size(size_t a, size_t b) {
     return a < b ? a : b;
 }
 
+static uint64_t min_ns(uint64_t a, uint64_t b) {
+    return a < b ? a : b;
+}
+
 static bool asks_to_hang_up(const terminal::termios2& settings) {
     return (settings.c_cflag & terminal::CBAUD) == terminal::B0;
+}
+
+// The time a character's start, data, parity and stop bits take at the line's speed
+static uint64_t character_ns(const line_settings& line) {
+    uint64_t bits = 1 + line.data_bits + (line.parity_mode == parity::none ? 0 : 1) + line.stop_bits;
+    return bits * NS_PER_SECOND / line.baud;
+}
+
+static uint64_t tcsbrkp_break_ns(uint64_t arg) {
+    return arg == 0 ? BREAK_NS : arg * NS_PER_TENTH;
 }
 
 static int32_t driver_result_to_fs(int32_t rc) {
@@ -147,6 +168,7 @@ __PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
     }
 
     p->take_read_settings(p->m_settings);
+    p->take_character_time(p->m_line);
 
     if (!p->copy_identity(id)) {
         heap::ufree_delete(p);
@@ -225,7 +247,12 @@ __PRIVILEGED_CODE int32_t port::open() {
     } else if (m_is_exclusive) {
         rc = fs::ERR_BUSY;
     } else if (is_first) {
-        rc = driver_result_to_fs(m_driver->set_line(m_line));
+        // The chip still breaks when the last close could not end its break
+        rc = m_is_breaking ? change_break(false) : fs::OK;
+        if (rc == fs::OK) {
+            rc = driver_result_to_fs(m_driver->set_line(m_line));
+        }
+
         if (rc == fs::OK && !asks_to_hang_up(m_settings)) {
             rc = change_modem_outputs(MODEM_OUTPUTS);
         }
@@ -247,8 +274,8 @@ __PRIVILEGED_CODE int32_t port::open() {
     return rc;
 }
 
-// A close that is not the last leaves the count at once, so one of two files closing together is the last and waits.
-// The last stays counted through its wait for the send, so a file that opens meanwhile is not a first open
+// A close that is not the last leaves the count at once, so one of two files closing together is the last and drains.
+// The last stays counted through its drain, so a file that opens meanwhile is not a first open
 __PRIVILEGED_CODE void port::close() {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     bool may_be_last = m_open_files == 1;
@@ -262,8 +289,16 @@ __PRIVILEGED_CODE void port::close() {
         return;
     }
 
+    // A chip holds what it has to send while it breaks, so the break ends before the drain
+    sync::mutex_lock(m_control_lock);
+    if (m_is_breaking) {
+        (void)change_break(false);
+    }
+
+    sync::mutex_unlock(m_control_lock);
+
     sync::mutex_lock(m_write_lock);
-    (void)wait_for_send_end(send_deadline());
+    (void)drain(false);
     release_write_lock();
 
     sync::mutex_lock(m_control_lock);
@@ -300,6 +335,10 @@ __PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
         return fs::ERR_IO;
     }
 
+    if (cmd == terminal::TCSBRKP && arg > MAX_TCSBRKP_TENTHS) {
+        return fs::ERR_INVAL;
+    }
+
     switch (cmd) {
         case terminal::TCGETS:     return copy_settings_out(arg, sizeof(terminal::termios));
         case terminal::TCGETS2:    return copy_settings_out(arg, sizeof(terminal::termios2));
@@ -309,6 +348,10 @@ __PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
         case terminal::TCSETS2:    return apply_settings(arg, sizeof(terminal::termios2), false, false);
         case terminal::TCSETSW2:   return apply_settings(arg, sizeof(terminal::termios2), true, false);
         case terminal::TCSETSF2:   return apply_settings(arg, sizeof(terminal::termios2), true, true);
+        case terminal::TCSBRK:     return drain_then_break(arg == 0 ? BREAK_NS : 0);
+        case terminal::TCSBRKP:    return drain_then_break(tcsbrkp_break_ns(arg));
+        case terminal::TIOCSBRK:   return set_break_request(true);
+        case terminal::TIOCCBRK:   return set_break_request(false);
         case terminal::TIOCMGET:   return copy_modem_lines_out(arg);
         case terminal::TIOCMSET:   return take_modem_outputs(cmd, arg);
         case terminal::TIOCMBIS:   return take_modem_outputs(cmd, arg);
@@ -358,17 +401,17 @@ __PRIVILEGED_CODE int32_t port::copy_settings_out(uint64_t arg, size_t length) {
 }
 
 // Stores the settings only once the chip takes them, so TCGETS returns what the last applied TCSETS wrote. TCSETSW
-// and TCSETSF hold the write lock from their wait to the change, so no send starts in between
-__PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool waits_for_send, bool drops_queued) {
+// and TCSETSF hold the write lock from their drain to the change, so no send starts in between
+__PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool drains_first, bool drops_queued) {
     terminal::termios2 written = {};
     const void* source = reinterpret_cast<const void*>(arg);
     if (mm::uaccess::copy_from_user(&written, source, length) != mm::uaccess::OK) {
         return fs::ERR_INVAL;
     }
 
-    if (waits_for_send) {
+    if (drains_first) {
         sync::mutex_lock(m_write_lock);
-        int32_t rc = wait_for_send_end(send_deadline());
+        int32_t rc = drain(true);
         if (rc != fs::OK) {
             release_write_lock();
             return rc;
@@ -399,11 +442,12 @@ __PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool
         m_settings = settings;
         m_line = line;
         take_read_settings(settings);
+        take_character_time(line);
     }
 
     sync::mutex_unlock(m_control_lock);
 
-    if (waits_for_send) {
+    if (drains_first) {
         release_write_lock();
     }
 
@@ -613,19 +657,118 @@ __PRIVILEGED_CODE int32_t port::wait_for_send_end(uint64_t deadline_ns) {
     return rc;
 }
 
-// The deadline of a wait for the send in flight: now, plus its bytes' time at the line's speed and a margin
-__PRIVILEGED_CODE uint64_t port::send_deadline() {
-    sync::mutex_lock(m_control_lock);
-    line_settings line = m_line;
-    sync::mutex_unlock(m_control_lock);
-
+// Counts the bytes the chip took and may still hold as well as the send's, so a chip still sending them is waited for
+__PRIVILEGED_CODE uint64_t port::drain_deadline() {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
-    size_t unsent = m_send_length;
+    uint64_t now_ns = clock::now_ns();
+    uint64_t held_ns = m_chip_empty_ns > now_ns ? m_chip_empty_ns - now_ns : 0;
+    uint64_t deadline_ns = now_ns + m_send_length * m_character_ns + held_ns + DRAIN_DEADLINE_MARGIN_NS;
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 
-    uint64_t bits = 1 + line.data_bits + (line.parity_mode == parity::none ? 0 : 1) + line.stop_bits;
-    uint64_t character_ns = bits * NS_PER_SECOND / line.baud;
-    return clock::now_ns() + unsent * character_ns + SEND_DEADLINE_MARGIN_NS;
+    return deadline_ns;
+}
+
+// The caller must hold the write lock. Waits for the send, then while the chip holds bytes, up to the deadline, and
+// with `waits_for_last_character` one character more for the byte a chip's count leaves out, if it may be leaving
+__PRIVILEGED_CODE int32_t port::drain(bool waits_for_last_character) {
+    uint64_t deadline_ns = drain_deadline();
+    int32_t rc = wait_for_send_end(deadline_ns);
+    bool has_held_bytes = false;
+    ssize_t pending = 1;
+    while (rc == fs::OK && pending > 0) {
+        pending = chip_tx_pending();
+        if (pending < 0 || (pending > 0 && clock::now_ns() >= deadline_ns)) {
+            rc = fs::ERR_IO;
+        } else if (pending > 0) {
+            has_held_bytes = true;
+            rc = sleep_until(min_ns(chip_empty_ns(pending), deadline_ns));
+        }
+    }
+
+    bool may_be_sending = has_held_bytes || is_chip_sending();
+    if (rc == fs::OK && waits_for_last_character && may_be_sending) {
+        rc = sleep_until(min_ns(chip_empty_ns(1), deadline_ns));
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE ssize_t port::chip_tx_pending() {
+    sync::mutex_lock(m_control_lock);
+    ssize_t pending = m_driver ? m_driver->tx_pending() : ERR_IO;
+    sync::mutex_unlock(m_control_lock);
+
+    return pending;
+}
+
+// When the chip should have sent what it holds
+__PRIVILEGED_CODE uint64_t port::chip_empty_ns(ssize_t pending) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    uint64_t empty_ns = clock::now_ns() + static_cast<uint64_t>(pending) * m_character_ns;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    return empty_ns;
+}
+
+// True until the bytes the chip took have left it at the line's speed
+__PRIVILEGED_CODE bool port::is_chip_sending() {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    bool is_sending = m_chip_empty_ns > clock::now_ns();
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    return is_sending;
+}
+
+// Sleeps until `wake_ns`, or until a signal or an unplug, taking only the state lock, so control calls go on meanwhile
+__PRIVILEGED_CODE int32_t port::sleep_until(uint64_t wake_ns) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    while (clock::now_ns() < wake_ns && !m_is_gone && !signals::interrupt_pending(sched::current())) {
+        irq = sync::wait_until(m_send_wq, m_state_lock, irq, wake_ns);
+    }
+
+    int32_t rc = fs::OK;
+    if (m_is_gone) {
+        rc = fs::ERR_IO;
+    } else if (clock::now_ns() < wake_ns) {
+        rc = fs::ERR_INTR;
+    }
+
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+    return rc;
+}
+
+// Holds the write lock through the drain and the break, so no send starts before the break ends. A `break_ns` of 0
+// only drains
+__PRIVILEGED_CODE int32_t port::drain_then_break(uint64_t break_ns) {
+    sync::mutex_lock(m_write_lock);
+    int32_t rc = drain(true);
+    if (rc == fs::OK && break_ns > 0) {
+        rc = hold_break(break_ns);
+    }
+
+    release_write_lock();
+    return rc;
+}
+
+// Takes the control lock for each chip request rather than across the break, so modem lines and settings can change
+// during it. A signal ends the break early, and the request ending it still goes out
+__PRIVILEGED_CODE int32_t port::hold_break(uint64_t break_ns) {
+    int32_t rc = set_break_request(true);
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    int32_t slept = sleep_until(clock::now_ns() + break_ns);
+    rc = set_break_request(false);
+    return slept != fs::OK ? slept : rc;
+}
+
+__PRIVILEGED_CODE int32_t port::set_break_request(bool on) {
+    sync::mutex_lock(m_control_lock);
+    int32_t rc = change_break(on);
+    sync::mutex_unlock(m_control_lock);
+
+    return rc;
 }
 
 // TIOCMGET gives an int of TIOCM bits: DTR and RTS as last set, and the chip's inputs
@@ -671,6 +814,16 @@ __PRIVILEGED_CODE int32_t port::change_modem_outputs(uint32_t lines) {
     int32_t rc = m_driver ? driver_result_to_fs(m_driver->set_modem_outputs(lines)) : fs::ERR_IO;
     if (rc == fs::OK) {
         m_modem_outputs = lines;
+    }
+
+    return rc;
+}
+
+// The caller must hold the control lock
+__PRIVILEGED_CODE int32_t port::change_break(bool on) {
+    int32_t rc = m_driver ? driver_result_to_fs(m_driver->set_break(on)) : fs::ERR_IO;
+    if (rc == fs::OK) {
+        m_is_breaking = on;
     }
 
     return rc;
@@ -779,6 +932,11 @@ __PRIVILEGED_CODE void port::end_send(ssize_t taken_or_error) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     if (taken_or_error < 0) {
         m_has_send_failed = true;
+    } else {
+        // The chip sends what it took at the line's speed, after what it already held
+        uint64_t now_ns = clock::now_ns();
+        uint64_t from_ns = m_chip_empty_ns > now_ns ? m_chip_empty_ns : now_ns;
+        m_chip_empty_ns = from_ns + static_cast<uint64_t>(taken_or_error) * m_character_ns;
     }
 
     m_send_length = 0;
@@ -787,10 +945,16 @@ __PRIVILEGED_CODE void port::end_send(ssize_t taken_or_error) {
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 }
 
+__PRIVILEGED_CODE void port::take_character_time(const line_settings& line) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    m_character_ns = character_ns(line);
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+}
+
 __PRIVILEGED_CODE void port::take_read_settings(const terminal::termios2& settings) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     m_read_min = settings.c_cc[terminal::VMIN];
-    m_read_timeout_ns = settings.c_cc[terminal::VTIME] * NS_PER_VTIME;
+    m_read_timeout_ns = settings.c_cc[terminal::VTIME] * NS_PER_TENTH;
     m_is_receiving = (settings.c_cflag & terminal::CREAD) != 0;
     sync::wake_all(m_read_wq);
     sync::spin_unlock_irqrestore(m_state_lock, irq);

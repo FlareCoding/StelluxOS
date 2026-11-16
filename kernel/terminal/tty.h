@@ -14,6 +14,7 @@ constexpr uint32_t TCGETS     = 0x5401;
 constexpr uint32_t TCSETS     = 0x5402;
 constexpr uint32_t TCSETSW    = 0x5403;
 constexpr uint32_t TCSETSF    = 0x5404;
+constexpr uint32_t TCSBRK     = 0x5409;
 constexpr uint32_t TCXONC     = 0x540A;
 constexpr uint32_t TCFLSH     = 0x540B;
 constexpr uint32_t TIOCEXCL   = 0x540C;
@@ -28,6 +29,9 @@ constexpr uint32_t TIOCMBIS   = 0x5416;
 constexpr uint32_t TIOCMBIC   = 0x5417;
 constexpr uint32_t TIOCMSET   = 0x5418;
 constexpr uint32_t FIONREAD   = 0x541B;
+constexpr uint32_t TCSBRKP    = 0x5425;
+constexpr uint32_t TIOCSBRK   = 0x5427;
+constexpr uint32_t TIOCCBRK   = 0x5428;
 
 // The termios2 requests carry the size of their argument, 44 bytes, in bits 16 to 29 and its direction above them
 constexpr uint32_t TCGETS2  = 0x802C542A;

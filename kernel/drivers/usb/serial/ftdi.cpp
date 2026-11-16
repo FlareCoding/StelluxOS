@@ -19,6 +19,7 @@ static constexpr uint8_t REQUEST_SET_MODEM_CTRL = 0x01;
 static constexpr uint8_t REQUEST_SET_FLOW_CTRL = 0x02;
 static constexpr uint8_t REQUEST_SET_BAUD_RATE = 0x03;
 static constexpr uint8_t REQUEST_SET_DATA = 0x04;
+static constexpr uint8_t REQUEST_GET_MODEM_STATUS = 0x05;
 static constexpr uint8_t REQUEST_SET_LATENCY_TIMER = 0x09;
 
 // Resets the UART and empties both of its buffers
@@ -31,7 +32,7 @@ static constexpr uint16_t LATENCY_TIMER_MS = 1;
 // Every packet the chip sends starts with its modem status and line status bytes
 static constexpr size_t STATUS_BYTES = 2;
 
-// SET_DATA's value: data bits in bits 0 to 7, parity in bits 8 to 10 and stop bits in bits 11 to 13
+// SET_DATA's value: data bits in bits 0 to 7, parity in bits 8 to 10, stop bits in bits 11 to 13 and a break in bit 14
 static constexpr uint16_t PARITY_NONE = 0;
 static constexpr uint16_t PARITY_ODD = 1;
 static constexpr uint16_t PARITY_EVEN = 2;
@@ -41,17 +42,23 @@ static constexpr uint16_t PARITY_SHIFT = 8;
 static constexpr uint16_t ONE_STOP_BIT = 0;
 static constexpr uint16_t TWO_STOP_BITS = 2;
 static constexpr uint16_t STOP_BITS_SHIFT = 11;
+static constexpr uint16_t BREAK_ON = 1u << 14;
+
+// A new chip's character format (8 data bits, no parity and 1 stop bit), until the first open sets one
+static constexpr uint16_t DEFAULT_CHARACTER_FORMAT = 8;
 
 // SET_MODEM_CTRL's value: each line's level, and a bit that lets the request change it
 static constexpr uint16_t MODEM_CTRL_DTR = 1u << 0;
 static constexpr uint16_t MODEM_CTRL_RTS = 1u << 1;
 static constexpr uint16_t MODEM_CTRL_WRITE_BOTH = (1u << 8) | (1u << 9);
 
-// The modem status byte starting each packet
+// The modem status byte starting each packet, and GET_MODEM_STATUS's two bytes, the second holding the line status
 static constexpr uint8_t MODEM_STATUS_CTS = 1u << 4;
 static constexpr uint8_t MODEM_STATUS_DSR = 1u << 5;
 static constexpr uint8_t MODEM_STATUS_RI = 1u << 6;
 static constexpr uint8_t MODEM_STATUS_CD = 1u << 7;
+static constexpr uint8_t LINE_STATUS_TRANSMITTER_EMPTY = 1u << 6;
+static constexpr uint16_t MODEM_STATUS_REPLY_BYTES = 2;
 
 // SET_FLOW_CTRL's index holds the flow control in its high byte and the UART in its low one
 static constexpr uint16_t FLOW_RTS_CTS = 0x0100;
@@ -82,25 +89,36 @@ struct ftdi_chip {
     const char* name;
     bool        names_uart_in_baud_index; // SET_BAUD_RATE's index carries the UART, and the divisor's top bit above it
     bool        has_coarse_eighths;       // divides by COARSE_EIGHTHS only, and never by 1.5
+    uint16_t    transmit_buffer_bytes;    // each UART's, from the chip's data sheet
 };
 
 static constexpr ftdi_chip CHIPS[] = {
-    {.release = 0x0200, .name = "ft232am", .names_uart_in_baud_index = false, .has_coarse_eighths = true},
-    {.release = 0x0400, .name = "ft232bm", .names_uart_in_baud_index = false, .has_coarse_eighths = false},
-    {.release = 0x0500, .name = "ft2232c", .names_uart_in_baud_index = true, .has_coarse_eighths = false},
-    {.release = 0x0600, .name = "ft232r", .names_uart_in_baud_index = false, .has_coarse_eighths = false},
-    {.release = 0x0700, .name = "ft2232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false},
-    {.release = 0x0800, .name = "ft4232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false},
-    {.release = 0x0900, .name = "ft232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false},
-    {.release = 0x1000, .name = "ftx", .names_uart_in_baud_index = false, .has_coarse_eighths = false},
+    {.release = 0x0200, .name = "ft232am", .names_uart_in_baud_index = false, .has_coarse_eighths = true,
+     .transmit_buffer_bytes = 128},
+    {.release = 0x0400, .name = "ft232bm", .names_uart_in_baud_index = false, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 128},
+    {.release = 0x0500, .name = "ft2232c", .names_uart_in_baud_index = true, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 128},
+    {.release = 0x0600, .name = "ft232r", .names_uart_in_baud_index = false, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 128},
+    {.release = 0x0700, .name = "ft2232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 4096},
+    {.release = 0x0800, .name = "ft4232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 2048},
+    {.release = 0x0900, .name = "ft232h", .names_uart_in_baud_index = true, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 1024},
+    {.release = 0x1000, .name = "ftx", .names_uart_in_baud_index = false, .has_coarse_eighths = false,
+     .transmit_buffer_bytes = 512},
 };
 
-// A release the table lacks takes the family's name, and its rates are coded as an FT232BM's
+// A release the table lacks takes the family's name, an FT232BM's rate coding and the smallest transmit buffer, so a
+// drain asks it again soon
 static constexpr ftdi_chip UNLISTED_CHIP = {
     .release = 0,
     .name = FAMILY_NAME,
     .names_uart_in_baud_index = false,
     .has_coarse_eighths = false,
+    .transmit_buffer_bytes = 128,
 };
 
 static const ftdi_chip* chip_for_release(uint16_t release) {
@@ -158,7 +176,12 @@ static uint16_t parity_code(::serial::parity mode) {
     return PARITY_NONE;
 }
 
-ftdi::ftdi(device* dev, const interface& iface) : translator(dev, iface), m_chip(&UNLISTED_CHIP) {
+static uint16_t format_with_break(uint16_t character_format, bool is_breaking) {
+    return is_breaking ? static_cast<uint16_t>(character_format | BREAK_ON) : character_format;
+}
+
+ftdi::ftdi(device* dev, const interface& iface)
+    : translator(dev, iface), m_chip(&UNLISTED_CHIP), m_character_format(DEFAULT_CHARACTER_FORMAT) {
     m_modem_status.store_relaxed(0);
 }
 
@@ -217,17 +240,18 @@ int32_t ftdi::set_line(const ::serial::line_settings& settings) {
         ? static_cast<uint16_t>(divisor_top << 8 | uart_number())
         : divisor_top;
     uint16_t stop_bits = settings.stop_bits == 2 ? TWO_STOP_BITS : ONE_STOP_BIT;
-    uint16_t data = static_cast<uint16_t>(settings.data_bits) |
-                    static_cast<uint16_t>(parity_code(settings.parity_mode) << PARITY_SHIFT) |
-                    static_cast<uint16_t>(stop_bits << STOP_BITS_SHIFT);
+    uint16_t character_format = static_cast<uint16_t>(settings.data_bits) |
+                                static_cast<uint16_t>(parity_code(settings.parity_mode) << PARITY_SHIFT) |
+                                static_cast<uint16_t>(stop_bits << STOP_BITS_SHIFT);
     uint16_t flow_index = static_cast<uint16_t>((settings.uses_rts_cts ? FLOW_RTS_CTS : 0) | uart_number());
 
     if (send_request(REQUEST_SET_BAUD_RATE, static_cast<uint16_t>(divisor), baud_index) != 0 ||
-        send_request(REQUEST_SET_DATA, data, uart_number()) != 0 ||
+        send_request(REQUEST_SET_DATA, format_with_break(character_format, m_is_breaking), uart_number()) != 0 ||
         send_request(REQUEST_SET_FLOW_CTRL, 0, flow_index) != 0) {
         return ::serial::ERR_IO;
     }
 
+    m_character_format = character_format;
     return ::serial::OK;
 }
 
@@ -266,6 +290,36 @@ int32_t ftdi::get_modem_inputs(uint32_t* lines) {
 
     *lines = inputs;
     return ::serial::OK;
+}
+
+// A break is a bit of SET_DATA, so the request repeats the character format
+int32_t ftdi::set_break(bool on) {
+    if (send_request(REQUEST_SET_DATA, format_with_break(m_character_format, on), uart_number()) != 0) {
+        return ::serial::ERR_IO;
+    }
+
+    m_is_breaking = on;
+    return ::serial::OK;
+}
+
+// The chip tells only whether its transmitter is empty, so until it is, it may hold a whole transmit buffer
+ssize_t ftdi::tx_pending() {
+    uint8_t status[MODEM_STATUS_REPLY_BYTES] = {};
+    int32_t rc = control_transfer(
+        m_device,
+        USB_REQTYPE_DIR_IN | USB_REQTYPE_TYPE_VENDOR | USB_REQTYPE_RECIP_DEVICE,
+        REQUEST_GET_MODEM_STATUS,
+        0,
+        uart_number(),
+        status,
+        sizeof(status)
+    );
+    if (rc != 0) {
+        return ::serial::ERR_IO;
+    }
+
+    bool is_empty = (status[1] & LINE_STATUS_TRANSMITTER_EMPTY) != 0;
+    return is_empty ? 0 : static_cast<ssize_t>(m_chip->transmit_buffer_bytes);
 }
 
 // The oldest chips may refuse the request, and still pass bytes, only up to 16 ms later

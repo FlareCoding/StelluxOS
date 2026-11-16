@@ -59,12 +59,12 @@ class port;
 constexpr size_t SEND_BYTES = 4096;
 
 /**
- * A port's driver, which sends what programs write and applies the settings
- * and modem lines they ask for. The port calls `send` under its write lock
- * and the other calls one at a time under its control lock, so `send` can run
- * while another call does. `send` must return without waiting for the chip,
- * since non-blocking writes call it. The other calls may sleep until a chip
- * request ends at its reply, its deadline or the device's unplug.
+ * A port's driver, which sends what programs write and applies the settings,
+ * modem lines and breaks they ask for. The port calls `send` under its write
+ * lock and the other calls one at a time under its control lock, so `send`
+ * can run while another call does. `send` must return without waiting for the
+ * chip, since non-blocking writes call it. The other calls may sleep until a
+ * chip request ends at its reply, its deadline or the device's unplug.
  */
 class port_driver {
 public:
@@ -91,6 +91,21 @@ public:
      * @return OK, or ERR_IO when the chip request fails.
      */
     virtual int32_t get_modem_inputs(uint32_t* lines) = 0;
+
+    /**
+     * @brief Starts or ends a break, which holds the UART's transmit line low.
+     * @return OK, or ERR_IO when the chip request fails.
+     */
+    virtual int32_t set_break(bool on) = 0;
+
+    /**
+     * @brief The bytes the chip still holds to send, or an estimate for a chip
+     * that tells only whether it holds any, which the port waits out at the
+     * line's speed before it asks again. At 0 the chip's queue is empty,
+     * though a byte may still be leaving its UART, which the port allows for.
+     * @return The count, or ERR_IO when the chip request fails.
+     */
+    virtual ssize_t tx_pending() = 0;
 
     /**
      * @brief Starts sending `length` bytes, at most SEND_BYTES, from `data`,

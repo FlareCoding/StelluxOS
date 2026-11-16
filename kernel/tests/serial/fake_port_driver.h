@@ -3,10 +3,14 @@
 
 #include "helpers.h"
 #include "drivers/serial/serial.h"
+#include "clock/clock.h"
 #include "common/string.h"
 #include "sync/atomic.h"
 
 namespace serial_test {
+
+// The most answers a test scripts for tx_pending
+constexpr size_t MAX_PENDING_ANSWERS = 4;
 
 // A port driver whose chip answers at once, recording what the port asks of it and failing a call when told to.
 // Sends stay in flight until the test ends them, and a call the test gates waits inside the chip until it opens
@@ -39,6 +43,22 @@ public:
     int32_t get_modem_inputs(uint32_t* lines) override {
         *lines = inputs;
         return control_result;
+    }
+
+    int32_t set_break(bool on) override {
+        break_calls++;
+        if (control_result == serial::OK) {
+            is_breaking = on;
+            (on ? break_started_ns : break_ended_ns) = clock::now_ns();
+        }
+
+        return control_result;
+    }
+
+    // Gives the scripted answers in turn, then 0
+    ssize_t tx_pending() override {
+        tx_pending_calls++;
+        return tx_pending_calls <= pending_answer_count ? pending_answers[tx_pending_calls - 1] : 0;
     }
 
     int32_t send(const uint8_t* data, size_t length) override {
@@ -98,6 +118,14 @@ public:
         modem_output_calls = 0;
         control_result = serial::OK;
 
+        is_breaking = false;
+        break_calls = 0;
+        break_started_ns = 0;
+        break_ended_ns = 0;
+
+        pending_answer_count = 0;
+        tx_pending_calls = 0;
+
         started_sends.store_relaxed(0);
         sent_length = 0;
         send_result = serial::OK;
@@ -121,7 +149,14 @@ public:
     uint32_t outputs = 0;                     // DTR and RTS as last set
     uint32_t inputs = 0;                      // what get_modem_inputs reports
     uint32_t modem_output_calls = 0;
-    int32_t  control_result = serial::OK;     // the modem line calls' result
+    bool     is_breaking = false;
+    uint32_t break_calls = 0;
+    uint64_t break_started_ns = 0;
+    uint64_t break_ended_ns = 0;
+    int32_t  control_result = serial::OK;     // the modem line and break calls' result
+    ssize_t  pending_answers[MAX_PENDING_ANSWERS] = {};
+    size_t   pending_answer_count = 0;
+    size_t   tx_pending_calls = 0;
 
     sync::atomic<uint32_t> started_sends{0};
     uint8_t                sent[serial::SEND_BYTES] = {};
