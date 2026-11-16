@@ -5,6 +5,10 @@
 
 namespace usb {
 
+class class_driver;
+
+constexpr uint8_t MAX_INTERFACES = 16;
+
 struct endpoint {
     uint8_t  address;         // bEndpointAddress (e.g. 0x81 = EP1 IN)
     uint8_t  transfer_type;   // 0=control, 1=isochronous, 2=bulk, 3=interrupt
@@ -39,7 +43,7 @@ struct device {
     // Active configuration
     uint8_t  config_value;
     uint8_t  num_interfaces;
-    interface interfaces[16];
+    interface interfaces[MAX_INTERFACES];
 
     // Hub topology
     bool     is_hub;
@@ -55,6 +59,7 @@ struct device {
     bool disconnect_pending;
     bool hcd_teardown_complete; // HCD is done dereferencing hcd_device.
     bool finalize_started; // Final release path has claimed ownership.
+    class_driver* bound_drivers[MAX_INTERFACES]; // Each interface's driver, until an unplug takes it or its task ends.
 };
 
 } // namespace usb
