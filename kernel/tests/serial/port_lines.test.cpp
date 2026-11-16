@@ -523,6 +523,25 @@ TEST(serial_port_lines, a_drain_waits_a_character_for_the_byte_the_count_leaves_
     fs::close(f);
 }
 
+// A chip that cannot tell what it holds gets one wait, until the bytes it took have left it at the line's speed
+TEST(serial_port_lines, a_drain_waits_out_what_a_chip_that_cannot_tell_took) {
+    fs::file* f = open_port();
+    ASSERT_NOT_NULL(f);
+    const ssize_t answers[] = {serial::TX_UNKNOWN};
+    script_pending(answers);
+
+    ASSERT_EQ(fs::write(f, "0123456789", 10, fs::O_NONBLOCK), 10);
+    uint64_t taken_ns = clock::now_ns();
+    g_driver.end_send(10);
+
+    EXPECT_TRUE(call_number_request(f, terminal::TCSBRK, 1));
+    EXPECT_EQ(g_call.result, fs::OK);
+    EXPECT_EQ(g_driver.tx_pending_calls, static_cast<size_t>(1));
+    EXPECT_GE(g_call.ended_ns - taken_ns, 10 * CHARACTER_NS);
+
+    fs::close(f);
+}
+
 // A chip that keeps reporting bytes past the drain's deadline fails the drain with EIO
 TEST(serial_port_lines, a_drain_past_its_deadline_fails_with_eio) {
     fs::file* f = open_port();

@@ -11,6 +11,9 @@ constexpr int32_t ERR_UNSUPPORTED = -2;
 constexpr int32_t ERR_NO_MEMORY   = -3;
 constexpr int32_t ERR_IO          = -4;
 
+// What a chip that cannot tell how many bytes it still holds answers `port_driver::tx_pending` with
+constexpr ssize_t TX_UNKNOWN = -5;
+
 enum class parity : uint8_t {
     none,
     odd,
@@ -104,7 +107,8 @@ public:
      * that tells only whether it holds any, which the port waits out at the
      * line's speed before it asks again. At 0 the chip's queue is empty,
      * though a byte may still be leaving its UART, which the port allows for.
-     * @return The count, or ERR_IO when the chip request fails.
+     * @return The count, TX_UNKNOWN for a chip that cannot tell, or ERR_IO
+     *         when the chip request fails.
      */
     virtual ssize_t tx_pending() = 0;
 

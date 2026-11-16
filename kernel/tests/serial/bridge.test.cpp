@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "tests/serial/fake_chip.h"
 #include "drivers/usb/serial/bridge.h"
+#include "drivers/usb/serial/cdc_acm.h"
 #include "drivers/usb/serial/cp210x.h"
 #include "drivers/usb/serial/ftdi.h"
 #include "drivers/serial/serial.h"
@@ -75,6 +76,36 @@ static constexpr reset_step TIGHT_RESET[] = {
 
 static constexpr size_t TIGHT_RESET_STEPS = sizeof(TIGHT_RESET) / sizeof(TIGHT_RESET[0]);
 
+// A CDC-ACM device whose control interface 0 has a union descriptor naming data interface 1, which holds the bulk pair
+static constexpr uint8_t ACM_SUBCLASS = 0x02;
+static constexpr uint8_t DATA_CLASS = 0x0A;
+static constexpr uint8_t ACM_DATA_INTERFACE = 1;
+static constexpr uint16_t ACM_RELEASE = 0x0100;
+static constexpr const char* ACM_SERIAL_NUMBER = "AC01";
+static constexpr const char* ACM_PATH = "/dev/serial/acm-ac01";
+
+// The control interface's notification endpoint, whose stream the bridge's task opens once the port is listed
+static constexpr uint8_t ACM_NOTIFICATION_IN = 0x83;
+static constexpr uint8_t INTERRUPT_ATTRIBUTES = 3;
+static constexpr uint16_t ACM_NOTIFICATION_MAX_PACKET = 8;
+static constexpr uint8_t ACM_NOTIFICATION_INTERVAL = 16;
+
+static const uint8_t ACM_CONFIG[] = {
+    9, usb::USB_DESCRIPTOR_CONFIGURATION, 53, 0, 2, 1, 0, 0x80, 50,                   // configuration, 53 bytes
+    9, usb::USB_DESCRIPTOR_INTERFACE, 0, 0, 1, usb::USB_CLASS_CDC, ACM_SUBCLASS, 1, 0, // control interface 0
+    5, 0x24, 0x06, 0, ACM_DATA_INTERFACE,                                              // union of 0 and 1
+    7, usb::USB_DESCRIPTOR_ENDPOINT, ACM_NOTIFICATION_IN, 3, 8, 0, ACM_NOTIFICATION_INTERVAL,
+    9, usb::USB_DESCRIPTOR_INTERFACE, ACM_DATA_INTERFACE, 0, 2, DATA_CLASS, 0, 0, 0,  // data interface 1
+    7, usb::USB_DESCRIPTOR_ENDPOINT, BULK_OUT, 2, 64, 0, 0,
+    7, usb::USB_DESCRIPTOR_ENDPOINT, fake_xhci::BULK_IN, 2, 64, 0, 0,
+};
+
+// The first open's class requests: SET_LINE_CODING, then SET_CONTROL_LINE_STATE raising DTR and RTS
+static constexpr size_t ACM_FIRST_OPEN_REQUESTS = 2;
+static constexpr uint8_t SET_LINE_CODING = 0x20;
+static constexpr uint8_t SET_CONTROL_LINE_STATE = 0x22;
+static constexpr uint16_t DTR_AND_RTS = 3;
+
 // The first open's chip requests: the latency timer, the line's three, then DTR and RTS
 static constexpr size_t FIRST_OPEN_REQUESTS = 5;
 
@@ -83,6 +114,7 @@ static constexpr size_t WRITE_BYTES = 5;
 // Static, so calls that never end still find them after their test
 static fake_chip                   g_chip;
 static drivers::xhci::xhci_endpoint* g_bulk_out;
+static drivers::xhci::xhci_endpoint* g_notification_in;
 static usb::serial::bridge*        g_bridge;
 static fs::file*                   g_file;
 static int32_t                     g_rc;
@@ -175,6 +207,64 @@ static void run_bridge(void*) {
 
 static bool attach_ft232bm() {
     return attach_bridge(usb::serial::create_bridge<usb::serial::ftdi>, FT232BM_RELEASE, FTDI_SERIAL_NUMBER);
+}
+
+// The bridge is bound to control interface 0, which lists its notification endpoint, and the bulk pair moves to data
+// interface 1
+static bool attach_acm() {
+    if (!attach_bridge(usb::serial::create_bridge<usb::serial::cdc_acm>, ACM_RELEASE, ACM_SERIAL_NUMBER)) {
+        return false;
+    }
+
+    usb::device& dev = chip_device();
+    usb::interface& control = dev.interfaces[0];
+    control.interface_class = usb::USB_CLASS_CDC;
+    control.interface_subclass = ACM_SUBCLASS;
+    control.num_endpoints = 1;
+    control.endpoints[0] = {
+        ACM_NOTIFICATION_IN,
+        usb::USB_ENDPOINT_TYPE_INTERRUPT,
+        ACM_NOTIFICATION_MAX_PACKET,
+        ACM_NOTIFICATION_INTERVAL
+    };
+
+    usb::interface& data = dev.interfaces[1];
+    data.interface_number = ACM_DATA_INTERFACE;
+    data.interface_class = DATA_CLASS;
+    data.num_endpoints = 2;
+    data.endpoints[0] = {fake_xhci::BULK_IN, usb::USB_ENDPOINT_TYPE_BULK, fake_xhci::MAX_PACKET, 0};
+    data.endpoints[1] = {BULK_OUT, usb::USB_ENDPOINT_TYPE_BULK, fake_xhci::MAX_PACKET, 0};
+
+    dev.num_interfaces = 2;
+    g_notification_in = usb_test::add_fake_endpoint(
+        *g_chip.controller,
+        ACM_NOTIFICATION_IN,
+        INTERRUPT_ATTRIBUTES,
+        ACM_NOTIFICATION_MAX_PACKET
+    );
+    return g_notification_in != nullptr;
+}
+
+static void open_acm_port() {
+    g_file = fs::open(ACM_PATH, fs::O_RDWR);
+}
+
+// The notification read the bridge's task posts once the port is listed, or null when none comes before the deadline
+static const drivers::xhci::xhci_normal_trb_t* wait_for_notification_read() {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    auto* read = usb_test::transfer_trb(*g_chip.controller, 0, g_notification_in);
+    while (!read && clock::now_ns() <= deadline) {
+        test_helpers::brief_delay();
+        read = usb_test::transfer_trb(*g_chip.controller, 0, g_notification_in);
+    }
+
+    return reinterpret_cast<const drivers::xhci::xhci_normal_trb_t*>(read);
+}
+
+// The unplug ends the device's transfers, so a stream still open closes at run()'s end without a stop
+static void unplug_chip() {
+    drivers::xhci_hcd_test_access::mark_unplugged(*g_chip.controller->hcd, g_chip.controller->device);
+    drivers::xhci_hcd_test_access::end_unplugged_transfers(*g_chip.controller->hcd, g_chip.controller->device);
 }
 
 // True once the bridge's task has added the port at `path` to /dev/serial
@@ -290,4 +380,61 @@ TEST(serial_bridge, a_cp2102_with_the_factory_serial_number_is_cp2102_0001) {
     test_helpers::unpin(runner);
     fs::close(g_file);
     detach_bridge();
+}
+
+// The port's requests go to the control interface, and the port's writes are sent on the bulk OUT endpoint of the
+// data interface that the control interface's union descriptor names
+TEST(serial_bridge, a_cdc_acm_port_sends_on_the_data_interface_the_union_descriptor_names) {
+    ASSERT_TRUE(attach_acm());
+    chip_request config_read = {};
+    ASSERT_TRUE(make_calls(g_chip, probe, &config_read, 1, ACM_CONFIG, sizeof(ACM_CONFIG)));
+    ASSERT_EQ(g_rc, 0);
+
+    sched::task* runner = test_helpers::start_pinned_task_on_another_cpu(run_bridge, nullptr, "serial_bridge_run", 0);
+    ASSERT_NOT_NULL(runner);
+    ASSERT_TRUE(wait_until_listed(ACM_PATH));
+
+    chip_request first_open[ACM_FIRST_OPEN_REQUESTS];
+    ASSERT_TRUE(make_calls(g_chip, open_acm_port, first_open, ACM_FIRST_OPEN_REQUESTS));
+    ASSERT_NOT_NULL(g_file);
+    EXPECT_EQ(first_open[0].request, SET_LINE_CODING);
+    EXPECT_EQ(first_open[1].request, SET_CONTROL_LINE_STATE);
+    EXPECT_EQ(first_open[1].value, DTR_AND_RTS);
+
+    EXPECT_EQ(fs::write(g_file, g_bytes, WRITE_BYTES, fs::O_NONBLOCK), static_cast<ssize_t>(WRITE_BYTES));
+    EXPECT_NOT_NULL(usb_test::transfer_trb(*g_chip.controller, 0, g_bulk_out));
+    complete_send(0);
+
+    unplug_chip();
+    g_bridge->disconnect();
+    EXPECT_TRUE(test_helpers::spin_wait(g_has_run_returned));
+    test_helpers::unpin(runner);
+
+    fs::close(g_file);
+    detach_bridge();
+}
+
+// The probe runs on the HCD task and posts no notification read, and the bridge's task opens the stream once the port
+// is listed, with reads of one packet
+TEST(serial_bridge, a_cdc_acm_ports_notifications_open_on_the_bridges_task) {
+    ASSERT_TRUE(attach_acm());
+    chip_request config_read = {};
+    ASSERT_TRUE(make_calls(g_chip, probe, &config_read, 1, ACM_CONFIG, sizeof(ACM_CONFIG)));
+    ASSERT_EQ(g_rc, 0);
+    bool was_read_posted_by_probe = usb_test::transfer_trb(*g_chip.controller, 0, g_notification_in) != nullptr;
+
+    sched::task* runner = test_helpers::start_pinned_task_on_another_cpu(run_bridge, nullptr, "serial_bridge_run", 0);
+    ASSERT_NOT_NULL(runner);
+    ASSERT_TRUE(wait_until_listed(ACM_PATH));
+    const drivers::xhci::xhci_normal_trb_t* read = wait_for_notification_read();
+    uint32_t read_length = read ? read->trb_transfer_length : 0;
+
+    unplug_chip();
+    g_bridge->disconnect();
+    EXPECT_TRUE(test_helpers::spin_wait(g_has_run_returned));
+    test_helpers::unpin(runner);
+    detach_bridge();
+
+    EXPECT_FALSE(was_read_posted_by_probe);
+    EXPECT_EQ(read_length, static_cast<uint32_t>(ACM_NOTIFICATION_MAX_PACKET));
 }
