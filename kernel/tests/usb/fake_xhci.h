@@ -876,6 +876,44 @@ inline bool serve_until_step_done(fake_xhci& fake, uint8_t first_slot_id, served
     return true;
 }
 
+// The physical address of EP0's transfer ring entry `index`
+inline uint64_t control_trb_phys(const fake_xhci& fake, uint32_t index) {
+    return fake.device->ctrl_ring()->get_physical_base() + index * sizeof(xhci_trb_t);
+}
+
+// EP0's transfer ring entry `index` on the ring's first lap, or null when the driver has not written it
+inline const xhci_trb_t* control_trb(const fake_xhci& fake, uint32_t index) {
+    const xhci_trb_t* entry = &fake.device->ctrl_ring()->get_virtual_base()[index];
+    return (entry->control & fake_xhci::CYCLE_BIT) ? entry : nullptr;
+}
+
+// EP0's transfer ring entry `index` on the ring's first lap once the driver writes it, or null when it writes none
+// within `SPIN_TIMEOUT_NS`, since a class driver's task writes its TD only once it holds EP0
+inline const xhci_trb_t* wait_for_control_trb(const fake_xhci& fake, uint32_t index) {
+    const volatile xhci_trb_t* entry = &fake.device->ctrl_ring()->get_virtual_base()[index];
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while ((entry->control & fake_xhci::CYCLE_BIT) == 0) {
+        if (clock::now_ns() > deadline) {
+            return nullptr;
+        }
+    }
+
+    return const_cast<const xhci_trb_t*>(entry);
+}
+
+// Posts the completion of EP0's transfer ring entry `trb_index`, the status stage of a control transfer's TD
+inline void post_control_event(fake_xhci& fake, uint32_t trb_index, uint8_t completion_code) {
+    xhci_transfer_completion_trb_t event = {};
+    event.transfer_trb_pointer = control_trb_phys(fake, trb_index);
+    event.completion_code = completion_code;
+
+    event.trb_type = XHCI_TRB_TYPE_TRANSFER_EVENT;
+    event.endpoint_id = CONTROL_DCI;
+    event.slot_id = fake_xhci::SLOT_ID;
+
+    post_event(fake, *reinterpret_cast<const xhci_trb_t*>(&event));
+}
+
 } // namespace usb_test
 
 #endif // STELLUX_TESTS_USB_FAKE_XHCI_H

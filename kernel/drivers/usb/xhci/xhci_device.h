@@ -77,14 +77,14 @@ public:
     // Copy output device context into the input context's device context portion
     void sync_input_ctx();
 
-    // Persistent DMA buffer for control transfers
+    // DMA buffer for control transfer data, which a caller must hold `ctrl_transfer_mutex()` to read or write
     inline void* ctrl_transfer_buffer() const { return m_ctrl_transfer_buffer; }
     inline uintptr_t ctrl_transfer_buffer_phys() const { return m_ctrl_transfer_buffer_phys; }
 
     // Control transfer ring
     inline xhci_transfer_ring* ctrl_ring() { return m_ctrl_ring; }
 
-    // EP0 transfer mutex — serializes enqueue+doorbell+wait across tasks
+    // Held across one control transfer, from filling the control buffer until the transfer ends
     inline sync::mutex& ctrl_transfer_mutex() { return m_ctrl_transfer_mutex; }
 
     // EP0 completion state accessors
@@ -151,7 +151,6 @@ private:
 
     xhci_transfer_ring* m_ctrl_ring = nullptr;
 
-    // EP0 transfer mutex — protects enqueue+doorbell+wait against concurrent callers
     sync::mutex m_ctrl_transfer_mutex;
 
     // EP0 completion tracking
