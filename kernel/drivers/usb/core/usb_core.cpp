@@ -38,6 +38,45 @@ static bool match_interface(const class_match& match, const usb::interface* ifac
     return true;
 }
 
+static bool names_device(const class_match& match) {
+    return match.vendor_id != USB_MATCH_ANY_ID;
+}
+
+static bool match_device(const class_match& match, const usb::device& dev) {
+    if (!names_device(match)) {
+        return true;
+    }
+
+    return match.vendor_id == dev.vid && match.product_id == dev.pid;
+}
+
+const class_driver_entry* next_matching_entry(
+    const class_driver_entry* first,
+    const class_driver_entry* last,
+    const class_driver_entry* previous,
+    const device& dev,
+    const interface& iface
+) {
+    bool is_device_pass = !previous || names_device(previous->match);
+    const class_driver_entry* start = previous ? previous + 1 : first;
+
+    while (true) {
+        for (const class_driver_entry* entry = start; entry < last; entry++) {
+            bool is_in_pass = names_device(entry->match) == is_device_pass;
+            if (is_in_pass && match_device(entry->match, dev) && match_interface(entry->match, &iface)) {
+                return entry;
+            }
+        }
+
+        if (!is_device_pass) {
+            return nullptr;
+        }
+
+        is_device_pass = false;
+        start = first;
+    }
+}
+
 static finalization_ticket claim_finalization_if_ready_locked(usb::device* dev) {
     finalization_ticket ticket = {};
     if (!dev ||
@@ -176,11 +215,9 @@ void device_configured(drivers::xhci_hcd* hcd,
         for (uint8_t i = 0; i < dev->num_interfaces; i++) {
             auto* iface = &dev->interfaces[i];
 
-            for (const class_driver_entry* reg = reg_start; reg < reg_end; reg++) {
-                if (!match_interface(reg->match, iface)) {
-                    continue;
-                }
-
+            for (const class_driver_entry* reg = next_matching_entry(reg_start, reg_end, nullptr, *dev, *iface);
+                 reg;
+                 reg = next_matching_entry(reg_start, reg_end, reg, *dev, *iface)) {
                 auto* drv = reg->create(dev, iface);
                 if (!drv) {
                     continue;
