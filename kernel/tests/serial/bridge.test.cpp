@@ -5,6 +5,7 @@
 #include "tests/serial/fake_chip.h"
 #include "drivers/usb/serial/bridge.h"
 #include "drivers/usb/serial/cdc_acm.h"
+#include "drivers/usb/serial/ch34x.h"
 #include "drivers/usb/serial/cp210x.h"
 #include "drivers/usb/serial/ftdi.h"
 #include "drivers/serial/serial.h"
@@ -106,6 +107,13 @@ static constexpr uint8_t SET_LINE_CODING = 0x20;
 static constexpr uint8_t SET_CONTROL_LINE_STATE = 0x22;
 static constexpr uint16_t DTR_AND_RTS = 3;
 
+// A CH340 names no serial number, so its port's name holds its location, here root port 5 of controller 1
+static constexpr uint16_t CH340_PRODUCT_ID = 0x7523;
+static constexpr uint16_t CH340_RELEASE = 0x0254;
+static constexpr uint8_t CH340_CONTROLLER = 1;
+static constexpr uint8_t CH340_ROOT_PORT = 5;
+static constexpr const char* CH340_PATH = "/dev/serial/ch340-p1.5";
+
 // The first open's chip requests: the latency timer, the line's three, then DTR and RTS
 static constexpr size_t FIRST_OPEN_REQUESTS = 5;
 
@@ -128,13 +136,14 @@ static usb::device& chip_device() {
 
 // A chip whose bulk OUT endpoint takes the sends of a bridge from `create`. Its bulk IN endpoint is left off the fake
 // controller, so the port's stream fails to open and the test plays no reads
-static bool attach_bridge(bridge_factory create, uint16_t release, const char* serial_number) {
+static bool attach_bridge(bridge_factory create, uint16_t release, const char* serial_number, uint16_t product = 0) {
     if (!attach_fake_chip(g_chip)) {
         return false;
     }
 
     fake_xhci& fake = *g_chip.controller;
     usb::device& dev = fake.usb_device;
+    dev.pid = product;
     dev.bcd_device = release;
     string::memcpy(dev.serial_number, serial_number, string::strlen(serial_number) + 1);
     dev.num_interfaces = 1;
@@ -437,4 +446,26 @@ TEST(serial_bridge, a_cdc_acm_ports_notifications_open_on_the_bridges_task) {
 
     EXPECT_FALSE(was_read_posted_by_probe);
     EXPECT_EQ(read_length, static_cast<uint32_t>(ACM_NOTIFICATION_MAX_PACKET));
+}
+
+// The product ID names the chip, which reports no part number, and only the reset comes before the port is listed
+TEST(serial_bridge, a_ch340_without_a_serial_number_is_named_for_its_location) {
+    ASSERT_TRUE(attach_bridge(usb::serial::create_bridge<usb::serial::ch34x>, CH340_RELEASE, "", CH340_PRODUCT_ID));
+    usb::device& dev = chip_device();
+    dev.controller_number = CH340_CONTROLLER;
+    dev.port_path[0] = CH340_ROOT_PORT;
+    dev.port_path_length = 1;
+
+    chip_request reset = {};
+    ASSERT_TRUE(make_calls(g_chip, probe, &reset, 1));
+    ASSERT_EQ(g_rc, 0);
+
+    sched::task* runner = test_helpers::start_pinned_task_on_another_cpu(run_bridge, nullptr, "serial_bridge_run", 0);
+    ASSERT_NOT_NULL(runner);
+    EXPECT_TRUE(wait_until_listed(CH340_PATH));
+
+    g_bridge->disconnect();
+    EXPECT_TRUE(test_helpers::spin_wait(g_has_run_returned));
+    test_helpers::unpin(runner);
+    detach_bridge();
 }

@@ -85,6 +85,9 @@ uint32_t modem_inputs_from_status(uint8_t status);
 // Stores `value` in the 4 bytes at `bytes`, least significant first, as USB requests carry it
 void store_le32(uint8_t* bytes, uint32_t value);
 
+// How far apart two rates are, whichever is larger
+uint32_t distance(uint32_t a, uint32_t b);
+
 } // namespace usb::serial
 
 #endif // STELLUX_DRIVERS_USB_SERIAL_TRANSLATOR_H

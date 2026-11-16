@@ -64,4 +64,8 @@ void store_le32(uint8_t* bytes, uint32_t value) {
     bytes[3] = static_cast<uint8_t>(value >> 24);
 }
 
+uint32_t distance(uint32_t a, uint32_t b) {
+    return a > b ? a - b : b - a;
+}
+
 } // namespace usb::serial
