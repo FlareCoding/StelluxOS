@@ -15,12 +15,18 @@ void device_configured(drivers::xhci_hcd*, drivers::xhci::xhci_device*,
                        const usb_device_descriptor&);
 } // namespace core
 
-constexpr uint8_t USB_MATCH_ANY = 0xFF;
+// Outside the 8-bit class, subclass and protocol codes, so an entry can name each of them, 0xFF included
+constexpr uint16_t USB_MATCH_ANY = 0x100;
+
+// Fills both IDs of a class entry, so no device entry can name the vendor ID 0xFFFF
+constexpr uint16_t USB_MATCH_ANY_ID = 0xFFFF;
 
 struct class_match {
-    uint8_t interface_class;     // USB_MATCH_ANY = wildcard
-    uint8_t interface_subclass;  // USB_MATCH_ANY = wildcard
-    uint8_t interface_protocol;  // USB_MATCH_ANY = wildcard
+    uint16_t interface_class;     // USB_MATCH_ANY = wildcard
+    uint16_t interface_subclass;  // USB_MATCH_ANY = wildcard
+    uint16_t interface_protocol;  // USB_MATCH_ANY = wildcard
+    uint16_t vendor_id;           // USB_MATCH_ANY_ID for a class entry
+    uint16_t product_id;          // USB_MATCH_ANY_ID for a class entry
 };
 
 class class_driver {
@@ -68,19 +74,45 @@ struct class_driver_entry {
     const char* name;
 };
 
+namespace core {
+/**
+ * Finds the entry in [`first`, `last`) that follows `previous` in binding
+ * order and matches `iface` of `dev`. In binding order, device entries, which
+ * name a vendor and a product ID, come before class entries, which name
+ * neither, each in registration order, so an interface is offered to a driver
+ * for its device before any driver matching by class alone.
+ * @param previous The entry the last call returned, or nullptr to start.
+ * @return The entry, or nullptr when no matching entry follows `previous`.
+ */
+const class_driver_entry* next_matching_entry(
+    const class_driver_entry* first,
+    const class_driver_entry* last,
+    const class_driver_entry* previous,
+    const device& dev,
+    const interface& iface
+);
+} // namespace core
+
 } // namespace usb
 
 #define USB_MATCH(cls, sub, proto) \
-    { cls, sub, proto }
+    { cls, sub, proto, ::usb::USB_MATCH_ANY_ID, ::usb::USB_MATCH_ANY_ID }
+
+#define USB_MATCH_DEVICE(vendor, product, cls, sub, proto) \
+    { cls, sub, proto, vendor, product }
 
 #define USB_CLASS_DRIVER_FACTORY(drv) \
     [](usb::device* dev, usb::interface* iface) -> usb::class_driver* { \
         return heap::ualloc_new<drv>(dev, iface); \
     }
 
+#define USB_CLASS_DRIVER_ENTRY_JOIN(prefix, n) prefix##n
+#define USB_CLASS_DRIVER_ENTRY_NAME(drv, n) USB_CLASS_DRIVER_ENTRY_JOIN(_usb_class_reg_##drv##_, n)
+
+// Each use defines an entry of its own, so a driver serving several products registers one entry per product
 #define REGISTER_USB_CLASS_DRIVER(drv, match, factory) \
     __attribute__((used, section(".usb_class_drivers"))) \
-    static const ::usb::class_driver_entry _usb_class_reg_##drv = { \
+    static const ::usb::class_driver_entry USB_CLASS_DRIVER_ENTRY_NAME(drv, __COUNTER__) = { \
         match, factory, #drv \
     }
 
