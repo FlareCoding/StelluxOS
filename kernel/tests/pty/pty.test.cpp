@@ -1,12 +1,14 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "pty/pty.h"
 #include "resource/resource.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "terminal/terminal.h"
 #include "terminal/line_discipline.h"
+#include "terminal/tty.h"
 #include "signals/signal_types.h"
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
@@ -338,10 +340,12 @@ TEST(pty_test, isig_reenabled_in_raw_mode) {
 
     auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
     ep->channel->m_sig = { isig_capture, nullptr };
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
 
     // TCSETS can turn ISIG back on independently of raw mode
-    terminal::ld_set_mode(&ep->channel->m_ld, terminal::STLX_TCSETS_RAW);
-    terminal::ld_set_isig(&ep->channel->m_ld, true);
+    terminal::termios raw_with_signals = {};
+    raw_with_signals.c_lflag = terminal::ISIG;
+    terminal::ld_set_termios(&ep->channel->m_ld, raw_with_signals);
 
     g_isig_caught = 0;
     ASSERT_EQ(resource::write(task, hm, "x\x03y", 3), static_cast<ssize_t>(3));
@@ -352,6 +356,109 @@ TEST(pty_test, isig_reenabled_in_raw_mode) {
     ASSERT_EQ(resource::read(task, hs, buf, 4), static_cast<ssize_t>(2));
     EXPECT_EQ(buf[0], 'x');
     EXPECT_EQ(buf[1], 'y');
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, tcgets_reads_cooked_mode_until_tcsets_without_icanon_or_isig_makes_the_slave_raw) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    test_helpers::user_page page;
+    ASSERT_TRUE(page.ready());
+
+    auto* settings = page.at<terminal::termios>(0);
+    {
+        test_helpers::user_space_scope scope(page.ctx);
+        EXPECT_EQ(resource::ioctl(task, hs, terminal::TCGETS, page.addr), resource::OK);
+        EXPECT_EQ(settings->c_lflag, terminal::ICANON | terminal::ECHO | terminal::ISIG);
+
+        *settings = {};
+        EXPECT_EQ(resource::ioctl(task, hs, terminal::TCSETS, page.addr), resource::OK);
+
+        string::memset(settings, 0xA5, sizeof(*settings));
+        EXPECT_EQ(resource::ioctl(task, hs, terminal::TCGETS, page.addr), resource::OK);
+    }
+
+    terminal::termios expected = {};
+    EXPECT_EQ(string::memcmp(settings, &expected, sizeof(expected)), 0);
+
+    // Ctrl C reaches the slave as a byte
+    ASSERT_EQ(resource::write(task, hm, "\x03", 1), static_cast<ssize_t>(1));
+    char buf[4] = {};
+    ASSERT_EQ(resource::read(task, hs, buf, sizeof(buf)), static_cast<ssize_t>(1));
+    EXPECT_EQ(buf[0], '\x03');
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+// Sends the termios with these local flags to the pty's slave, as TCSETS from a program does
+static int32_t set_slave_lflag(sched::task* task, resource::handle_t slave, test_helpers::user_page& page,
+                               uint32_t lflag) {
+    auto* settings = page.at<terminal::termios>(0);
+    *settings = {};
+    settings->c_lflag = lflag;
+
+    test_helpers::user_space_scope scope(page.ctx);
+
+    return resource::ioctl(task, slave, terminal::TCSETS, page.addr);
+}
+
+TEST(pty_test, tcsets_without_echo_stops_the_cooked_echo_until_echo_is_set_again) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    resource::set_status_flags(master, fs::O_NONBLOCK);
+    resource::set_status_flags(slave, fs::O_NONBLOCK);
+
+    test_helpers::user_page page;
+    ASSERT_TRUE(page.ready());
+
+    // With ECHO clear the line still reaches the slave whole, and nothing comes back to the master
+    EXPECT_EQ(set_slave_lflag(task, hs, page, terminal::ICANON | terminal::ISIG), resource::OK);
+    EXPECT_EQ(resource::write(task, hm, "pw\r", 3), static_cast<ssize_t>(3));
+
+    char line[8] = {};
+    EXPECT_EQ(resource::read(task, hs, line, sizeof(line)), static_cast<ssize_t>(3));
+    EXPECT_EQ(string::memcmp(line, "pw\n", 3), 0);
+
+    char echo_buf[8] = {};
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(resource::ERR_AGAIN));
+
+    EXPECT_EQ(set_slave_lflag(task, hs, page, terminal::ICANON | terminal::ECHO | terminal::ISIG), resource::OK);
+    EXPECT_EQ(resource::write(task, hm, "ok\r", 3), static_cast<ssize_t>(3));
+    EXPECT_EQ(resource::read(task, hm, echo_buf, sizeof(echo_buf)), static_cast<ssize_t>(4));
+    EXPECT_EQ(string::memcmp(echo_buf, "ok\r\n", 4), 0);
 
     EXPECT_EQ(resource::close(task, hm), resource::OK);
     EXPECT_EQ(resource::close(task, hs), resource::OK);

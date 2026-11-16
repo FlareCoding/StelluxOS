@@ -24,6 +24,7 @@ constexpr size_t LD_RUBOUT_BYTES_PER_COLUMN = 3;
 void ld_init(line_discipline* ld) {
     ld->mode = 0;
     ld->isig = 1;
+    ld->echo = 1;
     ld->line_len = 0;
     ld->prev_char = 0;
     for (ring_buffer_mark& mark : ld->eof_marks) {
@@ -169,6 +170,10 @@ __PRIVILEGED_CODE static void send_eof(line_discipline* ld, ring_buffer* sink) {
 static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
                              const echo_target* echo, const signal_target* sig,
                              char c, bool hold_lock, sync::irq_state& irq) {
+    if (!ld->echo) {
+        echo = nullptr;
+    }
+
     uint32_t signum = ld->isig ? signal_for_char(c) : 0;
     if (signum) {
         // The byte becomes a signal instead of input, and the pending
@@ -354,6 +359,21 @@ __PRIVILEGED_CODE ssize_t ld_read(line_discipline* ld, ring_buffer* sink,
     }
 }
 
+// One critical section for all three, so no input byte meets part of the new settings without the rest
+static void set_mode_isig_and_echo(line_discipline* ld, uint32_t new_mode, bool intercepts_signals, bool echoes) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
+        if (ld->mode != new_mode) {
+            ld->line_len = 0;
+            ld->mode = new_mode;
+        }
+
+        ld->isig = intercepts_signals ? 1u : 0u;
+        ld->echo = echoes ? 1u : 0u;
+        sync::spin_unlock_irqrestore(ld->lock, irq);
+    });
+}
+
 int32_t ld_set_mode(line_discipline* ld, uint32_t cmd) {
     uint32_t new_mode;
     if (cmd == STLX_TCSETS_RAW) {
@@ -364,27 +384,40 @@ int32_t ld_set_mode(line_discipline* ld, uint32_t cmd) {
         return ERR;
     }
 
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
-        if (ld->mode != new_mode) {
-            ld->line_len = 0;
-            ld->mode = new_mode;
-        }
-        // The shortcuts pair ISIG with the mode, raw callers expect
-        // control bytes verbatim (cfmakeraw clears ISIG the same way)
-        ld->isig = (new_mode == LD_MODE_RAW) ? 0u : 1u;
-        sync::spin_unlock_irqrestore(ld->lock, irq);
-    });
+    // The shortcuts pair ISIG with the mode, raw callers expect
+    // control bytes verbatim (cfmakeraw clears ISIG the same way)
+    set_mode_isig_and_echo(ld, new_mode, new_mode != LD_MODE_RAW, true);
 
     return OK;
 }
 
-void ld_set_isig(line_discipline* ld, bool on) {
+termios ld_get_termios(line_discipline* ld) {
+    bool is_raw = false;
+    bool intercepts_signals = false;
+    bool echoes = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ld->lock);
-        ld->isig = on ? 1u : 0u;
+        is_raw = ld->mode == LD_MODE_RAW;
+        intercepts_signals = ld->isig != 0;
+        echoes = ld->echo != 0;
         sync::spin_unlock_irqrestore(ld->lock, irq);
     });
+
+    termios settings = {};
+    if (!is_raw) {
+        settings.c_lflag = echoes ? ICANON | ECHO : ICANON;
+    }
+
+    if (intercepts_signals) {
+        settings.c_lflag |= ISIG;
+    }
+
+    return settings;
+}
+
+void ld_set_termios(line_discipline* ld, const termios& settings) {
+    uint32_t new_mode = (settings.c_lflag & ICANON) ? 0 : LD_MODE_RAW;
+    set_mode_isig_and_echo(ld, new_mode, (settings.c_lflag & ISIG) != 0, (settings.c_lflag & ECHO) != 0);
 }
 
 } // namespace terminal

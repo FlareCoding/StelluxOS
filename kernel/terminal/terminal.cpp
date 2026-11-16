@@ -1,6 +1,7 @@
 #include "terminal/terminal.h"
 #include "terminal/console_node.h"
 #include "terminal/line_discipline.h"
+#include "terminal/tty.h"
 #include "common/ring_buffer.h"
 #include "arch/arch_uart.h"
 #include "drivers/serial/uart/ns16550.h"
@@ -38,6 +39,7 @@ constexpr uint16_t COM1_LEGACY_PORT = 0x3F8;
 __PRIVILEGED_BSS static struct {
     ring_buffer* input_rb;
     line_discipline ld;
+    winsize window_size; // what TIOCSWINSZ last stored, 0 by 0 before any
     sync::atomic<uint32_t> fg_group; // foreground process group, 0 = none
     serial::uart::device* uart; // carries the kernel log and /dev/console, nullptr until claimed
 } g_console;
@@ -215,43 +217,100 @@ int32_t set_mode(uint32_t cmd) {
     return ld_set_mode(&g_console.ld, cmd);
 }
 
+static int32_t get_termios(uint64_t arg) {
+    termios settings = ld_get_termios(&g_console.ld);
+
+    return mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &settings, sizeof(settings)) == mm::uaccess::OK
+        ? OK : fs::ERR_INVAL;
+}
+
+static int32_t set_termios(uint64_t arg) {
+    termios settings = {};
+    if (mm::uaccess::copy_from_user(
+            &settings, reinterpret_cast<const void*>(arg), sizeof(settings)) != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    ld_set_termios(&g_console.ld, settings);
+
+    return OK;
+}
+
+static int32_t get_window_size(uint64_t arg) {
+    winsize size = {};
+    RUN_ELEVATED({
+        size = g_console.window_size;
+    });
+
+    return mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &size, sizeof(size)) == mm::uaccess::OK
+        ? OK : fs::ERR_INVAL;
+}
+
+static int32_t set_window_size(uint64_t arg) {
+    winsize size = {};
+    if (mm::uaccess::copy_from_user(
+            &size, reinterpret_cast<const void*>(arg), sizeof(size)) != mm::uaccess::OK) {
+        return fs::ERR_INVAL;
+    }
+
+    RUN_ELEVATED({
+        g_console.window_size = size;
+    });
+
+    return OK;
+}
+
+static int32_t get_foreground_group(uint64_t arg) {
+    int32_t g = 0;
+    RUN_ELEVATED({
+        g = static_cast<int32_t>(g_console.fg_group.load_acquire());
+    });
+
+    return mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
+        ? OK : fs::ERR_INVAL;
+}
+
+static int32_t set_foreground_group(uint64_t arg) {
+    int32_t g = 0;
+    if (mm::uaccess::copy_from_user(
+            &g, reinterpret_cast<const void*>(arg), sizeof(g)) != mm::uaccess::OK
+        || g < 0) {
+        return fs::ERR_INVAL;
+    }
+
+    int32_t result = OK;
+    RUN_ELEVATED({
+        // POSIX requires an existing process group, 0 clears the foreground
+        if (g > 0 && signals::send_to_group_id(
+                static_cast<uint32_t>(g), 0) != signals::OK) {
+            result = fs::ERR_INVAL;
+        } else {
+            g_console.fg_group.store_release(static_cast<uint32_t>(g));
+        }
+    });
+
+    return result;
+}
+
 int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
     // Failures use fs error codes: this sits on the /dev/console node
     // path, where the terminal ERR value would read as fs::ERR_NOENT
-    if (cmd == TIOCGPGRP) {
-        int32_t g = 0;
-        RUN_ELEVATED({
-            g = static_cast<int32_t>(g_console.fg_group.load_acquire());
-        });
-
-        return mm::uaccess::copy_to_user(
-            reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
-            ? OK : fs::ERR_INVAL;
+    switch (cmd) {
+        case TCGETS:             return get_termios(arg);
+        case TCSETS:
+        case TCSETSW:
+        case TCSETSF:            return set_termios(arg);
+        case TIOCGWINSZ:         return get_window_size(arg);
+        case TIOCSWINSZ:         return set_window_size(arg);
+        case TIOCGPGRP:          return get_foreground_group(arg);
+        case TIOCSPGRP:          return set_foreground_group(arg);
+        case STLX_TCSETS_RAW:
+        case STLX_TCSETS_COOKED: return set_mode(cmd);
+        default:                 return fs::ERR_NOSYS;
     }
-
-    if (cmd == TIOCSPGRP) {
-        int32_t g = 0;
-        if (mm::uaccess::copy_from_user(
-                &g, reinterpret_cast<const void*>(arg), sizeof(g)) != mm::uaccess::OK
-            || g < 0) {
-            return fs::ERR_INVAL;
-        }
-
-        int32_t result = OK;
-        RUN_ELEVATED({
-            // POSIX requires an existing process group, 0 clears the foreground
-            if (g > 0 && signals::send_to_group_id(
-                    static_cast<uint32_t>(g), 0) != signals::OK) {
-                result = fs::ERR_INVAL;
-            } else {
-                g_console.fg_group.store_release(static_cast<uint32_t>(g));
-            }
-        });
-
-        return result;
-    }
-
-    return set_mode(cmd);
 }
 
 } // namespace terminal

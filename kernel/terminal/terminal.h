@@ -16,10 +16,6 @@ constexpr int32_t ERR = -1;
 constexpr uint32_t STLX_TCSETS_RAW    = 0x7301;
 constexpr uint32_t STLX_TCSETS_COOKED = 0x7302;
 
-// Linux tty ioctls for the terminal foreground process group
-constexpr uint32_t TIOCGPGRP = 0x540F;
-constexpr uint32_t TIOCSPGRP = 0x5410;
-
 /**
  * @brief Claims the UART built into the platform for the kernel log and
  * /dev/console. Must be called after boot_services::init() and before anything
@@ -92,10 +88,14 @@ __PRIVILEGED_CODE ssize_t console_read(uint8_t* buf, size_t len, bool nonblock);
 int32_t set_mode(uint32_t cmd);
 
 /**
- * @brief Console terminal ioctl handling: the foreground process group
- * ioctls plus the mode-switch commands set_mode accepts.
- * @return OK on success, fs::ERR_INVAL on a bad foreground argument,
- * ERR on an unsupported cmd.
+ * @brief Console terminal ioctl handling: the termios, window size and
+ * foreground process group requests in tty.h, plus the mode-switch
+ * commands set_mode accepts. The window size reads 0 by 0, meaning
+ * unknown, until a program sets it. TCSETSF applies settings as TCSETS
+ * does and keeps input no program has read.
+ * @return OK on success, fs::ERR_INVAL for an argument the kernel cannot
+ * read or write or a negative or missing foreground group, fs::ERR_NOSYS
+ * for any other cmd.
  */
 int32_t console_ioctl(uint32_t cmd, uint64_t arg);
 

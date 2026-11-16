@@ -9,28 +9,9 @@
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
 #include "terminal/terminal.h"
+#include "terminal/tty.h"
 
 namespace pty {
-
-constexpr uint32_t TCGETS      = 0x5401;
-constexpr uint32_t TCSETS      = 0x5402;
-constexpr uint32_t TCSETSW     = 0x5403;
-constexpr uint32_t TCSETSF     = 0x5404;
-constexpr uint32_t TIOCGWINSZ  = 0x5413;
-constexpr uint32_t TIOCSWINSZ  = 0x5414;
-
-constexpr uint32_t LINUX_ISIG   = 0x0001;
-constexpr uint32_t LINUX_ECHO   = 0x0008;
-constexpr uint32_t LINUX_ICANON = 0x0002;
-
-struct linux_termios {
-    uint32_t c_iflag;
-    uint32_t c_oflag;
-    uint32_t c_cflag;
-    uint32_t c_lflag;
-    uint8_t  c_line;
-    uint8_t  c_cc[19];
-};
 
 __PRIVILEGED_BSS static sync::atomic<uint32_t> g_next_pty_id;
 
@@ -252,14 +233,7 @@ static void pty_slave_close(resource::resource_object* obj) {
 }
 
 static int32_t do_tcgets(pty_channel* chan, uint64_t arg) {
-    linux_termios t = {};
-
-    if (chan->m_ld.mode != terminal::LD_MODE_RAW) {
-        t.c_lflag = LINUX_ICANON | LINUX_ECHO;
-    }
-    if (chan->m_ld.isig) {
-        t.c_lflag |= LINUX_ISIG;
-    }
+    terminal::termios t = terminal::ld_get_termios(&chan->m_ld);
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(arg), &t, sizeof(t));
@@ -268,7 +242,7 @@ static int32_t do_tcgets(pty_channel* chan, uint64_t arg) {
 }
 
 static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
-    linux_termios t = {};
+    terminal::termios t = {};
     int32_t rc = mm::uaccess::copy_from_user(
         &t, reinterpret_cast<const void*>(arg), sizeof(t));
     
@@ -276,13 +250,8 @@ static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
         return resource::ERR_INVAL;
     }
 
-    uint32_t mode = (t.c_lflag & LINUX_ICANON)
-        ? terminal::STLX_TCSETS_COOKED
-        : terminal::STLX_TCSETS_RAW;
+    terminal::ld_set_termios(&chan->m_ld, t);
 
-    // The mode shortcut pairs ISIG with it, the termios bit then decides
-    terminal::ld_set_mode(&chan->m_ld, mode);
-    terminal::ld_set_isig(&chan->m_ld, (t.c_lflag & LINUX_ISIG) != 0);
     return resource::OK;
 }
 
@@ -321,7 +290,7 @@ static int32_t do_tiocgwinsz(pty_channel* chan, uint64_t arg) {
 }
 
 static int32_t do_tiocswinsz(pty_channel* chan, uint64_t arg) {
-    pty_winsize w = {};
+    terminal::winsize w = {};
     int32_t rc = mm::uaccess::copy_from_user(
         &w, reinterpret_cast<const void*>(arg), sizeof(w));
     if (rc != mm::uaccess::OK) {
@@ -334,12 +303,12 @@ static int32_t do_tiocswinsz(pty_channel* chan, uint64_t arg) {
 
 static int32_t pty_termios_ioctl(pty_channel* chan, uint32_t cmd, uint64_t arg) {
     switch (cmd) {
-        case TCGETS:                       return do_tcgets(chan, arg);
-        case TCSETS:
-        case TCSETSW:
-        case TCSETSF:                      return do_tcsets(chan, arg);
-        case TIOCGWINSZ:                   return do_tiocgwinsz(chan, arg);
-        case TIOCSWINSZ:                   return do_tiocswinsz(chan, arg);
+        case terminal::TCGETS:             return do_tcgets(chan, arg);
+        case terminal::TCSETS:
+        case terminal::TCSETSW:
+        case terminal::TCSETSF:            return do_tcsets(chan, arg);
+        case terminal::TIOCGWINSZ:         return do_tiocgwinsz(chan, arg);
+        case terminal::TIOCSWINSZ:         return do_tiocswinsz(chan, arg);
         case terminal::TIOCGPGRP:          return do_tiocgpgrp(chan, arg);
         case terminal::TIOCSPGRP:          return do_tiocspgrp(chan, arg);
         case terminal::STLX_TCSETS_RAW:

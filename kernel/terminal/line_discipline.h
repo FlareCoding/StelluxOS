@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "common/ring_buffer.h"
 #include "sync/spinlock.h"
+#include "terminal/tty.h"
 
 namespace terminal {
 
@@ -29,6 +30,7 @@ struct signal_target {
 struct line_discipline {
     uint32_t mode;
     uint32_t isig; // 1 = intercept INTR/QUIT/SUSP control bytes
+    uint32_t echo; // 1 = echo cooked input
     char line_buf[LD_LINE_BUF_MAX + 1];
     size_t line_len;
     char prev_char;
@@ -39,7 +41,8 @@ struct line_discipline {
 };
 
 /**
- * @brief Initialize a line discipline to cooked mode with ISIG enabled.
+ * @brief Initialize a line discipline to cooked mode with ISIG and echo
+ * enabled.
  */
 void ld_init(line_discipline* ld);
 
@@ -48,7 +51,7 @@ void ld_init(line_discipline* ld);
  * Acquires and releases ld->lock per call. Safe from ISR context.
  * @param ld Line discipline state.
  * @param sink Ring buffer where processed input is delivered.
- * @param echo Where echo bytes are sent (cooked mode only).
+ * @param echo Where echo bytes are sent (cooked mode while ECHO is set).
  * @param sig Where intercepted control bytes deliver signals (ISIG).
  * @param c The input byte.
  * @note Privilege: **required**
@@ -95,18 +98,30 @@ __PRIVILEGED_CODE ssize_t ld_read(line_discipline* ld, ring_buffer* sink,
 /**
  * @brief Switch between raw and cooked mode. Resets line buffer.
  * ISIG follows the shortcut: raw disables it, cooked enables it, and a
- * later TCSETS can set it independently. Elevates internally for the
- * spinlock critical section.
+ * later TCSETS can set it independently. Both shortcuts turn the echo of
+ * cooked input on. Elevates internally for the spinlock critical section.
  * @param cmd STLX_TCSETS_RAW or STLX_TCSETS_COOKED.
  * @return OK on success, ERR on invalid cmd.
  */
 int32_t ld_set_mode(line_discipline* ld, uint32_t cmd);
 
 /**
- * @brief Enable or disable signal-character interception (termios ISIG).
- * Elevates internally for the spinlock critical section.
+ * @brief The termios flags describing the line discipline: ICANON in
+ * cooked mode, ECHO while cooked input is echoed, ISIG while signal
+ * characters are intercepted, and 0 in every other field. Elevates
+ * internally for the spinlock critical section.
  */
-void ld_set_isig(line_discipline* ld, bool on);
+termios ld_get_termios(line_discipline* ld);
+
+/**
+ * @brief Apply the termios flags the line discipline implements in one
+ * critical section: cooked mode while ICANON is set and raw mode
+ * otherwise, the echo of cooked input while ECHO is set, since raw mode
+ * never echoes, and signal characters intercepted while ISIG is set.
+ * Every other field is ignored. Elevates internally for the spinlock
+ * critical section.
+ */
+void ld_set_termios(line_discipline* ld, const termios& settings);
 
 } // namespace terminal
 
