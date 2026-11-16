@@ -14,8 +14,9 @@ constexpr size_t LOCATION_TEXT_BYTES = (MAX_PORT_PATH_LENGTH + 1) * 4;
  * `dev` and logs them. They are read in the first language the device lists,
  * else US English, and a device whose language table cannot be read is asked
  * nothing more. A string is empty when the device names none, its read fails
- * or its reply holds no text. Blocks on each control transfer it sends, so the
- * caller must be a task that may sleep and must hold no spinlock.
+ * or its reply holds no text, and a serial number the first read misses is
+ * read once more. Blocks on each control transfer it sends, so the caller must
+ * be a task that may sleep and must hold no spinlock.
  */
 void read_device_strings(device* dev, const usb_device_descriptor& desc);
 

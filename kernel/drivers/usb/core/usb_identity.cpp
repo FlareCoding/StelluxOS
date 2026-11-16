@@ -69,6 +69,14 @@ static void read_string(device* dev, uint8_t index, uint16_t language, char (&ou
     decode_string(descriptor, length, out, sizeof(out));
 }
 
+// Serial ports are named after their board's serial number, so one the first read misses is read once more
+static void read_serial_number(device* dev, uint8_t index, uint16_t language) {
+    read_string(dev, index, language, dev->serial_number);
+    if (index != 0 && dev->serial_number[0] == '\0') {
+        read_string(dev, index, language, dev->serial_number);
+    }
+}
+
 void read_device_strings(device* dev, const usb_device_descriptor& desc) {
     dev->manufacturer[0] = '\0';
     dev->product[0] = '\0';
@@ -79,7 +87,13 @@ void read_device_strings(device* dev, const usb_device_descriptor& desc) {
     if (names_a_string && read_first_language(dev, &language)) {
         read_string(dev, desc.iManufacturer, language, dev->manufacturer);
         read_string(dev, desc.iProduct, language, dev->product);
-        read_string(dev, desc.iSerialNumber, language, dev->serial_number);
+        read_serial_number(dev, desc.iSerialNumber, language);
+    }
+
+    if (desc.iSerialNumber != 0 && dev->serial_number[0] == '\0') {
+        char location[LOCATION_TEXT_BYTES];
+        format_location(*dev, location);
+        log::warn("usb: %04x:%04x at location %s names a serial number it did not give", dev->vid, dev->pid, location);
     }
 
     log::info("usb: %04x:%04x is \"%s\" by \"%s\", release %x.%02x, serial number \"%s\"",

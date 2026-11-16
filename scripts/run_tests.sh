@@ -22,14 +22,32 @@ fi
 SERIAL_LOG="$(mktemp)"
 QEMU_PID=""
 
+# The serial port tests drive QEMU's FTDI chip through this socket, by way of serial_test_host.py
+FTDI_DIR="$(mktemp -d)"
+FTDI_SOCKET="$FTDI_DIR/ftdi.sock"
+FTDI_HOST_PID=""
+
 cleanup() {
     if [[ -n "$QEMU_PID" ]]; then
         kill "$QEMU_PID" 2>/dev/null || true
         wait "$QEMU_PID" 2>/dev/null || true
     fi
+    if [[ -n "$FTDI_HOST_PID" ]]; then
+        kill "$FTDI_HOST_PID" 2>/dev/null || true
+        wait "$FTDI_HOST_PID" 2>/dev/null || true
+    fi
     rm -f "$SERIAL_LOG"
+    rm -rf "$FTDI_DIR"
 }
 trap cleanup EXIT
+
+# QEMU plugs the chip in only while the host script holds the socket, and its serial number names the port
+FTDI_DEVICE=(-chardev socket,id=ftdi,path="$FTDI_SOCKET",server=on,wait=off
+             -device usb-serial,chardev=ftdi,serial=FT0001)
+
+# The drivers tier binds a driver to every PCI device it can, so the aarch64 machine carries no virtio-net card,
+# while x86_64 keeps q35's e1000e, which has no driver
+NO_NETWORK_CARD=(-nic none)
 
 IMAGE="$ROOT_DIR/images/stellux-${ARCH}.img"
 BUILD_DIR="$ROOT_DIR/build"
@@ -91,6 +109,7 @@ if [[ "$ARCH" == "x86_64" ]]; then
         -drive format=raw,file="$IMAGE" \
         -device qemu-xhci \
         -device usb-kbd \
+        "${FTDI_DEVICE[@]}" \
         -serial file:"$SERIAL_LOG" \
         -display none \
         -no-reboot \
@@ -118,6 +137,8 @@ elif [[ "$ARCH" == "aarch64" ]]; then
         -drive format=raw,file="$IMAGE" \
         -device qemu-xhci \
         -device usb-kbd \
+        "${FTDI_DEVICE[@]}" \
+        "${NO_NETWORK_CARD[@]}" \
         -serial file:"$SERIAL_LOG" \
         -display none \
         -no-reboot \
@@ -127,6 +148,9 @@ else
     echo "Error: Unknown ARCH=$ARCH"
     exit 1
 fi
+
+python3 "$SCRIPT_DIR/serial_test_host.py" "$SERIAL_LOG" "$FTDI_SOCKET" &
+FTDI_HOST_PID=$!
 
 SENTINEL_LINE=""
 SENTINEL_LINE=$(timeout "$TIMEOUT" bash -c "
