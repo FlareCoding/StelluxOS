@@ -67,6 +67,18 @@ __PRIVILEGED_CODE fs::node* ensure_dir(const char* name);
  */
 __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node);
 
+/**
+ * @brief Remove a char_device node from its devfs directory, without blocking.
+ * Lookups and listings stop finding the node at once, while open files keep
+ * it allocated and keep calling it. The caller must hold its own reference to
+ * `dev_node` and release it after the call. The node's driver must keep what
+ * the node's methods use until the node's destructor runs, on whichever task
+ * drops the last reference.
+ * @return OK, or ERR when `dev_node` is not a char_device in a devfs directory.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t remove_char_device(fs::node* dev_node);
+
 // Text append helpers for generators. They write only what fits below cap but
 // return the position after the whole text, so a generator returns its full length.
 size_t append_str(char* buf, size_t cap, size_t pos, const char* s);
