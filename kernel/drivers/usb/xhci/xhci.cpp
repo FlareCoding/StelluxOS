@@ -205,6 +205,7 @@ void xhci_hcd::run() {
 
         _process_pending_port_changes();
         _process_hub_events();
+        _stop_cancelled_transfers();
 
         // Hub event processing (and the device enumeration / class-driver
         // probing it triggers) can call _process_event_ring() internally,
@@ -1915,6 +1916,7 @@ void xhci_hcd::_kick_async_request_queue(xhci_device* device,
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             if (!state.disconnecting &&
+                !state.stopping &&
                 !state.interrupt_in_stream.active &&
                 !state.active_request &&
                 state.pending_head) {
@@ -1973,22 +1975,9 @@ void xhci_hcd::_complete_async_request(xhci_device* device,
         return;
     }
 
-    if (cancelled) {
-        _finish_request(*request, usb::transfer_status::cancelled, 0);
-        _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
-        RUN_ELEVATED({
-            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-            if (!state.active_request && !state.pending_head &&
-                !state.interrupt_in_stream.active &&
-                !state.interrupt_in_stream.closing &&
-                !state.interrupt_in_stream.payloads &&
-                !state.interrupt_in_stream.payload_storage) {
-                state.async_enabled = false;
-            }
-            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
-        });
-        return;
-    }
+    bool was_stopped = event->completion_code == XHCI_TRB_COMPLETION_CODE_STOPPED ||
+                       event->completion_code == XHCI_TRB_COMPLETION_CODE_STOPPED_LENGTH_INVALID ||
+                       event->completion_code == XHCI_TRB_COMPLETION_CODE_STOPPED_SHORT_PACKET;
 
     uint32_t residual = event->transfer_length;
     uint32_t actual = residual <= requested ? (requested - residual) : 0;
@@ -2005,13 +1994,23 @@ void xhci_hcd::_complete_async_request(xhci_device* device,
     } else if (event->completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
         status = usb::transfer_status::stalled;
         actual = 0;
+    } else if (cancelled && was_stopped) {
+        status = usb::transfer_status::cancelled;
+
+        // A one-TRB request stopped with an invalid length moved no bytes, and the short packet stop code, which
+        // counts bytes rather than a residual, occurs only in a TD of several TRBs.
+        if (event->completion_code != XHCI_TRB_COMPLETION_CODE_STOPPED) {
+            actual = 0;
+        }
     } else {
         actual = 0;
     }
 
     if (ep->is_in() && request->buffer && request->requested_length > 0) {
         string::memset(request->buffer, 0, request->requested_length);
-        if ((status == usb::transfer_status::ok || status == usb::transfer_status::short_packet) &&
+        if ((status == usb::transfer_status::ok ||
+             status == usb::transfer_status::short_packet ||
+             status == usb::transfer_status::cancelled) &&
             actual > 0) {
             barrier::dma_read();
             string::memcpy(request->buffer, ep->dma_buffer(), actual);
@@ -2022,7 +2021,7 @@ void xhci_hcd::_complete_async_request(xhci_device* device,
     _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (!state.active_request && !state.pending_head &&
+        if (!state.active_request && !state.pending_head && !state.stopping &&
             !state.interrupt_in_stream.active &&
             !state.interrupt_in_stream.closing &&
             !state.interrupt_in_stream.payloads &&
@@ -2218,6 +2217,8 @@ void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
         state->pending_head = nullptr;
         state->pending_tail = nullptr;
         state->active_request_cancelled = false;
+
+        state->stopping = false;
         if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
             state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
             state->interrupt_in_stream.active = false;
@@ -2296,7 +2297,7 @@ int32_t xhci_hcd::usb_submit_transfer_async(xhci_device* device,
     bool start_now = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
-        if (state->disconnecting || state->interrupt_in_stream.active ||
+        if (state->disconnecting || state->stop_failed || state->interrupt_in_stream.active ||
             state->interrupt_in_stream.closing ||
             state->interrupt_in_stream.payloads ||
             state->interrupt_in_stream.payload_storage ||
@@ -2308,7 +2309,7 @@ int32_t xhci_hcd::usb_submit_transfer_async(xhci_device* device,
             request.status = usb::transfer_status::invalid;
             request.pending = true;
             request.next = nullptr;
-            if (!state->active_request) {
+            if (!state->active_request && !state->stopping) {
                 state->active_request = &request;
                 state->active_request_cancelled = false;
                 start_now = true;
@@ -2357,7 +2358,7 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
     usb::transfer_request* prev = nullptr;
     usb::transfer_request* cur = nullptr;
     bool queued = false;
-    bool active = false;
+    bool must_stop = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         cur = state->pending_head;
@@ -2379,9 +2380,10 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
             cur = cur->next;
         }
 
-        if (!queued && state->active_request == &request) {
+        if (!queued && state->active_request == &request && !state->disconnecting) {
             state->active_request_cancelled = true;
-            active = true;
+            state->stopping = true;
+            must_stop = true;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
@@ -2399,10 +2401,112 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
             }
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
         });
-    } else if (active) {
-        log::warn("xhci: cancel requested for active transfer on EP%u, will complete when hardware retires it",
-                  ep->endpoint_num());
+    } else if (must_stop) {
+        m_endpoint_stop_pending.store_release(true);
+        RUN_ELEVATED(notify_event());
     }
+}
+
+// Stops run on the HCD task, since `_send_command` drains the event ring on whatever task calls it. A command's wait
+// clears any event marked pending meanwhile, so the scan repeats while a cancel is pending and then marks one itself.
+void xhci_hcd::_stop_cancelled_transfers() {
+    bool has_sent_commands = false;
+    while (m_endpoint_stop_pending.exchange_acquire(false)) {
+        for (uint16_t slot_id = 1; slot_id <= m_hc_params.max_device_slots; slot_id++) {
+            xhci_device* device = m_slot_devices[slot_id];
+            if (!device) {
+                continue;
+            }
+
+            for (uint8_t dci = 2; dci <= xhci_device::MAX_ENDPOINTS; dci++) {
+                xhci_endpoint* ep = device->endpoint(dci);
+                if (ep && ep->async_state() && ep->async_state()->stopping) {
+                    has_sent_commands |= _stop_cancelled_transfer(device, ep, *ep->async_state());
+                }
+            }
+        }
+    }
+
+    if (has_sent_commands) {
+        RUN_ELEVATED(notify_event());
+    }
+}
+
+// The controller posts any transfer event for the stopped request before the Stop Endpoint completion, and may post
+// none. A doorbell restarts a stopped endpoint at its dequeue pointer, so the pointer moves past the request.
+bool xhci_hcd::_stop_cancelled_transfer(xhci_device* device,
+                                        xhci_endpoint* ep,
+                                        xhci::endpoint_async_state& state) {
+    bool is_on_ring = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        is_on_ring = state.active_request && state.active_request_cancelled;
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    bool is_pointer_moved = !is_on_ring;
+    if (is_on_ring && _stop_endpoint(device, ep->dci()) == 0) {
+        xhci_transfer_ring* ring = ep->ring();
+        is_pointer_moved =
+            _set_tr_dequeue_ptr(device, ep->dci(), ring->get_enqueue_phys(), ring->get_cycle_bit()) == 0;
+    }
+
+    if (!is_pointer_moved) {
+        log::error("xhci: could not stop EP 0x%02x of slot %u for a cancel, it takes no transfer until unplug",
+                   ep->endpoint_addr(), device->slot_id());
+    }
+
+    usb::transfer_request* unfinished = nullptr;
+    usb::transfer_request* pending = nullptr;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.active_request && state.active_request_cancelled) {
+            unfinished = state.active_request;
+            state.active_request = nullptr;
+            state.active_request_cancelled = false;
+        }
+
+        // A request the controller would not stop may still run, so the requests queued behind it fail with it
+        if (!is_pointer_moved) {
+            pending = state.pending_head;
+            state.pending_head = nullptr;
+            state.pending_tail = nullptr;
+            state.stop_failed = true;
+        }
+
+        state.stopping = false;
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    usb::transfer_status status = is_pointer_moved ? usb::transfer_status::cancelled : usb::transfer_status::io_error;
+    if (unfinished) {
+        _finish_request(*unfinished, status, 0);
+    }
+
+    while (pending) {
+        usb::transfer_request* next = pending->next;
+        _finish_request(*pending, usb::transfer_status::io_error, 0);
+        pending = next;
+    }
+
+    if (is_pointer_moved) {
+        _kick_async_request_queue(device, ep, state);
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (!state.active_request && !state.pending_head &&
+            !state.interrupt_in_stream.active &&
+            !state.interrupt_in_stream.closing &&
+            !state.interrupt_in_stream.payloads &&
+            !state.interrupt_in_stream.payload_storage) {
+            state.async_enabled = false;
+        }
+
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    return is_on_ring;
 }
 
 int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,

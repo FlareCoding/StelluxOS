@@ -6,6 +6,7 @@
 #include "drivers/usb/xhci/xhci_regs.h"
 #include "drivers/usb/xhci/xhci_rings.h"
 #include "drivers/usb/xhci/xhci_device.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
@@ -162,6 +163,11 @@ private:
     // calls when _process_event_ring is invoked from _send_command.
     uint32_t m_psc_pending_bitmap = 0;
 
+    // Set when a cancel asks the HCD task to stop an endpoint
+    sync::atomic<bool> m_endpoint_stop_pending{false};
+
+    friend struct xhci_hcd_test_access;
+
 private:
     void _parse_extended_capabilities();
     void _request_bios_handoff(volatile uint32_t* usblegsup);
@@ -234,6 +240,10 @@ private:
                                        xhci::xhci_endpoint* ep,
                                        xhci::endpoint_async_state& state,
                                        const xhci::xhci_transfer_completion_trb_t* event);
+    void _stop_cancelled_transfers();
+    bool _stop_cancelled_transfer(xhci::xhci_device* device,
+                                  xhci::xhci_endpoint* ep,
+                                  xhci::endpoint_async_state& state);
     void _mark_async_endpoints_for_device_disconnecting(xhci::xhci_device* device);
     void _clear_async_endpoint_state(xhci::xhci_device* device,
                                      xhci::xhci_endpoint* ep,

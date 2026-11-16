@@ -39,6 +39,13 @@ struct endpoint_async_state {
     usb::transfer_request* pending_tail = nullptr;
     bool disconnecting = false;
     bool active_request_cancelled = false;
+
+    // Set from a cancel until the HCD task's stop ends, keeping new requests off the ring, and cleared only there
+    bool stopping = false;
+
+    // Set when a cancel's stop or dequeue move fails, since the ring may then still hold the cancelled request
+    bool stop_failed = false;
+
     interrupt_in_stream_state interrupt_in_stream = {};
 };
 
