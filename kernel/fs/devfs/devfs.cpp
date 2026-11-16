@@ -21,6 +21,18 @@ public:
         sync::irq_lock_guard guard(m_lock);
         attach_child(child);
     }
+
+    // False when `child` is not in this directory, as after a racing removal took it out
+    bool remove_child(fs::node* child) {
+        sync::irq_lock_guard guard(m_lock);
+        if (child->parent() != this) {
+            return false;
+        }
+
+        detach_child(child);
+
+        return true;
+    }
 };
 
 /* Built-in /dev/null: reads return EOF, writes are discarded. */
@@ -118,6 +130,21 @@ __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node) 
 
     auto* ddir = static_cast<devfs_dir_node*>(dir);
     ddir->add_child(dev_node);
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t remove_char_device(fs::node* dev_node) {
+    if (!dev_node || dev_node->type() != fs::node_type::char_device) {
+        return ERR;
+    }
+
+    // Only devfs holds char_device nodes, and devfs never frees a directory, so the parent is read without its lock
+    // and `remove_child` reads the parent again under that lock
+    auto* dir = static_cast<devfs_dir_node*>(dev_node->parent());
+    if (!dir || !dir->remove_child(dev_node)) {
+        return ERR;
+    }
+
     return OK;
 }
 
