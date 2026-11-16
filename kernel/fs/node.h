@@ -62,6 +62,7 @@ public:
     virtual int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr,
                          size_t length, uint32_t prot, uint32_t max_prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr);
+    // `POLL_HUP` or `POLL_ERR` must mean reads and writes return at once, since select counts either as ready for both
     virtual uint32_t poll(file* f, sync::poll_table* pt);
 
     // --- Lifecycle hooks (called on open/close) ---
