@@ -1,6 +1,7 @@
 #include "drivers/usb/core/usb_core.h"
 #include "drivers/usb/core/usb_driver.h"
 #include "drivers/usb/core/usb_identity.h"
+#include "drivers/usb/core/usb_registry.h"
 #include "drivers/usb/xhci/xhci.h"
 #include "drivers/usb/xhci/xhci_device.h"
 #include "drivers/usb/xhci/xhci_endpoint.h"
@@ -298,6 +299,8 @@ void device_configured(drivers::xhci_hcd* hcd,
             }
         }
     });
+
+    list_device(dev);
 }
 
 void device_disconnected(drivers::xhci_hcd*,
@@ -310,6 +313,9 @@ void device_disconnected(drivers::xhci_hcd*,
     if (!dev) {
         return;
     }
+
+    // Before anything below can free the device, and outside its lifetime lock, which the listing takes second
+    unlist_device(dev);
 
     usb::class_driver* taken_drivers[usb::MAX_INTERFACES] = {};
     RUN_ELEVATED({

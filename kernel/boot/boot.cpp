@@ -27,6 +27,7 @@
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
+#include "drivers/usb/core/usb_registry.h"
 #include "drivers/serial/serial.h"
 #include "gpu/gpu.h"
 #include "random/random.h"
@@ -121,6 +122,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (sysstat::init() != sysstat::OK) {
         log::warn("sysstat::init failed, /dev/sysinfo unavailable");
+    }
+
+    if (usb::core::init_registry() != usb::core::OK) {
+        log::warn("usb::core::init_registry failed, /dev/sysinfo/usb unavailable");
     }
 
     if (terminal::init() != terminal::OK) {

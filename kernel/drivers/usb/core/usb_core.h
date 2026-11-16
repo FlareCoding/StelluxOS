@@ -11,7 +11,8 @@ namespace usb::core {
 /**
  * Called by the HCD after a device is fully configured (endpoints created,
  * SET_CONFIGURATION sent). Builds a usb::device, matches interfaces against
- * registered class drivers, and spawns kernel tasks for bound drivers.
+ * registered class drivers, spawns kernel tasks for bound drivers, then lists
+ * the device in `/dev/sysinfo/usb`.
  */
 void device_configured(drivers::xhci_hcd* hcd,
                        drivers::xhci::xhci_device* xdev,
@@ -19,8 +20,8 @@ void device_configured(drivers::xhci_hcd* hcd,
 
 /**
  * Called by the HCD when a device is being torn down (disconnect or detach).
- * Calls each bound driver's `disconnect()` and marks the device pending
- * teardown. A driver whose `run()` has returned is destroyed here, before
+ * Takes the device out of `/dev/sysinfo/usb`, then calls each bound driver's
+ * `disconnect()` and marks the device pending teardown. A driver whose `run()` has returned is destroyed here, before
  * the HCD ends the device's transfers. Final release happens later once both
  * the HCD and the class-driver tasks have dropped their references.
  */
