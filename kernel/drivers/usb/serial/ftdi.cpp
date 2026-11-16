@@ -52,11 +52,7 @@ static constexpr uint16_t MODEM_CTRL_DTR = 1u << 0;
 static constexpr uint16_t MODEM_CTRL_RTS = 1u << 1;
 static constexpr uint16_t MODEM_CTRL_WRITE_BOTH = (1u << 8) | (1u << 9);
 
-// The modem status byte starting each packet, and GET_MODEM_STATUS's two bytes, the second holding the line status
-static constexpr uint8_t MODEM_STATUS_CTS = 1u << 4;
-static constexpr uint8_t MODEM_STATUS_DSR = 1u << 5;
-static constexpr uint8_t MODEM_STATUS_RI = 1u << 6;
-static constexpr uint8_t MODEM_STATUS_CD = 1u << 7;
+// GET_MODEM_STATUS's two bytes, the second holding the line status
 static constexpr uint8_t LINE_STATUS_TRANSMITTER_EMPTY = 1u << 6;
 static constexpr uint16_t MODEM_STATUS_REPLY_BYTES = 2;
 
@@ -270,25 +266,7 @@ int32_t ftdi::set_modem_outputs(uint32_t lines) {
 
 // The chip reports its modem inputs at the start of every packet, so they need no request
 int32_t ftdi::get_modem_inputs(uint32_t* lines) {
-    uint32_t status = m_modem_status.load_relaxed();
-    uint32_t inputs = 0;
-    if (status & MODEM_STATUS_CTS) {
-        inputs |= terminal::TIOCM_CTS;
-    }
-
-    if (status & MODEM_STATUS_DSR) {
-        inputs |= terminal::TIOCM_DSR;
-    }
-
-    if (status & MODEM_STATUS_RI) {
-        inputs |= terminal::TIOCM_RNG;
-    }
-
-    if (status & MODEM_STATUS_CD) {
-        inputs |= terminal::TIOCM_CAR;
-    }
-
-    *lines = inputs;
+    *lines = modem_inputs_from_status(static_cast<uint8_t>(m_modem_status.load_relaxed()));
     return ::serial::OK;
 }
 

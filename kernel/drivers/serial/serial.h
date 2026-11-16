@@ -81,7 +81,8 @@ public:
 
     /**
      * @brief Sets DTR and RTS to the TIOCM_DTR and TIOCM_RTS bits of `lines`,
-     * both in one chip request.
+     * both in one chip request. A chip that drives RTS itself for flow control
+     * by CTS may leave RTS alone.
      * @return OK, or ERR_IO when the chip request fails.
      */
     virtual int32_t set_modem_outputs(uint32_t lines) = 0;

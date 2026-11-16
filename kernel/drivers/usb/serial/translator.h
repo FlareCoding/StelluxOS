@@ -66,6 +66,9 @@ const endpoint* find_bulk_in(const interface& iface);
 // The first bulk OUT endpoint of `iface` with a packet size, or null when it has none
 const endpoint* find_bulk_out(const interface& iface);
 
+// The TIOCM bits of the CTS, DSR, RI and CD that several chips report in bits 4 to 7 of a modem status byte
+uint32_t modem_inputs_from_status(uint8_t status);
+
 } // namespace usb::serial
 
 #endif // STELLUX_DRIVERS_USB_SERIAL_TRANSLATOR_H
