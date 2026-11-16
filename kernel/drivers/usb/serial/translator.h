@@ -59,6 +59,9 @@ protected:
 // The first bulk IN endpoint of `iface` with a packet size, or null when it has none
 const endpoint* find_bulk_in(const interface& iface);
 
+// The first bulk OUT endpoint of `iface` with a packet size, or null when it has none
+const endpoint* find_bulk_out(const interface& iface);
+
 } // namespace usb::serial
 
 #endif // STELLUX_DRIVERS_USB_SERIAL_TRANSLATOR_H

@@ -3,6 +3,7 @@
 #include "clock/clock.h"
 #include "fs/fs.h"
 #include "fs/node.h"
+#include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
 #include "mm/uaccess.h"
@@ -18,6 +19,11 @@ namespace serial {
 static constexpr size_t READ_CHUNK_BYTES = 256;
 
 static constexpr uint64_t NS_PER_VTIME = 100000000;
+
+static constexpr uint64_t NS_PER_SECOND = 1000000000;
+
+// A wait for the send to end allows this beyond the time its bytes take at the line's speed
+static constexpr uint64_t SEND_DEADLINE_MARGIN_NS = NS_PER_SECOND;
 
 namespace {
 
@@ -51,6 +57,19 @@ public:
         }
 
         return m_port->read(ubuf, count, flags, true);
+    }
+
+    ssize_t write(fs::file*, const void* buf, size_t count, uint32_t flags) override {
+        return m_port->write(buf, count, flags, false);
+    }
+
+    // A port has no offsets to write at
+    ssize_t write_from_user(fs::file*, const void* ubuf, size_t count, int64_t offset, uint32_t flags) override {
+        if (offset >= 0) {
+            return fs::ERR_NOSYS;
+        }
+
+        return m_port->write(ubuf, count, flags, true);
     }
 
     uint32_t poll(fs::file*, sync::poll_table* pt) override {
@@ -92,6 +111,19 @@ __PRIVILEGED_CODE static bool copy_out(uint8_t* destination, const uint8_t* sour
     return mm::uaccess::copy_to_user(destination, source, len) == mm::uaccess::OK;
 }
 
+/**
+ * Copies from a program's buffer or from a kernel buffer, false when the program's buffer faults.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static bool copy_in(uint8_t* destination, const uint8_t* source, size_t len, bool is_user_buffer) {
+    if (!is_user_buffer) {
+        string::memcpy(destination, source, len);
+        return true;
+    }
+
+    return mm::uaccess::copy_from_user(destination, source, len) == mm::uaccess::OK;
+}
+
 __PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
     auto* p = heap::ualloc_new<port>();
     if (!p) {
@@ -113,7 +145,8 @@ __PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
     }
 
     p->m_queue = static_cast<uint8_t*>(heap::ualloc(RECEIVE_QUEUE_BYTES));
-    if (!p->m_queue) {
+    p->m_staging = static_cast<uint8_t*>(heap::ualloc(SEND_BYTES));
+    if (!p->m_queue || !p->m_staging) {
         heap::ufree_delete(p);
         return nullptr;
     }
@@ -129,11 +162,14 @@ __PRIVILEGED_CODE port* port::create(port_driver* driver, const identity& id) {
 
 port::port() {
     m_control_lock.init();
+    m_write_lock.init();
     m_read_wq.init();
+    m_send_wq.init();
 }
 
 port::~port() {
     heap::ufree(m_queue);
+    heap::ufree(m_staging);
     heap::ufree(m_strings);
 }
 
@@ -199,22 +235,43 @@ __PRIVILEGED_CODE int32_t port::open() {
     return rc;
 }
 
+// A close that is not the last leaves the count at once, so one of two files closing together is the last and waits.
+// The last stays counted through its wait for the send, so a file that opens meanwhile is not a first open
 __PRIVILEGED_CODE void port::close() {
-    sync::mutex_lock(m_control_lock);
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    bool may_be_last = m_open_files == 1;
+    if (!may_be_last) {
+        m_open_files--;
+    }
+
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    if (!may_be_last) {
+        return;
+    }
+
+    sync::mutex_lock(m_write_lock);
+    (void)wait_for_send_end(send_deadline());
+    release_write_lock();
+
+    sync::mutex_lock(m_control_lock);
+    irq = sync::spin_lock_irqsave(m_state_lock);
+    bool is_last = m_open_files == 1;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    if (is_last) {
+        cancel_started_send();
+        m_is_exclusive = false;
+    }
+
+    irq = sync::spin_lock_irqsave(m_state_lock);
     m_open_files--;
-    bool is_last = m_open_files == 0;
     if (is_last) {
         m_queue_head = 0;
         m_queued = 0;
     }
 
     sync::spin_unlock_irqrestore(m_state_lock, irq);
-
-    if (is_last) {
-        m_is_exclusive = false;
-    }
-
     sync::mutex_unlock(m_control_lock);
 }
 
@@ -230,13 +287,14 @@ __PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
     switch (cmd) {
         case terminal::TCGETS:     return copy_settings_out(arg, sizeof(terminal::termios));
         case terminal::TCGETS2:    return copy_settings_out(arg, sizeof(terminal::termios2));
-        case terminal::TCSETS:
-        case terminal::TCSETSW:    return apply_settings(arg, sizeof(terminal::termios), false);
-        case terminal::TCSETSF:    return apply_settings(arg, sizeof(terminal::termios), true);
-        case terminal::TCSETS2:
-        case terminal::TCSETSW2:   return apply_settings(arg, sizeof(terminal::termios2), false);
-        case terminal::TCSETSF2:   return apply_settings(arg, sizeof(terminal::termios2), true);
+        case terminal::TCSETS:     return apply_settings(arg, sizeof(terminal::termios), false, false);
+        case terminal::TCSETSW:    return apply_settings(arg, sizeof(terminal::termios), true, false);
+        case terminal::TCSETSF:    return apply_settings(arg, sizeof(terminal::termios), true, true);
+        case terminal::TCSETS2:    return apply_settings(arg, sizeof(terminal::termios2), false, false);
+        case terminal::TCSETSW2:   return apply_settings(arg, sizeof(terminal::termios2), true, false);
+        case terminal::TCSETSF2:   return apply_settings(arg, sizeof(terminal::termios2), true, true);
         case terminal::TCFLSH:     return flush(arg);
+        case terminal::TIOCOUTQ:   return copy_send_length_out(arg);
         case terminal::TIOCGWINSZ: return copy_window_size_out(arg);
         case terminal::TIOCSWINSZ: return take_window_size(arg);
         case terminal::TIOCEXCL:   return set_exclusive(true);
@@ -247,9 +305,11 @@ __PRIVILEGED_CODE int32_t port::request(uint32_t cmd, uint64_t arg) {
 }
 
 __PRIVILEGED_CODE void port::release_driver() {
+    sync::mutex_lock(m_write_lock);
     sync::mutex_lock(m_control_lock);
     m_driver = nullptr;
     sync::mutex_unlock(m_control_lock);
+    release_write_lock();
 }
 
 __PRIVILEGED_CODE bool port::is_gone() {
@@ -277,12 +337,22 @@ __PRIVILEGED_CODE int32_t port::copy_settings_out(uint64_t arg, size_t length) {
     return mm::uaccess::copy_to_user(destination, &settings, length) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
 }
 
-// Stores the settings only once the chip takes them, so TCGETS returns what the last applied TCSETS wrote
-__PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool drops_queued) {
+// Stores the settings only once the chip takes them, so TCGETS returns what the last applied TCSETS wrote. TCSETSW
+// and TCSETSF hold the write lock from their wait to the change, so no send starts in between
+__PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool waits_for_send, bool drops_queued) {
     terminal::termios2 written = {};
     const void* source = reinterpret_cast<const void*>(arg);
     if (mm::uaccess::copy_from_user(&written, source, length) != mm::uaccess::OK) {
         return fs::ERR_INVAL;
+    }
+
+    if (waits_for_send) {
+        sync::mutex_lock(m_write_lock);
+        int32_t rc = wait_for_send_end(send_deadline());
+        if (rc != fs::OK) {
+            release_write_lock();
+            return rc;
+        }
     }
 
     sync::mutex_lock(m_control_lock);
@@ -309,6 +379,10 @@ __PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool
 
     sync::mutex_unlock(m_control_lock);
 
+    if (waits_for_send) {
+        release_write_lock();
+    }
+
     if (rc == fs::OK && drops_queued) {
         drop_queued();
     }
@@ -317,16 +391,21 @@ __PRIVILEGED_CODE int32_t port::apply_settings(uint64_t arg, size_t length, bool
 }
 
 __PRIVILEGED_CODE int32_t port::flush(uint64_t which) {
-    switch (which) {
-        case terminal::TCIFLUSH:
-        case terminal::TCIOFLUSH:
-            drop_queued();
-            return fs::OK;
-        case terminal::TCOFLUSH:
-            return fs::OK;
-        default:
-            return fs::ERR_INVAL;
+    if (which > terminal::TCIOFLUSH) {
+        return fs::ERR_INVAL;
     }
+
+    if (which != terminal::TCOFLUSH) {
+        drop_queued();
+    }
+
+    if (which != terminal::TCIFLUSH) {
+        sync::mutex_lock(m_control_lock);
+        cancel_started_send();
+        sync::mutex_unlock(m_control_lock);
+    }
+
+    return fs::OK;
 }
 
 // FIONREAD answers with an int
@@ -409,9 +488,169 @@ __PRIVILEGED_CODE ssize_t port::read(void* out, size_t count, uint32_t flags, bo
     return static_cast<ssize_t>(done);
 }
 
+__PRIVILEGED_CODE ssize_t port::write(const void* data, size_t count, uint32_t flags, bool is_user_buffer) {
+    bool may_wait = (flags & fs::O_NONBLOCK) == 0;
+    const auto* bytes = static_cast<const uint8_t*>(data);
+
+    size_t written = 0;
+    while (written < count) {
+        size_t length = min_size(count - written, SEND_BYTES);
+        ssize_t copied = start_send(bytes + written, length, may_wait, is_user_buffer);
+        while (copied == fs::ERR_AGAIN && may_wait) {
+            int32_t rc = wait_for_send_end(0);
+            copied = rc == fs::OK ? start_send(bytes + written, length, true, is_user_buffer) : rc;
+        }
+
+        if (copied < 0) {
+            return written > 0 ? static_cast<ssize_t>(written) : copied;
+        }
+
+        written += static_cast<size_t>(copied);
+    }
+
+    return static_cast<ssize_t>(written);
+}
+
+// Holds the write lock only from the copy into the staging buffer to the send's start, so no call waits behind a
+// writer while the chip takes the bytes
+__PRIVILEGED_CODE ssize_t port::start_send(const uint8_t* data, size_t length, bool may_wait, bool is_user_buffer) {
+    if (may_wait) {
+        sync::mutex_lock(m_write_lock);
+    } else if (!sync::mutex_trylock(m_write_lock)) {
+        return fs::ERR_AGAIN;
+    }
+
+    ssize_t result = static_cast<ssize_t>(length);
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    bool logs_failure = m_has_send_failed && !m_is_send_failure_logged;
+    if (m_is_gone || m_has_send_failed || !m_driver) {
+        result = fs::ERR_IO;
+    } else if (m_send_length > 0 || m_is_cancelling) {
+        result = fs::ERR_AGAIN;
+    }
+
+    m_is_send_failure_logged = m_is_send_failure_logged || logs_failure;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    if (logs_failure) {
+        log::warn("serial: a send to /dev/serial/%s failed, so its writes fail until it is unplugged", name());
+    }
+
+    if (result > 0 && !copy_in(m_staging, data, length, is_user_buffer)) {
+        result = fs::ERR_FAULT;
+    }
+
+    // Marked in flight before the call, since the send can end before the call returns
+    if (result > 0) {
+        irq = sync::spin_lock_irqsave(m_state_lock);
+        m_send_length = length;
+        sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+        bool is_started = m_driver->send(m_staging, length) == OK;
+
+        irq = sync::spin_lock_irqsave(m_state_lock);
+        if (is_started) {
+            m_is_send_started = m_send_length > 0;
+        } else {
+            m_send_length = 0;
+            result = fs::ERR_IO;
+        }
+
+        sync::spin_unlock_irqrestore(m_state_lock, irq);
+    }
+
+    release_write_lock();
+    return result;
+}
+
+// Waits for the send in flight to end, and for a cancel to finish, taking only the state lock. A signal ends the wait,
+// and so does `deadline_ns` unless it is 0
+__PRIVILEGED_CODE int32_t port::wait_for_send_end(uint64_t deadline_ns) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    while ((m_send_length > 0 || m_is_cancelling) && !m_is_gone && !m_has_send_failed &&
+           !signals::interrupt_pending(sched::current())) {
+        if (deadline_ns == 0) {
+            irq = sync::wait(m_send_wq, m_state_lock, irq);
+        } else if (clock::now_ns() < deadline_ns) {
+            irq = sync::wait_until(m_send_wq, m_state_lock, irq, deadline_ns);
+        } else {
+            break;
+        }
+    }
+
+    int32_t rc = fs::OK;
+    if (m_is_gone || m_has_send_failed) {
+        rc = fs::ERR_IO;
+    } else if (m_send_length > 0 || m_is_cancelling) {
+        rc = signals::interrupt_pending(sched::current()) ? fs::ERR_INTR : fs::ERR_IO;
+    }
+
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+    return rc;
+}
+
+// The deadline of a wait for the send in flight: now, plus its bytes' time at the line's speed and a margin
+__PRIVILEGED_CODE uint64_t port::send_deadline() {
+    sync::mutex_lock(m_control_lock);
+    line_settings line = m_line;
+    sync::mutex_unlock(m_control_lock);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    size_t unsent = m_send_length;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    uint64_t bits = 1 + line.data_bits + (line.parity_mode == parity::none ? 0 : 1) + line.stop_bits;
+    uint64_t character_ns = bits * NS_PER_SECOND / line.baud;
+    return clock::now_ns() + unsent * character_ns + SEND_DEADLINE_MARGIN_NS;
+}
+
+// Releasing the write lock wakes pollers, since a free lock can make the port writable
+__PRIVILEGED_CODE void port::release_write_lock() {
+    sync::mutex_unlock(m_write_lock);
+    sync::wake_all(m_send_wq);
+}
+
+// The caller must hold the control lock. No send starts while the cancel runs, and a send whose driver call has not
+// returned is waited for, since that call never waits for the chip, so the cancel reaches every send in flight
+__PRIVILEGED_CODE void port::cancel_started_send() {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    m_is_cancelling = m_send_length > 0 && m_driver;
+    while (m_is_cancelling && m_send_length > 0 && !m_is_send_started) {
+        irq = sync::wait_uninterruptible(m_send_wq, m_state_lock, irq);
+    }
+
+    bool is_cancelling = m_is_cancelling;
+    bool is_send_started = m_is_send_started;
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    if (!is_cancelling) {
+        return;
+    }
+
+    if (is_send_started) {
+        m_driver->cancel_send();
+    }
+
+    irq = sync::spin_lock_irqsave(m_state_lock);
+    m_is_cancelling = false;
+    sync::wake_all(m_send_wq);
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+}
+
+// TIOCOUTQ gives an int
+__PRIVILEGED_CODE int32_t port::copy_send_length_out(uint64_t arg) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    int32_t length = static_cast<int32_t>(m_send_length);
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+
+    void* destination = reinterpret_cast<void*>(arg);
+    return mm::uaccess::copy_to_user(destination, &length, sizeof(length)) == mm::uaccess::OK ? fs::OK : fs::ERR_INVAL;
+}
+
 __PRIVILEGED_CODE uint32_t port::poll(sync::poll_table* pt) {
     if (pt) {
         sync::poll_subscribe(*pt, m_read_wq);
+        sync::poll_subscribe(*pt, m_send_wq);
     }
 
     // A failed stream only makes reads fail, so the port reports readable rather than an error, until an unplug
@@ -419,9 +658,13 @@ __PRIVILEGED_CODE uint32_t port::poll(sync::poll_table* pt) {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     bool is_readable = m_queued >= min_readable_bytes_locked() || (m_has_failed && !m_is_gone);
     bool is_gone = m_is_gone;
+
+    // A failed send or an unplug only makes writes fail, so the port reports writable rather than an error
+    bool can_start_send = m_send_length == 0 && !m_is_cancelling && !sync::mutex_is_locked(m_write_lock);
+    bool is_writable = can_start_send || m_is_gone || m_has_send_failed;
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 
-    return (is_readable ? sync::POLL_IN : 0) | (is_gone ? sync::POLL_HUP : 0);
+    return (is_readable ? sync::POLL_IN : 0) | (is_writable ? sync::POLL_OUT : 0) | (is_gone ? sync::POLL_HUP : 0);
 }
 
 __PRIVILEGED_CODE size_t port::queued_bytes() {
@@ -456,6 +699,19 @@ __PRIVILEGED_CODE void port::mark_gone() {
     sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
     m_is_gone = true;
     sync::wake_all(m_read_wq);
+    sync::wake_all(m_send_wq);
+    sync::spin_unlock_irqrestore(m_state_lock, irq);
+}
+
+__PRIVILEGED_CODE void port::end_send(ssize_t taken_or_error) {
+    sync::irq_state irq = sync::spin_lock_irqsave(m_state_lock);
+    if (taken_or_error < 0) {
+        m_has_send_failed = true;
+    }
+
+    m_send_length = 0;
+    m_is_send_started = false;
+    sync::wake_all(m_send_wq);
     sync::spin_unlock_irqrestore(m_state_lock, irq);
 }
 

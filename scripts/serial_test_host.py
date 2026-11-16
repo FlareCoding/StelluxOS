@@ -9,6 +9,7 @@ the serial log, which this script follows until the tests complete:
 
     STLX_SERIAL_HOST connect                 plugs the chip in
     STLX_SERIAL_HOST send <first> <count>    sends <count> bytes counting up from <first>, wrapping at 256
+    STLX_SERIAL_HOST echo <count>            sends back the next <count> bytes the chip sends
     STLX_SERIAL_HOST baud <rate>             sends ACK once QEMU's trace shows the chip set within 3 percent of
                                              <rate>, or NAK when it does not within a few seconds
     STLX_SERIAL_HOST disconnect              unplugs the chip
@@ -26,7 +27,8 @@ POLL_SECONDS = 0.05
 # QEMU creates the socket as it starts, so the first connect may come before it exists
 CONNECT_TIMEOUT_SECONDS = 10
 
-# How long QEMU's trace lines may take to arrive
+# How long the chip's bytes and QEMU's trace lines may take to arrive
+ECHO_TIMEOUT_SECONDS = 10
 TRACE_TIMEOUT_SECONDS = 5
 
 ACK = b"\x06"
@@ -71,6 +73,23 @@ def counting_bytes(first, count):
     return bytes((first + i) % 256 for i in range(count))
 
 
+def echo(chip, count):
+    chip.settimeout(ECHO_TIMEOUT_SECONDS)
+    received = b""
+    try:
+        while len(received) < count:
+            chunk = chip.recv(count - len(received))
+            if not chunk:
+                break
+
+            received += chunk
+    except socket.timeout:
+        pass
+
+    chip.settimeout(None)
+    chip.sendall(received)
+
+
 # The speed the chip was last set to, as QEMU traces it
 def last_traced_rate(trace_path):
     try:
@@ -111,6 +130,8 @@ def main():
             chip = connect(socket_path)
         elif request[0] == "send" and chip is not None:
             chip.sendall(counting_bytes(int(request[1]), int(request[2])))
+        elif request[0] == "echo" and chip is not None:
+            echo(chip, int(request[1]))
         elif request[0] == "baud" and chip is not None:
             confirm_rate(chip, trace_path, int(request[1]))
         elif request[0] == "disconnect" and chip is not None:

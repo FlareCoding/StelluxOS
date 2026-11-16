@@ -111,6 +111,7 @@ static read_call        g_read;
 static int32_t register_board() {
     g_driver.reset();
     g_port = serial::register_port(&g_driver, BOARD);
+    g_driver.port = g_port;
     g_is_detached = false;
     return g_port ? 0 : -1;
 }

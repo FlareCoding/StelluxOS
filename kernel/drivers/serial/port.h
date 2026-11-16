@@ -66,8 +66,9 @@ public:
     __PRIVILEGED_CODE int32_t open();
 
     /**
-     * @brief Counts a file closing. The last close ends exclusive mode and
-     * empties the queue.
+     * @brief Counts a file closing. The last close waits for the send in
+     * flight up to its deadline, unless a signal is pending, cancels it if it
+     * has not ended, ends exclusive mode and empties the queue.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void close();
@@ -94,10 +95,21 @@ public:
     __PRIVILEGED_CODE ssize_t read(void* out, size_t count, uint32_t flags, bool is_user_buffer);
 
     /**
+     * @brief Copies `data`, a user buffer when `is_user_buffer` is set, into
+     * sends of up to SEND_BYTES, one in flight at a time, waiting for each
+     * send in flight to end unless `flags` holds O_NONBLOCK.
+     * @return The bytes copied into sends, or with none fs::ERR_AGAIN,
+     *         fs::ERR_INTR when a signal ends the wait, fs::ERR_IO once the
+     *         device has left or a send failed, or fs::ERR_FAULT.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE ssize_t write(const void* data, size_t count, uint32_t flags, bool is_user_buffer);
+
+    /**
      * @brief Reports POLL_IN once a byte is queued (VMIN bytes when VTIME is 0
      * and VMIN is above 1) or receiving has failed while the device is
-     * attached, and POLL_HUP once the device has left. Subscribes `pt` when
-     * given.
+     * attached, POLL_OUT while a write starts a send at once or fails at once,
+     * and POLL_HUP once the device has left. Subscribes `pt` when given.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE uint32_t poll(sync::poll_table* pt);
@@ -125,12 +137,47 @@ public:
     __PRIVILEGED_CODE void mark_gone();
 
     /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void end_send(ssize_t taken_or_error);
+
+    /**
      * @brief Stops calling the driver, once a call in progress returns.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void release_driver();
 
 private:
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE ssize_t start_send(const uint8_t* data, size_t length, bool may_wait, bool is_user_buffer);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t wait_for_send_end(uint64_t deadline_ns);
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE uint64_t send_deadline();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void release_write_lock();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void cancel_started_send();
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t copy_send_length_out(uint64_t arg);
+
     /**
      * @note Privilege: **required**
      */
@@ -149,7 +196,7 @@ private:
     /**
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE int32_t apply_settings(uint64_t arg, size_t length, bool drops_queued);
+    __PRIVILEGED_CODE int32_t apply_settings(uint64_t arg, size_t length, bool waits_for_send, bool drops_queued);
 
     /**
      * @note Privilege: **required**
@@ -206,7 +253,8 @@ private:
 
     fs::node* m_node = nullptr;
 
-    // Guards the driver, the settings, the window size and exclusive mode across each chip request
+    // Guards the settings, the window size and exclusive mode across each chip request. The driver pointer changes
+    // only under this lock and the write lock, so a call holding either may use it
     sync::mutex        m_control_lock;
     port_driver*       m_driver = nullptr;
     terminal::termios2 m_settings = {};
@@ -222,8 +270,14 @@ private:
     sync::atomic<uint64_t> m_received_bytes{0}; // every byte the chip delivered, those dropped included
     sync::atomic<uint64_t> m_dropped_bytes{0};  // the received bytes dropped because the queue was full
 
+    // Held from each copy into the staging buffer to its send's start, and while TCSETSW, TCSETSF or the last close
+    // waits for the send to end, so no new send starts meanwhile
+    sync::mutex m_write_lock;
+    uint8_t*    m_staging = nullptr; // SEND_BYTES, which the send in flight reads until it ends
+
     sync::spinlock   m_state_lock = sync::SPINLOCK_INIT;
     sync::wait_queue m_read_wq;         // readers and pollers, woken by every change they wait for
+    sync::wait_queue m_send_wq;         // writers and pollers, woken by every change they wait for
     uint8_t*         m_queue = nullptr; // RECEIVE_QUEUE_BYTES, oldest byte at m_queue_head
     size_t           m_queue_head = 0;
     size_t           m_queued = 0;
@@ -231,9 +285,14 @@ private:
     uint64_t         m_read_timeout_ns = 0; // VTIME
     bool             m_is_receiving = true; // CREAD
     uint64_t         m_last_receive_ns = 0;
+    size_t           m_send_length = 0; // the bytes in the send in flight, 0 with none
     uint32_t         m_open_files = 0;
     bool             m_is_gone = false;
     bool             m_has_failed = false;
+    bool             m_is_send_started = false; // the driver's send call has returned, so the send may be cancelled
+    bool             m_has_send_failed = false;
+    bool             m_is_send_failure_logged = false;
+    bool             m_is_cancelling = false; // a cancel is running, so no send starts
 };
 
 using port_list = list::head<port, &port::registry_link>;
