@@ -69,7 +69,7 @@ hid_driver::hid_driver(usb::device* dev, usb::interface* iface)
 
 hid_driver::~hid_driver() {
     if (m_stream) {
-        usb::close_interrupt_in_stream(m_stream);
+        usb::close_in_stream(m_stream);
         m_stream = nullptr;
     }
 
@@ -168,7 +168,7 @@ int32_t hid_driver::probe(usb::device* dev, usb::interface* iface) {
         return -1;
     }
 
-    rc = usb::open_interrupt_in_stream(
+    rc = usb::open_in_stream(
         dev, ep->address, m_payload_length, &m_stream);
     if (rc != 0) {
         log::error("hid: failed to open interrupt stream on EP 0x%02x", ep->address);
@@ -199,7 +199,7 @@ void hid_driver::run() {
     while (!m_disconnected) {
         uint32_t actual = 0;
         string::memset(report_buf, 0, m_payload_length);
-        int32_t rc = usb::read_interrupt_in_stream(
+        int32_t rc = usb::read_in_stream(
             m_stream, report_buf, m_payload_length, &actual);
         if (rc != 0) {
             if (m_disconnected) {
@@ -234,7 +234,7 @@ void hid_driver::run() {
 
     heap::ufree(report_buf);
     if (m_stream) {
-        usb::close_interrupt_in_stream(m_stream);
+        usb::close_in_stream(m_stream);
         m_stream = nullptr;
     }
 
