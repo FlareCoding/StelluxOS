@@ -225,14 +225,12 @@ private:
     xhci::endpoint_async_state* _ensure_endpoint_async_state(xhci::xhci_endpoint* ep);
     void _enqueue_pending_request(xhci::endpoint_async_state& state,
                                   usb::transfer_request& request);
-    void _finish_request(usb::transfer_request& request,
+    void _finish_request(xhci::xhci_endpoint* ep,
+                         xhci::endpoint_async_state& state,
+                         usb::transfer_request& request,
                          usb::transfer_status status,
                          uint32_t actual_length);
-    int32_t _start_async_request(xhci::xhci_device* device,
-                                 xhci::xhci_endpoint* ep,
-                                 xhci::endpoint_async_state& state,
-                                 usb::transfer_request& request,
-                                 bool defer_doorbell = false);
+    void _post_async_request(xhci::xhci_endpoint* ep, usb::transfer_request& request);
     void _kick_async_request_queue(xhci::xhci_device* device,
                                    xhci::xhci_endpoint* ep,
                                    xhci::endpoint_async_state& state,

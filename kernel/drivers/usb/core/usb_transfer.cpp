@@ -22,11 +22,21 @@ void init_transfer_request(transfer_request& req,
     req.actual_length = 0;
     req.flags = flags;
     req.status = transfer_status::invalid;
+
     req.pending = false;
     req.lock = sync::SPINLOCK_INIT;
     req.complete_wq.init();
+    req.on_complete = nullptr;
+    req.context = nullptr;
+
     req.next = nullptr;
     req.hcd_private = nullptr;
+    req.cancelled_in_queue = false;
+}
+
+void set_completion_callback(transfer_request& req, completion_callback on_complete, void* context) {
+    req.on_complete = on_complete;
+    req.context = context;
 }
 
 int32_t submit_transfer_async(device* dev, transfer_request& req) {
