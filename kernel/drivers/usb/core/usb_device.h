@@ -12,6 +12,9 @@ constexpr uint8_t MAX_INTERFACES = 16;
 // A string descriptor holds at most 126 UTF-16 code units
 constexpr size_t MAX_STRING_LENGTH = 126;
 
+// A device is reached through its root port and at most five hubs
+constexpr uint8_t MAX_PORT_PATH_LENGTH = 6;
+
 struct endpoint {
     uint8_t  address;         // bEndpointAddress (e.g. 0x81 = EP1 IN)
     uint8_t  transfer_type;   // 0=control, 1=isochronous, 2=bulk, 3=interrupt
@@ -58,6 +61,11 @@ struct device {
     // Hub topology
     bool     is_hub;
     uint8_t  hub_num_ports;
+
+    // The root port, then the port on each hub between it and the device, written only before any driver
+    // binds, so it needs no lock
+    uint8_t  port_path[MAX_PORT_PATH_LENGTH];
+    uint8_t  port_path_length;
 
     // Opaque handles for the USB Core transfer API
     void* hcd;          // host controller driver instance (xhci_hcd*)

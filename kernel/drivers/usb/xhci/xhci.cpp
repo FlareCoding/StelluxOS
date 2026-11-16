@@ -1145,6 +1145,7 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
 
     // Root hub device: route_string=0, root_port_id=port_id, no parent
     device->set_root_port_id(port_id);
+    device->set_port_path(nullptr, port_id);
 
     device->set_output_ctx(output_ctx);
     m_port_devices[port_index] = device;
@@ -1297,6 +1298,16 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     auto* device = heap::ualloc_new<xhci_device>();
     if (!device) {
         log::error("xhci: failed to allocate xhci_device for slot %u", slot_id);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    if (device->set_port_path(hub_device, hub_port) != 0) {
+        log::error("xhci: hub slot %u port %u is behind six hubs, more than USB allows",
+                   hub_device->slot_id(), hub_port);
+        heap::ufree_delete(device);
         free_xhci_memory(output_ctx);
         m_dcbaa[slot_id] = 0;
         _disable_slot(slot_id);

@@ -4,11 +4,10 @@
 #include "xhci_device_ctx.h"
 #include "xhci_rings.h"
 #include "xhci_endpoint.h"
+#include "drivers/usb/core/usb_device.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 #include "sync/mutex.h"
-
-namespace usb { struct device; }
 
 namespace drivers::xhci {
 
@@ -39,6 +38,8 @@ public:
     inline uint8_t  parent_slot_id() const { return m_parent_slot_id; }
     inline uint8_t  parent_port_num() const { return m_parent_port_num; }
     inline uint8_t  root_port_id() const { return m_root_port_id; }
+    inline const uint8_t* port_path() const { return m_port_path; }
+    inline uint8_t  port_path_length() const { return m_port_path_length; }
     inline bool     is_hub() const { return m_is_hub; }
     inline uint8_t  hub_num_ports() const { return m_hub_num_ports; }
     inline uint8_t  tt_think_time() const { return m_tt_think_time; }
@@ -52,6 +53,14 @@ public:
     void set_hub_num_ports(uint8_t n) { m_hub_num_ports = n; }
     void set_tt_think_time(uint8_t t) { m_tt_think_time = t; }
     void set_mtt(bool m) { m_mtt = m; }
+
+    /**
+     * Records the path of ports to this device: `parent`'s path, then `port`,
+     * or `port` alone when `parent` is null, for a device on a root port.
+     * @return 0, or -1 when `parent` is already behind five hubs, the most USB
+     * allows.
+     */
+    int32_t set_port_path(const xhci_device* parent, uint8_t port);
 
     // Input context (DMA, used for Address Device / Configure Endpoint commands)
     inline uintptr_t input_ctx_phys() const { return m_input_ctx_phys; }
@@ -125,6 +134,8 @@ private:
     uint8_t   m_parent_slot_id = 0;    // Slot ID of parent hub (0 = root hub)
     uint8_t   m_parent_port_num = 0;   // Port number on parent hub (0 = root hub)
     uint8_t   m_root_port_id = 0;      // Root hub port ID this device is ultimately behind
+    uint8_t   m_port_path[usb::MAX_PORT_PATH_LENGTH] = {}; // Root port, then each hub's port down to this device
+    uint8_t   m_port_path_length = 0;  // Number of ports in m_port_path
     bool      m_is_hub = false;        // True if this device is a hub
     uint8_t   m_hub_num_ports = 0;     // Number of downstream ports (hubs only)
     uint8_t   m_tt_think_time = 0;     // TT think time (HS hubs only)

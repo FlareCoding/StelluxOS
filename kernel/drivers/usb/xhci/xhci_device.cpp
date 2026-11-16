@@ -174,4 +174,20 @@ void xhci_device::set_hub_child(uint8_t hub_port, xhci_device* child) {
     }
 }
 
+int32_t xhci_device::set_port_path(const xhci_device* parent, uint8_t port) {
+    uint8_t parent_length = parent ? parent->m_port_path_length : 0;
+    if (parent_length >= usb::MAX_PORT_PATH_LENGTH) {
+        return -1;
+    }
+
+    if (parent) {
+        string::memcpy(m_port_path, parent->m_port_path, parent_length);
+    }
+
+    m_port_path[parent_length] = port;
+    m_port_path_length = static_cast<uint8_t>(parent_length + 1);
+
+    return 0;
+}
+
 } // namespace drivers::xhci
