@@ -1,7 +1,8 @@
 # Version and source pins for the python recipe. Sourced by build.sh on the host, by
 # container.sh inside, and by the dispatcher for package_version.
 
-# CPython, cross-built with the container's python3 as the build interpreter, which must share its major.minor version
+# CPython, cross-built with the container's python3 as the build interpreter, which must share its major.minor version,
+# as must PYTHON_LIB in packages/esptool/versions.sh
 PYTHON_VER="3.12.8"
 PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz"
 PYTHON_SHA256="c909157bb25ec114e5869124cc2a9c4a4d4c1e957ca4ff553f1edc692101154e"

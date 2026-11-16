@@ -241,6 +241,32 @@ cores, plus about 80 seconds for the sysroot on the first run, kept in the
 of musl, zlib, the software CPython records as incorporated and HACL* with
 its KaRaMeL headers are under `/usr/share/licenses/python`.
 
+## The esptool recipe
+
+`esptool` is an `extra` package: Espressif's esptool and the modules it
+imports, in the site-packages of the `python` package, which must be
+selected or installed with `esptool`. esptool reads and writes the flash
+of Espressif chips, such as the ESP32, over a serial port. Stellux starts
+no `#!` scripts, so the package installs no `esptool` command, and
+esptool runs as a Python module:
+
+    stlxpkg install python esptool
+    python3 -m esptool version
+
+esptool finds no serial port by itself, so `--port` names one in
+`/dev/serial`, here an ESP32 behind a CP2102 bridge:
+
+    python3 -m esptool --chip esp32 --port /dev/serial/cp2102-0001 read-mac
+
+The package leaves out espefuse, espsecure and esp_rfc2217_server, the
+other programs of esptool's release. esptool and its modules are pure
+Python, so both architectures get the same files. esptool is
+GPL-2.0-or-later, each module keeps its own license, and their texts are
+under `/usr/share/licenses/esptool`. The stub flashers that esptool
+uploads to a chip state their own terms in the README and license files
+of `esptool/targets/stub_flasher/` in site-packages: the legacy one is
+GPL-2.0-or-later, the other Apache-2.0 or MIT.
+
 ## Building and publishing
 
     make packages-build [PACKAGES=...] [ARCHES=x86_64]
