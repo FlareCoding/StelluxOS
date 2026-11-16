@@ -165,7 +165,7 @@ private:
     // loop, so no pass sets up or tears down a device, wherever it runs
     uint32_t m_psc_pending_bitmap = 0;
 
-    // Set when a cancel or a stream's close asks the HCD task to stop an endpoint
+    // Set when a cancel, a stream's close or a class driver's request asks the HCD task to stop or recover an endpoint
     sync::atomic<bool> m_endpoint_stop_pending{false};
 
     friend struct xhci_hcd_test_access;
@@ -258,6 +258,7 @@ private:
     bool _stop_requested_endpoint(xhci::xhci_device* device,
                                   xhci::xhci_endpoint* ep,
                                   xhci::endpoint_async_state& state);
+    bool _recover_requested_control_endpoint(xhci::xhci_device* device);
     void _end_in_stream(xhci::xhci_endpoint* ep, xhci::endpoint_async_state& state, usb::transfer_status status);
     void _mark_async_endpoints_for_device_disconnecting(xhci::xhci_device* device);
     void _clear_async_endpoint_state(xhci::xhci_device* device,
@@ -296,6 +297,9 @@ private:
                                 uintptr_t new_dequeue_phys, uint8_t dcs);
     int32_t _recover_halted_control_endpoint(xhci::xhci_device* device);
     void _clear_tt_buffer(xhci::xhci_device* device, uint8_t dev_addr = 0);
+
+    // Has the HCD task recover EP0 and waits until it has or EP0 is gone. The caller must hold EP0's mutex
+    void _await_control_endpoint_recovery(xhci::xhci_device* device);
 
     // Transfer event completion dispatch
     void _complete_endpoint_transfer(sync::spinlock& lock, sync::wait_queue& wq,

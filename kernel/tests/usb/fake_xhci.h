@@ -919,6 +919,27 @@ inline void post_control_event(fake_xhci& fake, uint32_t trb_index, uint8_t comp
     post_event(fake, *reinterpret_cast<const xhci_trb_t*>(&event));
 }
 
+// Command ring entry `index` on the ring's first lap, or null when the driver has not written it
+inline const xhci_trb_t* command_trb(const fake_xhci& fake, uint32_t index) {
+    const xhci_trb_t* entry = &fake.command_ring->get_virtual_base()[index];
+    return (entry->control & fake_xhci::CYCLE_BIT) ? entry : nullptr;
+}
+
+// Answers the Set TR Dequeue Pointer command for EP0, whose new dequeue pointer must be EP0's ring entry `next_entry`
+// with the first lap's cycle bit
+inline void answer_control_move(fake_xhci& fake, uint32_t next_entry) {
+    auto* move = reinterpret_cast<const drivers::xhci::xhci_set_tr_dequeue_ptr_command_trb_t*>(
+        wait_for_command(fake, MOVE_COMMAND)
+    );
+    ASSERT_NOT_NULL(move);
+
+    EXPECT_EQ(move->trb_type, static_cast<uint32_t>(XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD));
+    EXPECT_EQ(move->slot_id, fake_xhci::SLOT_ID);
+    EXPECT_EQ(move->endpoint_id, CONTROL_DCI);
+    EXPECT_EQ(move->new_dequeue_ptr, control_trb_phys(fake, next_entry) | FIRST_LAP_CYCLE);
+    complete_command(fake, MOVE_COMMAND, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+}
+
 } // namespace usb_test
 
 #endif // STELLUX_TESTS_USB_FAKE_XHCI_H

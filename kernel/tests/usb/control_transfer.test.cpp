@@ -27,6 +27,9 @@ static constexpr uint32_t TD_TRBS   = 3;
 static constexpr uint32_t FIRST_TD  = 0;
 static constexpr uint32_t SECOND_TD = FIRST_TD + TD_TRBS;
 
+// A recovery after a stall sends Reset Endpoint in the command ring entry a stop takes, then its dequeue move
+static constexpr uint32_t RESET_COMMAND = STOP_COMMAND;
+
 // A control transfer a task makes, with the request it sends and the result the test reads back
 struct control_transfer_call {
     uint16_t               value;
@@ -262,4 +265,96 @@ TEST(usb_control_transfer, a_request_on_the_hcd_task_fails_at_once_while_a_class
     EXPECT_FALSE(is_second_td_queued);
     EXPECT_EQ(s_mixed_calls[0].rc, 0);
     EXPECT_EQ(s_mixed_calls[1].rc, -1);
+}
+
+static sync::atomic<uint32_t> s_is_step_done;
+
+// Runs the stop step as the HCD task, then marks the step done
+static void run_recovery_step(void*) {
+    xhci_hcd_test_access::set_task(*s_fake->hcd, sched::current());
+    xhci_hcd_test_access::stop_requested_endpoints(*s_fake->hcd);
+    s_is_step_done.store_release(1);
+    sched::exit(0);
+}
+
+// Answers the Reset Endpoint command for EP0
+static void answer_control_reset() {
+    auto* reset = reinterpret_cast<const drivers::xhci::xhci_reset_endpoint_command_trb_t*>(
+        wait_for_command(*s_fake, RESET_COMMAND)
+    );
+    ASSERT_NOT_NULL(reset);
+
+    EXPECT_EQ(reset->trb_type, static_cast<uint32_t>(XHCI_TRB_TYPE_RESET_ENDPOINT_CMD));
+    EXPECT_EQ(reset->slot_id, fake_xhci::SLOT_ID);
+    EXPECT_EQ(reset->endpoint_id, CONTROL_DCI);
+    complete_command(*s_fake, RESET_COMMAND, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+}
+
+static control_transfer_call s_stalled_call;
+static control_transfer_call s_call_during_recovery;
+
+// A stall on a class driver's request leaves EP0's recovery to the HCD task's stop step, which resets EP0, moves its
+// dequeue pointer past the stalled TD and marks an event pending, while a second request waits for EP0 until then
+TEST(usb_control_transfer, a_stalled_class_driver_request_has_the_hcd_task_recover_ep0) {
+    ASSERT_TRUE(attach_controller());
+    prepare_out_call(s_stalled_call, FIRST_BYTE);
+    prepare_out_call(s_call_during_recovery, SECOND_BYTE);
+    s_is_step_done.store_release(0);
+
+    sched::task* stalled = start_call(run_driver_call, s_stalled_call);
+    ASSERT_NOT_NULL(stalled);
+    EXPECT_TRUE(wait_for_td_sending(FIRST_TD, FIRST_BYTE));
+    complete_driver_td(FIRST_TD, XHCI_TRB_COMPLETION_CODE_STALL_ERROR);
+    ASSERT_TRUE(blocks_before_deadline(stalled));
+    bool has_driver_sent_command = command_trb(*s_fake, RESET_COMMAND) != nullptr;
+
+    // Clears the doorbell the stalled request rang, so a ring for the second request's TD shows
+    s_fake->doorbells[fake_xhci::SLOT_ID] = 0;
+    sched::task* next = start_call(run_driver_call, s_call_during_recovery);
+    ASSERT_NOT_NULL(next);
+    ASSERT_TRUE(blocks_before_deadline(next));
+    uint32_t doorbell = s_fake->doorbells[fake_xhci::SLOT_ID];
+
+    sched::task* step = start_pinned_task_on_another_cpu(run_recovery_step, nullptr, "usb_recovery_step", 0);
+    ASSERT_NOT_NULL(step);
+    answer_control_reset();
+
+    // The step waits for its move with every earlier wake taken, so an event pending once it ends is the step's own
+    ASSERT_NOT_NULL(wait_for_command(*s_fake, MOVE_COMMAND));
+    ASSERT_TRUE(blocks_before_deadline(step));
+    answer_control_move(*s_fake, SECOND_TD);
+    EXPECT_TRUE(spin_wait(s_is_step_done));
+    unpin(step);
+    bool is_event_pending = xhci_hcd_test_access::is_event_pending(*s_fake->hcd);
+
+    EXPECT_TRUE(wait_for_td_sending(SECOND_TD, SECOND_BYTE));
+    complete_driver_td(SECOND_TD, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+
+    bool is_stalled_done = finish_call(stalled, s_stalled_call);
+    bool is_next_done = finish_call(next, s_call_during_recovery);
+    detach_when_done(is_stalled_done && is_next_done);
+
+    EXPECT_FALSE(has_driver_sent_command);
+    EXPECT_EQ(doorbell, 0u);
+    EXPECT_TRUE(is_event_pending);
+    EXPECT_EQ(s_stalled_call.rc, -1);
+    EXPECT_EQ(s_call_during_recovery.rc, 0);
+}
+
+static control_transfer_call s_recovery_waiter;
+
+// A class driver's request waiting for EP0's recovery fails once teardown ends EP0's transfers, before any step runs
+TEST(usb_control_transfer, a_request_waiting_for_ep0s_recovery_fails_at_teardown) {
+    ASSERT_TRUE(attach_controller());
+    prepare_out_call(s_recovery_waiter, FIRST_BYTE);
+
+    sched::task* waiter = start_call(run_driver_call, s_recovery_waiter);
+    ASSERT_NOT_NULL(waiter);
+    EXPECT_TRUE(wait_for_td_sending(FIRST_TD, FIRST_BYTE));
+    complete_driver_td(FIRST_TD, XHCI_TRB_COMPLETION_CODE_STALL_ERROR);
+    ASSERT_TRUE(blocks_before_deadline(waiter));
+
+    xhci_hcd_test_access::end_control_transfers(*s_fake->hcd, s_fake->device);
+    detach_when_done(finish_call(waiter, s_recovery_waiter));
+    EXPECT_EQ(s_recovery_waiter.rc, -1);
 }
