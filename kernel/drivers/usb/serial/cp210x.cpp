@@ -120,10 +120,6 @@ static const cp210x_part* part_for_number(uint8_t number) {
     return &UNLISTED_PART;
 }
 
-static uint32_t distance(uint32_t a, uint32_t b) {
-    return a > b ? a - b : b - a;
-}
-
 static uint32_t nearest_table_rate(uint32_t baud) {
     uint32_t nearest = RATE_TABLE[0];
     for (uint32_t rate : RATE_TABLE) {
