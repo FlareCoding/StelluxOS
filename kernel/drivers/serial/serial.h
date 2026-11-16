@@ -28,6 +28,16 @@ struct line_settings {
     bool     uses_rts_cts; // the chip sends only while CTS is raised
 };
 
+/**
+ * What a serial port is and where it is attached. Its name is made of these.
+ */
+struct identity {
+    const char* chip;          // the chip's short name in lowercase letters and digits, such as "cp2102"
+    const char* serial_number; // "" when the device names none
+    const char* location;      // digits and dots in its bus's numbering, such as "1.5.3", or "" when unknown
+    int8_t      channel;       // the port's number on its device, 0 to 25, or -1 on a device with one port
+};
+
 } // namespace serial
 
 #endif // STELLUX_DRIVERS_SERIAL_SERIAL_H
