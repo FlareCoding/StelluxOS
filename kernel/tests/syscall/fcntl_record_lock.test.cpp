@@ -11,7 +11,7 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
-#include "fs/record_lock_table.h"
+#include "fs/file_lock_table.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "dynpriv/dynpriv.h"
@@ -53,12 +53,12 @@ static int64_t fcntl_with_flock(user_page& page, resource::handle_t h, uint64_t 
 }
 
 // The table stays valid while the handle to its file stays open
-static fs::record_lock_table* record_locks_of(sched::task* task, resource::handle_t h) {
-    fs::record_lock_table* locks = nullptr;
+static fs::file_lock_table* record_locks_of(sched::task* task, resource::handle_t h) {
+    fs::file_lock_table* locks = nullptr;
     RUN_ELEVATED({
         resource::resource_object* obj = nullptr;
         if (resource::get_handle_object(task->handles, h, 0, &obj) == resource::HANDLE_OK) {
-            locks = &resource::file_provider::get_file(obj)->get_node()->record_locks();
+            locks = &resource::file_provider::get_file(obj)->get_node()->file_locks();
             resource::resource_release(obj);
         }
     });
@@ -66,7 +66,7 @@ static fs::record_lock_table* record_locks_of(sched::task* task, resource::handl
     return locks;
 }
 
-static int32_t lock_as_other_process(fs::record_lock_table* locks, uint64_t start, uint64_t end) {
+static int32_t lock_as_other_process(fs::file_lock_table* locks, uint64_t start, uint64_t end) {
     fs::record_lock request = {&g_other_owner, fs::record_lock_type::exclusive, start, end, OTHER_PROCESS_PID};
     int32_t result = 0;
     RUN_ELEVATED(result = locks->try_lock(request));
@@ -74,7 +74,7 @@ static int32_t lock_as_other_process(fs::record_lock_table* locks, uint64_t star
 }
 
 static bool find_lock_blocking_other_process(
-    fs::record_lock_table* locks,
+    fs::file_lock_table* locks,
     uint64_t start,
     uint64_t end,
     fs::record_lock* out_holder
@@ -85,7 +85,7 @@ static bool find_lock_blocking_other_process(
     return found;
 }
 
-static void unlock_other_process(fs::record_lock_table* locks) {
+static void unlock_other_process(fs::file_lock_table* locks) {
     RUN_ELEVATED(locks->unlock_all(&g_other_owner));
 }
 
@@ -101,7 +101,7 @@ TEST(fcntl_record_lock, getlk_reports_the_lock_of_another_process) {
 
     resource::handle_t h = -1;
     ASSERT_EQ(resource::open(task, "/fcntl_lock_report", fs::O_CREAT | fs::O_RDWR, &h), resource::OK);
-    fs::record_lock_table* locks = record_locks_of(task, h);
+    fs::file_lock_table* locks = record_locks_of(task, h);
     ASSERT_NOT_NULL(locks);
     ASSERT_EQ(lock_as_other_process(locks, 10, 19), fs::OK);
 
@@ -129,7 +129,7 @@ TEST(fcntl_record_lock, a_zero_length_lock_covers_the_file_however_far_it_grows)
 
     resource::handle_t h = -1;
     ASSERT_EQ(resource::open(task, "/fcntl_lock_whole", fs::O_CREAT | fs::O_RDWR, &h), resource::OK);
-    fs::record_lock_table* locks = record_locks_of(task, h);
+    fs::file_lock_table* locks = record_locks_of(task, h);
     ASSERT_NOT_NULL(locks);
 
     ASSERT_EQ(fcntl_with_flock(page, h, F_SETLKW, {F_WRLCK, fs::SEEK_SET, 0, 0, 0}), 0);
@@ -153,7 +153,7 @@ TEST(fcntl_record_lock, ranges_count_from_the_offset_or_the_end_and_may_run_back
     resource::handle_t h = -1;
     uint32_t flags = fs::O_CREAT | fs::O_TRUNC | fs::O_RDWR;
     ASSERT_EQ(resource::open(task, "/fcntl_lock_range", flags, &h), resource::OK);
-    fs::record_lock_table* locks = record_locks_of(task, h);
+    fs::file_lock_table* locks = record_locks_of(task, h);
     ASSERT_NOT_NULL(locks);
 
     // A 100 byte file whose offset sits at 50
@@ -215,7 +215,7 @@ TEST(fcntl_record_lock, closing_any_handle_to_the_file_releases_the_locks) {
     resource::handle_t second = -1;
     ASSERT_EQ(resource::open(task, "/fcntl_lock_close", fs::O_CREAT | fs::O_RDWR, &locked), resource::OK);
     ASSERT_EQ(resource::open(task, "/fcntl_lock_close", fs::O_RDWR, &second), resource::OK);
-    fs::record_lock_table* locks = record_locks_of(task, locked);
+    fs::file_lock_table* locks = record_locks_of(task, locked);
     ASSERT_NOT_NULL(locks);
 
     ASSERT_EQ(fcntl_with_flock(page, locked, F_SETLK, {F_WRLCK, fs::SEEK_SET, 0, 0, 0}), 0);
@@ -240,7 +240,7 @@ TEST(fcntl_record_lock, replacing_a_handle_with_dup2_releases_the_locks) {
     ASSERT_EQ(resource::open(task, "/fcntl_lock_dup2", fs::O_RDWR, &keeper), resource::OK);
     ASSERT_EQ(resource::open(task, "/fcntl_lock_dup2_other", fs::O_CREAT | fs::O_RDWR, &replacement),
               resource::OK);
-    fs::record_lock_table* locks = record_locks_of(task, keeper);
+    fs::file_lock_table* locks = record_locks_of(task, keeper);
     ASSERT_NOT_NULL(locks);
 
     ASSERT_EQ(fcntl_with_flock(page, locked, F_SETLK, {F_WRLCK, fs::SEEK_SET, 0, 0, 0}), 0);

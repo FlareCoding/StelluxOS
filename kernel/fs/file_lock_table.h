@@ -1,5 +1,5 @@
-#ifndef STELLUX_FS_RECORD_LOCK_TABLE_H
-#define STELLUX_FS_RECORD_LOCK_TABLE_H
+#ifndef STELLUX_FS_FILE_LOCK_TABLE_H
+#define STELLUX_FS_FILE_LOCK_TABLE_H
 
 #include "common/types.h"
 #include "common/list.h"
@@ -35,13 +35,13 @@ using record_lock_list = list::head<record_lock_entry, &record_lock_entry::link>
  * overlap and either is exclusive. An owner's own locks never conflict and never
  * overlap, and they merge when adjacent and of the same type.
  */
-class record_lock_table {
+class file_lock_table {
 public:
-    record_lock_table();
-    ~record_lock_table();
+    file_lock_table();
+    ~file_lock_table();
 
-    record_lock_table(const record_lock_table&) = delete;
-    record_lock_table& operator=(const record_lock_table&) = delete;
+    file_lock_table(const file_lock_table&) = delete;
+    file_lock_table& operator=(const file_lock_table&) = delete;
 
     /**
      * @brief Finds another owner's lock that conflicts with `request`.
@@ -90,4 +90,4 @@ private:
 
 } // namespace fs
 
-#endif // STELLUX_FS_RECORD_LOCK_TABLE_H
+#endif // STELLUX_FS_FILE_LOCK_TABLE_H

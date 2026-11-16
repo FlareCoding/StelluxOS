@@ -129,7 +129,7 @@ __PRIVILEGED_CODE static void file_handle_closed(resource_object* obj, const han
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     if (impl->file && impl->file->get_node()) {
-        impl->file->get_node()->record_locks().unlock_all(table);
+        impl->file->get_node()->file_locks().unlock_all(table);
     }
 }
 

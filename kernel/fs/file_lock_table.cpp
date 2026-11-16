@@ -1,4 +1,4 @@
-#include "fs/record_lock_table.h"
+#include "fs/file_lock_table.h"
 #include "fs/fs.h"
 #include "mm/heap.h"
 #include "sched/sched.h"
@@ -137,20 +137,20 @@ static void free_entries(record_lock_list& entries) {
     }
 }
 
-record_lock_table::record_lock_table() {
+file_lock_table::file_lock_table() {
     m_lock = sync::SPINLOCK_INIT;
     m_locks.init();
     m_waiters.init();
 }
 
-record_lock_table::~record_lock_table() {
+file_lock_table::~file_lock_table() {
     free_entries(m_locks);
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool record_lock_table::find_conflict(const record_lock& request, record_lock* out_conflict) {
+__PRIVILEGED_CODE bool file_lock_table::find_conflict(const record_lock& request, record_lock* out_conflict) {
     sync::irq_lock_guard guard(m_lock);
 
     const record_lock_entry* conflict = find_conflict_in(m_locks, request);
@@ -166,21 +166,21 @@ __PRIVILEGED_CODE bool record_lock_table::find_conflict(const record_lock& reque
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t record_lock_table::try_lock(const record_lock& request) {
+__PRIVILEGED_CODE int32_t file_lock_table::try_lock(const record_lock& request) {
     return acquire(request, false);
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t record_lock_table::lock(const record_lock& request) {
+__PRIVILEGED_CODE int32_t file_lock_table::lock(const record_lock& request) {
     return acquire(request, true);
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t record_lock_table::unlock(const void* owner, uint64_t start, uint64_t end) {
+__PRIVILEGED_CODE int32_t file_lock_table::unlock(const void* owner, uint64_t start, uint64_t end) {
     // Entries are allocated before the table lock, which holds interrupts off
     record_lock_entry* split_entry = heap::ualloc_new<record_lock_entry>();
     record_lock_list removed;
@@ -211,7 +211,7 @@ __PRIVILEGED_CODE int32_t record_lock_table::unlock(const void* owner, uint64_t 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void record_lock_table::unlock_all(const void* owner) {
+__PRIVILEGED_CODE void file_lock_table::unlock_all(const void* owner) {
     record_lock_list removed;
     removed.init();
 
@@ -231,7 +231,7 @@ __PRIVILEGED_CODE void record_lock_table::unlock_all(const void* owner) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t record_lock_table::acquire(const record_lock& request, bool wait) {
+__PRIVILEGED_CODE int32_t file_lock_table::acquire(const record_lock& request, bool wait) {
     // Entries are allocated before the table lock, which holds interrupts off
     record_lock_entry* added = heap::ualloc_new<record_lock_entry>();
     if (!added) {
