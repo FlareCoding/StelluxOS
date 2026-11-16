@@ -1,0 +1,2 @@
+name=Stellux Other
+version=1.0.0

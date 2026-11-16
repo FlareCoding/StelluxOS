@@ -1,0 +1,4 @@
+name=Stellux Native
+version=1.0.0
+
+build.extra_flags=
