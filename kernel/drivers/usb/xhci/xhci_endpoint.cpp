@@ -49,6 +49,8 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
     m_async_state->disconnecting = false;
     m_async_state->active_request_cancelled = false;
 
+    m_async_state->callback_wq.init();
+
     m_async_state->in_stream.active = false;
     m_async_state->in_stream.closing = false;
     m_async_state->in_stream.payload_length = 0;

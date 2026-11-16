@@ -55,6 +55,12 @@ struct endpoint_async_state {
     // Set when the ring may hold transfers no one tracks, after a failed stop or move or a stream's failed read
     bool stop_failed = false;
 
+    // Requests taken off the endpoint to end, and those whose callback has since returned or whose waiters were woken,
+    // both in submission order, so a cancel waits on `callback_wq` until its request's callback has returned
+    uint64_t         requests_ended     = 0;
+    uint64_t         callbacks_returned = 0;
+    sync::wait_queue callback_wq;
+
     in_stream_state in_stream = {};
 };
 

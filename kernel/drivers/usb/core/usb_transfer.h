@@ -21,6 +21,17 @@ enum transfer_flags : uint32_t {
     allow_short = 1u << 0,
 };
 
+struct transfer_request;
+
+/**
+ * A request's callback, called on the host controller driver's task once a
+ * submission of `req` has ended, in the order its endpoint's requests were
+ * submitted. From the submit until this call `req` belongs to the USB core.
+ * The callback must not block or call into the USB core other than
+ * `submit_transfer_async`, and may submit `req` again or free it.
+ */
+using completion_callback = void (*)(void* context, transfer_request& req);
+
 struct transfer_request {
     uint8_t endpoint_addr = 0;
     void* buffer = nullptr;
@@ -32,9 +43,16 @@ struct transfer_request {
     sync::spinlock lock;
     sync::wait_queue complete_wq;
 
+    // Set by `set_completion_callback`
+    completion_callback on_complete = nullptr;
+    void* context = nullptr;
+
     // Internal linkage for per-endpoint software queues.
     transfer_request* next = nullptr;
     void* hcd_private = nullptr;
+
+    // Set when a cancel finds the request in its endpoint's queue, so it ends in its turn without starting
+    bool cancelled_in_queue = false;
 };
 
 struct in_stream;
@@ -60,8 +78,24 @@ void init_transfer_request(transfer_request& req,
                            uint32_t requested_length,
                            uint32_t flags = 0);
 
+/**
+ * Makes the host controller driver's task call `on_complete` with `context`
+ * once each submission of `req` has ended, in place of waking a task waiting
+ * in `await_transfer`, which must not wait on it. The callback must be set
+ * after `init_transfer_request` and before `submit_transfer_async`.
+ */
+void set_completion_callback(transfer_request& req, completion_callback on_complete, void* context);
+
 int32_t submit_transfer_async(device* dev, transfer_request& req);
 int32_t await_transfer(transfer_request& req);
+
+/**
+ * Cancels the submission of `req` in flight and returns once it has ended and
+ * any callback has returned. The wait has no bound, since a request waiting
+ * behind others on its endpoint ends only in its turn. It must not be called
+ * on the host controller driver's task, which runs probes, `disconnect()` and
+ * callbacks, and a `disconnect()` must not wait for a cancelling task.
+ */
 void cancel_transfer(device* dev, transfer_request& req);
 
 /**
