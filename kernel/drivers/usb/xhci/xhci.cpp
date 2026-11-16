@@ -718,11 +718,10 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
     _process_event_ring();
 
     if (!m_cmd_state.completed) {
-        constexpr uint64_t CMD_TIMEOUT_MS = 5000;
-        uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
+        uint64_t deadline = clock::now_ns() + m_command_timeout_ns;
 
         while (!m_cmd_state.completed && clock::now_ns() < deadline) {
-            wait_for_event();
+            wait_for_event_until(deadline);
             _process_event_ring();
         }
     }
@@ -993,19 +992,38 @@ int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
     return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
 }
 
-int32_t xhci_hcd::_recover_halted_control_endpoint(xhci_device* device) {
+// A stall, babble, or USB transaction error moves the endpoint to the Halted state (xHCI 4.10.2),
+// and every later transfer on it waits until software resets the endpoint.
+static bool completion_halts_endpoint(uint32_t completion_code) {
+    return completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR ||
+           completion_code == XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR;
+}
+
+// Reads under the completion lock whether EP0's last TD has completed and whether its completion halted EP0
+static void read_control_completion(xhci_device* device, bool& has_completed, bool& is_halted) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        has_completed = device->ctrl_completed();
+        is_halted = has_completed && completion_halts_endpoint(device->ctrl_result().completion_code);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+}
+
+int32_t xhci_hcd::_recover_control_endpoint(xhci_device* device) {
     if (!device || !device->ctrl_ring()) {
         return -1;
     }
 
-    // When a control transfer stalls, the next SETUP transaction clears the
-    // USB-level stall, but xHCI still needs its EP0 state repaired. Reset the
-    // endpoint and then advance the hardware dequeue pointer past the failed TD
-    // so the controller does not try to replay it on the next doorbell ring.
-    //
-    // Match Linux behavior: always proceed with Set TR Dequeue even if Reset
-    // Endpoint fails — the command will only fail if the endpoint wasn't
-    // halted, and in that case we still need the dequeue pointer advanced.
+    bool has_completed = false;
+    bool is_halted = false;
+    read_control_completion(device, has_completed, is_halted);
+
+    // A timed-out TD that has since completed without halting EP0 left EP0 running past it
+    if (has_completed && !is_halted) {
+        return 0;
+    }
+
     xhci_transfer_ring* ring = device->ctrl_ring();
     uintptr_t dequeue_phys = ring->get_enqueue_phys();
     uint8_t dequeue_cycle = ring->get_cycle_bit();
@@ -1022,22 +1040,36 @@ int32_t xhci_hcd::_recover_halted_control_endpoint(xhci_device* device) {
         dequeue_cycle = !dequeue_cycle;
     }
 
-    int32_t rc = _reset_endpoint(device, 1);
-    if (rc != 0) {
-        log::warn("xhci: recovering halted EP0 slot %u: reset endpoint failed (ignored)",
-                  device->slot_id());
+    // A failed stop rereads the completion its wait recorded: a halt that raced the stop needs a reset, and any other
+    // completion left EP0 running past the TD
+    bool is_stopped = !is_halted && _stop_endpoint(device, 1) == 0;
+    if (!is_halted && !is_stopped) {
+        read_control_completion(device, has_completed, is_halted);
+        if (has_completed && !is_halted) {
+            return 0;
+        }
     }
 
-    if (_set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) != 0) {
-        log::warn("xhci: recovering halted EP0 slot %u: set dequeue pointer failed",
-                  device->slot_id());
+    // A refused reset leaves EP0 halted, where the move fails too
+    if (is_halted) {
+        (void)_reset_endpoint(device, 1);
+    }
+
+    // An EP0 the controller will not move may still run its TD, which would send the next transfer's bytes
+    bool is_moved = (is_stopped || is_halted) && _set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) == 0;
+    if (!is_moved) {
+        log::error("xhci: could not move EP0 of slot %u past its TD, so it takes no transfer until unplugged",
+                   device->slot_id());
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+            device->set_ctrl_failed();
+            sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        });
+
         return -1;
     }
 
-    // For FS/LS devices behind a HS hub, clear the hub's TT buffer so the
-    // shared Transaction Translator does not remain stuck from the stalled
-    // split transaction. Without this, a single-TT hub can block enumeration
-    // and traffic for all other downstream FS/LS devices.
+    // A halted or unfinished split transaction can block every FS and LS device behind a single-TT hub
     if (device->output_ctx()) {
         uint8_t dev_addr = 0;
         if (m_hc_params.csz) {
@@ -2695,7 +2727,7 @@ bool xhci_hcd::_recover_requested_control_endpoint(xhci_device* device) {
         return false;
     }
 
-    (void)_recover_halted_control_endpoint(device);
+    (void)_recover_control_endpoint(device);
 
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
@@ -3145,14 +3177,6 @@ uint16_t xhci_hcd::_initial_max_packet_size(uint8_t speed) {
     }
 }
 
-// A stall, babble, or USB transaction error moves the endpoint to the Halted state (xHCI 4.10.2),
-// and every later transfer on it waits until software resets the endpoint.
-static bool completion_halts_endpoint(uint32_t completion_code) {
-    return completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR ||
-           completion_code == XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR ||
-           completion_code == XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR;
-}
-
 int32_t xhci_hcd::_send_control_transfer(
     xhci_device* device,
     xhci_device_request_packet& request,
@@ -3215,6 +3239,11 @@ int32_t xhci_hcd::_send_control_transfer(
         return -1;
     }
 
+    if (device->ctrl_failed()) {
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        return -1;
+    }
+
     if (length > 0 && !is_in && buffer) {
         string::memcpy(dma_buffer, buffer, length);
     } else {
@@ -3242,25 +3271,25 @@ int32_t xhci_hcd::_send_control_transfer(
 
     _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
 
-    constexpr uint64_t XFER_TIMEOUT_MS = 5000;
-    uint64_t deadline = clock::now_ns() + XFER_TIMEOUT_MS * 1000000ULL;
+    uint64_t deadline = clock::now_ns() + m_control_transfer_timeout_ns;
 
     _process_event_ring();
 
     while (!device->ctrl_completed() && clock::now_ns() < deadline) {
-        wait_for_event();
+        wait_for_event_until(deadline);
         _process_event_ring();
     }
 
     if (!device->ctrl_completed()) {
+        log::error("xhci: slot %u control transfer timed out", device->slot_id());
+        (void)_recover_control_endpoint(device);
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
-        log::error("xhci: control transfer timed out");
         return -1;
     }
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
         if (completion_halts_endpoint(device->ctrl_result().completion_code)) {
-            (void)_recover_halted_control_endpoint(device);
+            (void)_recover_control_endpoint(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",
@@ -3485,11 +3514,11 @@ int32_t xhci_hcd::usb_control_transfer(
 
     // Teardown marks EP0 gone and completed under this lock, so a transfer that finds EP0 present queues its TD and
     // rings EP0's doorbell before teardown marks it, and teardown still ends its wait
-    bool is_gone = false;
+    bool is_refused = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
-        is_gone = device->ctrl_gone();
-        if (!is_gone) {
+        is_refused = device->ctrl_gone() || device->ctrl_failed();
+        if (!is_refused) {
             device->set_ctrl_completed(false);
             ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
             if (length > 0) {
@@ -3503,26 +3532,39 @@ int32_t xhci_hcd::usb_control_transfer(
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
     });
 
-    if (is_gone) {
+    if (is_refused) {
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         return -1;
     }
 
+    uint64_t deadline = clock::now_ns() + m_control_transfer_timeout_ns;
+    bool has_completed = false;
+    uint32_t completion_code = XHCI_TRB_COMPLETION_CODE_SUCCESS;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
-        while (!device->ctrl_completed()) {
-            irq = sync::wait_uninterruptible(device->ctrl_completion_wq(), device->ctrl_completion_lock(), irq);
+        while (!device->ctrl_completed() && clock::now_ns() < deadline) {
+            irq = sync::wait_uninterruptible_until(device->ctrl_completion_wq(),
+                                                   device->ctrl_completion_lock(), irq, deadline);
         }
+
+        has_completed = device->ctrl_completed();
+        completion_code = device->ctrl_result().completion_code;
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
     });
 
-    if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        if (completion_halts_endpoint(device->ctrl_result().completion_code)) {
+    if (!has_completed) {
+        log::error("xhci: slot %u control transfer timed out", device->slot_id());
+        _await_control_endpoint_recovery(device);
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        return -1;
+    }
+
+    if (completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        if (completion_halts_endpoint(completion_code)) {
             _await_control_endpoint_recovery(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
-        log::warn("xhci: control transfer failed: %s",
-                   trb_completion_code_to_string(device->ctrl_result().completion_code));
+        log::warn("xhci: control transfer failed: %s", trb_completion_code_to_string(completion_code));
         return -1;
     }
 

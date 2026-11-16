@@ -27,6 +27,12 @@ struct hub_event {
 
 static constexpr uint8_t HUB_EVENT_QUEUE_SIZE = 32;
 
+// How long a control transfer waits for its TD to complete before it fails
+static constexpr uint64_t CONTROL_TRANSFER_TIMEOUT_NS = 5000ULL * 1000 * 1000;
+
+// How long a command waits for its completion before it fails
+static constexpr uint64_t COMMAND_TIMEOUT_NS = 5000ULL * 1000 * 1000;
+
 struct xhci_hc_params {
     uint8_t  max_device_slots;
     uint16_t max_interrupters;
@@ -168,6 +174,10 @@ private:
     // Set when a cancel, a stream's close or a class driver's request asks the HCD task to stop or recover an endpoint
     sync::atomic<bool> m_endpoint_stop_pending{false};
 
+    // Control transfer and command timeouts, shorter only in tests
+    uint64_t m_control_transfer_timeout_ns = xhci::CONTROL_TRANSFER_TIMEOUT_NS;
+    uint64_t m_command_timeout_ns = xhci::COMMAND_TIMEOUT_NS;
+
     friend struct xhci_hcd_test_access;
 
 private:
@@ -295,8 +305,11 @@ private:
     int32_t _stop_endpoint(xhci::xhci_device* device, uint8_t dci);
     int32_t _set_tr_dequeue_ptr(xhci::xhci_device* device, uint8_t dci,
                                 uintptr_t new_dequeue_phys, uint8_t dcs);
-    int32_t _recover_halted_control_endpoint(xhci::xhci_device* device);
     void _clear_tt_buffer(xhci::xhci_device* device, uint8_t dev_addr = 0);
+
+    // Moves EP0's dequeue pointer past a TD that halted EP0 or never completed, after resetting or stopping EP0, and
+    // fails EP0 until unplug when the controller will not move it
+    int32_t _recover_control_endpoint(xhci::xhci_device* device);
 
     // Has the HCD task recover EP0 and waits until it has or EP0 is gone. The caller must hold EP0's mutex
     void _await_control_endpoint_recovery(xhci::xhci_device* device);

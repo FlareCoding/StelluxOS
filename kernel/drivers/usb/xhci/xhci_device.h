@@ -103,6 +103,11 @@ public:
     inline bool ctrl_recovery_requested() const { return m_ctrl_recovery_requested; }
     inline void set_ctrl_recovery_requested(bool v) { m_ctrl_recovery_requested = v; }
 
+    // Set on the HCD task under `ctrl_completion_lock()` once the controller would not move EP0 past a TD, after
+    // which every control transfer fails at once
+    inline bool ctrl_failed() const { return m_ctrl_failed; }
+    inline void set_ctrl_failed() { m_ctrl_failed = true; }
+
     // Non-control endpoints (indexed by DCI)
     static constexpr uint8_t MAX_ENDPOINTS = 31;
     xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
@@ -167,6 +172,7 @@ private:
     bool             m_ctrl_completed = false;
     bool             m_ctrl_gone = false;
     bool             m_ctrl_recovery_requested = false;
+    bool             m_ctrl_failed = false;
     xhci_transfer_completion_trb_t m_ctrl_result = {};
 
     // Non-control endpoints (DCI 2-31, index 0-1 unused)
