@@ -5,6 +5,7 @@
 #include "drivers/usb/xhci/xhci_device.h"
 #include "drivers/usb/xhci/xhci_endpoint.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "mm/heap.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
@@ -13,6 +14,9 @@ extern "C" const usb::class_driver_entry __usb_class_drivers_start[];
 extern "C" const usb::class_driver_entry __usb_class_drivers_end[];
 
 namespace usb::core {
+
+// The longest port path as text: up to three digits for each port, the dots between them and the NUL
+static constexpr size_t PORT_PATH_TEXT_BYTES = usb::MAX_PORT_PATH_LENGTH * 4;
 
 struct finalization_ticket {
     usb::device* dev = nullptr;
@@ -139,6 +143,20 @@ static void class_driver_task_entry(void* arg) {
     sched::exit(0);
 }
 
+// Writes the device's ports joined by dots, such as "5.1" for port 1 of the hub on root port 5
+static void format_port_path(const usb::device* dev, char (&text)[PORT_PATH_TEXT_BYTES]) {
+    size_t length = 0;
+    for (uint8_t i = 0; i < dev->port_path_length; i++) {
+        if (i > 0) {
+            text[length++] = '.';
+        }
+
+        length += string::format_u64(&text[length], sizeof(text) - 1 - length, dev->port_path[i]);
+    }
+
+    text[length] = '\0';
+}
+
 static usb::device* build_usb_device(
     drivers::xhci_hcd* hcd,
     drivers::xhci::xhci_device* xdev,
@@ -195,6 +213,13 @@ static usb::device* build_usb_device(
             ep.interval = xep->interval();
         }
     }
+
+    string::memcpy(dev->port_path, xdev->port_path(), xdev->port_path_length());
+    dev->port_path_length = xdev->port_path_length();
+
+    char port_path_text[PORT_PATH_TEXT_BYTES];
+    format_port_path(dev, port_path_text);
+    log::info("usb: %04x:%04x is on port %s", dev->vid, dev->pid, port_path_text);
 
     read_device_strings(dev, desc);
 
