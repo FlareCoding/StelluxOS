@@ -15,14 +15,13 @@ extern "C" const usb::class_driver_entry __usb_class_drivers_end[];
 
 namespace usb::core {
 
-// The longest port path as text: up to three digits for each port, the dots between them and the NUL
-static constexpr size_t PORT_PATH_TEXT_BYTES = usb::MAX_PORT_PATH_LENGTH * 4;
-
 struct finalization_ticket {
     usb::device* dev = nullptr;
     drivers::xhci_hcd* hcd = nullptr;
     drivers::xhci::xhci_device* xdev = nullptr;
 };
+
+static uint8_t g_numbered_controllers;
 
 static bool match_interface(const class_match& match, const usb::interface* iface) {
     if (match.interface_class != USB_MATCH_ANY &&
@@ -162,20 +161,6 @@ static void class_driver_task_entry(void* arg) {
     sched::exit(0);
 }
 
-// Writes the device's ports joined by dots, such as "5.1" for port 1 of the hub on root port 5
-static void format_port_path(const usb::device* dev, char (&text)[PORT_PATH_TEXT_BYTES]) {
-    size_t length = 0;
-    for (uint8_t i = 0; i < dev->port_path_length; i++) {
-        if (i > 0) {
-            text[length++] = '.';
-        }
-
-        length += string::format_u64(&text[length], sizeof(text) - 1 - length, dev->port_path[i]);
-    }
-
-    text[length] = '\0';
-}
-
 static usb::device* build_usb_device(
     drivers::xhci_hcd* hcd,
     drivers::xhci::xhci_device* xdev,
@@ -233,12 +218,13 @@ static usb::device* build_usb_device(
         }
     }
 
+    dev->controller_number = hcd->controller_number();
     string::memcpy(dev->port_path, xdev->port_path(), xdev->port_path_length());
     dev->port_path_length = xdev->port_path_length();
 
-    char port_path_text[PORT_PATH_TEXT_BYTES];
-    format_port_path(dev, port_path_text);
-    log::info("usb: %04x:%04x is on port %s", dev->vid, dev->pid, port_path_text);
+    char location[LOCATION_TEXT_BYTES];
+    format_location(*dev, location);
+    log::info("usb: %04x:%04x is at location %s", dev->vid, dev->pid, location);
 
     read_device_strings(dev, desc);
 
@@ -373,6 +359,10 @@ void finalize_disconnected_device(drivers::xhci_hcd* hcd,
         sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
     });
     finish_claimed_finalization(ticket);
+}
+
+uint8_t next_controller_number() {
+    return ++g_numbered_controllers;
 }
 
 } // namespace usb::core

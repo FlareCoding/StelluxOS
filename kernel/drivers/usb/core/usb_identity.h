@@ -6,6 +6,9 @@
 
 namespace usb::core {
 
+// The longest location as text: three digits for the controller and each port, the dots between them and the NUL
+constexpr size_t LOCATION_TEXT_BYTES = (MAX_PORT_PATH_LENGTH + 1) * 4;
+
 /**
  * Reads the manufacturer, product and serial number strings `desc` names into
  * `dev` and logs them. They are read in the first language the device lists,
@@ -32,6 +35,13 @@ void decode_string(const uint8_t* descriptor, size_t length, char* out, size_t c
  * English when the table's first `length` bytes list none.
  */
 uint16_t decode_first_language(const uint8_t* table, size_t length);
+
+/**
+ * Writes where `dev` is plugged in: its controller's number, its root port,
+ * then the port on each hub between them, joined by dots, such as "1.5.3" for
+ * port 3 of the hub on root port 5 of controller 1.
+ */
+void format_location(const device& dev, char (&text)[LOCATION_TEXT_BYTES]);
 
 } // namespace usb::core
 

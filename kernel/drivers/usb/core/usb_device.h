@@ -62,6 +62,10 @@ struct device {
     bool     is_hub;
     uint8_t  hub_num_ports;
 
+    // The number of the device's controller, which its location starts with, written only before any driver binds,
+    // so it needs no lock
+    uint8_t  controller_number;
+
     // The root port, then the port on each hub between it and the device, written only before any driver
     // binds, so it needs no lock
     uint8_t  port_path[MAX_PORT_PATH_LENGTH];

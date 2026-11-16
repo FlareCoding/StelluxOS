@@ -177,3 +177,37 @@ TEST(usb_identity, a_table_listing_no_language_chooses_us_english) {
     table[1] = usb::USB_DESCRIPTOR_STRING;
     EXPECT_EQ(decode_first_language(table, HEADER_BYTES + 1), usb::USB_LANGID_ENGLISH_US);
 }
+
+static usb::device g_device;
+
+TEST(usb_identity, a_location_is_the_controller_then_each_port) {
+    // Port 3 of the hub on root port 5 of the second controller
+    g_device.controller_number = 2;
+    g_device.port_path[0] = 5;
+    g_device.port_path[1] = 3;
+    g_device.port_path_length = 2;
+
+    char location[usb::core::LOCATION_TEXT_BYTES];
+    usb::core::format_location(g_device, location);
+    EXPECT_STREQ(location, "2.5.3");
+
+    g_device.port_path_length = 0;
+    usb::core::format_location(g_device, location);
+    EXPECT_STREQ(location, "2");
+}
+
+// The largest controller or port number, three digits as text
+static constexpr uint8_t LARGEST_NUMBER = 255;
+
+TEST(usb_identity, the_longest_location_fits_its_text) {
+    g_device.controller_number = LARGEST_NUMBER;
+    for (uint8_t i = 0; i < usb::MAX_PORT_PATH_LENGTH; i++) {
+        g_device.port_path[i] = LARGEST_NUMBER;
+    }
+
+    g_device.port_path_length = usb::MAX_PORT_PATH_LENGTH;
+
+    char location[usb::core::LOCATION_TEXT_BYTES];
+    usb::core::format_location(g_device, location);
+    EXPECT_STREQ(location, "255.255.255.255.255.255.255");
+}

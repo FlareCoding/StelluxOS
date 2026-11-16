@@ -2,6 +2,7 @@
 #include "drivers/usb/core/usb_transfer.h"
 #include "drivers/usb/usb_langids.h"
 #include "common/logging.h"
+#include "common/string.h"
 
 namespace usb::core {
 
@@ -123,6 +124,16 @@ uint16_t decode_first_language(const uint8_t* table, size_t length) {
 
     const uint8_t* language = table + STRING_HEADER_BYTES;
     return static_cast<uint16_t>(language[0] | (language[1] << 8));
+}
+
+void format_location(const device& dev, char (&text)[LOCATION_TEXT_BYTES]) {
+    size_t length = string::format_u64(text, sizeof(text) - 1, dev.controller_number);
+    for (uint8_t i = 0; i < dev.port_path_length; i++) {
+        text[length++] = '.';
+        length += string::format_u64(&text[length], sizeof(text) - 1 - length, dev.port_path[i]);
+    }
+
+    text[length] = '\0';
 }
 
 } // namespace usb::core
