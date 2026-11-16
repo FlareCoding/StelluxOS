@@ -8,8 +8,8 @@
 constexpr int USAGE_STATUS = 2;
 constexpr const char* USAGE =
     "usage: mcufw boards [<word>] [--events]\n"
-    "       mcufw install <core or board>[@<version>]... [--events]\n"
-    "       mcufw remove <core>... [--events]\n";
+    "       mcufw install <board, core or library>[@<version>]... [--events]\n"
+    "       mcufw remove <core or library>... [--events]\n";
 
 int main(int argc, char** argv) {
     arguments parsed;

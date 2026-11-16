@@ -31,8 +31,8 @@ public:
     // `board <fqbn> <needs> <name>` with every option in the FQBN, then `option <menu> <choice> <label>` per choice.
     void board_described(const selected_board& board, const board_requirements& requirements);
 
-    // An item is a core or a data tool, such as `esp32:esp32-libs`. A program sees `start <item> <version> <bytes>`,
-    // then `progress <item> <done> <bytes>` at most every 100 ms and at the end.
+    // An item is a core, a data tool such as `esp32:esp32-libs`, or a library such as `Adafruit GFX Library`. A program
+    // sees `start <item> <version> <bytes>`, then `progress <item> <done> <bytes>` at most every 100 ms and at the end.
     void install_started(const std::string& item, const std::string& version, uint64_t length);
     void install_progress(const std::string& item, uint64_t done, uint64_t length, uint64_t now_ns);
 
@@ -43,6 +43,9 @@ public:
     // A program a board's recipes need that no Stellux package has installed. A program reading events sees
     // `needs <tool> <version>`, or `needs <file> -` for a compiler missing from its installed tool.
     void program_missing(const tool_dependency& tool);
+
+    // Something the run went on without, `mcufw: <reason>` on stderr, or `warning <reason>`
+    void warned(const std::string& reason);
 
     // `mcufw: <reason>` on stderr, or `failed <kind> <reason>`
     void failed(const failure& failure);

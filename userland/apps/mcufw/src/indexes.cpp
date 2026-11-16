@@ -17,6 +17,9 @@ constexpr uint64_t INDEX_INFLATED_MAX = 256 << 20;
 // The package index lists 14 packages with 331 tools, so these hold more than ten times as many
 constexpr size_t INDEX_PACKAGES_MAX = 256;
 constexpr size_t INDEX_TOOLS_MAX = 4096;
+
+// The library index lists 56,199 releases, so this holds more than four times as many
+constexpr size_t INDEX_RELEASES_MAX = 262144;
 constexpr int GZIP_WINDOW_BITS = 16 + MAX_WBITS;
 constexpr const char* DATA_HOST = "all";
 // What a Linux host's name holds, as in `x86_64-linux-gnu` and `arm-linux-gnueabihf`
@@ -178,18 +181,17 @@ static bool read_package(const json_value& package, const std::string& packager,
     return true;
 }
 
-bool read_package_index(const std::string& path, const std::string& packager, const std::string& architecture,
-                        std::vector<core_release>& cores, std::vector<tool_release>& tools, std::string& error) {
-    cores.clear();
-    tools.clear();
-    size_t packages = 0;
-    json_array_reader reader("packages", [&](json_value& package, std::string& take_error) {
-        if (++packages > INDEX_PACKAGES_MAX) {
-            take_error = "the index lists more than " + std::to_string(INDEX_PACKAGES_MAX) + " packages";
+// Streams the elements of an index's one array into `take`, failing past `elements_max` of them
+static bool read_index_array(const std::string& path, const char* array_key, const char* index_name,
+                             size_t elements_max, const json_element_handler& take, std::string& error) {
+    size_t elements = 0;
+    json_array_reader reader(array_key, [&](json_value& element, std::string& take_error) {
+        if (++elements > elements_max) {
+            take_error = "the index lists more than " + std::to_string(elements_max) + " " + array_key;
             return false;
         }
 
-        return read_package(package, packager, architecture, cores, tools, take_error);
+        return take(element, take_error);
     });
 
     auto feed = [&](std::string_view bytes, std::string& feed_error) {
@@ -197,8 +199,82 @@ bool read_package_index(const std::string& path, const std::string& packager, co
     };
 
     if (!read_gzip_file(path, feed, error) || !reader.finish(error)) {
-        error = "cannot read the package index, since " + error;
+        error = std::string("cannot read the ") + index_name + ", since " + error;
         return false;
+    }
+
+    return true;
+}
+
+bool read_package_index(const std::string& path, const std::string& packager, const std::string& architecture,
+                        std::vector<core_release>& cores, std::vector<tool_release>& tools, std::string& error) {
+    cores.clear();
+    tools.clear();
+    auto take = [&](json_value& package, std::string& take_error) {
+        return read_package(package, packager, architecture, cores, tools, take_error);
+    };
+
+    return read_index_array(path, "packages", "package index", INDEX_PACKAGES_MAX, take, error);
+}
+
+static std::vector<std::string> member_texts(const json_value& object, std::string_view name) {
+    std::vector<std::string> texts;
+    for (const json_value& item : member_items(object, name)) {
+        texts.push_back(item.text);
+    }
+
+    return texts;
+}
+
+static library_release read_library_release(const json_value& library) {
+    library_release release = { member_text(library, "name"), member_text(library, "version"),
+                                member_texts(library, "architectures"), {}, member_texts(library, "providesIncludes") };
+    for (const json_value& dependency : member_items(library, "dependencies")) {
+        release.dependencies.push_back({ member_text(dependency, "name"), member_text(dependency, "version") });
+    }
+
+    return release;
+}
+
+bool read_library_releases(const std::string& path,
+                           const std::function<bool(library_release& release, std::string& error)>& take,
+                           std::string& error) {
+    auto take_release = [&](json_value& library, std::string& take_error) {
+        library_release release = read_library_release(library);
+        return take(release, take_error);
+    };
+
+    return read_index_array(path, "libraries", "library index", INDEX_RELEASES_MAX, take_release, error);
+}
+
+bool read_library_downloads(const std::string& path, const std::vector<release_name>& wanted,
+                            std::vector<archive_download>& downloads, std::string& error) {
+    downloads.assign(wanted.size(), {});
+    std::vector<bool> found(wanted.size(), false);
+    auto take = [&](json_value& library, std::string&) {
+        for (size_t i = 0; i < wanted.size(); i++) {
+            bool is_wanted = member_text(library, "name") == wanted[i].name &&
+                             member_text(library, "version") == wanted[i].version;
+            if (is_wanted && !found[i]) {
+                downloads[i] = read_archive(library);
+                found[i] = true;
+            }
+        }
+
+        return true;
+    };
+
+    bool read = read_index_array(path, "libraries", "library index", INDEX_RELEASES_MAX, take, error);
+
+    if (!read) {
+        return false;
+    }
+
+    for (size_t i = 0; i < wanted.size(); i++) {
+        if (!found[i]) {
+            error = "the library index lists no " + wanted[i].name + " " + wanted[i].version;
+            return false;
+        }
     }
 
     return true;

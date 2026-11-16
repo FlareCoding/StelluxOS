@@ -13,8 +13,8 @@ struct command_rule {
 
 constexpr command_rule COMMAND_RULES[] = {
     { "boards", command_name::boards, 1, "" },
-    { "install", command_name::install, SIZE_MAX, "install needs a core or a board, such as esp32:esp32:esp32da" },
-    { "remove", command_name::remove, SIZE_MAX, "remove needs a core, such as esp32:esp32" },
+    { "install", command_name::install, SIZE_MAX, "install needs a board, a core or a library, such as FastLED" },
+    { "remove", command_name::remove, SIZE_MAX, "remove needs a core or a library, such as FastLED" },
 };
 
 static const command_rule* find_rule(std::string_view name) {

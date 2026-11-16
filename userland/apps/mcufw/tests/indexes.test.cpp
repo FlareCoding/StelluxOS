@@ -1,5 +1,5 @@
-/* indexes, run on the build machine against an excerpt of Arduino's package index: a core's releases with their
- * archives and tools, which tools are data, and an index that is cut short */
+/* indexes, run on the build machine against excerpts of Arduino's indexes: a core's releases with their archives and
+ * tools, which tools are data, an index that is cut short, and the library index's two passes */
 
 #include "indexes.hpp"
 
@@ -19,6 +19,7 @@ constexpr uint32_t MAX_REPORTS = 8;
 constexpr uint64_t INDEX_INFLATED_BYTES = 256 << 20;
 constexpr size_t INDEX_PACKAGES = 256;
 constexpr size_t INDEX_TOOLS = 4096;
+constexpr size_t INDEX_RELEASES = 262144;
 
 static uint64_t g_checks;
 static uint64_t g_failures;
@@ -160,6 +161,76 @@ static void check_tools(const std::vector<tool_release>& tools) {
     check(oversized && oversized->is_data && oversized->archive.size == 0, "a size past 64 bits reads as unstated");
 }
 
+/* A library index of `releases` releases of one library */
+static std::string release_index(size_t releases) {
+    std::string text = "{\"libraries\": [";
+    for (size_t i = 0; i < releases; i++) {
+        text += (i == 0 ? "" : ",") + std::string("{\"name\": \"L\", \"version\": \"") + std::to_string(i) + "\"}";
+    }
+
+    return text + "]}";
+}
+
+static void check_release_bound(const std::string& root) {
+    std::string index = join_path(root, "releases.json.gz");
+    std::string error;
+    size_t count = 0;
+    auto counted = [&](library_release&, std::string&) {
+        count++;
+        return true;
+    };
+
+    write_gzip(index, release_index(INDEX_RELEASES));
+    check(read_library_releases(index, counted, error) && count == INDEX_RELEASES,
+          "a library index of 262144 releases reads");
+    write_gzip(index, release_index(INDEX_RELEASES + 1));
+    check(!read_library_releases(index, counted, error) &&
+              error == "cannot read the library index, since the index lists more than 262144 libraries",
+          "a library index of 262145 releases fails");
+}
+
+static void check_library_index(const std::string& root) {
+    std::string text;
+    std::string error;
+    check(read_file("fixtures/library_index.json", text, error), "the library excerpt reads");
+
+    std::string index = join_path(root, "library_index.json.gz");
+    write_gzip(index, text);
+
+    std::vector<library_release> releases;
+    auto keep = [&](library_release& release, std::string&) {
+        releases.push_back(release);
+        return true;
+    };
+
+    check(read_library_releases(index, keep, error) && releases.size() == 9, "the first pass reads every release");
+    for (const library_release& release : releases) {
+        if (release.name == "Adafruit SSD1306" && release.version == "2.5.15") {
+            check(release.dependencies.size() == 1 && release.dependencies[0].name == "Adafruit GFX Library" &&
+                  release.dependencies[0].constraint.empty(), "a dependency without a version allows any");
+            check(release.architectures == std::vector<std::string>({ "*" }), "its architectures");
+        }
+
+        if (release.name == "Sensirion Gadget BLE Arduino Lib") {
+            check(release.dependencies.size() == 3 && release.dependencies[1].constraint == ">=2.3.4 && <3.0.0",
+                  "a dependency keeps its constraint");
+        }
+
+        if (release.name == "FastLED" && release.version == "3.10.9") {
+            check(release.provided_headers == std::vector<std::string>({ "FastLED.h" }), "its provided headers");
+        }
+    }
+
+    std::vector<archive_download> downloads;
+    std::vector<release_name> wanted = { { "FastLED", "3.10.9" }, { "Adafruit BusIO", "1.17.4" } };
+    check(read_library_downloads(index, wanted, downloads, error) && downloads.size() == 2, "the second pass reads");
+    check(downloads.size() == 2 && downloads[0].file_name == "FastLED-3.10.9.zip" &&
+          downloads[1].file_name == "Adafruit_BusIO-1.17.4.zip", "the downloads come in the wanted order");
+
+    check(!read_library_downloads(index, { { "FastLED", "9.9.9" } }, downloads, error), "a missing release fails");
+    check(error == "the library index lists no FastLED 9.9.9", "and names it");
+}
+
 int main() {
     char root_template[] = "/tmp/mcufw-indexes-XXXXXX";
     std::string root = mkdtemp(root_template);
@@ -184,6 +255,8 @@ int main() {
     check(error == "cannot read the package index, since the document ends early", "and says so");
 
     check_bounds(root);
+    check_library_index(root);
+    check_release_bound(root);
 
     std::string cleanup = "rm -rf " + root;
     if (system(cleanup.c_str()) != 0) {

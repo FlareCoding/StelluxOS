@@ -1,5 +1,5 @@
-/* the installer's decisions, run on the build machine: what a target names, which archives install and how much they
- * may hold, where entries land, which modes apply, which release installs, which tools download, and which stay */
+/* the installer's decisions, run on the build machine: targets, archives and their bounds, entry paths and modes,
+ * releases, data tools, and which library releases install where */
 
 #include "installer.hpp"
 
@@ -43,10 +43,14 @@ static void check_targets() {
           "a board takes options and a version");
     check(target.board.options.size() == 1 && target.board.options[0].choice_id == "esp32p4_es", "its option");
 
-    check(!parse_install_target("esp32da", target, error), "a board ID alone fails");
-    check(error == "esp32da names no core or board, so name a core as packager:architecture or a board by its FQBN",
-          "a board ID alone says how to name one");
+    check(parse_install_target("Adafruit GFX Library@1.12.1", target, error) && target.kind == install_kind::library,
+          "a name without a colon is a library");
+    check(target.library == "Adafruit GFX Library" && target.version == "1.12.1", "a library takes a version");
+    check(!parse_install_target("esp32:", target, error) &&
+              error == "esp32: names no library, core or board: a core is packager:architecture with both parts",
+          "an empty part names nothing");
     check(!parse_install_target("esp32:esp32@", target, error), "an empty version fails");
+    check(!parse_install_target("a:b:c:d:e", target, error), "too many parts fail");
 }
 
 static void check_archives() {
@@ -231,6 +235,211 @@ static void check_unused_tools() {
     check(unused_data_tools({}, installed).size() == 3, "with no core every tool goes");
 }
 
+static library_release library_version(const std::string& name, const std::string& version,
+                                       const std::vector<library_dependency>& dependencies) {
+    return { name, version, { "*" }, dependencies, {} };
+}
+
+/* Releases as the library index lists them, with the two cases the design review probed: B needs an older A, and A's
+ * newest needs a C that does not exist */
+static std::vector<library_release> library_index() {
+    return {
+        library_version("Adafruit SSD1306", "2.5.15", { { "Adafruit GFX Library", "" } }),
+        library_version("Adafruit GFX Library", "1.12.1", { { "Adafruit BusIO", ">=1.14.0" } }),
+        library_version("Adafruit GFX Library", "1.11.9", { { "Adafruit BusIO", "" } }),
+        library_version("Adafruit BusIO", "1.17.4", {}),
+        library_version("Adafruit BusIO", "1.12.0", {}),
+        library_version("Adafruit BusIO", "2.0.0", {}),
+        library_version("Sensor", "1.0.0", { { "Adafruit BusIO", ">=1.12.0 && <2.0.0" } }),
+        library_version("Orphan", "1.0.0", { { "Missing Library", "" } }),
+        library_version("Unreadable", "1.0.0", { { "Adafruit BusIO", "~1.0" } }),
+        library_version("Equal", "1.0.0", {}),
+        library_version("A", "2.0.0", { { "C", "" } }),
+        library_version("A", "1.0.0", {}),
+        library_version("B", "1.0.0", { { "A", "<2.0.0" } }),
+        library_version("C", "1.0.0", {}),
+        library_version("D", "2.0.0", { { "E", ">=2.0.0" } }),
+        library_version("D", "1.0.0", { { "E", "<2.0.0" } }),
+        library_version("F", "1.0.0", { { "D", "" } }),
+        library_version("E", "1.0.0", {}),
+    };
+}
+
+static install_target library_target(const std::string& name, const std::string& version) {
+    install_target target;
+    target.kind = install_kind::library;
+    target.library = name;
+    target.version = version;
+
+    return target;
+}
+
+static library installed_library(const std::string& name, const std::string& version, bool is_legacy = false) {
+    return { name, version, "/libraries/" + library_folder_name(name), library_folder_name(name),
+             library_location::installed, is_legacy };
+}
+
+static std::string chosen_text(const std::vector<release_name>& chosen) {
+    std::string text;
+    for (const release_name& release : chosen) {
+        text += (text.empty() ? "" : ", ") + release.name + " " + release.version;
+    }
+
+    return text;
+}
+
+static bool resolves(const std::vector<install_target>& targets, const std::vector<library>& installed,
+                     const std::string& expected) {
+    std::vector<release_name> chosen;
+    std::string error;
+    if (resolve_libraries(library_index(), targets, installed, chosen, error) && chosen_text(chosen) == expected) {
+        return true;
+    }
+
+    printf("  got: %s\n", error.empty() ? chosen_text(chosen).c_str() : error.c_str());
+
+    return false;
+}
+
+static bool refuses(const std::vector<install_target>& targets, const std::vector<library>& installed,
+                    const std::string& expected) {
+    std::vector<release_name> chosen;
+    std::string error;
+    if (!resolve_libraries(library_index(), targets, installed, chosen, error) && error == expected) {
+        return true;
+    }
+
+    printf("  got: %s\n", error.empty() ? chosen_text(chosen).c_str() : error.c_str());
+
+    return false;
+}
+
+static void check_libraries() {
+    check(resolves({ library_target("Adafruit SSD1306", "") }, {},
+                   "Adafruit BusIO 2.0.0, Adafruit GFX Library 1.12.1, Adafruit SSD1306 2.5.15"),
+          "a chain resolves to the newest of each, dependencies first");
+    check(resolves({ library_target("Adafruit SSD1306", ""), library_target("Sensor", "") }, {},
+                   "Adafruit BusIO 1.17.4, Adafruit GFX Library 1.12.1, Adafruit SSD1306 2.5.15, Sensor 1.0.0"),
+          "two targets resolve together to the newest release meeting both");
+    check(resolves({ library_target("Adafruit GFX Library", "1.11.9") }, {},
+                   "Adafruit BusIO 2.0.0, Adafruit GFX Library 1.11.9"),
+          "a target's version holds");
+
+    check(resolves({ library_target("A", ""), library_target("B", "") }, {}, "A 1.0.0, B 1.0.0"),
+          "a target another one needs older takes that release, leaving out what its newest needed");
+    check(resolves({ library_target("F", "") }, {}, "E 1.0.0, D 1.0.0, F 1.0.0"),
+          "a dependency whose newest cannot be met backtracks to one that can");
+}
+
+static void check_installed_libraries() {
+    std::vector<library> old_bus = { installed_library("Adafruit BusIO", "1.12.0") };
+    check(resolves({ library_target("Sensor", "") }, old_bus, "Sensor 1.0.0"),
+          "an installed library meeting the constraints stays");
+    check(refuses({ library_target("Adafruit GFX Library", "") }, old_bus,
+                  "Adafruit BusIO 1.12.0 is installed, but Adafruit GFX Library 1.12.1 needs >=1.14.0, so run mcufw "
+                  "install \"Adafruit BusIO@2.0.0\""),
+          "an installed library failing a constraint names the dependent and the install that fixes it");
+    check(resolves({ library_target("Adafruit BusIO", "") }, old_bus, "Adafruit BusIO 2.0.0"),
+          "naming an installed library installs its newest");
+
+    check(resolves({ library_target("Adafruit BusIO", "") }, { installed_library("Adafruit BusIO", "2.0.0") }, ""),
+          "naming a library installed at its newest installs nothing");
+    check(resolves({ library_target("Equal", "") }, { installed_library("Equal", "1.0") }, ""),
+          "an installed 1.0 is the index's 1.0.0, so nothing installs");
+    check(resolves({ library_target("Sensor", "") }, { installed_library("Adafruit BusIO", "1.15.0") }, "Sensor 1.0.0"),
+          "an installed version the index lacks stays when it meets the constraints");
+
+    check(refuses({ library_target("Sensor", "") }, { installed_library("Adafruit BusIO", "", true) },
+                  "Adafruit BusIO is installed, but the libraries being installed need 1.17.4, so run mcufw install "
+                  "\"Adafruit BusIO@1.17.4\""),
+          "a legacy library of a needed name is never replaced unasked");
+}
+
+static void check_library_refusals() {
+    check(refuses({ library_target("Adafruit BusIO", "3.0.0") }, {}, "the library index lists no Adafruit BusIO 3.0.0"),
+          "a version the index lacks fails");
+    check(refuses({ library_target("esp32da", "") }, {},
+                  "the library index lists no library esp32da, and a core or board is named with colons, as "
+                  "esp32:esp32:esp32da"),
+          "a word the index does not list says how a core or board is named");
+    check(refuses({ library_target("Orphan", "") }, {},
+                  "the library index lists no library Missing Library, which Orphan 1.0.0 depends on"),
+          "a dependency the index lacks fails, naming the dependent");
+    check(refuses({ library_target("Unreadable", "") }, {},
+                  "Unreadable 1.0.0's dependency on Adafruit BusIO: cannot read the version constraint \"~1.0\""),
+          "a constraint outside relaxed-semver's grammar fails, naming the dependency");
+    check(refuses({ library_target("Adafruit BusIO", "1.12.0"), library_target("Adafruit BusIO", "2.0.0") }, {},
+                  "two different versions of the library Adafruit BusIO are required: 1.12.0 and 2.0.0"),
+          "a library named at two versions fails");
+    check(refuses({ library_target("Adafruit GFX Library", "1.12.1"), library_target("Adafruit BusIO", "1.12.0") }, {},
+                  "no library releases meet every dependency of Adafruit GFX Library, Adafruit BusIO"),
+          "pinned targets that cannot go together fail");
+}
+
+static void check_library_index_need() {
+    install_target core;
+    core.kind = install_kind::core;
+    install_target board;
+    board.kind = install_kind::board;
+    check(!needs_library_index({ core, board }) && !needs_library_index({}),
+          "an install of cores and boards alone goes on without the library index");
+    check(needs_library_index({ core, library_target("FastLED", "") }),
+          "an install naming a library fails without the library index");
+}
+
+static void check_library_installs() {
+    std::vector<library_install> installs;
+    std::string error;
+
+    const std::string libraries = "/libraries";
+    const std::vector<std::string> no_entries;
+    const std::vector<library> none_installed;
+    const std::vector<release_name> gfx = { { "Adafruit GFX Library", "1.12.1" } };
+    check(plan_library_installs(gfx, none_installed, libraries, no_entries, installs, error) && installs.size() == 1 &&
+              installs[0].directory == "/libraries/Adafruit_GFX_Library" && installs[0].replaced.empty(),
+          "a new library lands in its folder name");
+
+    const std::vector<release_name> bus = { { "Adafruit BusIO", "2.0.0" } };
+    const std::vector<std::string> bus_entry = { "Adafruit_BusIO" };
+    const std::vector<library> in_place = { installed_library("Adafruit BusIO", "1.12.0") };
+    check(plan_library_installs(bus, in_place, libraries, bus_entry, installs, error) &&
+              installs[0].replaced == "/libraries/Adafruit_BusIO",
+          "an installed copy in the same folder is replaced");
+
+    library elsewhere = installed_library("Adafruit BusIO", "1.12.0");
+    elsewhere.directory = "/libraries/BusIO-master";
+    const std::vector<library> moved = { elsewhere };
+    const std::vector<std::string> moved_entry = { "BusIO-master" };
+    check(plan_library_installs(bus, moved, libraries, moved_entry, installs, error) &&
+              installs[0].directory == "/libraries/Adafruit_BusIO" &&
+              installs[0].replaced == "/libraries/BusIO-master",
+          "an installed copy in another folder is replaced, the new release landing in its own folder name");
+
+    library other = installed_library("Other Library", "1.0.0");
+    other.directory = "/libraries/Adafruit_BusIO";
+    const std::vector<library> placed = { other };
+    check(!plan_library_installs(bus, placed, libraries, bus_entry, installs, error) &&
+              error == "/libraries/Adafruit_BusIO already holds something other than Adafruit BusIO, so mcufw cannot "
+                       "install it there",
+          "a folder a person placed holding another library is left alone");
+    check(!plan_library_installs(bus, none_installed, libraries, bus_entry, installs, error),
+          "a folder holding no library is left alone too");
+
+    const std::vector<release_name> colliding = { { "Foo Bar", "1.0.0" }, { "Foo_Bar", "1.0.0" } };
+    check(!plan_library_installs(colliding, none_installed, libraries, no_entries, installs, error) &&
+              error == "/libraries/Foo_Bar already holds something other than Foo_Bar, so mcufw cannot install it "
+                       "there",
+          "two chosen names that share a folder name fail");
+
+    library twin = installed_library("Adafruit BusIO", "1.17.4");
+    twin.directory = "/libraries/BusIO-copy";
+    const std::vector<library> twins = { in_place[0], twin };
+    check(!plan_library_installs(bus, twins, libraries, no_entries, installs, error) &&
+              error == "Adafruit BusIO is installed twice, in /libraries/Adafruit_BusIO and /libraries/BusIO-copy, "
+                       "so remove one before installing it",
+          "a library installed twice fails, as arduino-cli refuses it");
+}
+
 int main() {
     check_targets();
     check_archives();
@@ -243,6 +452,12 @@ int main() {
     check_releases();
     check_tool_plans();
     check_unused_tools();
+
+    check_libraries();
+    check_installed_libraries();
+    check_library_refusals();
+    check_library_index_need();
+    check_library_installs();
 
     if (g_failures != 0) {
         printf("install_plan: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

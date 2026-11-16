@@ -15,6 +15,7 @@ struct directory_layout {
     std::string program_tools;  // links to programs Stellux packages provide, named as data tools are
     std::string state;          // Arduino's indexes, the staging folder and the lock
     std::string overrides;      // the image's Stellux overrides, as <packager>/<architecture>/<version>.txt
+    std::string libraries;      // libraries mcufw installs or a person places, one folder each
 };
 
 // The folders of a running system
