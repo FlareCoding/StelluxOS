@@ -1053,6 +1053,24 @@ int32_t xhci_hcd::_recover_halted_control_endpoint(xhci_device* device) {
     return 0;
 }
 
+void xhci_hcd::_await_control_endpoint_recovery(xhci_device* device) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->set_ctrl_recovery_requested(true);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+
+        m_endpoint_stop_pending.store_release(true);
+        notify_event();
+
+        irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        while (device->ctrl_recovery_requested() && !device->ctrl_gone()) {
+            irq = sync::wait_uninterruptible(device->ctrl_completion_wq(), device->ctrl_completion_lock(), irq);
+        }
+
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+}
+
 void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
     if (!device || device->route_string() == 0)
         return;
@@ -1072,11 +1090,17 @@ void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
     uint16_t windex = hub->mtt() ? device->parent_port_num() : 1;
     uint16_t base = static_cast<uint16_t>((dev_addr & 0x7F) << 4); // EP0, control type=0
     // Clear IN direction (bit 15)
-    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+    int32_t in_rc = usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
         8 /* CLEAR_TT_BUFFER */, base | 0x8000, windex, nullptr, 0);
     // Clear OUT/SETUP direction
-    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+    int32_t out_rc = usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
         8 /* CLEAR_TT_BUFFER */, base, windex, nullptr, 0);
+
+    // On the HCD task a clear fails while the hub's task holds the hub's EP0, and nothing resends it
+    if (in_rc != 0 || out_rc != 0) {
+        log::warn("xhci: slot %u TT buffer not cleared on hub slot %u, so the TT may stay busy",
+                  device->slot_id(), hub->slot_id());
+    }
 }
 
 void xhci_hcd::_setup_device(uint8_t port_index) {
@@ -2547,8 +2571,8 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
     }
 }
 
-// Stops run on the HCD task, since `_send_command` drains the event ring on whatever task calls it. A command's wait
-// clears any event marked pending meanwhile, so the scan repeats while a stop is requested and then marks one itself.
+// Stops and EP0 recoveries run on the HCD task, since `_send_command` drains the event ring on whatever task calls it.
+// A command's wait clears events marked pending meanwhile, so the scan repeats while work is requested, then marks one.
 void xhci_hcd::_stop_requested_endpoints() {
     bool has_sent_commands = false;
     while (m_endpoint_stop_pending.exchange_acquire(false)) {
@@ -2557,6 +2581,8 @@ void xhci_hcd::_stop_requested_endpoints() {
             if (!device) {
                 continue;
             }
+
+            has_sent_commands |= _recover_requested_control_endpoint(device);
 
             for (uint8_t dci = 2; dci <= xhci_device::MAX_ENDPOINTS; dci++) {
                 xhci_endpoint* ep = device->endpoint(dci);
@@ -2654,6 +2680,31 @@ bool xhci_hcd::_stop_requested_endpoint(xhci_device* device,
     });
 
     return must_stop;
+}
+
+// EP0's part of the stop step. The class driver's task that asked holds EP0's mutex and waits until the mark clears
+bool xhci_hcd::_recover_requested_control_endpoint(xhci_device* device) {
+    bool is_requested = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        is_requested = device->ctrl_recovery_requested();
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+
+    if (!is_requested) {
+        return false;
+    }
+
+    (void)_recover_halted_control_endpoint(device);
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->set_ctrl_recovery_requested(false);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        sync::wake_all(device->ctrl_completion_wq());
+    });
+
+    return true;
 }
 
 // Makes the stream's last call unless a read's event made it already, then lets any close waiting for it return
@@ -3467,7 +3518,7 @@ int32_t xhci_hcd::usb_control_transfer(
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
         if (completion_halts_endpoint(device->ctrl_result().completion_code)) {
-            (void)_recover_halted_control_endpoint(device);
+            _await_control_endpoint_recovery(device);
         }
         RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",

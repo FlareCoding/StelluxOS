@@ -99,6 +99,10 @@ public:
     inline bool ctrl_gone() const { return m_ctrl_gone; }
     inline void set_ctrl_gone() { m_ctrl_gone = true; }
 
+    // Set under `ctrl_completion_lock()` while a class driver's task waits for the HCD task to recover EP0
+    inline bool ctrl_recovery_requested() const { return m_ctrl_recovery_requested; }
+    inline void set_ctrl_recovery_requested(bool v) { m_ctrl_recovery_requested = v; }
+
     // Non-control endpoints (indexed by DCI)
     static constexpr uint8_t MAX_ENDPOINTS = 31;
     xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
@@ -157,11 +161,12 @@ private:
 
     sync::mutex m_ctrl_transfer_mutex;
 
-    // EP0 completion tracking
+    // EP0 completion, teardown and recovery state
     sync::wait_queue m_ctrl_completion_wq;
     sync::spinlock   m_ctrl_completion_lock;
     bool             m_ctrl_completed = false;
     bool             m_ctrl_gone = false;
+    bool             m_ctrl_recovery_requested = false;
     xhci_transfer_completion_trb_t m_ctrl_result = {};
 
     // Non-control endpoints (DCI 2-31, index 0-1 unused)
