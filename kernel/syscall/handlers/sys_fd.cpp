@@ -57,6 +57,12 @@ constexpr uint8_t DT_SOCK    = 12;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
+// flock operations, where LOCK_SH or LOCK_EX with LOCK_NB fails instead of waiting
+constexpr uint64_t LOCK_SH = 1;
+constexpr uint64_t LOCK_EX = 2;
+constexpr uint64_t LOCK_NB = 4;
+constexpr uint64_t LOCK_UN = 8;
+
 namespace {
 
 struct linux_dirent64_hdr {
@@ -1722,7 +1728,7 @@ static int64_t resolve_record_lock_range(
     return 0;
 }
 
-static int64_t map_record_lock_error(int32_t fs_result) {
+static int64_t map_file_lock_error(int32_t fs_result) {
     switch (fs_result) {
         case fs::OK:        return 0;
         case fs::ERR_AGAIN: return syscall::EAGAIN;
@@ -1778,7 +1784,7 @@ __PRIVILEGED_CODE static int64_t take_record_lock(
     fs::file_lock_table& locks = f->get_node()->file_locks();
     int32_t result = wait ? locks.lock(request) : locks.try_lock(request);
 
-    return map_record_lock_error(result);
+    return map_file_lock_error(result);
 }
 
 /**
@@ -1829,7 +1835,7 @@ __PRIVILEGED_CODE static int64_t run_record_lock_command(
 
     if (is_unlock) {
         fs::file_lock_table& locks = f->get_node()->file_locks();
-        return map_record_lock_error(locks.unlock(request.owner, request.start, request.end));
+        return map_file_lock_error(locks.unlock(request.owner, request.start, request.end));
     }
 
     return take_record_lock(f, request, rights, cmd == F_SETLKW);
@@ -1935,6 +1941,66 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     }
 
     return syscall::EINVAL;
+}
+
+/**
+ * Takes the whole-file lock of the open file description behind `obj` in `mode`, or releases it when `mode` is
+ * unlocked, waiting for conflicting locks to be released when `wait` is set.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int64_t run_whole_file_lock_operation(
+    resource::resource_object* obj,
+    fs::whole_file_lock_mode mode,
+    bool wait
+) {
+    // Only files carry whole-file locks
+    fs::file* f = obj->type == resource::resource_type::FILE ? resource::file_provider::get_file(obj) : nullptr;
+    if (!f) {
+        return syscall::EINVAL;
+    }
+
+    fs::file_lock_table& locks = f->get_node()->file_locks();
+    if (mode == fs::whole_file_lock_mode::unlocked) {
+        locks.unlock_whole_file(*f);
+        return 0;
+    }
+
+    int32_t result = wait ? locks.lock_whole_file(*f, mode) : locks.try_lock_whole_file(*f, mode);
+
+    return map_file_lock_error(result);
+}
+
+DEFINE_SYSCALL2(flock, fd, operation) {
+    fs::whole_file_lock_mode mode;
+    switch (operation & ~LOCK_NB) {
+        case LOCK_SH:
+            mode = fs::whole_file_lock_mode::shared;
+            break;
+        case LOCK_EX:
+            mode = fs::whole_file_lock_mode::exclusive;
+            break;
+        case LOCK_UN:
+            mode = fs::whole_file_lock_mode::unlocked;
+            break;
+        default:
+            return syscall::EINVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    int64_t result = run_whole_file_lock_operation(obj, mode, (operation & LOCK_NB) == 0);
+    resource::resource_release(obj);
+
+    return result;
 }
 
 DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
