@@ -18,6 +18,7 @@ constexpr uint32_t TIOCGPGRP  = 0x540F;
 constexpr uint32_t TIOCSPGRP  = 0x5410;
 constexpr uint32_t TIOCGWINSZ = 0x5413;
 constexpr uint32_t TIOCSWINSZ = 0x5414;
+constexpr uint32_t FIONREAD   = 0x541B;
 
 // The control characters the settings carry, the first 19 of the 32 in musl's termios
 constexpr size_t NCCS = 19;
