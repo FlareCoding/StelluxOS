@@ -4,13 +4,16 @@
 #include "helpers.h"
 #include "tests/serial/fake_chip.h"
 #include "drivers/usb/serial/bridge.h"
+#include "drivers/usb/serial/cp210x.h"
 #include "drivers/usb/serial/ftdi.h"
 #include "drivers/serial/serial.h"
+#include "terminal/tty.h"
 #include "common/string.h"
 #include "clock/clock.h"
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
+#include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
 #include "sync/atomic.h"
 
@@ -28,13 +31,49 @@ struct class_driver_test_access {
 
 TEST_SUITE(serial_bridge);
 
+struct reset_step {
+    uint32_t lines;
+    uint16_t set_mhs_value;
+};
+
 using namespace serial_test;
+using test_helpers::user_page;
+using test_helpers::user_space_scope;
 using usb_test::fake_xhci;
+
+using bridge_factory = usb::class_driver* (*)(usb::device* dev, usb::interface* iface);
 
 static constexpr uint8_t BULK_OUT = 0x02;
 static constexpr uint16_t FT232BM_RELEASE = 0x0400;
-static constexpr const char* SERIAL_NUMBER = "BR01";
+static constexpr const char* FTDI_SERIAL_NUMBER = "BR01";
 static constexpr const char* PORT_PATH = "/dev/serial/ft232bm-br01";
+
+// A CP2102 keeps the serial number 0001 unless its board's maker programs another
+static constexpr uint16_t CP2102_RELEASE = 0x0100;
+static constexpr uint8_t CP2102_PART_NUMBER = 0x02;
+static constexpr const char* CP2102_SERIAL_NUMBER = "0001";
+static constexpr const char* CP2102_PATH = "/dev/serial/cp2102-0001";
+
+// The part number request, then IFC_ENABLE
+static constexpr size_t CP210X_SETUP_REQUESTS = 2;
+
+// A CP210x's first open sends SET_BAUDRATE, SET_LINE_CTL and SET_FLOW, then SET_MHS raising DTR and RTS
+static constexpr size_t CP210X_FIRST_OPEN_REQUESTS = 4;
+static constexpr uint8_t CP210X_SET_MHS = 0x07;
+static constexpr uint8_t CP210X_GET_MDMSTS = 0x08;
+static constexpr uint8_t CP210X_SET_FLOW = 0x13;
+static constexpr uint16_t CP210X_FLOW_LENGTH = 16;
+
+// esptool's reset on a Unix host, a TIOCMGET then one TIOCMSET for each step, and the SET_MHS each step sends
+static constexpr reset_step TIGHT_RESET[] = {
+    {0,                                         0x0300},
+    {terminal::TIOCM_DTR | terminal::TIOCM_RTS, 0x0303},
+    {terminal::TIOCM_RTS,                       0x0302},
+    {terminal::TIOCM_DTR,                       0x0301},
+    {0,                                         0x0300},
+};
+
+static constexpr size_t TIGHT_RESET_STEPS = sizeof(TIGHT_RESET) / sizeof(TIGHT_RESET[0]);
 
 // The first open's chip requests: the latency timer, the line's three, then DTR and RTS
 static constexpr size_t FIRST_OPEN_REQUESTS = 5;
@@ -47,6 +86,7 @@ static drivers::xhci::xhci_endpoint* g_bulk_out;
 static usb::serial::bridge*        g_bridge;
 static fs::file*                   g_file;
 static int32_t                     g_rc;
+static user_page*                  g_page;
 static sync::atomic<uint32_t>      g_has_run_returned;
 static const uint8_t               g_bytes[WRITE_BYTES] = {'h', 'e', 'l', 'l', 'o'};
 
@@ -54,17 +94,17 @@ static usb::device& chip_device() {
     return g_chip.controller->usb_device;
 }
 
-// An FT232BM on the fake controller, whose bulk OUT endpoint takes the bridge's sends. Its bulk IN endpoint is left
-// off the controller, so the port's stream fails to open and the test plays no reads
-static bool attach_bridge() {
+// A chip whose bulk OUT endpoint takes the sends of a bridge from `create`. Its bulk IN endpoint is left off the fake
+// controller, so the port's stream fails to open and the test plays no reads
+static bool attach_bridge(bridge_factory create, uint16_t release, const char* serial_number) {
     if (!attach_fake_chip(g_chip)) {
         return false;
     }
 
     fake_xhci& fake = *g_chip.controller;
     usb::device& dev = fake.usb_device;
-    dev.bcd_device = FT232BM_RELEASE;
-    string::memcpy(dev.serial_number, SERIAL_NUMBER, string::strlen(SERIAL_NUMBER) + 1);
+    dev.bcd_device = release;
+    string::memcpy(dev.serial_number, serial_number, string::strlen(serial_number) + 1);
     dev.num_interfaces = 1;
 
     usb::interface& iface = dev.interfaces[0];
@@ -75,7 +115,7 @@ static bool attach_bridge() {
 
     fake.device->set_endpoint(fake.endpoint->dci(), nullptr);
     g_bulk_out = usb_test::add_fake_endpoint(fake, BULK_OUT, fake_xhci::BULK_ATTRIBUTES, fake_xhci::MAX_PACKET);
-    g_bridge = static_cast<usb::serial::bridge*>(usb::serial::create_bridge<usb::serial::ftdi>(&dev, &iface));
+    g_bridge = static_cast<usb::serial::bridge*>(create(&dev, &iface));
     if (!g_bulk_out || !g_bridge) {
         return false;
     }
@@ -102,17 +142,46 @@ static void open_port() {
     g_file = fs::open(PORT_PATH, fs::O_RDWR);
 }
 
+static void open_cp2102() {
+    g_file = fs::open(CP2102_PATH, fs::O_RDWR);
+}
+
+// One step of esptool's reset, through the int at the start of the test's page
+static int32_t set_lines_as_esptool_does(uint32_t lines) {
+    user_space_scope scope(g_page->ctx);
+    int32_t rc = fs::ioctl(g_file, terminal::TIOCMGET, g_page->addr);
+    if (rc != fs::OK) {
+        return rc;
+    }
+
+    *g_page->at<int32_t>(0) = static_cast<int32_t>(lines);
+    return fs::ioctl(g_file, terminal::TIOCMSET, g_page->addr);
+}
+
+static void reset_as_esptool_does() {
+    g_rc = fs::OK;
+    for (const reset_step& step : TIGHT_RESET) {
+        int32_t rc = fs::OK;
+        RUN_ELEVATED(rc = set_lines_as_esptool_does(step.lines));
+        g_rc = g_rc == fs::OK ? rc : g_rc;
+    }
+}
+
 static void run_bridge(void*) {
     g_bridge->run();
     g_has_run_returned.store_release(1);
     sched::exit(0);
 }
 
-// True once the bridge's task has added the port to /dev/serial
-static bool wait_until_listed() {
+static bool attach_ft232bm() {
+    return attach_bridge(usb::serial::create_bridge<usb::serial::ftdi>, FT232BM_RELEASE, FTDI_SERIAL_NUMBER);
+}
+
+// True once the bridge's task has added the port at `path` to /dev/serial
+static bool wait_until_listed(const char* path) {
     uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
     fs::vattr attr = {};
-    while (fs::stat(PORT_PATH, &attr) != fs::OK) {
+    while (fs::stat(path, &attr) != fs::OK) {
         if (clock::now_ns() > deadline) {
             return false;
         }
@@ -131,7 +200,7 @@ static void complete_send(uint32_t index) {
 
 // A send before run() publishes the port has no port to report its end to, so the bridge refuses it
 TEST(serial_bridge, a_send_before_the_port_is_published_is_refused) {
-    ASSERT_TRUE(attach_bridge());
+    ASSERT_TRUE(attach_ft232bm());
     chip_request reset = {};
     ASSERT_TRUE(make_calls(g_chip, probe, &reset, 1));
     ASSERT_EQ(g_rc, 0);
@@ -145,14 +214,14 @@ TEST(serial_bridge, a_send_before_the_port_is_published_is_refused) {
 // A send's completion reports its end, so the next send can start. After the unplug the bridge refuses new sends, and
 // run() waits for the send in flight to call back before it unregisters the port and returns
 TEST(serial_bridge, run_waits_for_the_send_in_flight_after_the_unplug) {
-    ASSERT_TRUE(attach_bridge());
+    ASSERT_TRUE(attach_ft232bm());
     chip_request reset = {};
     ASSERT_TRUE(make_calls(g_chip, probe, &reset, 1));
     ASSERT_EQ(g_rc, 0);
 
     sched::task* runner = test_helpers::start_pinned_task_on_another_cpu(run_bridge, nullptr, "serial_bridge_run", 0);
     ASSERT_NOT_NULL(runner);
-    ASSERT_TRUE(wait_until_listed());
+    ASSERT_TRUE(wait_until_listed(PORT_PATH));
     chip_request first_open[FIRST_OPEN_REQUESTS];
     ASSERT_TRUE(make_calls(g_chip, open_port, first_open, FIRST_OPEN_REQUESTS));
     ASSERT_NOT_NULL(g_file);
@@ -173,6 +242,52 @@ TEST(serial_bridge, run_waits_for_the_send_in_flight_after_the_unplug) {
     EXPECT_TRUE(test_helpers::spin_wait(g_has_run_returned));
     test_helpers::unpin(runner);
 
+    fs::close(g_file);
+    detach_bridge();
+}
+
+// A CP2102 left with its factory serial number is named for the part its part number request reports, and its port
+// carries esptool's reset as one SET_MHS for each step
+TEST(serial_bridge, a_cp2102_with_the_factory_serial_number_is_cp2102_0001) {
+    ASSERT_TRUE(attach_bridge(usb::serial::create_bridge<usb::serial::cp210x>, CP2102_RELEASE, CP2102_SERIAL_NUMBER));
+    chip_request setup[CP210X_SETUP_REQUESTS];
+    ASSERT_TRUE(make_calls(g_chip, probe, setup, CP210X_SETUP_REQUESTS, &CP2102_PART_NUMBER, 1));
+    ASSERT_EQ(g_rc, 0);
+
+    sched::task* runner = test_helpers::start_pinned_task_on_another_cpu(run_bridge, nullptr, "serial_bridge_run", 0);
+    ASSERT_NOT_NULL(runner);
+    ASSERT_TRUE(wait_until_listed(CP2102_PATH));
+
+    // The first open raises DTR and RTS only after SET_FLOW has left both lowered, as they are on a new chip
+    chip_request first_open[CP210X_FIRST_OPEN_REQUESTS];
+    ASSERT_TRUE(make_calls(g_chip, open_cp2102, first_open, CP210X_FIRST_OPEN_REQUESTS));
+    ASSERT_NOT_NULL(g_file);
+    EXPECT_EQ(first_open[2].request, CP210X_SET_FLOW);
+    EXPECT_EQ(first_open[3].request, CP210X_SET_MHS);
+    EXPECT_EQ(first_open[3].value, static_cast<uint16_t>(0x0303));
+
+    for (uint16_t offset = 0; offset < CP210X_FLOW_LENGTH; offset++) {
+        EXPECT_EQ(first_open[2].data[offset], 0u);
+    }
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    g_page = &page;
+
+    chip_request reset[2 * TIGHT_RESET_STEPS];
+    uint8_t status = 0;
+    EXPECT_TRUE(make_calls(g_chip, reset_as_esptool_does, reset, 2 * TIGHT_RESET_STEPS, &status, 1));
+    EXPECT_EQ(g_rc, fs::OK);
+
+    for (size_t i = 0; i < TIGHT_RESET_STEPS; i++) {
+        EXPECT_EQ(reset[2 * i].request, CP210X_GET_MDMSTS);
+        EXPECT_EQ(reset[2 * i + 1].request, CP210X_SET_MHS);
+        EXPECT_EQ(reset[2 * i + 1].value, TIGHT_RESET[i].set_mhs_value);
+    }
+
+    g_bridge->disconnect();
+    EXPECT_TRUE(test_helpers::spin_wait(g_has_run_returned));
+    test_helpers::unpin(runner);
     fs::close(g_file);
     detach_bridge();
 }
