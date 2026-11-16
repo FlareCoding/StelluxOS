@@ -94,6 +94,13 @@ static void run_driver_call(void* arg) {
     sched::exit(0);
 }
 
+// Makes the call as the HCD task, as enumeration and class driver probes do
+static void run_hcd_call(void* arg) {
+    xhci_hcd_test_access::set_task(*s_fake->hcd, sched::current());
+    make_call(*static_cast<control_transfer_call*>(arg));
+    sched::exit(0);
+}
+
 // Starts `entry` making `call` on a lowered task, as class driver and HCD tasks run, pinned until `finish_call`
 static sched::task* start_call(void (*entry)(void*), control_transfer_call& call) {
     return start_pinned_task_on_another_cpu(entry, &call, "usb_control_call", 0);
@@ -140,6 +147,13 @@ static bool wait_for_td_sending(uint32_t first, uint8_t byte) {
 static void complete_driver_td(uint32_t first, uint8_t completion_code) {
     post_control_event(*s_fake, first + TD_TRBS - 1, completion_code);
     xhci_hcd_test_access::process_events(*s_fake->hcd);
+}
+
+// Ends the TD at EP0 ring entry `first` with `completion_code` for a request the HCD task makes, which handles the
+// event itself once the interrupt wakes it
+static void complete_hcd_td(uint32_t first, uint8_t completion_code) {
+    post_control_event(*s_fake, first + TD_TRBS - 1, completion_code);
+    raise_interrupt(*s_fake);
 }
 
 static control_transfer_call s_driver_calls[2];
@@ -209,4 +223,43 @@ TEST(usb_control_transfer, a_request_waiting_at_teardown_fails) {
     xhci_hcd_test_access::end_control_transfers(*s_fake->hcd, s_fake->device);
     detach_when_done(finish_call(waiting, s_waiting_call));
     EXPECT_EQ(s_waiting_call.rc, -1);
+}
+
+static control_transfer_call s_mixed_calls[2];
+
+// While a class driver's request holds EP0 and waits for a completion only the HCD task handles, a request on the HCD
+// task fails at once, without ringing EP0's doorbell or writing the control buffer
+TEST(usb_control_transfer, a_request_on_the_hcd_task_fails_at_once_while_a_class_driver_holds_ep0) {
+    ASSERT_TRUE(attach_controller());
+    prepare_out_call(s_mixed_calls[0], FIRST_BYTE);
+    prepare_out_call(s_mixed_calls[1], SECOND_BYTE);
+
+    sched::task* driver = start_call(run_driver_call, s_mixed_calls[0]);
+    ASSERT_NOT_NULL(driver);
+    ASSERT_NOT_NULL(wait_for_control_trb(*s_fake, FIRST_TD + TD_TRBS - 1));
+
+    // Takes the doorbell the driver rings for the first TD once it has rung, so a ring for a second TD shows
+    ASSERT_TRUE(wait_for_doorbell(*s_fake, fake_xhci::SLOT_ID, CONTROL_DCI, test_helpers::SPIN_TIMEOUT_NS));
+    sched::task* hcd = start_call(run_hcd_call, s_mixed_calls[1]);
+    ASSERT_NOT_NULL(hcd);
+    EXPECT_FALSE(blocks_before_deadline(hcd));
+    uint32_t doorbell = s_fake->doorbells[fake_xhci::SLOT_ID];
+    bool is_second_td_queued = control_trb(*s_fake, SECOND_TD) != nullptr;
+
+    EXPECT_TRUE(wait_for_td_sending(FIRST_TD, FIRST_BYTE));
+    complete_driver_td(FIRST_TD, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+
+    // A request that waits instead of failing is answered as after an interrupt, so the test can free the fake
+    if (!s_mixed_calls[1].is_done.load_acquire() && wait_for_td_sending(SECOND_TD, SECOND_BYTE)) {
+        complete_hcd_td(SECOND_TD, XHCI_TRB_COMPLETION_CODE_SUCCESS);
+    }
+
+    bool is_driver_done = finish_call(driver, s_mixed_calls[0]);
+    bool is_hcd_done = finish_call(hcd, s_mixed_calls[1]);
+    detach_when_done(is_driver_done && is_hcd_done);
+
+    EXPECT_EQ(doorbell, 0u);
+    EXPECT_FALSE(is_second_td_queued);
+    EXPECT_EQ(s_mixed_calls[0].rc, 0);
+    EXPECT_EQ(s_mixed_calls[1].rc, -1);
 }
