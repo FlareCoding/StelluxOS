@@ -1,5 +1,6 @@
 #include "drivers/usb/core/usb_core.h"
 #include "drivers/usb/core/usb_driver.h"
+#include "drivers/usb/core/usb_identity.h"
 #include "drivers/usb/xhci/xhci.h"
 #include "drivers/usb/xhci/xhci_device.h"
 #include "drivers/usb/xhci/xhci_endpoint.h"
@@ -151,6 +152,7 @@ static usb::device* build_usb_device(
     dev->vid = desc.idVendor;
     dev->pid = desc.idProduct;
     dev->bcd_usb = desc.bcdUsb;
+    dev->bcd_device = desc.bcdDevice;
     dev->device_class = desc.bDeviceClass;
     dev->device_subclass = desc.bDeviceSubClass;
     dev->device_protocol = desc.bDeviceProtocol;
@@ -193,6 +195,8 @@ static usb::device* build_usb_device(
             ep.interval = xep->interval();
         }
     }
+
+    read_device_strings(dev, desc);
 
     return dev;
 }
