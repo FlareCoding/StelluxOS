@@ -17,8 +17,6 @@
 #include "fs/fstypes.h"
 #include "common/string.h"
 
-constexpr size_t MAX_PROC_ARGV_TOTAL = 128 * 1024; // 128 KB
-
 namespace {
 
 struct process_info {
@@ -29,7 +27,7 @@ struct process_info {
 
 // One bounded user string array copied into kernel storage
 struct proc_string_array {
-    char buf[MAX_PROC_ARGV_TOTAL];
+    char buf[sched::MAX_ARG_ARRAY_BYTES];
     const char* ptrs[sched::MAX_ARG_STRINGS];
     int count;
 };
@@ -54,7 +52,7 @@ static int64_t copy_proc_string_array_from_user(
     }
 
     size_t buf_offset = 0;
-    for (size_t i = 0; i < sched::MAX_ARG_STRINGS; i++) {
+    for (size_t i = 0; i <= sched::MAX_ARG_STRINGS; i++) {
         uintptr_t uptr = 0;
         int32_t rc = mm::uaccess::copy_from_user(
             &uptr,
@@ -68,9 +66,13 @@ static int64_t copy_proc_string_array_from_user(
             break;
         }
 
-        size_t remaining = MAX_PROC_ARGV_TOTAL - buf_offset;
+        if (i == sched::MAX_ARG_STRINGS) {
+            return syscall::E2BIG;
+        }
+
+        size_t remaining = sched::MAX_ARG_ARRAY_BYTES - buf_offset;
         if (remaining == 0) {
-            return syscall::ENAMETOOLONG;
+            return syscall::E2BIG;
         }
 
         size_t cap = remaining < sched::MAX_ARG_STRLEN
@@ -80,7 +82,7 @@ static int64_t copy_proc_string_array_from_user(
             arr.buf + buf_offset, cap,
             reinterpret_cast<const char*>(uptr));
         if (rc == mm::uaccess::ERR_NAMETOOLONG) {
-            return syscall::ENAMETOOLONG;
+            return syscall::E2BIG;
         }
 
         if (rc != mm::uaccess::OK) {
