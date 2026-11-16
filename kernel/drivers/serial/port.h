@@ -82,19 +82,22 @@ public:
 
     /**
      * @brief Reads queued bytes into `out`, a user buffer when `is_user_buffer`
-     * is set, waiting for a byte unless `flags` holds O_NONBLOCK.
+     * is set, waiting as the settings' VMIN and VTIME ask unless `flags` holds
+     * O_NONBLOCK.
      * @return The bytes read, 0 once the device has left and the queue is
-     *         empty, else fs::ERR_IO once receiving failed and the queue is
-     *         empty, fs::ERR_AGAIN, fs::ERR_INTR when a signal ends the wait,
-     *         or fs::ERR_FAULT.
+     *         empty or with VMIN 0 when no byte arrives in time, else
+     *         fs::ERR_IO once receiving failed and the queue is empty,
+     *         fs::ERR_AGAIN, fs::ERR_INTR when a signal ends the wait, or
+     *         fs::ERR_FAULT.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE ssize_t read(void* out, size_t count, uint32_t flags, bool is_user_buffer);
 
     /**
-     * @brief Reports POLL_IN while bytes are queued, or once receiving has
-     * failed while the device is attached, and POLL_HUP once the device has
-     * left. Subscribes `pt` when given.
+     * @brief Reports POLL_IN once a byte is queued (VMIN bytes when VTIME is 0
+     * and VMIN is above 1) or receiving has failed while the device is
+     * attached, and POLL_HUP once the device has left. Subscribes `pt` when
+     * given.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE uint32_t poll(sync::poll_table* pt);
@@ -173,8 +176,21 @@ private:
      */
     __PRIVILEGED_CODE int32_t set_exclusive(bool is_exclusive);
 
-    // True when a read has bytes or an end to report
-    bool has_read_result_locked() const;
+    /**
+     * @brief Copies what `settings` asks of reads and received bytes into the
+     * fields the state lock guards.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void take_read_settings(const terminal::termios2& settings);
+
+    // True when a read of `count` bytes may return without waiting further
+    bool is_read_ready_locked(size_t count) const;
+
+    // The queued bytes that make the port readable: VMIN while VTIME is 0 and VMIN is above 1, else one
+    size_t min_readable_bytes_locked() const;
+
+    // When a read that started at `started_ns` stops waiting under VTIME, or 0 when it waits without a limit
+    uint64_t read_deadline_locked(uint64_t started_ns) const;
 
     // What a read that finds no queued bytes returns
     ssize_t empty_read_result_locked(bool may_wait) const;
@@ -211,6 +227,10 @@ private:
     uint8_t*         m_queue = nullptr; // RECEIVE_QUEUE_BYTES, oldest byte at m_queue_head
     size_t           m_queue_head = 0;
     size_t           m_queued = 0;
+    size_t           m_read_min = 1;        // VMIN
+    uint64_t         m_read_timeout_ns = 0; // VTIME
+    bool             m_is_receiving = true; // CREAD
+    uint64_t         m_last_receive_ns = 0;
     uint32_t         m_open_files = 0;
     bool             m_is_gone = false;
     bool             m_has_failed = false;

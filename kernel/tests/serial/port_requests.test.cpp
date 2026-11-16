@@ -44,6 +44,10 @@ static constexpr const char* PORT_PATH = "/dev/serial/reqchip-7777";
 static constexpr uint32_t DEFAULT_CFLAG_WITHOUT_SPEED = terminal::CS8 | terminal::CREAD | terminal::CLOCAL |
                                                         terminal::HUPCL;
 
+static constexpr uint64_t NS_PER_VTIME = 100000000;
+
+static constexpr size_t READ_BYTES = 8;
+
 // A port file opened by the calling task, with a user page that carries each request's argument
 struct port_file {
     user_page          page;
@@ -86,11 +90,23 @@ struct port_call {
     sync::atomic<uint32_t> is_done;
 };
 
+// A blocking read a helper task makes, since a wait on the test runner's task never wakes
+struct read_call {
+    fs::file*              file;
+    size_t                 count;
+    uint8_t                bytes[READ_BYTES];
+    ssize_t                result;
+    uint64_t               started_ns;
+    uint64_t               ended_ns;
+    sync::atomic<uint32_t> is_done;
+};
+
 static fake_port_driver g_driver;
 static serial::port*    g_port;
 static bool             g_is_detached;
 static port_call        g_call;
 static port_call        g_unregister_call;
+static read_call        g_read;
 
 static int32_t register_board() {
     g_driver.reset();
@@ -167,6 +183,45 @@ static bool finish_call(port_call& call, sched::task* task) {
 // What the board's driver does when it unregisters, after which the test's AFTER_EACH has nothing left to do
 static void forget_board() {
     g_port = nullptr;
+}
+
+static void run_read(void*) {
+    g_read.started_ns = clock::now_ns();
+    g_read.result = fs::read(g_read.file, g_read.bytes, g_read.count, 0);
+    g_read.ended_ns = clock::now_ns();
+    g_read.is_done.store_release(1);
+    sched::exit(0);
+}
+
+static sched::task* start_read(fs::file* f, size_t count) {
+    g_read.file = f;
+    g_read.count = count;
+    g_read.is_done.store_release(0);
+    return start_pinned_task_on_another_cpu(run_read, nullptr, "serial_port_read", 0);
+}
+
+static bool finish_read(sched::task* reader) {
+    bool is_done = spin_wait(g_read.is_done);
+    unpin(reader);
+    return is_done;
+}
+
+static uint32_t poll_events(fs::file* f) {
+    uint32_t events = 0;
+    RUN_ELEVATED(events = f->get_node()->poll(f, nullptr));
+    return events;
+}
+
+// Sets VMIN and VTIME through `file`, keeping the rest of its settings
+static int64_t set_read_rules(port_file& file, uint8_t min_bytes, uint8_t tenths) {
+    int64_t rc = file.request(terminal::TCGETS);
+    if (rc != 0) {
+        return rc;
+    }
+
+    file.page.at<terminal::termios>(0)->c_cc[terminal::VMIN] = min_bytes;
+    file.page.at<terminal::termios>(0)->c_cc[terminal::VTIME] = tenths;
+    return file.request(terminal::TCSETS);
 }
 
 static bool lines_equal(const serial::line_settings& a, const serial::line_settings& b) {
@@ -454,4 +509,146 @@ TEST(serial_port_requests, an_unplug_during_the_first_open_fails_it) {
     g_driver.set_line_gate.store_release(0);
     EXPECT_TRUE(finish_call(g_call, opener));
     EXPECT_NULL(g_call.file);
+}
+
+TEST(serial_port_requests, received_bytes_are_dropped_while_cread_is_clear) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    ASSERT_EQ(file.request(terminal::TCGETS), 0);
+    terminal::termios settings = *file.page.at<terminal::termios>(0);
+
+    *file.page.at<terminal::termios>(0) = with_cflag(settings, settings.c_cflag & ~terminal::CREAD);
+    ASSERT_EQ(file.request(terminal::TCSETS), 0);
+    receive_text("dropped");
+    ASSERT_EQ(file.request(terminal::FIONREAD), 0);
+    EXPECT_EQ(*file.page.at<int32_t>(0), 0);
+
+    *file.page.at<terminal::termios>(0) = settings;
+    ASSERT_EQ(file.request(terminal::TCSETS), 0);
+    receive_text("kept");
+    ASSERT_EQ(file.request(terminal::FIONREAD), 0);
+    EXPECT_EQ(*file.page.at<int32_t>(0), 4);
+}
+
+TEST(serial_port_requests, vmin_and_vtime_0_read_what_is_queued_at_once) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 0, 0), 0);
+
+    uint8_t bytes[READ_BYTES] = {};
+    EXPECT_EQ(fs::read(reader, bytes, READ_BYTES, 0), 0);
+    receive_text("ab");
+    EXPECT_EQ(fs::read(reader, bytes, READ_BYTES, 0), 2);
+
+    fs::close(reader);
+}
+
+// Without VTIME a read waits for VMIN bytes, and poll reports readable only once they are queued
+TEST(serial_port_requests, a_read_waits_for_vmin_bytes) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 3, 0), 0);
+
+    receive_text("a");
+    EXPECT_EQ(poll_events(reader) & sync::POLL_IN, 0u);
+    sched::task* task = start_read(reader, READ_BYTES);
+    ASSERT_NOT_NULL(task);
+    EXPECT_TRUE(blocks_before_deadline(task));
+
+    receive_text("bc");
+    EXPECT_TRUE(finish_read(task));
+    EXPECT_EQ(g_read.result, 3);
+    EXPECT_EQ(string::memcmp(g_read.bytes, "abc", 3), 0);
+
+    fs::close(reader);
+}
+
+TEST(serial_port_requests, a_read_shorter_than_vmin_returns_once_it_is_filled) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 5, 0), 0);
+
+    receive_text("abc");
+    sched::task* task = start_read(reader, 2);
+    ASSERT_NOT_NULL(task);
+    EXPECT_TRUE(finish_read(task));
+    EXPECT_EQ(g_read.result, 2);
+    EXPECT_EQ(string::memcmp(g_read.bytes, "ab", 2), 0);
+
+    fs::close(reader);
+}
+
+TEST(serial_port_requests, vtime_alone_ends_a_read_with_nothing) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 0, 1), 0);
+
+    sched::task* task = start_read(reader, READ_BYTES);
+    ASSERT_NOT_NULL(task);
+    EXPECT_TRUE(finish_read(task));
+    EXPECT_EQ(g_read.result, 0);
+    EXPECT_GE(g_read.ended_ns - g_read.started_ns, NS_PER_VTIME);
+
+    fs::close(reader);
+}
+
+// With both, a read waits for its first byte, then returns what arrived once VTIME passes with no new byte
+TEST(serial_port_requests, vmin_and_vtime_return_what_arrived_once_the_line_is_quiet) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 5, 1), 0);
+
+    sched::task* task = start_read(reader, READ_BYTES);
+    ASSERT_NOT_NULL(task);
+    EXPECT_TRUE(blocks_before_deadline(task));
+
+    uint64_t received_ns = clock::now_ns();
+    receive_text("ab");
+    EXPECT_TRUE(finish_read(task));
+    EXPECT_EQ(g_read.result, 2);
+    EXPECT_EQ(string::memcmp(g_read.bytes, "ab", 2), 0);
+    EXPECT_GE(g_read.ended_ns - received_ns, NS_PER_VTIME);
+
+    fs::close(reader);
+}
+
+// With VTIME above 0 a read returns once a byte has arrived and the line goes quiet, so one byte makes the port
+// readable whatever VMIN asks
+TEST(serial_port_requests, one_byte_makes_the_port_readable_when_vtime_is_set) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 3, 1), 0);
+
+    receive_text("a");
+    EXPECT_EQ(poll_events(reader) & sync::POLL_IN, sync::POLL_IN);
+
+    fs::close(reader);
+}
+
+// O_NONBLOCK reads what is queued at once, whatever VMIN asks
+TEST(serial_port_requests, a_nonblocking_read_takes_fewer_bytes_than_vmin) {
+    port_file file;
+    ASSERT_TRUE(file.ready());
+    fs::file* reader = fs::open(PORT_PATH, fs::O_RDONLY);
+    ASSERT_NOT_NULL(reader);
+    ASSERT_EQ(set_read_rules(file, 3, 0), 0);
+
+    receive_text("a");
+    uint8_t bytes[READ_BYTES] = {};
+    EXPECT_EQ(fs::read(reader, bytes, READ_BYTES, fs::O_NONBLOCK), 1);
+    EXPECT_EQ(bytes[0], 'a');
+
+    fs::close(reader);
 }
