@@ -20,6 +20,8 @@ private:
     hub_descriptor  m_hub_desc;
     bool            m_disconnected = false;
 
+    friend struct hub_driver_test_access;
+
     // Hub class requests
     int32_t get_hub_descriptor(hub_descriptor* out);
     int32_t get_port_status(uint8_t port, hub_port_status* out);

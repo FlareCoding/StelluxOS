@@ -146,8 +146,8 @@ void hub_driver::disconnect() {
 }
 
 void hub_driver::handle_port_change(uint8_t port) {
-    hub_port_status status = {};
-    if (get_port_status(port, &status) != 0) {
+    hub_port_status reported = {};
+    if (get_port_status(port, &reported) != 0) {
         log::warn("hub: failed to get status for port %u", port);
         return;
     }
@@ -156,27 +156,39 @@ void hub_driver::handle_port_change(uint8_t port) {
     auto* xdev = static_cast<drivers::xhci::xhci_device*>(m_dev->hcd_device);
 
     // Clear all change bits first
-    if (status.change & PORT_CHANGE_CONNECTION) {
+    if (reported.change & PORT_CHANGE_CONNECTION) {
         clear_port_feature(port, PORT_FEATURE_C_CONNECTION);
     }
-    if (status.change & PORT_CHANGE_ENABLE) {
+
+    if (reported.change & PORT_CHANGE_ENABLE) {
         clear_port_feature(port, PORT_FEATURE_C_ENABLE);
     }
-    if (status.change & PORT_CHANGE_RESET) {
+
+    if (reported.change & PORT_CHANGE_RESET) {
         clear_port_feature(port, PORT_FEATURE_C_RESET);
     }
-    if (status.change & PORT_CHANGE_OVER_CURRENT) {
+
+    if (reported.change & PORT_CHANGE_OVER_CURRENT) {
         clear_port_feature(port, PORT_FEATURE_C_OVER_CURRENT);
     }
-    if (status.change & PORT_CHANGE_SUSPEND) {
+
+    if (reported.change & PORT_CHANGE_SUSPEND) {
         clear_port_feature(port, PORT_FEATURE_C_SUSPEND);
+    }
+
+    // A device that leaves or returns before the clear raises no change of its own, so act on the status after it,
+    // or on the one before when that read fails, since the changes it reported are already cleared
+    hub_port_status status = {};
+    if (get_port_status(port, &status) != 0) {
+        log::warn("hub: failed to get status for port %u again, acting on the status read before", port);
+        status = reported;
     }
 
     // USB 2.0 Section 11.8.1: if the hub disabled a port due to babble or
     // error (C_PORT_ENABLE set, PORT_ENABLE cleared, device still connected),
     // treat it as a connect change so we re-enumerate.  Matches Linux's
     // "disabled by hub (EMI?), re-enabling..." path.
-    if ((status.change & PORT_CHANGE_ENABLE) && !(status.change & PORT_CHANGE_CONNECTION)) {
+    if ((reported.change & PORT_CHANGE_ENABLE) && !(reported.change & PORT_CHANGE_CONNECTION)) {
         if (!(status.status & PORT_STATUS_ENABLE) &&
             (status.status & PORT_STATUS_CONNECTION)) {
             log::warn("hub: port %u disabled by hub (babble?), re-enabling", port);
@@ -197,7 +209,7 @@ void hub_driver::handle_port_change(uint8_t port) {
         }
     }
 
-    if (status.change & PORT_CHANGE_CONNECTION) {
+    if (reported.change & PORT_CHANGE_CONNECTION) {
         if (status.status & PORT_STATUS_CONNECTION) {
             log::info("hub: device connected on port %u", port);
 
