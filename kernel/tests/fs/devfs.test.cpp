@@ -5,9 +5,13 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "mm/heap.h"
+#include "clock/clock.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
+#include "sched/sched.h"
 #include "sync/atomic.h"
+#include "sync/poll.h"
+#include "helpers.h"
 
 TEST_SUITE(devfs);
 
@@ -294,3 +298,293 @@ TEST(devfs, a_removed_device_lives_until_its_creator_releases_it) {
     release_device(device);
     EXPECT_EQ(g_kept_record.is_destroyed.load_acquire(), 1u);
 }
+
+static constexpr const char* WATCHED_DIR_NAME = "devfs_watched";
+static constexpr const char* WATCHED_PATH = "/dev/devfs_watched/text";
+static constexpr const char WATCHED_TEXT[] = "watched\n";
+static constexpr ssize_t WATCHED_TEXT_LENGTH = sizeof(WATCHED_TEXT) - 1;
+
+static devfs::generation_counter g_watched_generation;
+static devfs::text_snapshot_node* g_watched_node;
+
+// Set by a test so that the generator's next run counts a change
+static bool g_changes_while_generating;
+
+static size_t generate_watched_text(char* buf, size_t cap) {
+    if (g_changes_while_generating) {
+        g_changes_while_generating = false;
+        (void)g_watched_generation.advance();
+    }
+
+    return devfs::append_str(buf, cap, 0, WATCHED_TEXT);
+}
+
+// Adds the watched node on first use and opens a file on it
+static fs::file* open_watched_node() {
+    if (!g_watched_node) {
+        g_watched_generation.init();
+        RUN_ELEVATED({
+            fs::node* dir = devfs::ensure_dir(WATCHED_DIR_NAME);
+            auto* node = heap::kalloc_new<devfs::text_snapshot_node>(
+                "text", generate_watched_text, &g_watched_generation
+            );
+            if (dir && node && devfs::add_char_device_at(dir, node) == devfs::OK) {
+                g_watched_node = node;
+            } else if (node) {
+                heap::kfree_delete(node);
+            }
+        });
+    }
+
+    return g_watched_node ? fs::open(WATCHED_PATH, fs::O_RDONLY) : nullptr;
+}
+
+static uint32_t poll_events(fs::file* f) {
+    uint32_t events = 0;
+    RUN_ELEVATED(events = f->get_node()->poll(f, nullptr));
+    return events;
+}
+
+static void count_change() {
+    RUN_ELEVATED((void)g_watched_generation.advance());
+}
+
+TEST(devfs, a_watched_snapshot_is_readable_until_it_holds_the_latest_change) {
+    fs::file* f = open_watched_node();
+    ASSERT_NOT_NULL(f);
+
+    char text[sizeof(WATCHED_TEXT)] = {};
+    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+    ASSERT_EQ(fs::read(f, text, sizeof(text)), WATCHED_TEXT_LENGTH);
+    EXPECT_EQ(poll_events(f), 0u);
+
+    count_change();
+    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+
+    // Reading on past the snapshot's end takes no new one
+    EXPECT_EQ(fs::read(f, text, sizeof(text)), 0);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+
+    ASSERT_EQ(fs::seek(f, 0, fs::SEEK_SET), 0);
+    ASSERT_EQ(fs::read(f, text, sizeof(text)), WATCHED_TEXT_LENGTH);
+    EXPECT_EQ(poll_events(f), 0u);
+
+    fs::close(f);
+}
+
+TEST(devfs, a_change_while_the_text_is_generated_leaves_the_snapshot_stale) {
+    fs::file* f = open_watched_node();
+    ASSERT_NOT_NULL(f);
+
+    char text[sizeof(WATCHED_TEXT)] = {};
+    g_changes_while_generating = true;
+    ASSERT_EQ(fs::read(f, text, sizeof(text)), WATCHED_TEXT_LENGTH);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN);
+
+    ASSERT_EQ(fs::seek(f, 0, fs::SEEK_SET), 0);
+    ASSERT_EQ(fs::read(f, text, sizeof(text)), WATCHED_TEXT_LENGTH);
+    EXPECT_EQ(poll_events(f), 0u);
+
+    fs::close(f);
+}
+
+static constexpr uint64_t POLL_TIMEOUT_NS = 10000000000ULL;
+
+static fs::file* g_poller_file;
+static sync::atomic<uint32_t> g_poller_events;
+static sync::atomic<uint32_t> g_poller_is_woken;
+static sync::atomic<uint32_t> g_poller_done;
+
+// Polls the watched file on a task of its own, since the test runner's task cannot sleep
+static void poll_watched_node(void*) {
+    RUN_ELEVATED({
+        sync::poll_table pt;
+        pt.init(sched::current());
+        g_poller_events.store_relaxed(g_poller_file->get_node()->poll(g_poller_file, &pt));
+        g_poller_is_woken.store_relaxed(sync::poll_wait(pt, POLL_TIMEOUT_NS) ? 1 : 0);
+        sync::poll_cleanup(pt);
+    });
+
+    g_poller_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(devfs, a_change_wakes_a_poller) {
+    fs::file* f = open_watched_node();
+    ASSERT_NOT_NULL(f);
+
+    char text[sizeof(WATCHED_TEXT)] = {};
+    ASSERT_EQ(fs::read(f, text, sizeof(text)), WATCHED_TEXT_LENGTH);
+
+    g_poller_file = f;
+    g_poller_done.store_relaxed(0);
+    sched::task* poller = test_helpers::start_pinned_task(poll_watched_node, nullptr, "devfs_poller");
+    ASSERT_NOT_NULL(poller);
+    ASSERT_TRUE(test_helpers::blocks_before_deadline(poller));
+    EXPECT_EQ(g_poller_events.load_acquire(), 0u);
+
+    count_change();
+    ASSERT_TRUE(test_helpers::spin_wait(g_poller_done));
+    EXPECT_EQ(g_poller_is_woken.load_acquire(), 1u);
+
+    test_helpers::unpin(poller);
+    fs::close(f);
+}
+
+TEST(devfs, a_snapshot_node_seeks_only_back_to_its_start) {
+    fs::file* f = open_watched_node();
+    ASSERT_NOT_NULL(f);
+
+    char letter = 0;
+    ASSERT_EQ(fs::read(f, &letter, 1), 1);
+    EXPECT_EQ(fs::seek(f, 0, fs::SEEK_CUR), 1);
+
+    // Refused seeks leave the offset where it was
+    EXPECT_EQ(fs::seek(f, 1, fs::SEEK_CUR), static_cast<int64_t>(fs::ERR_INVAL));
+    EXPECT_EQ(fs::seek(f, 1, fs::SEEK_SET), static_cast<int64_t>(fs::ERR_INVAL));
+    EXPECT_EQ(fs::seek(f, 0, fs::SEEK_END), static_cast<int64_t>(fs::ERR_INVAL));
+    EXPECT_EQ(fs::seek(f, 0, fs::SEEK_CUR), 1);
+
+    EXPECT_EQ(fs::seek(f, 0, fs::SEEK_SET), 0);
+    ASSERT_EQ(fs::read(f, &letter, 1), 1);
+    EXPECT_EQ(letter, WATCHED_TEXT[0]);
+
+    fs::close(f);
+}
+
+static constexpr const char* HELD_PATH = "/dev/devfs_watched/held";
+static constexpr uint64_t HOLD_TIMEOUT_NS = 10000000000ULL;
+
+// A node whose generator counts its runs at once and runs until the test lets it finish, used on three tasks
+static devfs::text_snapshot_node* g_held_node;
+static fs::file* g_shared_file;
+static sync::atomic<uint32_t> g_generators_running;
+static sync::atomic<uint32_t> g_most_generators_running;
+static sync::atomic<uint32_t> g_may_finish_generating;
+static sync::atomic<uint32_t> g_shared_file_calls_done;
+
+static size_t generate_held_text(char* buf, size_t cap) {
+    uint32_t running = g_generators_running.fetch_add_acq_rel(1) + 1;
+    if (running > g_most_generators_running.load_relaxed()) {
+        g_most_generators_running.store_release(running);
+    }
+
+    uint64_t deadline = clock::now_ns() + HOLD_TIMEOUT_NS;
+    while (!g_may_finish_generating.load_acquire() && clock::now_ns() < deadline) {
+        test_helpers::brief_delay();
+    }
+
+    g_generators_running.fetch_sub_relaxed(1);
+    return devfs::append_str(buf, cap, 0, WATCHED_TEXT);
+}
+
+static fs::file* open_held_node() {
+    if (!g_held_node) {
+        RUN_ELEVATED({
+            fs::node* dir = devfs::ensure_dir(WATCHED_DIR_NAME);
+            auto* node = heap::kalloc_new<devfs::text_snapshot_node>("held", generate_held_text);
+            if (dir && node && devfs::add_char_device_at(dir, node) == devfs::OK) {
+                g_held_node = node;
+            } else if (node) {
+                heap::kfree_delete(node);
+            }
+        });
+    }
+
+    return g_held_node ? fs::open(HELD_PATH, fs::O_RDONLY) : nullptr;
+}
+
+static void read_shared_file(void*) {
+    char text[sizeof(WATCHED_TEXT)] = {};
+    (void)fs::read(g_shared_file, text, sizeof(text));
+    g_shared_file_calls_done.fetch_add_release(1);
+    sched::exit(0);
+}
+
+static void rewind_shared_file(void*) {
+    (void)fs::seek(g_shared_file, 0, fs::SEEK_SET);
+    g_shared_file_calls_done.fetch_add_release(1);
+    sched::exit(0);
+}
+
+// True once `t` sleeps, or once a second generator runs beside the first, as reads without the lock let happen
+static bool sleeps_or_generates_beside_the_first(sched::task* t) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (clock::now_ns() < deadline) {
+        if (t->state.load_acquire() == sched::TASK_STATE_BLOCKED || g_most_generators_running.load_acquire() > 1) {
+            return true;
+        }
+
+        test_helpers::brief_delay();
+    }
+
+    return false;
+}
+
+// Threads and forked processes share one open file, so its reads and seeks wait while one of its reads refills it
+TEST(devfs, a_snapshot_being_taken_holds_off_other_reads_and_seeks_of_its_file) {
+    fs::file* f = open_held_node();
+    ASSERT_NOT_NULL(f);
+
+    g_shared_file = f;
+    g_generators_running.store_relaxed(0);
+    g_most_generators_running.store_relaxed(0);
+    g_may_finish_generating.store_relaxed(0);
+    g_shared_file_calls_done.store_relaxed(0);
+
+    sched::task* first = test_helpers::start_pinned_task_on_another_cpu(read_shared_file, nullptr, "devfs_reader", 0);
+    ASSERT_NOT_NULL(first);
+    ASSERT_TRUE(test_helpers::spin_wait_ge(g_generators_running, 1));
+
+    sched::task* second = test_helpers::start_pinned_task_on_another_cpu(read_shared_file, nullptr, "devfs_reader", 0);
+    ASSERT_NOT_NULL(second);
+    EXPECT_TRUE(sleeps_or_generates_beside_the_first(second));
+
+    sched::task* rewinder = test_helpers::start_pinned_task_on_another_cpu(
+        rewind_shared_file, nullptr, "devfs_rewinder", 0
+    );
+    ASSERT_NOT_NULL(rewinder);
+    EXPECT_TRUE(test_helpers::blocks_before_deadline(rewinder));
+
+    g_may_finish_generating.store_release(1);
+    EXPECT_TRUE(test_helpers::spin_wait_ge(g_shared_file_calls_done, 3));
+    EXPECT_EQ(g_most_generators_running.load_acquire(), 1u);
+
+    test_helpers::unpin(first);
+    test_helpers::unpin(second);
+    test_helpers::unpin(rewinder);
+    fs::close(f);
+}
+
+// Room for the uptime's digits and its line break
+static constexpr size_t UPTIME_TEXT_BYTES = 32;
+
+TEST(devfs, a_snapshot_node_without_a_generation_is_always_readable) {
+    fs::file* f = fs::open("/dev/sysinfo/uptime", fs::O_RDONLY);
+    ASSERT_NOT_NULL(f);
+
+    char text[UPTIME_TEXT_BYTES] = {};
+    EXPECT_GE(fs::read(f, text, sizeof(text)), 1);
+    EXPECT_EQ(poll_events(f), sync::POLL_IN | sync::POLL_OUT);
+
+    fs::close(f);
+}
+
+// Takes the watched and held nodes out of devfs, leaving their directory, which devfs never frees
+static int32_t remove_snapshot_nodes() {
+    if (g_watched_node) {
+        (void)remove_device(g_watched_node);
+        release_device(g_watched_node);
+        g_watched_node = nullptr;
+    }
+
+    if (g_held_node) {
+        (void)remove_device(g_held_node);
+        release_device(g_held_node);
+        g_held_node = nullptr;
+    }
+
+    return 0;
+}
+
+AFTER_ALL(devfs, remove_snapshot_nodes);
