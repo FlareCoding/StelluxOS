@@ -95,11 +95,11 @@ jobs:
         id: musl-cache
         with:
           path: userland/sysroot
-          key: musl-sysroot-1.2.5-v2
+          key: musl-sysroot-1.2.5-${{ hashFiles('userland/musl/patches/*', 'userland/lib/libstlx/include/stlx/*.h') }}-v2
 
       - name: Build musl libc
         if: steps.musl-cache.outputs.cache-hit != 'true'
-        run: make musl
+        run: make musl && make linux-headers
 
       - name: Cache libc++ sysroot
         uses: actions/cache@v4
@@ -212,11 +212,11 @@ jobs:
         id: musl-cache
         with:
           path: userland/sysroot
-          key: macos-musl-sysroot-1.2.5-v2
+          key: macos-musl-sysroot-1.2.5-${{ hashFiles('userland/musl/patches/*', 'userland/lib/libstlx/include/stlx/*.h') }}-v2
 
       - name: Build musl libc
         if: steps.musl-cache.outputs.cache-hit != 'true'
-        run: make musl
+        run: make musl && make linux-headers
 
       - name: Cache libc++ sysroot
         uses: actions/cache@v4

@@ -100,7 +100,8 @@ make qt
 llvm, qemu, ovmf, mtools, etc.) and via [Homebrew](https://brew.sh) on
 macOS (llvm, lld, qemu, mtools, gptfdisk, etc.). `make limine` downloads
 the Limine bootloader binaries. `make musl` builds musl 1.2.5 for both
-x86_64 and aarch64. `make libcxx` builds the LLVM C++ runtime (libc++,
+x86_64 and aarch64 with Stellux's patches from `userland/musl/patches/`.
+`make libcxx` builds the LLVM C++ runtime (libc++,
 libc++abi, libunwind) against the musl sysroot for C++ userland
 application support. `make compiler-rt` builds the compiler runtime
 builtins for both architectures. `make qt` builds a host Qt for this
