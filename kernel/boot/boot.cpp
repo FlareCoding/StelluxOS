@@ -27,6 +27,7 @@
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
+#include "drivers/serial/serial.h"
 #include "gpu/gpu.h"
 #include "random/random.h"
 #include "sysstat/sysstat.h"
@@ -132,6 +133,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (input::init() != input::OK) {
         log::warn("input::init failed, input devices unavailable");
+    }
+
+    if (serial::init() != serial::OK) {
+        log::warn("serial::init failed, serial ports unavailable");
     }
 
     if (clock::init() != clock::OK) {
