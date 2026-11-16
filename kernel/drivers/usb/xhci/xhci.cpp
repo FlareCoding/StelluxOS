@@ -3124,13 +3124,6 @@ int32_t xhci_hcd::_send_control_transfer(
 
     bool is_in = (request.transfer_direction != 0);
 
-    // For OUT data stage, copy caller data into DMA buffer before enqueue
-    if (length > 0 && !is_in && buffer) {
-        string::memcpy(dma_buffer, buffer, length);
-    } else {
-        string::memset(dma_buffer, 0, length > 0 ? length : 1);
-    }
-
     // Setup Stage TRB
     xhci_setup_stage_trb_t setup = {};
     setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
@@ -3163,9 +3156,19 @@ int32_t xhci_hcd::_send_control_transfer(
     status.ioc = 1; // Interrupt on completion
     status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
 
-    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
-    // (e.g. hub task and HCD task both sending control transfers to the hub).
-    RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+    // The HCD task never sleeps on EP0's mutex, since its holder may wait for a completion only this task handles
+    bool holds_ep0 = false;
+    RUN_ELEVATED(holds_ep0 = sync::mutex_trylock(device->ctrl_transfer_mutex()));
+    if (!holds_ep0) {
+        log::warn("xhci: slot %u control transfer refused, another task holds EP0", device->slot_id());
+        return -1;
+    }
+
+    if (length > 0 && !is_in && buffer) {
+        string::memcpy(dma_buffer, buffer, length);
+    } else {
+        string::memset(dma_buffer, 0, length > 0 ? length : 1);
+    }
 
     device->set_ctrl_completed(false);
 
@@ -3214,12 +3217,12 @@ int32_t xhci_hcd::_send_control_transfer(
         return -1;
     }
 
-    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
-
     if (buffer && length > 0 && is_in) {
         barrier::dma_read();
         string::memcpy(buffer, dma_buffer, length);
     }
+
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
 
     return 0;
 }

@@ -107,7 +107,7 @@ void close_in_stream(in_stream* stream);
 
 /**
  * Synchronous control transfer on EP0. Fails at once after the device's
- * unplug.
+ * unplug, and on the HCD task while another task's request holds EP0.
  * For IN (device-to-host) data is filled by the device, for OUT
  * (host-to-device) data is sent to the device. Direction is encoded
  * in request_type bit 7 (0=OUT, 1=IN). An IN reply shorter than
