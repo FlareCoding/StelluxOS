@@ -1,10 +1,13 @@
-/* cores and boards, run on the build machine against fixtures/: cores with their local files and install records,
- * menus as read on Linux, choosing a board with its options, and what `mcufw boards` lists and describes */
+/* cores, tools, boards and requirements, run on the build machine against fixtures/: cores, menus as read on Linux,
+ * choosing boards, the layered properties, what a build is missing, and what `mcufw boards` lists and describes */
 
 #include "boards.hpp"
 #include "commands.hpp"
 #include "cores.hpp"
 #include "files.hpp"
+#include "recipes.hpp"
+#include "requirements.hpp"
+#include "tools.hpp"
 
 #include <unistd.h>
 
@@ -17,6 +20,8 @@
 constexpr uint32_t MAX_REPORTS = 8;
 
 constexpr const char* NATIVE_CORE = "fixtures/hardware/stellux/native/1.0.0";
+constexpr const char* ALPHA_SDK = "fixtures/tools/stellux/alpha-sdk/2.0";
+constexpr const char* NATIVE_GCC = "fixtures/program-tools/stellux/native-gcc/1.0";
 
 /* A board request that selection refuses, with the reason it gives */
 struct refusal {
@@ -33,14 +38,19 @@ struct command_output {
 
 /* Every board of the fixture cores that a listing shows, in its order */
 constexpr const char* FULL_LISTING =
-    "board\tstellux:native:dotless\tDotless Menu Board\n"
-    "board\tstellux:native:esp32da\tESP32-WROOM-DA Module\n"
-    "board\tstellux:native:hideempty\tHide Empty Board\n"
-    "board\tstellux:native:hidefalse\tHide False Board\n"
-    "board\tstellux:native:hideupper\tHide Upper Board\n"
-    "board\tstellux:native:menus\tBoard With Menus\n"
-    "board\tstellux:native:plain\tPlain Board\n"
-    "board\tstellux:other:plain\tOther Plain Board\n";
+    "board\tstellux:native:beta\tstellux:beta-sdk 2.0\tBeta Board\n"
+    "board\tstellux:native:cross\txtensa-cross-g++\tCross Board\n"
+    "board\tstellux:native:dotless\t-\tDotless Menu Board\n"
+    "board\tstellux:native:esp32da\t-\tESP32-WROOM-DA Module\n"
+    "board\tstellux:native:gamma\tgamma-sdk\tGamma Board\n"
+    "board\tstellux:native:hideempty\t-\tHide Empty Board\n"
+    "board\tstellux:native:hidefalse\t-\tHide False Board\n"
+    "board\tstellux:native:hideupper\t-\tHide Upper Board\n"
+    "board\tstellux:native:menus\t-\tBoard With Menus\n"
+    "board\tstellux:native:plain\t-\tPlain Board\n"
+    "board\tstellux:native:twice\t-\tTwice Named Tool Board\n"
+    "board\tstellux:native:versioned\tstellux:beta-sdk 2.0\tVersioned Board\n"
+    "board\tstellux:other:plain\t-\tOther Plain Board\n";
 
 static uint64_t g_checks;
 static uint64_t g_failures;
@@ -77,7 +87,7 @@ static std::string read_back(FILE* file) {
 }
 
 static directory_layout fixture_layout() {
-    return { "fixtures/hardware", "", "" };
+    return { "fixtures/hardware", "fixtures/tools", "fixtures/program-tools" };
 }
 
 static command_output run_command(const directory_layout& layout, const std::string& word, bool events) {
@@ -120,6 +130,14 @@ static bool select(const std::vector<installed_core>& cores, const std::string& 
     return parse_board_request(text, request, error) && select_board(cores, request, board, error);
 }
 
+static board_requirements requirements_of(const std::vector<installed_core>& cores, const std::string& text,
+                                          const directory_layout& layout) {
+    selected_board board;
+    std::string error;
+    check(select(cores, text, board, error), "the board is chosen");
+    return check_requirements(board, locate_tools(board.core->tools, layout));
+}
+
 static void check_cores(const std::vector<installed_core>& cores) {
     check(cores.size() == 2, "both cores load");
     const installed_core& native = cores[0];
@@ -136,8 +154,9 @@ static void check_cores(const std::vector<installed_core>& cores) {
     }
 
     std::vector<std::string> expected = {
-        "plain",           "menus",  "hidden",     "hideupper", "hideempty", "hidefalse", "borrowed",
-        "borrowed_variant", "ownref", "undeclared", "nolabel",   "dotless",   "esp32da",
+        "plain",     "menus",     "beta",     "cross",            "gamma",  "versioned",  "twice",
+        "hidden",    "hideupper", "hideempty", "hidefalse",        "borrowed", "borrowed_variant", "ownref",
+        "undeclared", "nolabel",  "dotless",  "esp32da",
     };
 
     check(ids == expected, "boards come in boards.txt order, without the menu declarations");
@@ -271,17 +290,18 @@ static void check_listing() {
     check(all.err.empty(), "a listing writes nothing on stderr");
 
     command_output by_name = run_command(fixture_layout(), "WROOM", true);
-    check(by_name.out == "board\tstellux:native:esp32da\tESP32-WROOM-DA Module\n", "a word matches a name in any case");
+    check(by_name.out == "board\tstellux:native:esp32da\t-\tESP32-WROOM-DA Module\n",
+          "a word matches a name in any case");
 
     command_output by_fqbn = run_command(fixture_layout(), "Native:Hide", true);
-    std::string expected = "board\tstellux:native:hideempty\tHide Empty Board\n"
-                           "board\tstellux:native:hidefalse\tHide False Board\n"
-                           "board\tstellux:native:hideupper\tHide Upper Board\n";
+    std::string expected = "board\tstellux:native:hideempty\t-\tHide Empty Board\n"
+                           "board\tstellux:native:hidefalse\t-\tHide False Board\n"
+                           "board\tstellux:native:hideupper\t-\tHide Upper Board\n";
     check(by_fqbn.out == expected, "a word matches an FQBN in any case");
 
     command_output shared_id = run_command(fixture_layout(), "plain", true);
-    expected = "board\tstellux:native:plain\tPlain Board\n"
-               "board\tstellux:other:plain\tOther Plain Board\n";
+    expected = "board\tstellux:native:plain\t-\tPlain Board\n"
+               "board\tstellux:other:plain\t-\tOther Plain Board\n";
     check(shared_id.status == 0 && shared_id.out == expected, "an ID two cores define lists both boards");
 
     command_output person = run_command(fixture_layout(), "nothing-matches", false);
@@ -290,11 +310,11 @@ static void check_listing() {
 
 static void check_descriptions() {
     command_output hidden = run_command(fixture_layout(), "stellux:native:hidden", true);
-    check(hidden.status == 0 && hidden.out == "board\tstellux:native:hidden\tHidden Board\n",
+    check(hidden.status == 0 && hidden.out == "board\tstellux:native:hidden\t-\tHidden Board\n",
           "a hidden board named by its FQBN is described");
 
     command_output by_id = run_command(fixture_layout(), "menus", true);
-    check(by_id.out.starts_with("board\tstellux:native:menus:Speed=slow,Debug=off\tBoard With Menus\n"),
+    check(by_id.out.starts_with("board\tstellux:native:menus:Speed=slow,Debug=off\t-\tBoard With Menus\n"),
           "a unique ID is described rather than listed");
 
     command_output refused = run_command(fixture_layout(), "borrowed", true);
@@ -305,7 +325,7 @@ static void check_descriptions() {
 
     command_output with_option = run_command(fixture_layout(), "menus:Speed=turbo", true);
     check(with_option.status == 0 &&
-              with_option.out.starts_with("board\tstellux:native:menus:Speed=turbo,Debug=off\tBoard With Menus\n"),
+              with_option.out.starts_with("board\tstellux:native:menus:Speed=turbo,Debug=off\t-\tBoard With Menus\n"),
           "a word with an option describes the board with it");
 
     command_output person = run_command(fixture_layout(), "menus:Speed=turbo", false);
@@ -321,23 +341,134 @@ static void check_descriptions() {
           "a word with a malformed option fails");
 }
 
+static void check_properties(const std::vector<installed_core>& cores, const directory_layout& layout) {
+    selected_board board;
+    std::string error;
+    check(select(cores, "menus:Speed=turbo", board, error), "the board is chosen");
+
+    property_table properties = board_properties(board, locate_tools(board.core->tools, layout));
+    check(properties.get("build.speed") == "turbo" && properties.get("build.debug") == "0",
+          "a given option merges after the other menus' defaults");
+    check(properties.get("build.fqbn") == "stellux:native:menus:Speed=turbo", "build.fqbn holds the request");
+    check(properties.get("build.arch") == "NATIVE" && properties.get("build.board") == "MENUS_CUSTOM",
+          "build.arch is the architecture and the board's own build.board stays");
+    check(properties.get("_id") == "menus", "_id is the board's ID");
+
+    check(properties.get("runtime.platform.path") == NATIVE_CORE, "runtime.platform.path is the core");
+    check(properties.get("runtime.hardware.path") == "fixtures/hardware/stellux/native",
+          "runtime.hardware.path is the core's parent");
+
+    check(properties.get("build.board.platform.path") == NATIVE_CORE, "build.board.platform.path is the core");
+    check(properties.get("build.core.platform.path") == NATIVE_CORE, "build.core.platform.path is the core");
+    check(properties.get("build.core.path") == std::string(NATIVE_CORE) + "/cores/native",
+          "build.core.path is the core's cores/<build.core>");
+    check(properties.get("build.system.path") == std::string(NATIVE_CORE) + "/system",
+          "build.system.path is the core's system folder");
+    check(properties.get("build.variant.path").empty(), "no variant leaves build.variant.path empty");
+
+    check(properties.get("runtime.tools.alpha-sdk.path") == ALPHA_SDK,
+          "a data tool has its path, from the data folder though the program folder holds it too");
+    check(properties.get("runtime.tools.alpha-sdk-2.0.path") == ALPHA_SDK, "a data tool has its versioned path");
+    check(properties.get("runtime.tools.native-gcc.path") == NATIVE_GCC, "a program tool has its path");
+    check(!properties.find("runtime.tools.beta-sdk.path"), "a missing tool has none");
+
+    check(properties.get("runtime.os") == "linux", "runtime.os is linux");
+    check(properties.get("runtime.ide.version") == "10607" && properties.get("ide_version") == "10607",
+          "the IDE version is arduino-cli 1.6.0's");
+    check(properties.get("runtime.ide.path") == "/bin", "runtime.ide.path is mcufw's folder");
+    check(properties.get("software") == "ARDUINO", "software defaults to ARDUINO");
+    check(properties.get("build.library_discovery_phase") == "0", "build.library_discovery_phase is 0");
+    check(properties.get("tools.avrdude.path") == "{runtime.tools.avrdude.path}", "tools.avrdude.path is set");
+
+    std::vector<std::string> words;
+    check(recipe_words(properties, "recipe.cpp.o.pattern", words, error), "the compile recipe splits");
+    check(words[0] == std::string(NATIVE_GCC) + "/bin/g++" && words[2] == "-DSTELLUX_LOCAL",
+          "the recipe expands through every layer");
+
+    check(select(cores, "stellux:native:plain", board, error), "the board is chosen");
+    property_table plain = board_properties(board, {});
+    check(plain.get("build.board") == "NATIVE_PLAIN", "build.board defaults to the architecture and ID");
+    check(plain.get("build.variant.path") == std::string(NATIVE_CORE) + "/variants/plain_local", "a variant's path");
+
+    check(select(cores, "menus", board, error), "the board is chosen");
+    check(board_properties(board, {}).get("build.speed") == "debug", "defaults merge in menu order");
+
+    check(select(cores, "stellux:other:plain", board, error), "the board is chosen");
+    property_table other = board_properties(board, {});
+    check(other.get("runtime.ide.path") == "/opt/arduino", "a core's own runtime.ide.path stays");
+    check(other.get("software") == "STELLUX", "a core's own software stays");
+}
+
+static void check_tool_order() {
+    std::vector<located_tool> tools = {
+        { { "stellux", "sdk", "1.10" }, "/newer" },
+        { { "stellux", "sdk", "1.9" }, "/older" },
+    };
+
+    property_table properties;
+    set_tool_paths(tools, properties);
+    check(properties.get("runtime.tools.sdk.path") == "/newer", "the newest version takes the short key");
+    check(properties.get("runtime.tools.sdk-1.9.path") == "/older", "each version keeps its own key");
+
+    std::vector<located_tool> packagers = {
+        { { "zeta", "sdk", "1.0" }, "/zeta" },
+        { { "alpha", "sdk", "2.0" }, "/alpha" },
+    };
+
+    property_table by_packager;
+    set_tool_paths(packagers, by_packager);
+    check(by_packager.get("runtime.tools.sdk.path") == "/zeta", "tools sort by packager before version");
+}
+
+static void check_what_boards_need(const std::vector<installed_core>& cores, const directory_layout& layout) {
+    board_requirements plain = requirements_of(cores, "stellux:native:plain", layout);
+    check(plain.tools.size() == 2 && plain.tools[0].name == "native-gcc", "the recipe names the compiler's tool");
+    check(plain.tools[1].name == "alpha-sdk", "the recipe names the SDK it includes");
+    check(describe_missing(plain).empty(), "plain needs nothing");
+
+    board_requirements twice = requirements_of(cores, "twice", layout);
+    check(twice.tools.size() == 1 && twice.tools[0].name == "native-gcc", "a tool named twice is listed once");
+
+    board_requirements beta = requirements_of(cores, "beta", layout);
+    check(describe_missing(beta) == "stellux:beta-sdk 2.0", "a data tool no folder holds is missing");
+
+    board_requirements versioned = requirements_of(cores, "versioned", layout);
+    check(describe_missing(versioned) == "stellux:beta-sdk 2.0", "a tool named with its version is that dependency");
+
+    board_requirements cross = requirements_of(cores, "cross", layout);
+    check(describe_missing(cross) == "xtensa-cross-g++", "a compiler missing from its tool is missing");
+
+    board_requirements gamma = requirements_of(cores, "gamma", layout);
+    check(describe_missing(gamma) == "gamma-sdk", "a tool the core does not depend on is missing without a version");
+
+    directory_layout no_programs = layout;
+    no_programs.program_tools = "fixtures/missing";
+    board_requirements bare = requirements_of(cores, "stellux:native:plain", no_programs);
+    check(describe_missing(bare) == "stellux:native-gcc 1.0", "a missing tool hides the program it would hold");
+}
+
 int main() {
     char root_template[] = "/tmp/mcufw-boards-XXXXXX";
     std::string root = mkdtemp(root_template);
+    directory_layout layout = fixture_layout();
 
     std::vector<installed_core> cores;
     std::string error;
-    check(load_installed_cores(fixture_layout(), cores, error), "the fixture cores load");
+    check(load_installed_cores(layout, cores, error), "the fixture cores load");
     if (cores.size() == 2) {
         check_cores(cores);
         check_menus(cores[0]);
         check_selection(cores);
         check_selection_failures(cores);
+
         check_listing();
         check_descriptions();
+        check_properties(cores, layout);
+        check_what_boards_need(cores, layout);
     }
 
     check_loading_failures(root);
+    check_tool_order();
 
     std::string cleanup = "rm -rf " + root;
     if (system(cleanup.c_str()) != 0) {

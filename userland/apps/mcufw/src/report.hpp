@@ -6,27 +6,29 @@
 
 #include "boards.hpp"
 #include "failure.hpp"
+#include "requirements.hpp"
 
 #include <cstdio>
 #include <string>
 #include <vector>
 
 struct listed_board {
-    std::string fqbn;
-    std::string name;
+    std::string        fqbn;
+    std::string        name;
+    board_requirements requirements;
 };
 
 class reporter {
 public:
     reporter(bool events, FILE* out, FILE* err);
 
-    // A person sees the boards in aligned columns, or a sentence when no board matched `word`. A program sees
-    // `board <fqbn> <name>` per board.
+    // A person sees aligned columns, with `needs` and what after a board missing something, or a sentence when none
+    // matched `word`. A program sees `board <fqbn> <needs> <name>`, `<needs>` from `describe_missing` or `-` if none.
     void boards_listed(const std::vector<listed_board>& boards, const std::string& word);
 
-    // The board as requested, the core it comes from and each menu's choices, the default first. A program sees
-    // `board <fqbn> <name>` with every option in the FQBN, then `option <menu> <choice> <label>` per choice.
-    void board_described(const selected_board& board);
+    // The board as requested, its core, what it needs and each menu's choices, the default first. A program sees
+    // `board <fqbn> <needs> <name>` with every option in the FQBN, then `option <menu> <choice> <label>` per choice.
+    void board_described(const selected_board& board, const board_requirements& requirements);
 
     // `mcufw: <reason>` on stderr, or `failed <kind> <reason>`
     void failed(const failure& failure);

@@ -7,6 +7,7 @@
 constexpr size_t LISTING_GAP = 3;
 constexpr size_t MENU_GAP = 2;
 constexpr size_t DESCRIPTION_WIDTH_MAX = 120;
+constexpr const char* NOTHING_NEEDED = "-";
 
 reporter::reporter(bool events, FILE* out, FILE* err)
     : m_events(events), m_out(out), m_err(err) {}
@@ -62,6 +63,11 @@ void reporter::event(const std::vector<std::string>& fields) {
     fprintf(m_out, "%s\n", line.c_str());
 }
 
+static std::string needs_field(const board_requirements& requirements) {
+    std::string missing = describe_missing(requirements);
+    return missing.empty() ? NOTHING_NEEDED : missing;
+}
+
 static std::string padded(const std::string& text, size_t width) {
     return text + std::string(width > text.size() ? width - text.size() : 0, ' ');
 }
@@ -69,7 +75,7 @@ static std::string padded(const std::string& text, size_t width) {
 void reporter::boards_listed(const std::vector<listed_board>& boards, const std::string& word) {
     if (m_events) {
         for (const listed_board& board : boards) {
-            event({ "board", board.fqbn, board.name });
+            event({ "board", board.fqbn, needs_field(board.requirements), board.name });
         }
 
         return;
@@ -86,12 +92,16 @@ void reporter::boards_listed(const std::vector<listed_board>& boards, const std:
     }
 
     size_t fqbn_width = 0;
+    size_t name_width = 0;
     for (const listed_board& board : boards) {
         fqbn_width = std::max(fqbn_width, board.fqbn.size());
+        name_width = std::max(name_width, board.name.size());
     }
 
     for (const listed_board& board : boards) {
-        std::string line = padded(board.fqbn, fqbn_width + LISTING_GAP) + board.name;
+        std::string missing = describe_missing(board.requirements);
+        std::string line = padded(board.fqbn, fqbn_width + LISTING_GAP);
+        line += missing.empty() ? board.name : padded(board.name, name_width + LISTING_GAP) + "needs " + missing;
         fprintf(m_out, "%s\n", line.c_str());
     }
 }
@@ -124,10 +134,10 @@ static std::string menu_row(const board_menu& menu, size_t indent, size_t width)
     return row;
 }
 
-void reporter::board_described(const selected_board& board) {
+void reporter::board_described(const selected_board& board, const board_requirements& requirements) {
     const board_definition& definition = *board.definition;
     if (m_events) {
-        event({ "board", full_fqbn(board), definition.name });
+        event({ "board", full_fqbn(board), needs_field(requirements), definition.name });
         for (const board_menu& menu : definition.menus) {
             for (const menu_choice& choice : menu.choices) {
                 event({ "option", menu.id, choice.id, choice.label });
@@ -146,6 +156,11 @@ void reporter::board_described(const selected_board& board) {
     std::string header = requested_fqbn(board) + std::string(LISTING_GAP, ' ') + definition.name + ", from " +
                          platform_name + " " + core.version;
     fprintf(m_out, "%s\n", header.c_str());
+
+    std::string missing = describe_missing(requirements);
+    if (!missing.empty()) {
+        fprintf(m_out, "needs %s\n", missing.c_str());
+    }
 
     if (definition.menus.empty()) {
         return;

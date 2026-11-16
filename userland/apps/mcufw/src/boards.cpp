@@ -1,6 +1,17 @@
 #include "boards.hpp"
 
+#include "files.hpp"
+
 #include <cctype>
+
+// The `runtime.ide.version` and `ide_version` arduino-cli 1.6.0 gives every board
+constexpr const char* ARDUINO_IDE_VERSION = "10607";
+
+// The system whose keys properties read, which recipes test as `runtime.os`
+constexpr std::string_view RUNTIME_OS = LINUX_KEY_PART.substr(1);
+
+// arduino-cli names the folder holding its own program as `runtime.ide.path`, and mcufw is installed in /bin
+constexpr const char* MCUFW_DIRECTORY = "/bin";
 
 static std::string uppercased(std::string text) {
     for (char& c : text) {
@@ -206,4 +217,46 @@ std::string full_fqbn(const selected_board& board) {
     }
 
     return format_fqbn(board.core->packager, board.core->architecture, board.definition->id, in_menu_order);
+}
+
+property_table board_properties(const selected_board& board, const std::vector<located_tool>& tools) {
+    const installed_core& core = *board.core;
+    const board_definition& definition = *board.definition;
+
+    property_table board_build = board_build_properties(board);
+    std::string core_folder = board_build.expand(board_build.get("build.core"));
+    std::string variant = board_build.expand(board_build.get("build.variant"));
+    std::string variant_path = variant.empty() ? "" : join_path(join_path(core.directory, "variants"), variant);
+
+    property_table properties = core.platform;
+    properties.merge(board_build);
+    properties.set("runtime.platform.path", core.directory);
+    properties.set("runtime.hardware.path", parent_directory(core.directory));
+
+    properties.set("build.board.platform.path", core.directory);
+    properties.set("build.core.platform.path", core.directory);
+    properties.set("build.core.path", join_path(join_path(core.directory, "cores"), core_folder));
+    properties.set("build.system.path", join_path(core.directory, "system"));
+    properties.set("build.variant.path", variant_path);
+    set_tool_paths(tools, properties);
+
+    if (!properties.find("runtime.ide.path")) {
+        properties.set("runtime.ide.path", MCUFW_DIRECTORY);
+    }
+
+    properties.set("runtime.os", std::string(RUNTIME_OS));
+    properties.set("build.library_discovery_phase", "0");
+    if (properties.get("build.board").empty()) {
+        properties.set("build.board", uppercased(core.architecture + "_" + definition.id));
+    }
+
+    // arduino-cli 1.6.0's `ResolveFQBN` sets these deprecated properties for every board
+    properties.set("tools.avrdude.path", "{runtime.tools.avrdude.path}");
+    properties.set("ide_version", ARDUINO_IDE_VERSION);
+    properties.set("runtime.ide.version", ARDUINO_IDE_VERSION);
+    if (!properties.find("software")) {
+        properties.set("software", "ARDUINO");
+    }
+
+    return properties;
 }

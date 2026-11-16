@@ -2,6 +2,8 @@
 
 #include "boards.hpp"
 #include "cores.hpp"
+#include "requirements.hpp"
+#include "tools.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -54,7 +56,8 @@ static board_request request_for(const board_entry& entry) {
     return { entry.core->packager, entry.core->architecture, entry.definition->id, {} };
 }
 
-static int describe_board(const std::vector<installed_core>& cores, const board_request& request, reporter& report) {
+static int describe_board(const std::vector<installed_core>& cores, const directory_layout& layout,
+                          const board_request& request, reporter& report) {
     selected_board board;
     std::string error;
     if (!select_board(cores, request, board, error)) {
@@ -62,17 +65,20 @@ static int describe_board(const std::vector<installed_core>& cores, const board_
         return 1;
     }
 
-    report.board_described(board);
+    std::vector<located_tool> tools = locate_tools(board.core->tools, layout);
+    report.board_described(board, check_requirements(board, tools));
 
     return 0;
 }
 
 // Boards whose FQBN or name holds `word`, ignoring case. A hidden board, and one mcufw cannot select, is left out, and
 // naming it exactly shows it or the reason.
-static int list_boards(const std::vector<installed_core>& cores, const std::vector<board_entry>& entries,
-                       const std::string& word, reporter& report) {
+static int list_boards(const std::vector<installed_core>& cores, const directory_layout& layout,
+                       const std::vector<board_entry>& entries, const std::string& word, reporter& report) {
     std::string lowered_word = lowercased(word);
     std::vector<listed_board> listed;
+    const installed_core* located_core = nullptr;
+    std::vector<located_tool> tools;
     for (const board_entry& entry : entries) {
         bool matches = lowercased(entry.fqbn).find(lowered_word) != std::string::npos ||
                        lowercased(entry.definition->name).find(lowered_word) != std::string::npos;
@@ -86,7 +92,12 @@ static int list_boards(const std::vector<installed_core>& cores, const std::vect
             continue;
         }
 
-        listed.push_back({ entry.fqbn, entry.definition->name });
+        if (entry.core != located_core) {
+            tools = locate_tools(entry.core->tools, layout);
+            located_core = entry.core;
+        }
+
+        listed.push_back({ entry.fqbn, entry.definition->name, check_requirements(board, tools) });
     }
 
     std::sort(listed.begin(), listed.end(), [](const listed_board& a, const listed_board& b) {
@@ -115,14 +126,14 @@ int run_boards(const arguments& parsed, const directory_layout& layout, reporter
             return 1;
         }
 
-        return describe_board(cores, request, report);
+        return describe_board(cores, layout, request, report);
     }
 
     std::vector<board_entry> entries = all_boards(cores);
     const board_entry* exact = word.empty() ? nullptr : find_exact(entries, word);
     if (exact) {
-        return describe_board(cores, request_for(*exact), report);
+        return describe_board(cores, layout, request_for(*exact), report);
     }
 
-    return list_boards(cores, entries, word, report);
+    return list_boards(cores, layout, entries, word, report);
 }

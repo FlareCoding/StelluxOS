@@ -1,11 +1,12 @@
-/* files, run on the build machine: path joining and splitting, reading whole files, and directory listings sorted
- * without `.` and `..` */
+/* files, run on the build machine: path joining and splitting, reading whole files, directory listings sorted without
+ * `.` and `..`, and finding a program as musl's posix_spawnp does */
 
 #include "files.hpp"
 
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -77,13 +78,51 @@ static void check_listing(const std::string& root) {
     check(!list_directory(join_path(root, "missing"), names, error), "list_directory fails on a missing directory");
 }
 
+static void write_program(const std::string& path, mode_t mode) {
+    write_text(path, "#!/bin/sh\n");
+    chmod(path.c_str(), mode);
+}
+
+static void check_program_search(const std::string& root) {
+    std::string first = join_path(root, "first");
+    std::string second = join_path(root, "second");
+    mkdir(first.c_str(), 0755);
+    mkdir(second.c_str(), 0755);
+
+    write_program(join_path(first, "both"), 0755);
+    write_program(join_path(second, "both"), 0755);
+    write_program(join_path(first, "later"), 0644);
+    write_program(join_path(second, "later"), 0755);
+
+    std::string path = first + ":" + second;
+    setenv("PATH", path.c_str(), 1);
+    check(find_program("both") == join_path(first, "both"), "the first PATH entry holding the program wins");
+    check(find_program("later") == join_path(second, "later"), "a file that is not executable is passed over");
+    check(find_program("absent").empty(), "a program no PATH entry holds is not found");
+    check(find_program(join_path(second, "both")) == join_path(second, "both"), "a word with a slash is itself");
+
+    unsetenv("PATH");
+    check(find_program("sh") == "/bin/sh", "musl's default list is searched when PATH is unset");
+
+    char working[PATH_MAX];
+    std::string empty_first = ":" + second;
+    setenv("PATH", empty_first.c_str(), 1);
+    if (getcwd(working, sizeof(working)) && chdir(first.c_str()) == 0) {
+        check(find_program("both") == "both", "an empty PATH entry names the working folder");
+        check(chdir(working) == 0, "the working folder is restored");
+    }
+}
+
 int main() {
     char root_template[] = "/tmp/mcufw-files-XXXXXX";
     std::string root = mkdtemp(root_template);
+    std::string path = getenv("PATH") ? getenv("PATH") : "";
 
     check_paths();
     check_files(root);
     check_listing(root);
+    check_program_search(root);
+    setenv("PATH", path.c_str(), 1);
 
     std::string cleanup = "rm -rf " + root;
     if (system(cleanup.c_str()) != 0) {

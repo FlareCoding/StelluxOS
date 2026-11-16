@@ -7,9 +7,13 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 
 constexpr size_t READ_CHUNK_BYTES = 16 * 1024;
+
+// The directories musl's `execvp` and `posix_spawnp` search when `PATH` is unset
+constexpr const char* DEFAULT_PROGRAM_PATH = "/usr/local/bin:/bin:/usr/bin";
 
 std::string join_path(std::string_view directory, std::string_view name) {
     if (directory.empty()) {
@@ -113,4 +117,30 @@ bool list_directory(const std::string& path, std::vector<std::string>& names, st
     std::sort(names.begin(), names.end());
 
     return true;
+}
+
+static bool is_executable_file(const std::string& path) {
+    return is_file(path) && access(path.c_str(), X_OK) == 0;
+}
+
+std::string find_program(const std::string& word) {
+    if (word.find('/') != std::string::npos) {
+        return is_executable_file(word) ? word : std::string();
+    }
+
+    const char* path = getenv("PATH");
+    std::string_view directories = path ? path : DEFAULT_PROGRAM_PATH;
+    while (true) {
+        size_t colon = directories.find(':');
+        std::string candidate = join_path(directories.substr(0, colon), word);
+        if (is_executable_file(candidate)) {
+            return candidate;
+        }
+
+        if (colon == std::string_view::npos) {
+            return {};
+        }
+
+        directories.remove_prefix(colon + 1);
+    }
 }
