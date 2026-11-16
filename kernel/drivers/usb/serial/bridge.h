@@ -16,8 +16,10 @@ namespace usb::serial {
  * USB, into a serial port, with a translator for the chip, which it owns.
  * Reads stay posted on the bulk IN endpoint from the port's registration to
  * the unplug, since a chip left with none posted can resend its last packet.
+ * The bridge is also the port's driver, and passes the port's settings to the
+ * translator.
  */
-class bridge final : public class_driver {
+class bridge final : public class_driver, public ::serial::port_driver {
 public:
     explicit bridge(translator* chip_translator);
     ~bridge() override;
@@ -25,6 +27,8 @@ public:
     int32_t probe(device* dev, interface* iface) override;
     void run() override;
     void disconnect() override;
+
+    int32_t set_line(const ::serial::line_settings& settings) override;
 
 private:
     static void handle_read(void* context, const uint8_t* data, uint32_t length, transfer_status status);

@@ -11,8 +11,12 @@
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
 #include "sync/poll.h"
+#include "tests/serial/fake_port_driver.h"
 
 TEST_SUITE(serial_listing);
+
+// The driver of every port the tests register, whose chip answers at once
+static serial_test::fake_port_driver g_driver;
 
 static constexpr const char* LISTING_PATH = "/dev/sysinfo/serial";
 
@@ -74,7 +78,7 @@ static fs::file* open_listing() {
 }
 
 static serial::port* plug(const serial::identity& id) {
-    serial::port* p = serial::register_port(id);
+    serial::port* p = serial::register_port(&g_driver, id);
     test_port* free_slot = find_test_port(nullptr);
     if (p && free_slot) {
         *free_slot = {.port = p, .is_detached = false};

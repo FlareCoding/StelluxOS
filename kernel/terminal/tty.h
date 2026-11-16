@@ -14,11 +14,26 @@ constexpr uint32_t TCGETS     = 0x5401;
 constexpr uint32_t TCSETS     = 0x5402;
 constexpr uint32_t TCSETSW    = 0x5403;
 constexpr uint32_t TCSETSF    = 0x5404;
+constexpr uint32_t TCXONC     = 0x540A;
+constexpr uint32_t TCFLSH     = 0x540B;
+constexpr uint32_t TIOCEXCL   = 0x540C;
+constexpr uint32_t TIOCNXCL   = 0x540D;
 constexpr uint32_t TIOCGPGRP  = 0x540F;
 constexpr uint32_t TIOCSPGRP  = 0x5410;
 constexpr uint32_t TIOCGWINSZ = 0x5413;
 constexpr uint32_t TIOCSWINSZ = 0x5414;
 constexpr uint32_t FIONREAD   = 0x541B;
+
+// The termios2 requests carry the size of their argument, 44 bytes, in bits 16 to 29 and its direction above them
+constexpr uint32_t TCGETS2  = 0x802C542A;
+constexpr uint32_t TCSETS2  = 0x402C542B;
+constexpr uint32_t TCSETSW2 = 0x402C542C;
+constexpr uint32_t TCSETSF2 = 0x402C542D;
+
+// TCFLSH's argument: the received bytes, the bytes written, or both
+constexpr uint64_t TCIFLUSH  = 0;
+constexpr uint64_t TCOFLUSH  = 1;
+constexpr uint64_t TCIOFLUSH = 2;
 
 // The control characters the settings carry, the first 19 of the 32 in musl's termios
 constexpr size_t NCCS = 19;
@@ -84,6 +99,7 @@ constexpr uint32_t CBAUD   = 0x0000100F; // the output speed's code
 constexpr uint32_t CBAUDEX = 0x00001000; // set in BOTHER and the codes above B38400
 constexpr uint32_t BOTHER  = 0x00001000; // the code whose speed is c_ospeed, or c_ispeed in CIBAUD
 constexpr uint32_t B9600   = 0x0000000D;
+constexpr uint32_t B115200 = 0x00001002;
 constexpr uint32_t CSIZE   = 0x00000030; // data bits, one of CS5 to CS8
 constexpr uint32_t CS5     = 0x00000000;
 constexpr uint32_t CS6     = 0x00000010;

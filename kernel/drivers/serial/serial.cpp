@@ -24,6 +24,8 @@ struct registry {
 static registry g_registry;
 __PRIVILEGED_BSS static fs::node* g_serial_dir;
 
+static constexpr uint64_t MAX_RATE_ERROR_PERCENT = 3;
+
 static constexpr char        FIELD_SEPARATOR = '\t';
 static constexpr const char* MISSING_VALUE = "-";
 static constexpr const char* HEX_DIGITS = "0123456789abcdef";
@@ -224,11 +226,16 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
-port* register_port(const identity& id) {
+bool is_rate_within_tolerance(uint32_t made, uint32_t asked) {
+    uint64_t difference = made > asked ? made - asked : asked - made;
+    return difference * 100 <= static_cast<uint64_t>(asked) * MAX_RATE_ERROR_PERCENT;
+}
+
+port* register_port(port_driver* driver, const identity& id) {
     port* p = nullptr;
     bool is_named = false;
     RUN_ELEVATED({
-        p = g_serial_dir ? port::create(id) : nullptr;
+        p = g_serial_dir ? port::create(driver, id) : nullptr;
         is_named = p && reserve_name(p);
     });
 
@@ -285,7 +292,10 @@ void detach(port* p) {
 
 void unregister_port(port* p) {
     log::info("serial: unregistered the port that held /dev/serial/%s", p->name());
-    RUN_ELEVATED(release_registry_reference(p));
+    RUN_ELEVATED({
+        p->release_driver();
+        release_registry_reference(p);
+    });
 }
 
 } // namespace serial

@@ -5,6 +5,8 @@
 
 namespace usb::serial {
 
+struct ftdi_chip;
+
 /**
  * The translator for FTDI's USB bridge chips.
  */
@@ -13,15 +15,19 @@ public:
     ftdi(device* dev, const interface& iface);
 
     int32_t configure() override;
-    const char* chip_name() const override { return m_chip_name; }
+    const char* chip_name() const override;
     const char* driver_name() const override;
     int8_t channel() const override;
     void handle_received(::serial::port* p, const uint8_t* data, size_t length, uint16_t packet_size) override;
+    int32_t set_line(const ::serial::line_settings& settings) override;
 
 private:
-    int32_t send_request(uint8_t request, uint16_t value);
+    void ask_for_latency_timer();
+    uint16_t uart_number() const;
+    int32_t send_request(uint8_t request, uint16_t value, uint16_t index);
 
-    const char* m_chip_name;
+    const ftdi_chip* m_chip;
+    bool             m_has_asked_for_latency_timer = false;
 };
 
 } // namespace usb::serial

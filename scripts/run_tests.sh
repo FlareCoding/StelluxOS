@@ -25,6 +25,7 @@ QEMU_PID=""
 # The serial port tests drive QEMU's FTDI chip through this socket, by way of serial_test_host.py
 FTDI_DIR="$(mktemp -d)"
 FTDI_SOCKET="$FTDI_DIR/ftdi.sock"
+FTDI_TRACE="$FTDI_DIR/trace.log"
 FTDI_HOST_PID=""
 
 cleanup() {
@@ -44,6 +45,9 @@ trap cleanup EXIT
 # QEMU plugs the chip in only while the host script holds the socket, and its serial number names the port
 FTDI_DEVICE=(-chardev socket,id=ftdi,path="$FTDI_SOCKET",server=on,wait=off
              -device usb-serial,chardev=ftdi,serial=FT0001)
+
+# A socket has no line settings, so the tests read the speed set on the chip from QEMU's trace
+FTDI_DEVICE+=(-trace usb_serial_set_baud -D "$FTDI_TRACE")
 
 # The drivers tier binds a driver to every PCI device it can, so the aarch64 machine carries no virtio-net card,
 # while x86_64 keeps q35's e1000e, which has no driver
@@ -149,7 +153,7 @@ else
     exit 1
 fi
 
-python3 "$SCRIPT_DIR/serial_test_host.py" "$SERIAL_LOG" "$FTDI_SOCKET" &
+python3 "$SCRIPT_DIR/serial_test_host.py" "$SERIAL_LOG" "$FTDI_SOCKET" "$FTDI_TRACE" &
 FTDI_HOST_PID=$!
 
 SENTINEL_LINE=""

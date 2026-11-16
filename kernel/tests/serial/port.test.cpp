@@ -12,12 +12,16 @@
 #include "sync/poll.h"
 #include "syscall/handlers/sys_error_map.h"
 #include "terminal/tty.h"
+#include "tests/serial/fake_port_driver.h"
 
 TEST_SUITE(serial_port);
 
 using test_helpers::spin_wait;
 using test_helpers::user_page;
 using test_helpers::user_space_scope;
+
+// The driver of every port the tests register, whose chip answers at once
+static serial_test::fake_port_driver g_driver;
 
 // A board no other test names
 static constexpr serial::identity BOARD = {
@@ -64,7 +68,7 @@ static test_port* find_test_port(serial::port* p) {
 }
 
 static serial::port* plug(const serial::identity& id) {
-    serial::port* p = serial::register_port(id);
+    serial::port* p = serial::register_port(&g_driver, id);
     test_port* free_slot = find_test_port(nullptr);
     if (p && free_slot) {
         *free_slot = {.port = p, .is_detached = false};
@@ -398,8 +402,8 @@ TEST(serial_port, fionread_counts_the_queued_bytes_also_after_an_unplug) {
     EXPECT_EQ(ask_queued_bytes(f, page, &queued), fs::OK);
     EXPECT_EQ(queued, 0);
 
-    // Every other request is one a port does not answer
-    EXPECT_EQ(fs::ioctl(f, terminal::TCGETS, 0), fs::ERR_NOSYS);
+    // Every other request fails once the device has left
+    EXPECT_EQ(fs::ioctl(f, terminal::TCGETS, 0), fs::ERR_IO);
 
     fs::close(f);
     unregister_detached_port(p);
