@@ -1,14 +1,14 @@
 #include "common/logging.h"
 #include "common/varargs.h"
 #include "common/string.h"
-#include "serial/serial.h"
+#include "terminal/terminal.h"
 #include "hw/cpu.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
 
 namespace log {
 
-// Current backend (nullptr = use serial directly)
+// Current backend, nullptr writes to the console's UART
 static const backend* current_backend = nullptr;
 
 __PRIVILEGED_DATA static sync::spinlock g_log_lock = sync::SPINLOCK_INIT;
@@ -34,7 +34,7 @@ static void output(const char* str, size_t len) {
     if (current_backend && current_backend->write) {
         current_backend->write(str, len);
     } else {
-        serial::write(str, len);
+        terminal::console_write(str, len);
     }
 }
 
@@ -277,11 +277,11 @@ void error(const char* fmt, ...) {
 // Emergency serial output for fatal(), bypasses log_lock and num_buffer.
 // Uses stack-local buffer to avoid races with concurrent formatters.
 static void fatal_serial_char(char c) {
-    serial::write(&c, 1);
+    terminal::console_write(&c, 1);
 }
 
 static void fatal_serial_str(const char* s) {
-    serial::write(s, string::strlen(s));
+    terminal::console_write(s, string::strlen(s));
 }
 
 static void fatal_serial_hex(uint64_t val, int width) {

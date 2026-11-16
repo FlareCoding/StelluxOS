@@ -1,7 +1,8 @@
 #include "trap/trap_frame.h"
 #include "defs/vectors.h"
 #include "irq/irq.h"
-#include "serial/serial.h"
+#include "arch/arch_uart.h"
+#include "drivers/serial/uart/uart.h"
 #include "timer/timer.h"
 #include "debug/panic.h"
 #include "sched/task_exec_core.h"
@@ -63,7 +64,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
 
     if (tf->vector == x86::VEC_SERIAL) {
         irq::eoi(0);
-        serial::on_rx_irq();
+        arch::builtin_uart()->handle_receive_interrupt();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state(tf);
         return;

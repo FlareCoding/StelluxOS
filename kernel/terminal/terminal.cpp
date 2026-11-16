@@ -2,7 +2,11 @@
 #include "terminal/console_node.h"
 #include "terminal/line_discipline.h"
 #include "common/ring_buffer.h"
-#include "serial/serial.h"
+#include "arch/arch_uart.h"
+#include "drivers/serial/uart/ns16550.h"
+#include "hw/ioport.h"
+#include "pci/pci.h"
+#include "pci/pci_class_codes.h"
 #include "resource/resource.h"
 #include "signals/signal.h"
 #include "common/logging.h"
@@ -21,15 +25,29 @@ constexpr size_t INPUT_RING_CAPACITY = 4096;
 static_assert(INPUT_RING_CAPACITY >= LD_LINE_BUF_MAX + 1,
               "the console's input ring must hold a whole cooked line and its end");
 
+constexpr serial::uart::settings CONSOLE_UART_SETTINGS = {
+    .baud        = 115200,
+    .data_bits   = 8,
+    .parity_mode = serial::uart::parity::none,
+    .stop_bits   = 1,
+};
+
+// A PCI serial controller at COM1's legacy port is COM1 itself
+constexpr uint16_t COM1_LEGACY_PORT = 0x3F8;
+
 __PRIVILEGED_BSS static struct {
     ring_buffer* input_rb;
     line_discipline ld;
     sync::atomic<uint32_t> fg_group; // foreground process group, 0 = none
+    serial::uart::device* uart; // carries the kernel log and /dev/console, nullptr until claimed
 } g_console;
+
+// The UART of the PCI serial card claim_pci_uart moves the console to
+alignas(serial::uart::ns16550) __PRIVILEGED_BSS static uint8_t g_pci_card_storage[sizeof(serial::uart::ns16550)];
 
 __PRIVILEGED_CODE static void serial_echo(void* ctx, const uint8_t* buf, size_t len) {
     (void)ctx;
-    serial::write(reinterpret_cast<const char*>(buf), len);
+    console_write(reinterpret_cast<const char*>(buf), len);
 }
 
 __PRIVILEGED_DATA static const echo_target g_serial_echo = {
@@ -50,6 +68,64 @@ __PRIVILEGED_DATA static const signal_target g_console_sig = {
     nullptr,
 };
 
+__PRIVILEGED_CODE int32_t claim_builtin_uart() {
+    serial::uart::device* builtin = arch::builtin_uart();
+    if (builtin->init(CONSOLE_UART_SETTINGS) != serial::uart::OK) {
+        return ERR;
+    }
+
+    g_console.uart = builtin;
+
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t remap_uart() {
+    if (g_console.uart->remap_registers() != serial::uart::OK) {
+        return ERR;
+    }
+
+    return OK;
+}
+
+__PRIVILEGED_CODE void claim_pci_uart() {
+    pci::device* card = pci::find_by_class(pci::CLASS_SIMPLE_COMM, pci::SUB_COMM_SERIAL);
+    if (!card || !ioport::available()) {
+        return;
+    }
+
+    const pci::bar& bar = card->get_bar(0);
+    if (bar.type != pci::BAR_IO || bar.phys == 0 || bar.phys == COM1_LEGACY_PORT) {
+        return;
+    }
+
+    card->enable();
+
+    // PCI serial adapters use PCI interrupt lines, not legacy IRQ 4.
+    // RX interrupt routing for PCI UARTs is not supported.
+    auto* card_uart = new (g_pci_card_storage) serial::uart::ns16550(
+        static_cast<uint16_t>(bar.phys),
+        serial::uart::NS16550_STANDARD_CLOCK_HZ,
+        nullptr
+    );
+    if (card_uart->init(CONSOLE_UART_SETTINGS) != serial::uart::OK) {
+        log::warn("terminal: the PCI serial card does not answer, keeping the built-in UART");
+        return;
+    }
+
+    g_console.uart = card_uart;
+    log::info("serial: redirected to PCI adapter at %02x:%02x.%x (port 0x%x)",
+              card->bus(), card->slot(), card->func(), static_cast<uint32_t>(bar.phys));
+}
+
+__PRIVILEGED_CODE void console_write(const char* data, size_t len) {
+    serial::uart::device* uart = g_console.uart;
+    if (!uart) {
+        return;
+    }
+
+    uart->write(data, len);
+}
+
 __PRIVILEGED_CODE int32_t init() {
     g_console.input_rb = ring_buffer_create(INPUT_RING_CAPACITY);
     if (!g_console.input_rb) {
@@ -59,8 +135,7 @@ __PRIVILEGED_CODE int32_t init() {
 
     ld_init(&g_console.ld);
 
-    serial::set_rx_callback(input_char);
-    if (serial::enable_rx_interrupt() != serial::OK) {
+    if (g_console.uart->enable_receive_interrupt(input_char, nullptr) != serial::uart::OK) {
         log::warn("terminal: serial RX interrupt setup failed");
     }
 
@@ -81,9 +156,9 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
-__PRIVILEGED_CODE void input_char(char c) {
+__PRIVILEGED_CODE void input_char(void*, uint8_t byte) {
     ld_input(&g_console.ld, g_console.input_rb, &g_serial_echo,
-             &g_console_sig, c);
+             &g_console_sig, static_cast<char>(byte));
 }
 
 __PRIVILEGED_CODE ring_buffer* console_input_rb() {
@@ -109,7 +184,7 @@ __PRIVILEGED_CODE static ssize_t terminal_read(
 __PRIVILEGED_CODE static ssize_t terminal_write(
     resource::resource_object*, const void* ksrc, size_t count, uint32_t
 ) {
-    serial::write(static_cast<const char*>(ksrc), count);
+    console_write(static_cast<const char*>(ksrc), count);
     return static_cast<ssize_t>(count);
 }
 
