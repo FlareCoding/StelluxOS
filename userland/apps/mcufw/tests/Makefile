@@ -19,7 +19,7 @@ SOURCES     := $(SRC_DIR)/properties.cpp $(SRC_DIR)/files.cpp $(SRC_DIR)/fqbn.cp
                $(SRC_DIR)/zip.cpp $(SRC_DIR)/digest.cpp $(SRC_DIR)/indexes.cpp $(SRC_DIR)/install_plan.cpp \
                $(SRC_DIR)/libraries.cpp $(SRC_DIR)/hooks.cpp \
                $(SRC_DIR)/sketch.cpp $(SRC_DIR)/build_plan.cpp $(SRC_DIR)/compiler_output.cpp $(SRC_DIR)/sizes.cpp \
-               $(SRC_DIR)/prototypes.cpp
+               $(SRC_DIR)/prototypes.cpp $(SRC_DIR)/discovery.cpp $(SRC_DIR)/library_hint.cpp
 HEADERS     := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hpp $(SRC_DIR)/recipes.hpp \
                $(SRC_DIR)/versions.hpp $(SRC_DIR)/layout.hpp $(SRC_DIR)/cores.hpp $(SRC_DIR)/tools.hpp \
                $(SRC_DIR)/boards.hpp $(SRC_DIR)/requirements.hpp $(SRC_DIR)/failure.hpp $(SRC_DIR)/report.hpp \
@@ -27,7 +27,7 @@ HEADERS     := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hp
                $(SRC_DIR)/inflate.hpp $(SRC_DIR)/zip.hpp $(SRC_DIR)/digest.hpp $(SRC_DIR)/indexes.hpp \
                $(SRC_DIR)/installer.hpp $(SRC_DIR)/libraries.hpp $(SRC_DIR)/hooks.hpp \
                $(SRC_DIR)/sketch.hpp $(SRC_DIR)/build_plan.hpp $(SRC_DIR)/compiler_output.hpp $(SRC_DIR)/build.hpp \
-               $(SRC_DIR)/sizes.hpp $(SRC_DIR)/prototypes.hpp
+               $(SRC_DIR)/sizes.hpp $(SRC_DIR)/prototypes.hpp $(SRC_DIR)/discovery.hpp $(SRC_DIR)/library_hint.hpp
 # The vendored C the modules call: all of zlib, and libbearssl's SHA-256
 C_SOURCES   := $(wildcard $(ZLIB_DIR)/*.c) $(BEARSSL_DIR)/src/hash/sha2small.c \
                $(BEARSSL_DIR)/src/codec/dec32be.c $(BEARSSL_DIR)/src/codec/enc32be.c

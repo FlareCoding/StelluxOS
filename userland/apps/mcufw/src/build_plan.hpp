@@ -6,6 +6,7 @@
 
 #include "boards.hpp"
 #include "layout.hpp"
+#include "libraries.hpp"
 #include "sketch.hpp"
 
 #include <cstdint>
@@ -19,8 +20,11 @@ enum class step_kind { hook, compile, archive, link, objcopy, size };
 enum class build_stage {
     hooks,
     sketch_tree,
+    discovery,
     prototypes,
     sketch_compiles,
+    library_trees,
+    library_compiles,
     core_compiles,
     core_archive,
     link,
@@ -43,12 +47,20 @@ struct build_step {
     std::vector<size_t>                   lengths;   // each command's expanded recipe text, empty for none
 };
 
+// A library's compiles: its source directory's, then a flat library's utility/ folder's
+struct library_compiles {
+    const ::library*        library;
+    std::vector<build_step> sources;
+    std::vector<build_step> utility;
+};
+
 // A build's compiles, in the groups arduino-cli compiles one after another
 struct compile_plan {
-    std::vector<build_step> sketch;   // the sketch tree's own files
-    std::vector<build_step> sources;  // its src/ folder's
-    std::vector<build_step> variant;
-    std::vector<build_step> core;
+    std::vector<build_step>       sketch;   // the sketch tree's own files
+    std::vector<build_step>       sources;  // its src/ folder's
+    std::vector<library_compiles> libraries;
+    std::vector<build_step>       variant;
+    std::vector<build_step>       core;
 };
 
 // The build's stages in arduino-cli's order
@@ -73,14 +85,18 @@ bool plan_compiles(const property_table& properties, const std::vector<std::stri
                    const std::vector<std::string>& include_directories, std::string_view warnings,
                    std::vector<build_step>& steps, std::string& error);
 
-// Every compile of the build: the sketch tree's and its src/ folder's at `warnings`, then the variant's and the core's
-// into `core/` at `none`, as approved design decision 6 has it where arduino-cli uses one level for every compile
+// Every compile of the build: the sketch tree's and its src/ folder's at `warnings`, then each library's, the variant's
+// and the core's at `none`, as approved design decision 6 has it where arduino-cli uses one level for every compile
 bool plan_build_compiles(const property_table& properties, const std::vector<std::string>& sketch_includes,
-                         std::string_view warnings, compile_plan& plan, std::string& error);
+                         const std::vector<const library*>& libraries, std::string_view warnings, compile_plan& plan,
+                         std::string& error);
 
-// The objects the link takes, in arduino-cli's order: the sketch's, its src/ folder's, then the variant's, each group
-// sorted. The core's go into `core.a`.
-std::vector<std::string> linked_objects(const compile_plan& plan);
+// A `dot_a_linkage` library's archive, `<folder>.a` in its build folder
+std::string library_archive(const std::string& build_path, const library& library);
+
+// The objects the link takes, in arduino-cli's order: the sketch's, its src/ folder's, each library's or its archive,
+// then the variant's, each group sorted. The core's go into `core.a`.
+std::vector<std::string> linked_objects(const std::string& build_path, const compile_plan& plan);
 
 // How many of the `waiting` compiles may start: none after a failure, so the running ones finish alone
 size_t compiles_to_start(size_t waiting, uint32_t free_slots, bool failed);

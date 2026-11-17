@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 constexpr uint32_t MAX_REPORTS = 8;
@@ -154,10 +155,13 @@ static bool plan_stage(const property_table& properties, const stage_step& stage
     case build_stage::hooks:
         return plan_hooks(properties, stage.hook_point, steps, error);
     case build_stage::sketch_tree:
+    case build_stage::discovery:
     case build_stage::prototypes:
+    case build_stage::library_trees:
+    case build_stage::library_compiles:
         return true;
     case build_stage::sketch_compiles:
-        if (!plan_build_compiles(properties, includes, "none", compiles, error)) {
+        if (!plan_build_compiles(properties, includes, {}, "none", compiles, error)) {
             return false;
         }
 
@@ -171,14 +175,16 @@ static bool plan_stage(const property_table& properties, const stage_step& stage
     case build_stage::core_archive:
         steps.push_back(step);
         return plan_archive(properties, objects_of(compiles.core), core_archive, steps.back(), error);
-    case build_stage::link:
-        if (!plan_link(properties, linked_objects(compiles), core_archive, "none", folder_archives, step, error)) {
+    case build_stage::link: {
+        std::vector<std::string> objects = linked_objects(properties.get("build.path"), compiles);
+        if (!plan_link(properties, objects, core_archive, "none", folder_archives, step, error)) {
             return false;
         }
 
         steps.insert(steps.end(), folder_archives.begin(), folder_archives.end());
         steps.push_back(step);
         return true;
+    }
     case build_stage::objcopy:
         return plan_objcopy(properties, steps, error);
     case build_stage::size:
@@ -190,6 +196,42 @@ static bool plan_stage(const property_table& properties, const stage_step& stage
 }
 
 // The commands of every stage, in the order the build runs its stages, are the ones arduino-cli runs
+// The stages that run no command keep arduino-cli's places too, libraries found before prototypes are added
+static void check_stage_order() {
+    std::vector<std::pair<build_stage, std::string>> order;
+    for (const stage_step& stage : build_stages()) {
+        order.emplace_back(stage.stage, stage.hook_point);
+    }
+
+    std::vector<std::pair<build_stage, std::string>> expected = {
+        { build_stage::hooks, "prebuild" },
+        { build_stage::sketch_tree, "" },
+        { build_stage::discovery, "" },
+        { build_stage::prototypes, "" },
+        { build_stage::hooks, "sketch.prebuild" },
+        { build_stage::sketch_compiles, "" },
+        { build_stage::hooks, "sketch.postbuild" },
+        { build_stage::hooks, "libraries.prebuild" },
+        { build_stage::library_trees, "" },
+        { build_stage::library_compiles, "" },
+        { build_stage::hooks, "libraries.postbuild" },
+        { build_stage::hooks, "core.prebuild" },
+        { build_stage::core_compiles, "" },
+        { build_stage::core_archive, "" },
+        { build_stage::hooks, "core.postbuild" },
+        { build_stage::hooks, "linking.prelink" },
+        { build_stage::link, "" },
+        { build_stage::hooks, "linking.postlink" },
+        { build_stage::hooks, "objcopy.preobjcopy" },
+        { build_stage::objcopy, "" },
+        { build_stage::hooks, "objcopy.postobjcopy" },
+        { build_stage::hooks, "postbuild" },
+        { build_stage::size, "" },
+    };
+
+    check(order == expected, "the stages keep arduino-cli's order, libraries found before prototypes are added");
+}
+
 static void check_arduino_commands() {
     std::string build_tree = make_lamp_tree();
     std::vector<installed_core> cores;
@@ -239,7 +281,7 @@ static void check_group_levels() {
 
     compile_plan compiles;
     std::string error;
-    check(plan_build_compiles(properties, {}, "all", compiles, error), "the compiles plan at all: " + error);
+    check(plan_build_compiles(properties, {}, {}, "all", compiles, error), "the compiles plan at all: " + error);
 
     auto has_word = [](const build_step& step, const char* word) {
         return std::find(step.commands[0].begin(), step.commands[0].end(), word) != step.commands[0].end();
@@ -254,12 +296,13 @@ static void check_group_levels() {
 
     std::vector<build_step> folder_archives;
     build_step link;
-    check(plan_link(properties, linked_objects(compiles), "/core.a", "all", folder_archives, link, error) &&
+    std::vector<std::string> linked = linked_objects(properties.get("build.path"), compiles);
+    check(plan_link(properties, linked, "/core.a", "all", folder_archives, link, error) &&
               link.commands.size() == 1 && std::find(link.commands[0].begin(), link.commands[0].end(), "-Wextra") !=
                                                link.commands[0].end(),
           "the link takes the chosen level");
 
-    std::vector<std::string> objects = linked_objects(compiles);
+    std::vector<std::string> objects = linked_objects(properties.get("build.path"), compiles);
     check(objects.size() == 4 && objects[0].ends_with("sketch/Lamp.ino.cpp.o") &&
               objects[2].ends_with("sketch/src/effects/fade.cpp.o") && objects[3].ends_with("core/variant.cpp.o"),
           "the link takes the sketch's objects, then src/'s, then the variant's");
@@ -541,6 +584,7 @@ int main() {
     check_time_values();
     check_objcopy_and_hooks();
     check_long_commands();
+    check_stage_order();
 
     if (g_failures != 0) {
         printf("build_plan: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

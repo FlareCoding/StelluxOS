@@ -22,17 +22,21 @@ constexpr const char* FOLDER_ARCHIVE = "objs.a";
 constexpr const char* SKETCH_FOLDER = "sketch";
 constexpr const char* SKETCH_SOURCE_FOLDER = "src";
 constexpr const char* CORE_FOLDER = "core";
+constexpr const char* UTILITY_FOLDER = "utility";
 constexpr const char* NO_WARNINGS = "none";
 
 // The order of arduino-cli's builder: `preprocess` and then `build`, less the steps later stages add
 constexpr stage_step BUILD_STAGES[] = {
     { build_stage::hooks, "prebuild" },
     { build_stage::sketch_tree, "" },
+    { build_stage::discovery, "" },
     { build_stage::prototypes, "" },
     { build_stage::hooks, "sketch.prebuild" },
     { build_stage::sketch_compiles, "" },
     { build_stage::hooks, "sketch.postbuild" },
     { build_stage::hooks, "libraries.prebuild" },
+    { build_stage::library_trees, "" },
+    { build_stage::library_compiles, "" },
     { build_stage::hooks, "libraries.postbuild" },
     { build_stage::hooks, "core.prebuild" },
     { build_stage::core_compiles, "" },
@@ -336,8 +340,29 @@ static bool plan_tree(const property_table& properties, const std::string& folde
            plan_compiles(properties, sources, folder, object_directory, includes, warnings, compiles, error);
 }
 
+// A library's compiles into its build folder: src/ recursively, or its top folder and then a flat library's utility/,
+// with utility/ on the include path of its own files
+static bool plan_library(const property_table& properties, const library& added,
+                         const std::vector<std::string>& includes, library_compiles& compiles, std::string& error) {
+    std::string library_tree = library_build_directory(properties.get("build.path"), added);
+    std::vector<std::string> own_includes = includes;
+    if (!added.utility_directory.empty()) {
+        own_includes.push_back(added.utility_directory);
+    }
+
+    compiles = { &added, {}, {} };
+    bool is_recursive = added.layout == library_layout::recursive;
+    std::string utility_tree = join_path(library_tree, UTILITY_FOLDER);
+
+    return plan_tree(properties, library_source_directory(added), is_recursive, library_tree, own_includes,
+                     NO_WARNINGS, compiles.sources, error) &&
+           (added.utility_directory.empty() || plan_tree(properties, added.utility_directory, false, utility_tree,
+                                                         own_includes, NO_WARNINGS, compiles.utility, error));
+}
+
 bool plan_build_compiles(const property_table& properties, const std::vector<std::string>& sketch_includes,
-                         std::string_view warnings, compile_plan& plan, std::string& error) {
+                         const std::vector<const library*>& libraries, std::string_view warnings, compile_plan& plan,
+                         std::string& error) {
     const std::string& build_path = properties.get("build.path");
     std::string core_folder = properties.get("build.core.path");
     std::string variant_folder = properties.get("build.variant.path");
@@ -351,10 +376,24 @@ bool plan_build_compiles(const property_table& properties, const std::vector<std
         core_includes.push_back(variant_folder);
     }
 
-    return plan_tree(properties, sketch_tree, false, sketch_tree, sketch_includes, warnings, plan.sketch, error) &&
-           (!is_directory(source_tree) ||
-            plan_tree(properties, source_tree, true, source_tree, sketch_includes, warnings, plan.sources, error)) &&
-           (!has_variant ||
+    bool sketch_planned =
+        plan_tree(properties, sketch_tree, false, sketch_tree, sketch_includes, warnings, plan.sketch, error) &&
+        (!is_directory(source_tree) ||
+         plan_tree(properties, source_tree, true, source_tree, sketch_includes, warnings, plan.sources, error));
+    if (!sketch_planned) {
+        return false;
+    }
+
+    for (const library* added : libraries) {
+        library_compiles compiles;
+        if (!plan_library(properties, *added, sketch_includes, compiles, error)) {
+            return false;
+        }
+
+        plan.libraries.push_back(std::move(compiles));
+    }
+
+    return (!has_variant ||
             plan_tree(properties, variant_folder, true, core_tree, core_includes, NO_WARNINGS, plan.variant, error)) &&
            plan_tree(properties, core_folder, true, core_tree, core_includes, NO_WARNINGS, plan.core, error);
 }
@@ -369,11 +408,25 @@ static void add_sorted_objects(const std::vector<build_step>& compiles, std::vec
     objects.insert(objects.end(), group.begin(), group.end());
 }
 
-std::vector<std::string> linked_objects(const compile_plan& plan) {
+std::string library_archive(const std::string& build_path, const library& library) {
+    return join_path(library_build_directory(build_path, library), library.folder_name + ".a");
+}
+
+std::vector<std::string> linked_objects(const std::string& build_path, const compile_plan& plan) {
     std::vector<std::string> objects;
-    for (const std::vector<build_step>* group : { &plan.sketch, &plan.sources, &plan.variant }) {
-        add_sorted_objects(*group, objects);
+    add_sorted_objects(plan.sketch, objects);
+    add_sorted_objects(plan.sources, objects);
+    for (const library_compiles& compiles : plan.libraries) {
+        if (compiles.library->dot_a_linkage) {
+            objects.push_back(library_archive(build_path, *compiles.library));
+            continue;
+        }
+
+        add_sorted_objects(compiles.sources, objects);
+        add_sorted_objects(compiles.utility, objects);
     }
+
+    add_sorted_objects(plan.variant, objects);
 
     return objects;
 }

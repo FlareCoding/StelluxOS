@@ -7,6 +7,8 @@
 #include "boards.hpp"
 #include "compiler_output.hpp"
 #include "failure.hpp"
+#include "libraries.hpp"
+#include "library_hint.hpp"
 #include "requirements.hpp"
 #include "sizes.hpp"
 #include "sketch.hpp"
@@ -58,6 +60,15 @@ public:
     void sketch_found(const sketch& sketch);
     void board_selected(const selected_board& board, bool saved);
     void core_compiling(const installed_core& core, const std::string& archive, size_t files);
+
+    // The libraries the sketch uses, `library <name> <version> <folder>` each for a program
+    void libraries_found(const std::vector<const library*>& libraries);
+
+    // The library that provides a header no installed library does, and the command installing it
+    void library_suggested(const std::string& header, const library_suggestion& suggestion);
+
+    // Warns, as arduino-cli does, about a library whose architectures leave out the board's `architectures`
+    void library_incompatible(const library& library, const std::vector<std::string>& architectures);
 
     // A count updated in place on a terminal at most every 100 ms, and a line once it reaches the total. A program
     // sees `progress <stage> <done> <total>` at most every 100 ms and at the total.

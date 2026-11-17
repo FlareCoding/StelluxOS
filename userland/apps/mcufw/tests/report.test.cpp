@@ -269,6 +269,53 @@ static void check_commands() {
     fclose(program.err);
 }
 
+static void check_library_lines() {
+    library wifi = {};
+    wifi.name = "WiFi";
+    wifi.version = "3.3.12";
+    wifi.directory = "/cores/esp32/libraries/WiFi";
+
+    library servo = wifi;
+    servo.name = "Servo";
+    servo.version = "";
+    servo.architectures = { "avr", "megaavr" };
+
+    capture person = open_capture();
+    reporter shown(false, person.out, person.err);
+    shown.progress("libraries", 0, 1, BUILD_START_NS);
+    shown.progress("libraries", 3, 3, BUILD_START_NS + 1);
+
+    shown.libraries_found({ &wifi, &servo });
+    shown.library_suggested("FastLED.h", { "FastLED", "3.10.9" });
+    shown.library_incompatible(servo, { "esp32", "xtensa" });
+    check(read_back(person.out) == "Libraries  WiFi 3.3.12, Servo\n", "the list replaces the final count");
+    check(read_back(person.err) == "FastLED 3.10.9 provides FastLED.h: mcufw install FastLED\n"
+                                   "WARNING: library Servo claims to run on avr, megaavr architecture(s) and may be "
+                                   "incompatible with your current board which runs on esp32, xtensa "
+                                   "architecture(s).\n",
+          "the hint names its command, and an incompatible library is warned about in arduino-cli's words");
+
+    capture spaced = open_capture();
+    reporter(false, spaced.out, spaced.err).library_suggested("Adafruit_SSD1306.h", { "Adafruit SSD1306", "2.5.17" });
+    check(read_back(spaced.err) ==
+              "Adafruit SSD1306 2.5.17 provides Adafruit_SSD1306.h: mcufw install \"Adafruit SSD1306\"\n",
+          "a library name with a space is quoted in its command");
+    fclose(spaced.out);
+
+    capture program = open_capture();
+    reporter events(true, program.out, program.err);
+    events.progress("libraries", 3, 3, BUILD_START_NS);
+    events.libraries_found({ &wifi });
+    events.library_suggested("FastLED.h", { "FastLED", "3.10.9" });
+
+    std::string expected =
+        "progress\tlibraries\t3\t3\n"
+        "library\tWiFi\t3.3.12\t/cores/esp32/libraries/WiFi\n"
+        "hint\tFastLED.h\tFastLED\t3.10.9\n";
+    check(read_back(program.out) == expected, "a program sees each library and the hint");
+    fclose(program.err);
+}
+
 static void check_failures() {
     capture person = open_capture();
     reporter(false, person.out, person.err).failed({ failure_kind::board, "no installed core defines board x" });
@@ -380,6 +427,7 @@ int main() {
     check_build_lines();
     check_build_events();
     check_commands();
+    check_library_lines();
 
     if (g_failures != 0) {
         printf("report: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),
