@@ -269,6 +269,47 @@ uploads to a chip state their own terms in the README and license files
 of `esptool/targets/stub_flasher/` in site-packages: the legacy one is
 GPL-2.0-or-later, the other Apache-2.0 or MIT.
 
+## The xtensa-esp32-elf recipe
+
+`xtensa-esp32-elf` is an `extra` package: Espressif's binutils and GCC for the
+ESP32 microcontroller, as Stellux programs under `/usr/xtensa-esp32-elf`.
+Arduino-ESP32, Espressif's Arduino support for its chips, names this toolchain
+for compiling sketches (Arduino programs). The recipe builds binutils and GCC
+from the sources of the Espressif toolchain release `versions.sh` pins, as
+static programs with the ESP32's core configuration (which instructions and
+registers its Xtensa processor has) built in, taken from crosstool-NG, the tool
+Espressif builds its releases with. Espressif's own programs load the
+configuration from a plugin instead. A static program cannot load plugins, so
+GCC has no plugin support, and the package leaves out link-time optimization
+(LTO), which no Arduino-ESP32 build uses. The `gcc-ar`, `gcc-nm` and
+`gcc-ranlib` wrappers need the LTO plugin loader, which this static build
+leaves out, so the package has none of them. Arduino-ESP32's recipes name
+`gcc-ar`, so a build on Stellux has to call `ar`. GCC predefines five
+`__XCHAL_*` macros that Espressif's build leaves out, GCC's defaults for
+configuration entries the ESP32's configuration omits, which both compilers
+generate code from.
+
+The libraries that run on the ESP32 (the newlib C library, libgcc and
+libstdc++, with their headers and startup files) come unmodified from
+Espressif's Linux build of the same release, pinned by its SHA-256 like the
+sources, in the four variants that `-mfix-esp32-psram-cache-issue` and
+`-fno-rtti` select. The programs link musl with the tree's
+`userland/musl/patches` applied, since GCC starts its compiler, assembler and
+linker through `posix_spawn`, which those patches implement. A change to those
+patches or to the libstlx headers they include needs `XTENSA_ESP32_ELF_PKG_REL`
+bumped like a recipe change. `/usr/arduino/tools/esp32/esp-x32/<version>`
+links to `/usr/xtensa-esp32-elf`, where `esp32` and `esp-x32` are the packager
+and tool name Arduino-ESP32's package index gives the toolchain, and
+`<version>` is the tool version `versions.sh` pins. The license texts of GCC,
+binutils, GMP, MPFR, MPC, zlib, libbacktrace, libcody, musl and newlib are
+under `/usr/share/licenses/xtensa-esp32-elf`, with a NOTICE saying which files
+are Espressif's unmodified build and which terms cover each. A build takes
+about 10 minutes per architecture on 4 cores. The first build of an
+architecture adds about 20 minutes for its compiler for Stellux, and the first
+build on a machine about 15 more for the binutils and GCC that building GCC to
+run on Stellux runs in the container, all kept in the
+`stellux-xtensa-esp32-elf-work` volume. `JOBS` caps its parallel jobs.
+
 ## Building and publishing
 
     make packages-build [PACKAGES=...] [ARCHES=x86_64]

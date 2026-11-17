@@ -1,0 +1,21 @@
+Gives the single-chip xtensa-esp32-elf target the esp32 library variants of Espressif's multi-chip
+toolchain, selected by the same flags.
+
+--- a/gcc/config.gcc
++++ b/gcc/config.gcc
+@@ -3604,6 +3604,9 @@
+ 	xtensa*-esp-elf*)
+ 		tmake_file="${tmake_file} xtensa/t-esp-multilib"
+ 		;;
++	xtensa*-esp32-elf*)
++		tmake_file="${tmake_file} xtensa/t-esp32-multilib"
++		;;
+ 	esac
+ 	;;
+ xtensa*-*-linux*)
+--- /dev/null
++++ b/gcc/config/xtensa/t-esp32-multilib
+@@ -0,0 +1,3 @@
++# The esp32 variants of the target libraries, chosen by the same flags as in Espressif's multi-chip toolchain
++MULTILIB_OPTIONS = mfix-esp32-psram-cache-issue fno-rtti
++MULTILIB_DIRNAMES = psram no-rtti
