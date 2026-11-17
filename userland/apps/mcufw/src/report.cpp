@@ -351,6 +351,15 @@ void reporter::core_compiling(const installed_core& core, const std::string& arc
     labeled("Core", platform_name(core) + " " + core.version + ", " + count);
 }
 
+void reporter::core_cached(const std::string& archive) {
+    if (m_events) {
+        event({ "core", "cached", archive });
+        return;
+    }
+
+    labeled("Core", "cached");
+}
+
 void reporter::libraries_found(const std::vector<const library*>& libraries) {
     if (m_events) {
         for (const library* found : libraries) {

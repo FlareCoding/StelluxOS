@@ -242,6 +242,19 @@ static void check_rebuild_lines() {
     fclose(program.err);
 }
 
+static void check_cached_core() {
+    capture person = open_capture();
+    reporter(false, person.out, person.err).core_cached("/var/cache/mcufw/cores/esp32da-0123456789abcdef/core.a");
+    check(read_back(person.out) == "Core       cached\n", "a person reads that the core came from the cache");
+    fclose(person.err);
+
+    capture program = open_capture();
+    reporter(true, program.out, program.err).core_cached("/var/cache/mcufw/cores/esp32da-0123456789abcdef/core.a");
+    check(read_back(program.out) == "core\tcached\t/var/cache/mcufw/cores/esp32da-0123456789abcdef/core.a\n",
+          "a program reads the archive the build links");
+    fclose(program.err);
+}
+
 static void check_build_events() {
     installed_core core = esp32_core();
     selected_board board = default_board(core);
@@ -454,6 +467,7 @@ int main() {
 
     check_build_lines();
     check_rebuild_lines();
+    check_cached_core();
     check_build_events();
     check_commands();
     check_library_lines();

@@ -74,6 +74,25 @@ static bool remove_build_tree(const std::string& tree, failure& failed) {
     return true;
 }
 
-bool clean_sketch(const directory_layout& layout, const std::string& operand, failure& failed) {
-    return remove_build_tree(build_directory_for(layout, sketch_folder_named(operand)), failed);
+// Builds hold the state lock shared while they link from cache entries, so deleting the cache holds it exclusively,
+// taken before the tree goes so that a held lock leaves both
+bool clean_sketch(const directory_layout& layout, const std::string& operand, bool cores, failure& failed) {
+    file_lock state_lock;
+    std::string error;
+    if (cores && (!make_directories(layout.state, error) ||
+                  !state_lock.acquire(join_path(layout.state, STATE_LOCK_NAME), lock_mode::exclusive, error))) {
+        failed = { failure_kind::lock, error };
+        return false;
+    }
+
+    if (!remove_build_tree(build_directory_for(layout, sketch_folder_named(operand)), failed)) {
+        return false;
+    }
+
+    if (cores && is_directory(layout.core_cache) && !remove_tree(layout.core_cache, error)) {
+        failed = { failure_kind::io, error };
+        return false;
+    }
+
+    return true;
 }

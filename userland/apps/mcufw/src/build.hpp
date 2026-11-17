@@ -31,8 +31,8 @@ struct build_result {
     bool        up_to_date;  // no step that keeps a record ran, which `reporter::built` reports as up to date
 };
 
-// Builds `sketch` in its tree under `layout.builds`, holding the tree's lock for the call, so a second build of the
-// sketch fails at once as `lock`. Reports the build through `report` and leaves `failed` for the caller to report.
+// Builds `sketch` in its tree under `layout.builds`, holding the tree's lock so a second build fails at once as `lock`.
+// The caller holds the state lock shared throughout, since the link may read a core `clean --cores` deletes.
 bool build_sketch(
     const directory_layout& layout,
     const sketch& sketch,

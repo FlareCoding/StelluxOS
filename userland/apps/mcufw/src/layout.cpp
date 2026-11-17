@@ -10,6 +10,7 @@ directory_layout system_layout() {
     layout.overrides = "/etc/res/mcufw/overrides";
     layout.libraries = "/var/lib/mcufw/libraries";
     layout.builds = "/var/cache/mcufw/builds";
+    layout.core_cache = "/var/cache/mcufw/cores";
 
     return layout;
 }
