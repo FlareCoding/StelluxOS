@@ -8,6 +8,7 @@
 #include "compiler_output.hpp"
 #include "failure.hpp"
 #include "requirements.hpp"
+#include "sizes.hpp"
 #include "sketch.hpp"
 
 #include <cstdint>
@@ -66,12 +67,17 @@ public:
     // program sees no commands.
     void command_started(const std::vector<std::string>& words);
 
-    // A tool's output as it printed it, or `log <stage> <line>` for each of its lines
+    // A tool's output as it printed it, or a warning mcufw gives about the tool's step. A program sees
+    // `log <stage> <line>` for each of its lines.
     void tool_output(std::string_view stage, std::string_view text);
 
     // `problem <severity> <file> <line> <column> <message>`, which only a program sees, since a person reads the
     // compiler's own words
     void problem(const compiler_problem& problem);
+
+    // `Flash` and `RAM` lines with each share of the board's maximum, or `size flash|ram <used> <maximum>`, with `-`
+    // for a maximum the board does not state. No RAM line comes without the core's data regex.
+    void size_checked(const program_size& size, uint64_t flash_max, uint64_t ram_max);
 
     // `Built <image> in <time>`, or `built <image>`
     void built(const build_result& result, uint64_t elapsed_ns);

@@ -7,6 +7,7 @@
 #include "files.hpp"
 #include "hooks.hpp"
 #include "jobs.hpp"
+#include "sizes.hpp"
 
 #include <unistd.h>
 
@@ -315,6 +316,60 @@ static bool plan_and_count_compiles(build_run& run, const selected_board& board)
     return true;
 }
 
+// The size recipe's stdout summed by the core's regexes and checked against the board's limits as arduino-cli checks
+// them. A recipe that cannot run or fails, and regexes that cannot sum its output, only warn.
+static bool check_size(build_run& run) {
+    const property_table& properties = run.properties;
+    if (properties.get("upload.maximum_size").empty()) {
+        return true;
+    }
+
+    uint64_t flash_max = 0;
+    uint64_t ram_max = 0;
+    std::string error;
+    if (!read_size_limits(properties.get("upload.maximum_size"), properties.get("upload.maximum_data_size"), flash_max,
+                          ram_max, error)) {
+        return fail(run, failure_kind::size, error);
+    }
+
+    property_table sizing = properties;
+    sizing.set("compiler.warning_flags", properties.get("compiler.warning_flags." + run.options.warnings));
+
+    build_step step;
+    finished_job finished;
+    if (!plan_size(sizing, step, error) || !run_command(run, step, 0, finished)) {
+        if (cancel_requested()) {
+            return fail(run, failure_kind::cancelled, "the build was cancelled");
+        }
+
+        std::string reason = error.empty() ? run.failed.reason : error;
+        run.report.tool_output("size", "Couldn't determine program size: " + reason);
+        run.failed = {};
+        return true;
+    }
+
+    if (!finished.error_output.empty()) {
+        run.report.tool_output("size", finished.error_output);
+    }
+
+    program_size size;
+    bool exited = exit_problem(finished.exit_status).empty();
+    if (!exited || !sum_program_size(finished.output, properties.get("recipe.size.regex"),
+                                     properties.get("recipe.size.regex.data"),
+                                     properties.get("recipe.size.regex.eeprom"), size, error)) {
+        run.report.tool_output("size", "Couldn't determine program size" + (error.empty() ? "" : ": " + error));
+        return true;
+    }
+
+    size_verdict verdict = check_program_size(size, flash_max, ram_max, properties.get("build.warn_data_percentage"));
+    run.report.size_checked(size, flash_max, ram_max);
+    for (const std::string& warning : verdict.warnings) {
+        run.report.tool_output("size", warning);
+    }
+
+    return verdict.failure.empty() || fail(run, failure_kind::size, verdict.failure);
+}
+
 static bool archive_core(build_run& run, const std::string& core_archive) {
     if (unlink(core_archive.c_str()) != 0 && errno != ENOENT) {
         return fail(run, failure_kind::io, "cannot remove " + core_archive + ": " + strerror(errno));
@@ -400,12 +455,18 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
         return link_sketch(run, core_archive);
     case build_stage::objcopy:
         return make_images(run);
+    case build_stage::size:
+        return check_size(run);
     }
 
     return true;
 }
 
 static bool build_in_tree(build_run& run, const sketch& sketch, const selected_board& board) {
+    if (run.properties.find("recipe.advanced_size.pattern")) {
+        return fail(run, failure_kind::core, "the core sets recipe.advanced_size.pattern, which mcufw does not run");
+    }
+
     std::string variant_folder = run.properties.get("build.variant.path");
     run.includes = { run.properties.get("build.core.path") };
     if (!variant_folder.empty()) {

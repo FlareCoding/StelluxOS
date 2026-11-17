@@ -44,6 +44,7 @@ constexpr stage_step BUILD_STAGES[] = {
     { build_stage::objcopy, "" },
     { build_stage::hooks, "objcopy.postobjcopy" },
     { build_stage::hooks, "postbuild" },
+    { build_stage::size, "" },
 };
 
 std::vector<stage_step> build_stages() {
@@ -417,4 +418,16 @@ void shorten_long_command(const std::string& build_path, size_t text_length, std
             word = word.substr(build_path.size() + 1);
         }
     }
+}
+
+bool plan_size(const property_table& properties, build_step& step, std::string& error) {
+    std::vector<std::string> words;
+    size_t length = 0;
+    if (!recipe_words(properties, "recipe.size.pattern", words, length, error)) {
+        return false;
+    }
+
+    step = { step_kind::size, "recipe.size.pattern", { words }, "", "", { length } };
+
+    return true;
 }
