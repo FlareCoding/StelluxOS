@@ -1,6 +1,7 @@
 #include "extensions/embedded/embedded_protocol.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
@@ -10,12 +11,17 @@
 
 namespace sheen {
 
+static constexpr std::string_view SERIAL_DEV_PREFIX = "/dev/serial/";
 static constexpr std::string_view MIDDLE_DOT_SEPARATOR = " \xC2\xB7 ";
+static constexpr std::string_view DISCRIMINATOR_PREFIX = " (discriminator ";
+static constexpr std::string_view INLINED_FRAME_PREFIX = " (inlined by) ";
+static constexpr std::string_view HEX_ADDRESS_PREFIX = "0x";
 static constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 static constexpr uint64_t PERCENT_SCALE = 100;
 static constexpr uint64_t MEMORY_DANGER_PERCENT = 90;
 static constexpr uint64_t BYTES_PER_KILOBYTE = 1024;
 static constexpr uint64_t BYTES_PER_MEGABYTE = 1024 * 1024;
+static constexpr size_t SERIAL_LISTING_MIN_FIELDS = 10;
 static constexpr int MAX_NESTED_SKETCH_DEPTH = 3;
 
 namespace {
@@ -75,6 +81,28 @@ static std::string clean_optional_field(std::string_view field) {
     return field == "-" ? std::string() : std::string(field);
 }
 
+static std::vector<std::string> take_complete_lines(std::string& buffer, std::string_view chunk) {
+    buffer.append(chunk.data(), chunk.size());
+
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (true) {
+        size_t newline = buffer.find('\n', start);
+        if (newline == std::string::npos) {
+            break;
+        }
+
+        lines.emplace_back(strip_line_ending(std::string_view(buffer.data() + start, newline - start)));
+        start = newline + 1;
+    }
+
+    if (start > 0) {
+        buffer.erase(0, start);
+    }
+
+    return lines;
+}
+
 static bool has_sketch_extension(std::string_view name) {
     return name.ends_with(".ino") || name.ends_with(".pde");
 }
@@ -115,6 +143,26 @@ static bool is_directory_path(const std::filesystem::path& path) {
 static bool is_symlink_entry(const std::filesystem::directory_entry& entry) {
     std::error_code ec;
     return entry.is_symlink(ec) && !ec;
+}
+
+std::string normalize_serial_port_name(std::string_view port) {
+    port = trim_ascii(port);
+    if (port.starts_with(SERIAL_DEV_PREFIX)) {
+        port.remove_prefix(SERIAL_DEV_PREFIX.size());
+    }
+
+    if (port.empty() || port == "." || port == ".." || port == "-") {
+        return {};
+    }
+
+    for (char ch : port) {
+        unsigned char byte = static_cast<unsigned char>(ch);
+        if (ch == '/' || std::iscntrl(byte) != 0) {
+            return {};
+        }
+    }
+
+    return std::string(port);
 }
 
 std::string base_fqbn(std::string_view fqbn) {
@@ -317,6 +365,10 @@ mcufw_event parse_mcufw_event_fields(const std::vector<std::string>& fields) {
     } else if (tag == "built" && fields.size() >= 2 && !fields[1].empty()) {
         event.kind = mcufw_event_kind::BUILT;
         event.file_path = fields[1];
+    } else if ((tag == "port" || tag == "flashed") && fields.size() >= 2 && !fields[1].empty()) {
+        event.kind = tag == "port" ? mcufw_event_kind::PORT : mcufw_event_kind::FLASHED;
+        event.port_path = fields[1];
+        event.port_name = normalize_serial_port_name(fields[1]);
     } else if (tag == "failed" && fields.size() >= 3 && !fields[1].empty()) {
         event.kind = mcufw_event_kind::FAILED;
         event.failure_kind = fields[1];
@@ -333,6 +385,428 @@ mcufw_event parse_mcufw_event_line(std::string_view line) {
     }
 
     return parse_mcufw_event_fields(split_event_line(event_protocol::TSV_MCUFW, line));
+}
+
+static bool parse_serial_port_fields(const std::vector<std::string>& fields, serial_port_entry& port) {
+    if (fields.size() < SERIAL_LISTING_MIN_FIELDS) {
+        return false;
+    }
+
+    std::string normalized = normalize_serial_port_name(fields[1]);
+    uint64_t arrival = 0;
+    if (normalized.empty() || !parse_u64(fields[9], arrival)) {
+        return false;
+    }
+
+    port.name = std::move(normalized);
+    port.bus = clean_optional_field(fields[2]);
+    port.driver = clean_optional_field(fields[3]);
+    port.usb_ids = clean_optional_field(fields[4]);
+    port.location = clean_optional_field(fields[5]);
+
+    port.serial_number = clean_optional_field(fields[6]);
+    port.manufacturer = clean_optional_field(fields[7]);
+    port.product = clean_optional_field(fields[8]);
+    port.arrival = arrival;
+    return true;
+}
+
+serial_event parse_serial_event_line(std::string_view line) {
+    serial_event event;
+    line = strip_line_ending(line);
+    if (line.empty()) {
+        return event;
+    }
+
+    if (line.starts_with("mcufw: ") || line.starts_with("serial: ")) {
+        size_t colon = line.find(": ");
+        event.kind = serial_event_kind::FAILED;
+        event.failure_subject = "-";
+        event.failure_kind = "io";
+        event.failure_reason = std::string(line.substr(colon + 2));
+        return event;
+    }
+
+    std::vector<std::string> fields = split_event_line(event_protocol::TSV_MCUFW, line);
+    if (fields.empty()) {
+        return event;
+    }
+
+    const std::string& tag = fields[0];
+    if (tag == "port" || tag == "add") {
+        if (parse_serial_port_fields(fields, event.port)) {
+            event.kind = tag == "port" ? serial_event_kind::PORT : serial_event_kind::ADD;
+            event.port_name = event.port.name;
+        }
+    } else if (tag == "listed" && fields.size() >= 2) {
+        uint64_t count = 0;
+        if (parse_u64(fields[1], count)) {
+            event.kind = serial_event_kind::LISTED;
+            event.listed_count = static_cast<size_t>(count);
+        }
+    } else if (tag == "remove" && fields.size() >= 2) {
+        std::string name = normalize_serial_port_name(fields[1]);
+        if (!name.empty()) {
+            event.kind = serial_event_kind::REMOVE;
+            event.port_name = std::move(name);
+        }
+    } else if (tag == "open" && fields.size() >= 3) {
+        std::string name = normalize_serial_port_name(fields[1]);
+        uint32_t baud = 0;
+        if (!name.empty() && parse_u32(fields[2], baud) && baud > 0) {
+            event.kind = serial_event_kind::OPEN;
+            event.port_name = std::move(name);
+            event.baud_rate = baud;
+        }
+    } else if ((tag == "gone" || tag == "back" || tag == "closed") && fields.size() >= 2) {
+        std::string name = normalize_serial_port_name(fields[1]);
+        if (!name.empty()) {
+            event.kind = tag == "gone" ? serial_event_kind::GONE
+                       : tag == "back" ? serial_event_kind::BACK
+                                       : serial_event_kind::CLOSED;
+            event.port_name = std::move(name);
+        }
+    } else if (tag == "failed" && fields.size() >= 4 && !fields[2].empty()) {
+        event.kind = serial_event_kind::FAILED;
+        event.failure_subject = fields[1] == "-" ? std::string("-") : normalize_serial_port_name(fields[1]);
+        event.failure_kind = fields[2];
+        event.failure_reason = fields[3];
+    }
+
+    return event;
+}
+
+static bool same_port_entry(const serial_port_entry& left, const serial_port_entry& right) {
+    return left.name == right.name
+        && left.bus == right.bus
+        && left.driver == right.driver
+        && left.usb_ids == right.usb_ids
+        && left.location == right.location
+        && left.serial_number == right.serial_number
+        && left.manufacturer == right.manufacturer
+        && left.product == right.product
+        && left.arrival == right.arrival;
+}
+
+static bool same_port_list(const std::vector<serial_port_entry>& left,
+                           const std::vector<serial_port_entry>& right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+
+    for (size_t index = 0; index < left.size(); index++) {
+        if (!same_port_entry(left[index], right[index])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool upsert_port_entry(std::vector<serial_port_entry>& list, const serial_port_entry& port) {
+    auto existing = std::find_if(list.begin(), list.end(), [&](const serial_port_entry& item) {
+        return item.name == port.name;
+    });
+
+    if (existing != list.end()) {
+        if (same_port_entry(*existing, port)) {
+            return false;
+        }
+
+        *existing = port;
+        return true;
+    }
+
+    list.push_back(port);
+    std::sort(list.begin(), list.end(), [](const serial_port_entry& a, const serial_port_entry& b) {
+        return a.name < b.name;
+    });
+
+    return true;
+}
+
+bool serial_port_catalog::apply(const serial_event& event) {
+    if (event.kind == serial_event_kind::PORT) {
+        m_has_pending_snapshot = true;
+        upsert_port_entry(m_snapshot_ports, event.port);
+        return false;
+    }
+
+    if (event.kind == serial_event_kind::LISTED) {
+        bool changed = !same_port_list(m_ports, m_snapshot_ports);
+        m_ports = std::move(m_snapshot_ports);
+        m_snapshot_ports.clear();
+        m_has_pending_snapshot = false;
+        return changed;
+    }
+
+    if (event.kind == serial_event_kind::ADD) {
+        return upsert_port_entry(m_ports, event.port);
+    }
+
+    if (event.kind == serial_event_kind::REMOVE) {
+        auto existing = std::find_if(m_ports.begin(), m_ports.end(), [&](const serial_port_entry& item) {
+            return item.name == event.port_name;
+        });
+
+        if (existing == m_ports.end()) {
+            return false;
+        }
+
+        m_ports.erase(existing);
+        return true;
+    }
+
+    return false;
+}
+
+bool serial_port_catalog::feed_chunk(std::string_view chunk) {
+    std::vector<std::string> lines = take_complete_lines(m_line_buffer, chunk);
+    bool should_notify = false;
+    for (const std::string& line : lines) {
+        serial_event event = parse_serial_event_line(line);
+        if (apply(event)) {
+            should_notify = true;
+        }
+
+        if (event.kind == serial_event_kind::LISTED && !m_has_completed_snapshot) {
+            m_has_completed_snapshot = true;
+            should_notify = true;
+        }
+    }
+
+    return should_notify;
+}
+
+bool serial_port_catalog::finish_process() {
+    std::string tail(strip_line_ending(m_line_buffer));
+    m_line_buffer.clear();
+
+    bool should_notify = false;
+    if (!tail.empty()) {
+        serial_event event = parse_serial_event_line(tail);
+        if (apply(event)) {
+            should_notify = true;
+        }
+
+        if (event.kind == serial_event_kind::LISTED && !m_has_completed_snapshot) {
+            m_has_completed_snapshot = true;
+            should_notify = true;
+        }
+    }
+
+    if (m_has_pending_snapshot) {
+        m_snapshot_ports.clear();
+        m_has_pending_snapshot = false;
+    }
+
+    return should_notify;
+}
+
+const serial_port_entry* serial_port_catalog::find(std::string_view port_name) const {
+    std::string normalized = normalize_serial_port_name(port_name);
+    for (const serial_port_entry& port : m_ports) {
+        if (!normalized.empty() && port.name == normalized) {
+            return &port;
+        }
+    }
+
+    return nullptr;
+}
+
+resolved_serial_port serial_port_catalog::resolve(std::string_view preferred_port, uint32_t baud_rate) const {
+    resolved_serial_port resolved;
+    std::string preferred = normalize_serial_port_name(preferred_port);
+    if (!preferred.empty()) {
+        resolved.name = preferred;
+        const serial_port_entry* present = find(preferred);
+        if (present != nullptr) {
+            resolved.is_present = true;
+            resolved.short_description = format_serial_port_short_description(*present);
+            resolved.full_description = format_serial_port_detail(*present, baud_rate);
+        }
+
+        return resolved;
+    }
+
+    if (m_ports.size() == 1) {
+        const serial_port_entry& only = m_ports.front();
+        resolved.name = only.name;
+        resolved.is_present = true;
+        resolved.is_auto_selected = true;
+        resolved.short_description = format_serial_port_short_description(only);
+        resolved.full_description = format_serial_port_detail(only, baud_rate);
+    }
+
+    return resolved;
+}
+
+bool flash_monitor_coordinator::begin_flash(bool monitor_is_running) {
+    m_restart_monitor_after_stop = false;
+    m_waiting_for_monitor_stop = monitor_is_running;
+    m_resume_monitor_after_flash = monitor_is_running;
+    return monitor_is_running;
+}
+
+flash_cancel_action flash_monitor_coordinator::cancel_flash(bool monitor_is_running) {
+    if (!m_waiting_for_monitor_stop) {
+        return flash_cancel_action::NONE;
+    }
+
+    m_waiting_for_monitor_stop = false;
+    if (!m_resume_monitor_after_flash) {
+        return flash_cancel_action::NONE;
+    }
+
+    m_resume_monitor_after_flash = false;
+    if (monitor_is_running) {
+        m_restart_monitor_after_stop = true;
+        return flash_cancel_action::RESTART_MONITOR_WHEN_STOPPED;
+    }
+
+    return flash_cancel_action::START_MONITOR_NOW;
+}
+
+monitor_stop_action flash_monitor_coordinator::on_monitor_stopped() {
+    if (m_waiting_for_monitor_stop) {
+        m_waiting_for_monitor_stop = false;
+        return monitor_stop_action::START_PENDING_FLASH;
+    }
+
+    if (m_restart_monitor_after_stop) {
+        m_restart_monitor_after_stop = false;
+        return monitor_stop_action::RESTART_MONITOR;
+    }
+
+    return monitor_stop_action::NONE;
+}
+
+flash_finish_action flash_monitor_coordinator::on_flash_finished(bool flash_succeeded) {
+    m_waiting_for_monitor_stop = false;
+    if (!m_resume_monitor_after_flash) {
+        return flash_finish_action::NONE;
+    }
+
+    m_resume_monitor_after_flash = false;
+    return flash_succeeded
+        ? flash_finish_action::RESUME_AND_REVEAL_MONITOR
+        : flash_finish_action::RESUME_MONITOR_QUIETLY;
+}
+
+void flash_monitor_coordinator::request_monitor_restart_after_stop() {
+    m_restart_monitor_after_stop = true;
+}
+
+void flash_monitor_coordinator::clear_for_manual_monitor_toggle() {
+    reset();
+}
+
+void flash_monitor_coordinator::reset() {
+    m_waiting_for_monitor_stop = false;
+    m_resume_monitor_after_flash = false;
+    m_restart_monitor_after_stop = false;
+}
+
+void crash_output_scanner::reset() {
+    m_line_buffer.clear();
+    m_reported_in_current_dump = false;
+}
+
+std::optional<backtrace_location> crash_output_scanner::feed_chunk(
+    std::string_view chunk,
+    const std::function<bool(const std::string&)>& file_exists) {
+    std::vector<std::string> lines = take_complete_lines(m_line_buffer, chunk);
+    std::optional<backtrace_location> first_reported;
+
+    for (const std::string& line : lines) {
+        if (line.find("Backtrace:") != std::string::npos
+            || line.find("Guru Meditation Error:") != std::string::npos
+            || line.find("ELF file SHA256:") != std::string::npos) {
+            m_reported_in_current_dump = false;
+        }
+
+        std::optional<backtrace_location> decoded = extract_backtrace_location(line);
+        if (!decoded.has_value() || m_reported_in_current_dump) {
+            continue;
+        }
+
+        bool exists = file_exists ? file_exists(decoded->file_path) : is_regular_file_path(decoded->file_path);
+        if (exists) {
+            m_reported_in_current_dump = true;
+            if (!first_reported.has_value()) {
+                first_reported = std::move(decoded);
+            }
+        }
+    }
+
+    return first_reported;
+}
+
+std::string format_serial_port_short_description(const serial_port_entry& port) {
+    if (!port.product.empty()) {
+        return port.product;
+    }
+
+    if (!port.manufacturer.empty()) {
+        return port.manufacturer;
+    }
+
+    if (!port.usb_ids.empty()) {
+        return port.usb_ids;
+    }
+
+    return !port.driver.empty() ? port.driver : port.bus;
+}
+
+std::string format_serial_port_detail(const serial_port_entry& port, uint32_t baud_rate) {
+    std::vector<std::string> parts;
+    std::string primary = format_serial_port_short_description(port);
+    if (!primary.empty()) {
+        parts.push_back(std::move(primary));
+    }
+
+    if (!port.manufacturer.empty() && port.manufacturer != port.product && !port.product.empty()) {
+        parts.push_back(port.manufacturer);
+    }
+
+    if (!port.usb_ids.empty() && (parts.empty() || parts.front() != port.usb_ids)) {
+        parts.push_back(port.usb_ids);
+    }
+
+    if (baud_rate > 0) {
+        parts.push_back(std::to_string(baud_rate));
+    }
+
+    std::string joined;
+    for (const std::string& part : parts) {
+        if (!joined.empty()) {
+            joined += MIDDLE_DOT_SEPARATOR;
+        }
+
+        joined += part;
+    }
+
+    return joined;
+}
+
+std::string format_serial_monitor_mark(const serial_event& event, bool& is_danger) {
+    is_danger = false;
+    switch (event.kind) {
+    case serial_event_kind::OPEN:
+        return "Connected to /dev/serial/" + event.port_name + std::string(MIDDLE_DOT_SEPARATOR) +
+               std::to_string(event.baud_rate) + " 8N1";
+    case serial_event_kind::GONE:
+        return event.port_name + " left, waiting for it to come back";
+    case serial_event_kind::BACK:
+        return event.port_name + " is back";
+    case serial_event_kind::CLOSED:
+        return "Closed " + event.port_name;
+    case serial_event_kind::FAILED:
+        is_danger = true;
+        return event.failure_reason.empty() ? "Serial monitor failed" : event.failure_reason;
+    default:
+        return {};
+    }
 }
 
 static std::string format_byte_quantity(uint64_t bytes) {
@@ -413,6 +887,10 @@ std::string format_progress_label(std::string_view stage_or_item, uint64_t done,
         return percent >= 0
             ? "Installing " + std::string(stage_or_item) + " " + std::to_string(percent) + "%"
             : "Installing " + std::string(stage_or_item);
+    }
+
+    if (stage_or_item == "flash") {
+        return percent >= 0 ? "Flashing " + std::to_string(percent) + "%" : std::string("Flashing");
     }
 
     if (stage_or_item == "compile") {
@@ -587,6 +1065,82 @@ bool attach_library_hint(std::vector<embedded_diagnostic>& diagnostics, const mc
     return true;
 }
 
+static bool starts_decoded_backtrace_line(std::string_view line) {
+    if (line.starts_with(INLINED_FRAME_PREFIX)) {
+        return true;
+    }
+
+    if (!line.starts_with(HEX_ADDRESS_PREFIX)) {
+        return false;
+    }
+
+    size_t colon = line.find(": ");
+    if (colon == std::string_view::npos || colon <= HEX_ADDRESS_PREFIX.size()) {
+        return false;
+    }
+
+    for (size_t index = HEX_ADDRESS_PREFIX.size(); index < colon; index++) {
+        if (std::isxdigit(static_cast<unsigned char>(line[index])) == 0) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static std::string_view strip_discriminator_suffix(std::string_view line) {
+    size_t suffix = line.rfind(DISCRIMINATOR_PREFIX);
+    if (suffix == std::string_view::npos || line.back() != ')') {
+        return line;
+    }
+
+    std::string_view digits = line.substr(suffix + DISCRIMINATOR_PREFIX.size(),
+                                          line.size() - suffix - DISCRIMINATOR_PREFIX.size() - 1);
+    uint32_t ignored = 0;
+    return parse_u32(digits, ignored) ? line.substr(0, suffix) : line;
+}
+
+std::optional<backtrace_location> extract_backtrace_location(std::string_view line) {
+    std::string_view trimmed = strip_line_ending(line);
+    if (!starts_decoded_backtrace_line(trimmed)) {
+        return std::nullopt;
+    }
+
+    std::string_view core = strip_discriminator_suffix(trimmed);
+    size_t colon = core.rfind(':');
+    if (colon == std::string_view::npos || colon + 1 >= core.size()) {
+        return std::nullopt;
+    }
+
+    uint32_t parsed_line = 0;
+    if (!parse_u32(core.substr(colon + 1), parsed_line) || parsed_line == 0) {
+        return std::nullopt;
+    }
+
+    std::string_view before_colon = core.substr(0, colon);
+    size_t marker = before_colon.rfind(" at /");
+    if (marker == std::string_view::npos) {
+        marker = before_colon.rfind(" at ");
+    }
+
+    if (marker == std::string_view::npos) {
+        return std::nullopt;
+    }
+
+    size_t path_start = marker + 4;
+    std::string_view file_view = before_colon.substr(path_start);
+    if (file_view.empty() || file_view == "??") {
+        return std::nullopt;
+    }
+
+    backtrace_location location;
+    location.file_path = std::string(file_view);
+    location.line = static_cast<int>(parsed_line);
+    location.span_offset = path_start;
+    location.span_length = core.size() - path_start;
+    return location;
+}
+
 static bool parse_yaml_top_key(std::string_view line, std::string_view key, std::string& out_value) {
     if (!line.starts_with(key) || line.size() <= key.size() || line[key.size()] != ':') {
         return false;
@@ -618,7 +1172,12 @@ sketch_defaults parse_sketch_yaml(std::string_view text) {
         size_t end = text.find('\n', start);
         size_t length = end == std::string_view::npos ? text.size() - start : end - start;
         std::string_view line = strip_line_ending(text.substr(start, length));
-        parse_yaml_top_key(line, "default_fqbn", defaults.fqbn);
+
+        if (!parse_yaml_top_key(line, "default_fqbn", defaults.fqbn)) {
+            if (parse_yaml_top_key(line, "default_port", defaults.raw_port)) {
+                defaults.port_name = normalize_serial_port_name(defaults.raw_port);
+            }
+        }
 
         if (end == std::string_view::npos) {
             break;

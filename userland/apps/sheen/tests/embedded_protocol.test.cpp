@@ -17,6 +17,13 @@
 
 static constexpr uint32_t MAX_FAILURE_REPORTS = 12;
 
+static constexpr const char* MOCK_CP2102_LINE =
+    "cp2102-0007\tusb\tcp210x\t10c4:ea60\t1.5.3\t0007\tSilicon Labs\tCP2102 USB to UART\t7\t789\t0\t-";
+static constexpr const char* MOCK_FTDI_LINE =
+    "ft232bm-0001\tusb\tftdi\t0403:6001\t1.2\tFT0001\tAcme\tAcme UART\t3\t42\t0\t-";
+static constexpr const char* MOCK_BARE_UART_LINE =
+    "uart-0000\tplatform\tns16550\t-\t-\t-\t-\t-\t1";
+
 static uint64_t g_checks = 0;
 static uint64_t g_failures = 0;
 
@@ -58,7 +65,7 @@ static void write_file(const std::filesystem::path& path, std::string_view text)
     out.write(text.data(), static_cast<std::streamsize>(text.size()));
 }
 
-static void check_dependency_probes_and_fqbn() {
+static void check_dependency_probes_and_normalization() {
     check(std::string_view(sheen::EMBEDDED_PYTHON_PROBE_PATH) == "/bin/python3",
           "python dependency probes /bin/python3 installed by packages/python");
     check(std::string_view(sheen::EMBEDDED_ESPTOOL_PROBE_PATH) ==
@@ -80,6 +87,19 @@ static void check_dependency_probes_and_fqbn() {
           "default ESP32 core install target is 3-part board FQBN so mcufw installs esp32-libs");
     check(std::string_view(sheen::EMBEDDED_ESP32_LIBS_PROBE_PATH) == "/var/lib/mcufw/tools/esp32/esp32-libs",
           "ESP32 core post-install probe checks /var/lib/mcufw/tools/esp32/esp32-libs");
+
+    check(sheen::normalize_serial_port_name("cp2102-0001") == "cp2102-0001", "bare port name stays intact");
+    check(sheen::normalize_serial_port_name(" /dev/serial/cp2102-0001 \r\n") == "cp2102-0001",
+          "/dev/serial/ prefix and surrounding whitespace are stripped");
+    check(sheen::normalize_serial_port_name("/dev/serial/").empty(), "empty name after /dev/serial/ is rejected");
+    check(sheen::normalize_serial_port_name("-").empty(), "dash sentinel is rejected");
+
+    check(sheen::normalize_serial_port_name(".").empty() && sheen::normalize_serial_port_name("..").empty(),
+          "dot components are rejected");
+    check(sheen::normalize_serial_port_name("/dev/other/port").empty(),
+          "paths outside /dev/serial/ with slashes are rejected");
+    check(sheen::normalize_serial_port_name(std::string_view("bad\x01port", 8)).empty(),
+          "control bytes in port names are rejected");
 
     check(sheen::base_fqbn("esp32:esp32:esp32da") == "esp32:esp32:esp32da",
           "3-part FQBN stays unchanged");
@@ -222,10 +242,10 @@ static void check_mcufw_events() {
               && prog.total == 75,
           "progress event parses stage, done, and total");
 
-    sheen::mcufw_event log_ev = sheen::parse_mcufw_event_line("log\tcompile\tCompiling Blink.ino\n");
+    sheen::mcufw_event log_ev = sheen::parse_mcufw_event_line("log\tflash\tWriting at 0x00010000... (33 %)\n");
     check(log_ev.kind == sheen::mcufw_event_kind::LOG
-              && log_ev.stage == "compile"
-              && log_ev.message == "Compiling Blink.ino",
+              && log_ev.stage == "flash"
+              && log_ev.message == "Writing at 0x00010000... (33 %)",
           "log event parses stage and text");
 
     sheen::mcufw_event start_ev = sheen::parse_mcufw_event_line("start\tesp32:esp32\t3.3.12\t51102895\n");
@@ -256,6 +276,18 @@ static void check_mcufw_events() {
               && built_ev.file_path == "/var/cache/mcufw/builds/k/Blink.ino.bin",
           "built event parses output binary path");
 
+    sheen::mcufw_event port_ev = sheen::parse_mcufw_event_line("port\t/dev/serial/cp2102-0001\n");
+    check(port_ev.kind == sheen::mcufw_event_kind::PORT
+              && port_ev.port_path == "/dev/serial/cp2102-0001"
+              && port_ev.port_name == "cp2102-0001",
+          "port event normalizes /dev/serial/ name");
+
+    sheen::mcufw_event flashed_ev = sheen::parse_mcufw_event_line("flashed\t/dev/serial/ft232r-0002\n");
+    check(flashed_ev.kind == sheen::mcufw_event_kind::FLASHED
+              && flashed_ev.port_path == "/dev/serial/ft232r-0002"
+              && flashed_ev.port_name == "ft232r-0002",
+          "flashed event captures answering port path and normalized name");
+
     sheen::mcufw_event failed_ev =
         sheen::parse_mcufw_event_line("failed\tlibrary\tno installed library provides FastLED.h\n");
     check(failed_ev.kind == sheen::mcufw_event_kind::FAILED
@@ -265,6 +297,146 @@ static void check_mcufw_events() {
 
     check(sheen::parse_mcufw_event_line("future_fact\t1\t2").kind == sheen::mcufw_event_kind::UNKNOWN,
           "unknown future mcufw event kind is skipped cleanly");
+}
+
+static void check_serial_events_and_watch_snapshots() {
+    sheen::serial_port_catalog catalog;
+    check(catalog.ports().empty(), "catalog starts empty");
+
+    sheen::resolved_serial_port empty_res = catalog.resolve("");
+    check(empty_res.name.empty() && !empty_res.is_present && !empty_res.is_auto_selected,
+          "empty catalog with no preferred port resolves to no port");
+
+    std::string first_snapshot = std::string("port\t") + MOCK_CP2102_LINE + "\n"
+                               + "port\t" + MOCK_FTDI_LINE + "\n";
+    check(!catalog.feed_chunk(first_snapshot),
+          "PORT lines stage into pending snapshot until LISTED arrives");
+    check(catalog.ports().empty(), "uncommitted PORT lines do not expose partial snapshot");
+
+    check(catalog.feed_chunk("listed\t2\n") && catalog.ports().size() == 2,
+          "LISTED commits staged snapshot and triggers notification");
+
+    sheen::resolved_serial_port explicit_saved = catalog.resolve("/dev/serial/ft232bm-0001");
+    check(explicit_saved.name == "ft232bm-0001"
+              && explicit_saved.is_present
+              && !explicit_saved.is_auto_selected
+              && explicit_saved.short_description == "Acme UART",
+          "saved /dev/serial/ path resolves against live port");
+
+    std::string restart_snapshot = std::string("port\t") + MOCK_CP2102_LINE + "\nlisted\t1\n";
+    check(catalog.feed_chunk(restart_snapshot),
+          "restart snapshot with one port unplugged reports catalog mutation");
+    check(catalog.ports().size() == 1 && catalog.ports()[0].name == "cp2102-0007",
+          "LISTED prunes ghost port unplugged during serial watch restart window");
+
+    sheen::resolved_serial_port auto_res = catalog.resolve("", 115200);
+    check(auto_res.name == "cp2102-0007"
+              && auto_res.is_present
+              && auto_res.is_auto_selected
+              && auto_res.short_description == "CP2102 USB to UART"
+              && auto_res.full_description == "CP2102 USB to UART \xC2\xB7 Silicon Labs \xC2\xB7 10c4:ea60 \xC2\xB7 115200",
+          "single remaining port auto-selects with description and baud");
+
+    check(!catalog.feed_chunk(restart_snapshot),
+          "identical restart snapshot is idempotent");
+
+    check(!catalog.feed_chunk(std::string("port\t") + MOCK_FTDI_LINE + "\n"),
+          "interrupted restart stages PORT without mutating live ports");
+    check(!catalog.finish_process() && catalog.ports().size() == 1 && catalog.ports()[0].name == "cp2102-0007",
+          "finish_process discards incomplete snapshot when watch dies before LISTED");
+
+    check(!catalog.feed_chunk("remove\tcp2102-0007"),
+          "unterminated trailing line buffers until newline or process exit");
+    check(catalog.finish_process() && catalog.ports().empty(),
+          "finish_process parses unterminated final remove line directly instead of dropping it");
+
+    check(catalog.feed_chunk(std::string("add\t") + MOCK_FTDI_LINE + "\n")
+              && catalog.feed_chunk("add\tacm-0000\tusb\tcdc_acm\t2341:0043\t1.1\tSN0\tArduino\tArduino Uno\t9\n"),
+          "live hotplug ADD events insert sorted ports");
+    check(catalog.ports().size() == 2
+              && catalog.ports()[0].name == "acm-0000"
+              && catalog.ports()[1].name == "ft232bm-0001",
+          "catalog keeps ports sorted alphabetically");
+
+    check(catalog.feed_chunk("listed\t0\n") && catalog.ports().empty(),
+          "listed 0 snapshot prunes all previously known ports");
+
+    sheen::serial_event bare_uart = sheen::parse_serial_event_line(std::string("port\t") + MOCK_BARE_UART_LINE + "\n");
+    check(bare_uart.kind == sheen::serial_event_kind::PORT
+              && sheen::format_serial_port_short_description(bare_uart.port) == "ns16550",
+          "port without product/manufacturer/usb_ids falls back to driver");
+
+    sheen::serial_port_entry mfg_only = { "p0", "usb", "cdc", "1111:2222", "", "", "Espressif", "", 1 };
+    sheen::serial_port_entry usb_only = { "p1", "usb", "cdc", "1111:2222", "", "", "", "", 1 };
+    sheen::serial_port_entry bus_only = { "p2", "platform", "", "", "", "", "", "", 1 };
+    check(sheen::format_serial_port_short_description(mfg_only) == "Espressif"
+              && sheen::format_serial_port_short_description(usb_only) == "1111:2222"
+              && sheen::format_serial_port_short_description(bus_only) == "platform",
+          "short description fallback chain covers manufacturer, usb_ids, and bus");
+    check(sheen::format_serial_port_detail(usb_only) == "1111:2222",
+          "port detail does not duplicate usb_ids when usb_ids is already primary");
+
+    bool danger = false;
+    sheen::serial_event open_ev = sheen::parse_serial_event_line("open\tcp2102-0007\t115200\n");
+    check(sheen::format_serial_monitor_mark(open_ev, danger) ==
+              "Connected to /dev/serial/cp2102-0007 \xC2\xB7 115200 8N1" && !danger,
+          "monitor open mark formats connection banner");
+
+    sheen::serial_event busy_ev = sheen::parse_serial_event_line(
+        "failed\tcp2102-0007\tbusy\tcp2102-0007 is held by another program\n");
+    check(sheen::format_serial_monitor_mark(busy_ev, danger) == "cp2102-0007 is held by another program" && danger,
+          "monitor busy failure sets danger mark");
+
+    sheen::serial_event mcufw_err = sheen::parse_serial_event_line("mcufw: no serial port is plugged in\n");
+    sheen::serial_event serial_err = sheen::parse_serial_event_line("serial: permission denied\n");
+    check(mcufw_err.kind == sheen::serial_event_kind::FAILED
+              && mcufw_err.failure_reason == "no serial port is plugged in"
+              && serial_err.kind == sheen::serial_event_kind::FAILED
+              && serial_err.failure_reason == "permission denied",
+          "plain mcufw and serial stderr sentences parse as failures");
+}
+
+static void check_flash_monitor_coordinator() {
+    sheen::flash_monitor_coordinator coord;
+    check(!coord.begin_flash(false) && !coord.is_waiting_for_monitor_stop(),
+          "flash with monitor closed starts immediately without waiting");
+    check(coord.on_flash_finished(true) == sheen::flash_finish_action::NONE,
+          "flash with monitor initially closed does not auto-open monitor");
+
+    check(coord.begin_flash(true) && coord.is_waiting_for_monitor_stop(),
+          "flash with monitor open pauses monitor and enters waiting_for_monitor_stop");
+    check(coord.on_monitor_stopped() == sheen::monitor_stop_action::START_PENDING_FLASH
+              && !coord.is_waiting_for_monitor_stop(),
+          "monitor stop hands off to pending flash");
+    check(coord.on_flash_finished(true) == sheen::flash_finish_action::RESUME_AND_REVEAL_MONITOR,
+          "successful flash reopens and reveals paused monitor");
+
+    check(coord.begin_flash(true), "second flash pauses active monitor");
+    check(coord.on_monitor_stopped() == sheen::monitor_stop_action::START_PENDING_FLASH,
+          "monitor stop starts flash");
+    check(coord.cancel_flash(false) == sheen::flash_cancel_action::NONE,
+          "cancel while mcufw flash is running keeps resume flag for on_flash_finished");
+    check(coord.on_flash_finished(false) == sheen::flash_finish_action::RESUME_MONITOR_QUIETLY,
+          "canceled or failed flash still reopens paused monitor quietly");
+
+    check(coord.begin_flash(true) && coord.is_waiting_for_monitor_stop(),
+          "third flash pauses active monitor");
+    check(coord.cancel_flash(true) == sheen::flash_cancel_action::RESTART_MONITOR_WHEN_STOPPED
+              && !coord.is_waiting_for_monitor_stop(),
+          "canceling flash before monitor finishes stopping schedules immediate monitor restart");
+    check(coord.on_monitor_stopped() == sheen::monitor_stop_action::RESTART_MONITOR,
+          "monitor exit after pre-flash cancel restarts monitor instead of flashing");
+
+    check(coord.begin_flash(true), "fourth flash pauses active monitor");
+    check(coord.cancel_flash(false) == sheen::flash_cancel_action::START_MONITOR_NOW,
+          "canceling pending flash after monitor stopped reopens monitor immediately");
+
+    check(coord.begin_flash(true) && coord.is_waiting_for_monitor_stop(),
+          "fifth flash enters waiting state");
+    coord.clear_for_manual_monitor_toggle();
+    check(!coord.is_waiting_for_monitor_stop()
+              && coord.on_monitor_stopped() == sheen::monitor_stop_action::NONE,
+          "manual toggle_monitor clears pending flash state");
 }
 
 static void check_memory_and_progress_formatting() {
@@ -312,9 +484,10 @@ static void check_memory_and_progress_formatting() {
 
     check(sheen::format_progress_label("compile", 12, 75, false) == "Building 12/75", "compile progress label");
     check(sheen::format_progress_label("compile", 0, 0, false) == "Building", "compile zero-total label");
+    check(sheen::format_progress_label("flash", 33, 100, false) == "Flashing 33%", "flash progress label");
     check(sheen::format_progress_label("libraries", 1, 3, false) == "Resolving libraries", "libraries stage label");
-    check(sheen::format_progress_label("link", 1, 2, false) == "link 1/2", "generic stage progress label");
 
+    check(sheen::format_progress_label("link", 1, 2, false) == "link 1/2", "generic stage progress label");
     check(sheen::format_progress_label("FastLED", 20, 40, true) == "Installing FastLED 50%",
           "install progress label");
     check(sheen::format_progress_label("FastLED", 0, 0, true) == "Installing FastLED",
@@ -365,18 +538,76 @@ static void check_diagnostics_and_library_hints(const std::string& temp_root) {
           "synthesized diagnostic points to exact 1-based #include line");
 }
 
+static void check_crash_backtrace_extraction(const std::string& temp_root) {
+    std::filesystem::path crash_sketch = std::filesystem::path(temp_root) / "My Lamp";
+    std::filesystem::path crash_ino = crash_sketch / "My Lamp.ino";
+    std::filesystem::path core_main = crash_sketch / "main.cpp";
+    write_file(crash_ino, "void loop() {}\n");
+    write_file(core_main, "void app_main() {}\n");
+
+    std::string line1 = "0x400d1683: loop() at " + crash_ino.string() + ":12\r\n";
+    std::optional<sheen::backtrace_location> loc1 = sheen::extract_backtrace_location(line1);
+    check(loc1.has_value()
+              && loc1->file_path == crash_ino.string()
+              && loc1->line == 12
+              && line1.substr(loc1->span_offset, loc1->span_length) == crash_ino.string() + ":12",
+          "decoded address line with spaces in path extracts exact file, line, and clickable span");
+
+    std::string inlined = " (inlined by) std::vector<int>::at(unsigned int) at " + crash_ino.string() + ":27 (discriminator 2)\r\n";
+    std::optional<sheen::backtrace_location> loc2 = sheen::extract_backtrace_location(inlined);
+    check(loc2.has_value()
+              && loc2->file_path == crash_ino.string()
+              && loc2->line == 27
+              && inlined.substr(loc2->span_offset, loc2->span_length) == crash_ino.string() + ":27",
+          "inlined frame with ::at() in signature and discriminator suffix extracts clean path:line");
+
+    std::string spaced_sig = "0x400d1683: lookup(char const* at ) at " + crash_ino.string() + ":31\r\n";
+    std::optional<sheen::backtrace_location> loc3 = sheen::extract_backtrace_location(spaced_sig);
+    check(loc3.has_value() && loc3->file_path == crash_ino.string() && loc3->line == 31,
+          "frame containing ' at ' inside function signature still extracts trailing source path");
+
+    check(!sheen::extract_backtrace_location("0x400d1683: foo at ??:0\r\n").has_value(),
+          "unplaced ??:0 frame is ignored");
+    check(!sheen::extract_backtrace_location("0x400d1683: foo at ??:1\r\n").has_value(),
+          "unknown ?? file with non-zero line is ignored");
+    check(!sheen::extract_backtrace_location("Backtrace: 0x400d1683:0x3ffb2110\r\n").has_value(),
+          "raw hex backtrace register dump is not misread as file:line");
+
+    sheen::crash_output_scanner scanner;
+    std::string dump1 =
+        "Guru Meditation Error: Core  1 panic'ed (StoreProhibited).\r\n"
+        "Backtrace: 0x40087578:0x3ffb2050 0x400d1683:0x3ffb2110\r\n"
+        "0x40087578: panic_abort at /nonexistent/esp_system/panic.c:477\r\n"
+        "0x400d1683: loop() at " + crash_ino.string() + ":14\r\n"
+        "0x400d2000: loopTask at " + core_main.string() + ":55\r\n";
+    std::optional<sheen::backtrace_location> first = scanner.feed_chunk(dump1);
+    check(first.has_value() && first->file_path == crash_ino.string() && first->line == 14,
+          "crash_output_scanner reports first existing source frame rather than bottom core frame");
+    check(!scanner.feed_chunk("0x400d2001: vPortTaskWrapper at " + core_main.string() + ":90\r\n").has_value(),
+          "subsequent frames in same panic dump do not overwrite first frame note");
+
+    std::string dump2 = "ELF file SHA256: f29faa75d\r\n0x400d1683: loop() at " + crash_ino.string() + ":29\r\n";
+    std::optional<sheen::backtrace_location> second = scanner.feed_chunk(dump2);
+    check(second.has_value() && second->line == 29,
+          "new panic dump header resets scanner to report next crash location");
+}
+
 static void check_sketch_yaml_and_workspace_paths(const std::string& temp_root) {
     sheen::sketch_defaults parsed = sheen::parse_sketch_yaml(
         "\xEF\xBB\xBF"
-        "default_fqbn: \"esp32:esp32:esp32da:FlashSize=8M\" # desk esp32\r\n"
+        "default_fqbn: \"esp32:esp32:esp32da:FlashSize=8M\"\r\n"
+        "default_port: /dev/serial/cp2102-0001 # desk esp32\r\n"
         "profiles:\r\n"
         "  esp32s3:\r\n"
-        "    default_fqbn: wrong:indented:board\r\n");
-    check(parsed.fqbn == "esp32:esp32:esp32da:FlashSize=8M",
+        "    default_fqbn: wrong:indented:board\r\n"
+        "    default_port: /dev/serial/wrong-0009\r\n");
+    check(parsed.fqbn == "esp32:esp32:esp32da:FlashSize=8M"
+              && parsed.port_name == "cp2102-0001"
+              && parsed.raw_port == "/dev/serial/cp2102-0001",
           "parse_sketch_yaml handles BOM, CRLF, quotes, comments, and ignores indented keys");
 
-    sheen::sketch_defaults single_quoted = sheen::parse_sketch_yaml("default_fqbn: 'esp32:esp32:esp32s3' # note\n");
-    check(single_quoted.fqbn == "esp32:esp32:esp32s3",
+    sheen::sketch_defaults single_quoted = sheen::parse_sketch_yaml("default_fqbn: 'esp32:esp32:esp32s3'\n");
+    check(single_quoted.fqbn == "esp32:esp32:esp32s3" && single_quoted.port_name.empty(),
           "parse_sketch_yaml reads single-quoted FQBN");
 
     check(sheen::is_path_within_workspace("/sketches/led", "/sketches/led"),
@@ -390,16 +621,16 @@ static void check_sketch_yaml_and_workspace_paths(const std::string& temp_root) 
 
     std::filesystem::path root_sketch = std::filesystem::path(temp_root) / "Blink";
     write_file(root_sketch / "Blink.ino", "void setup() {}\n");
-    write_file(root_sketch / "sketch.yml", "default_fqbn: esp32:esp32:esp32c3 # comment\n");
+    write_file(root_sketch / "sketch.yml", "default_fqbn: esp32:esp32:esp32c3\ndefault_port: ch340-0002\n");
     write_file(root_sketch / "src" / "effects" / "fade.cpp", "void fade() {}\n");
 
     sheen::sketch_defaults disk_defaults = sheen::read_sketch_defaults(root_sketch.string());
-    check(disk_defaults.fqbn == "esp32:esp32:esp32c3",
+    check(disk_defaults.fqbn == "esp32:esp32:esp32c3" && disk_defaults.port_name == "ch340-0002",
           "read_sketch_defaults falls back to sketch.yml on disk");
 
-    write_file(root_sketch / "sketch.yaml", "default_fqbn: esp32:esp32:esp32da\n");
+    write_file(root_sketch / "sketch.yaml", "default_fqbn: esp32:esp32:esp32da\ndefault_port: cp2102-0009\n");
     sheen::sketch_defaults preferred_yaml = sheen::read_sketch_defaults(root_sketch.string());
-    check(preferred_yaml.fqbn == "esp32:esp32:esp32da",
+    check(preferred_yaml.fqbn == "esp32:esp32:esp32da" && preferred_yaml.port_name == "cp2102-0009",
           "sketch.yaml takes precedence over sketch.yml when both exist");
 
     check(sheen::resolve_sketch_directory(root_sketch.string()) == root_sketch.string(),
@@ -450,12 +681,16 @@ static void check_installed_library_scanner(const std::string& temp_root) {
 int main() {
     std::string temp_root = make_temp_dir();
 
-    check_dependency_probes_and_fqbn();
+    check_dependency_probes_and_normalization();
     check_board_catalog_preservation();
     check_mcufw_events();
+    check_serial_events_and_watch_snapshots();
+    check_flash_monitor_coordinator();
     check_memory_and_progress_formatting();
+
     if (!temp_root.empty()) {
         check_diagnostics_and_library_hints(temp_root);
+        check_crash_backtrace_extraction(temp_root);
         check_sketch_yaml_and_workspace_paths(temp_root);
         check_installed_library_scanner(temp_root);
         std::error_code ec;

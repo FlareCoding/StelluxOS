@@ -1,6 +1,7 @@
 #include "extensions/embedded/embedded_extension.h"
 
 #include "extensions/embedded/embedded_protocol.h"
+#include "extensions/embedded/serial_port_watch.h"
 #include "extensions/extension_host.h"
 #include "ui/chrome.h"
 #include "ui/ui_kit.h"
@@ -16,6 +17,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,10 +31,20 @@ static constexpr const char* INSTALL_CORE_ACTION_ID = "__install_core__";
 static constexpr const char* INSTALL_SAVED_BOARD_ACTION_ID = "__install_saved_board__";
 static constexpr const char* MISSING_LIB_ROW_PREFIX = "missing:";
 
+static constexpr uint32_t DEFAULT_BAUD_RATE = 115200;
+static constexpr uint32_t BAUD_RATES[] = {
+    9600, 19200, 38400, 57600, 74880, 115200, 230400, 460800, 921600,
+};
+
 static constexpr int TARGET_POPOVER_WIDTH = 352;
 static constexpr int TARGET_POPOVER_HEIGHT = 46;
 static constexpr int TARGET_POPOVER_INSET_X = 10;
 static constexpr int TARGET_POPOVER_GAP = 8;
+static constexpr int MONITOR_LOG_MAX_LINES = 100000;
+static constexpr int LOG_FLUSH_INTERVAL_MS = 16;
+static constexpr int HEADER_BAR_MARGIN_H = 8;
+static constexpr int HEADER_BAR_MARGIN_V = 4;
+static constexpr int HEADER_BAR_SPACING = 6;
 
 static constexpr package_requirement EMBEDDED_PACKAGES[] = {
     { "python", EMBEDDED_PYTHON_PROBE_PATH },
@@ -53,7 +65,7 @@ static constexpr dependency_group EMBEDDED_DEPS[] = {
       {}, CORE_INSTALL_ARGV, EMBEDDED_ESP32_LIBS_PROBE_PATH, event_protocol::TSV_MCUFW, true },
 };
 
-enum class active_run_kind { NONE, BUILD, INSTALL, CLEAN };
+enum class active_run_kind { NONE, BUILD, FLASH, INSTALL, CLEAN };
 
 namespace {
 
@@ -138,21 +150,133 @@ private:
     ui::ui_pill_button* m_install_button = nullptr;
 };
 
+/* Alien container pairing Serial Monitor header controls (baud selector + Clear) with `ui_log_panel`. */
+class serial_monitor_panel : public QWidget {
+public:
+    explicit serial_monitor_panel(uint32_t initial_baud, QWidget* parent = nullptr)
+        : QWidget(parent),
+          m_baud_button(new ui::ui_pill_button(format_baud_label(initial_baud), this)),
+          m_clear_button(new ui::ui_pill_button(QStringLiteral("Clear"), this)),
+          m_log(new ui::ui_log_panel(make_log_options(), this)),
+          m_baud_rate(initial_baud) {
+        m_baud_button->set_has_chevron(true);
+
+        auto* header = new QHBoxLayout();
+        header->setContentsMargins(HEADER_BAR_MARGIN_H, HEADER_BAR_MARGIN_V, HEADER_BAR_MARGIN_H, HEADER_BAR_MARGIN_V);
+        header->setSpacing(HEADER_BAR_SPACING);
+        header->addStretch(1);
+        header->addWidget(m_baud_button);
+        header->addWidget(m_clear_button);
+
+        auto* root = new QVBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+        root->addLayout(header);
+        root->addWidget(m_log, 1);
+
+        QObject::connect(m_clear_button, &QAbstractButton::clicked, m_log, [this] { m_log->clear_log(); });
+        QObject::connect(m_baud_button, &QAbstractButton::clicked, this, [this] { open_baud_picker(); });
+    }
+
+    ui::ui_log_panel* log_panel() const { return m_log; }
+
+    void set_baud_rate(uint32_t baud_rate) {
+        m_baud_rate = baud_rate;
+        m_baud_button->setText(format_baud_label(baud_rate));
+    }
+
+    void close_popups() {
+        if (m_open_picker) {
+            m_open_picker->close();
+            m_open_picker.clear();
+        }
+    }
+
+    std::function<void(uint32_t baud_rate)> on_baud_selected;
+
+private:
+    static QString format_baud_label(uint32_t baud_rate) {
+        return QStringLiteral("%1 baud").arg(baud_rate);
+    }
+
+    static ui::log_panel_options make_log_options() {
+        ui::log_panel_options options;
+        options.max_lines = MONITOR_LOG_MAX_LINES;
+        options.flush_interval_ms = LOG_FLUSH_INTERVAL_MS;
+        options.has_command_input = true;
+        options.input_placeholder = QStringLiteral("Send to serial...");
+
+        options.line_endings = {
+            QStringLiteral("LF"),
+            QStringLiteral("CRLF"),
+            QStringLiteral("CR"),
+            QStringLiteral("None"),
+        };
+
+        return options;
+    }
+
+    void open_baud_picker() {
+        close_popups();
+
+        QList<picker_choice> choices;
+        for (uint32_t rate : BAUD_RATES) {
+            QString rate_text = QString::number(rate);
+            QString badge = rate == m_baud_rate ? QStringLiteral("Active") : QString();
+            choices.push_back({ rate_text, format_baud_label(rate), {}, badge, false, false });
+        }
+
+        auto* picker = new ui::ui_searchable_picker(m_baud_button, QStringLiteral("Filter baud rates..."), choices);
+        picker->setAttribute(Qt::WA_DeleteOnClose, true);
+        m_open_picker = picker;
+        picker->on_selected = [this](const QString& choice_id) {
+            bool ok = false;
+            uint32_t chosen = choice_id.toUInt(&ok);
+            if (ok && chosen > 0 && on_baud_selected) {
+                on_baud_selected(chosen);
+            }
+        };
+
+        picker->open_below_anchor();
+    }
+
+    ui::ui_pill_button* m_baud_button = nullptr;
+    ui::ui_pill_button* m_clear_button = nullptr;
+    ui::ui_log_panel* m_log = nullptr;
+    QPointer<QWidget> m_open_picker;
+    uint32_t m_baud_rate = DEFAULT_BAUD_RATE;
+};
+
 class embedded_session : public extension_session {
 public:
     explicit embedded_session(extension_host& host)
         : m_host(host),
           m_libraries(new ui::ui_section_list(QStringLiteral("Install..."))),
           m_build_log(new ui::ui_log_panel({})),
+          m_monitor_panel(new serial_monitor_panel(DEFAULT_BAUD_RATE)),
+          m_monitor_log(m_monitor_panel->log_panel()),
           m_run_events(event_protocol::TSV_MCUFW) {
         m_sketch_dir = QString::fromStdString(resolve_sketch_directory(m_host.workspace_root().toStdString()));
         m_build_log->set_workspace_root(m_sketch_dir);
+        m_monitor_log->set_workspace_root(m_sketch_dir);
         load_saved_sketch_defaults();
+
+        m_ports = std::static_pointer_cast<serial_port_watch>(
+            m_host.acquire_service(QStringLiteral("serial_port_watch"),
+                                   [] { return std::make_shared<serial_port_watch>(); }));
+        m_ports->add_listener(this, [this] {
+            if (!m_is_shutting_down) {
+                refresh_strip();
+            }
+        });
 
         wire_panels_and_tasks();
 
         m_host.set_sidebar_sections({ { QStringLiteral("libraries"), QStringLiteral("Libraries"), m_libraries } });
-        m_host.set_dock_panels({ { QStringLiteral("build"), QStringLiteral("Build"), m_build_log, false, 0 } });
+        m_host.set_dock_panels({
+            { QStringLiteral("build"), QStringLiteral("Build"), m_build_log, false, 0 },
+            { QStringLiteral("monitor"), QStringLiteral("Serial Monitor"), m_monitor_panel, false, 0 },
+        });
 
         register_commands();
         refresh_libraries_sidebar();
@@ -171,10 +295,21 @@ public:
 
         m_is_shutting_down = true;
         m_rebuild_after_install = false;
+        m_flash_monitor.reset();
+        m_pending_flash_args.clear();
 
         if (m_open_popover) {
             m_open_popover->close();
             m_open_popover.clear();
+        }
+
+        if (m_monitor_panel != nullptr) {
+            m_monitor_panel->close_popups();
+        }
+
+        if (m_ports) {
+            m_ports->remove_listener(this);
+            m_ports.reset();
         }
 
         m_boards_task.on_stdout = nullptr;
@@ -185,11 +320,18 @@ public:
         m_run_task.on_stderr = nullptr;
         m_run_task.on_finished = nullptr;
 
+        m_monitor_task.on_stdout = nullptr;
+        m_monitor_task.on_stderr = nullptr;
+        m_monitor_task.on_finished = nullptr;
+
         m_libraries = nullptr;
         m_build_log = nullptr;
+        m_monitor_panel = nullptr;
+        m_monitor_log = nullptr;
 
         m_boards_task.stop();
         m_run_task.stop();
+        m_monitor_task.stop();
     }
 
     void on_active_file_changed(const QString& file_path) override {
@@ -215,13 +357,18 @@ public:
             m_build_log->set_workspace_root(m_sketch_dir);
         }
 
+        if (m_monitor_log != nullptr) {
+            m_monitor_log->set_workspace_root(m_sketch_dir);
+        }
+
         m_board_fqbn.clear();
         m_board_name.clear();
         m_has_explicit_board = false;
+        m_port_name.clear();
         m_diagnostics.clear();
         m_build_libraries.clear();
-        m_memory_usage = {};
 
+        m_memory_usage = {};
         m_status_summary.clear();
         m_last_error_summary.clear();
         m_host.clear_diagnostics();
@@ -235,7 +382,7 @@ public:
 
 private:
     bool is_run_busy() const {
-        return m_run_task.is_running();
+        return m_run_task.is_running() || m_flash_monitor.is_waiting_for_monitor_stop();
     }
 
     void load_saved_sketch_defaults() {
@@ -244,6 +391,10 @@ private:
         if (!defaults.fqbn.empty()) {
             m_board_fqbn = QString::fromStdString(defaults.fqbn);
         }
+
+        if (!defaults.port_name.empty()) {
+            m_port_name = QString::fromStdString(defaults.port_name);
+        }
     }
 
     void wire_panels_and_tasks() {
@@ -251,7 +402,22 @@ private:
         m_libraries->on_action_clicked = [this] { open_library_install_popover(); };
         m_libraries->on_row_activated = [this](const QString& row_id) { activate_library_row(row_id); };
         m_build_log->on_location_clicked = [this](const QString& p, int l) { open_resolved_location(p, l); };
+        m_monitor_log->on_location_clicked = [this](const QString& p, int l) { open_resolved_location(p, l); };
 
+        m_monitor_log->on_input_submitted = [this](const QByteArray& bytes) {
+            if (!m_is_shutting_down && m_monitor_task.is_running()) {
+                m_monitor_task.write_stdin(bytes);
+            }
+        };
+
+        m_monitor_panel->on_baud_selected = [this](uint32_t baud_rate) { set_baud_rate(baud_rate); };
+
+        wire_boards_task();
+        wire_run_task();
+        wire_monitor_task();
+    }
+
+    void wire_boards_task() {
         m_boards_task.on_stdout = [this](QByteArrayView chunk) {
             if (!m_is_shutting_down) {
                 m_board_catalog.feed_stdout(std::string_view(chunk.data(), static_cast<size_t>(chunk.size())));
@@ -264,7 +430,9 @@ private:
                 refresh_strip();
             }
         };
+    }
 
+    void wire_run_task() {
         m_run_task.on_stdout = [this](QByteArrayView chunk) {
             if (!m_is_shutting_down) {
                 m_run_events.feed(std::string_view(chunk.data(), static_cast<size_t>(chunk.size())),
@@ -281,12 +449,42 @@ private:
         m_run_task.on_finished = [this](const process_exit& result) { on_run_finished(result); };
     }
 
+    void wire_monitor_task() {
+        m_monitor_task.on_stdout = [this](QByteArrayView chunk) {
+            if (m_is_shutting_down) {
+                return;
+            }
+
+            if (m_monitor_log != nullptr) {
+                m_monitor_log->append_bytes(chunk);
+            }
+
+            scan_monitor_crash_output(chunk);
+        };
+
+        m_monitor_task.on_stderr = [this](QByteArrayView chunk) {
+            if (!m_is_shutting_down) {
+                handle_monitor_stderr_chunk(chunk);
+            }
+        };
+
+        m_monitor_task.on_finished = [this](const process_exit& result) { on_monitor_finished(result); };
+    }
+
     void register_commands() {
         m_host.set_commands({
             { QStringLiteral("embedded.build"), QStringLiteral("Embedded"), QStringLiteral("Build"),
-              QStringLiteral("Ctrl+B"), false, [this] { return !is_run_busy(); }, [this] { run_build(); } },
+              QStringLiteral("Ctrl+B"), false, [this] { return !is_run_busy(); },
+              [this] { run_build_or_flash(false); } },
+            { QStringLiteral("embedded.flash"), QStringLiteral("Embedded"), QStringLiteral("Flash"),
+              QStringLiteral("F5"), false, [this] { return can_flash(); },
+              [this] { run_build_or_flash(true); } },
+            { QStringLiteral("embedded.monitor"), QStringLiteral("Embedded"), QStringLiteral("Serial Monitor"),
+              QStringLiteral("F6"), false, [this] { return m_monitor_task.is_running() || can_open_monitor(); },
+              [this] { toggle_monitor(); } },
             { QStringLiteral("embedded.stop"), QStringLiteral("Embedded"), QStringLiteral("Stop"),
-              QStringLiteral("Shift+F5"), true, [this] { return is_run_busy(); }, [this] { cancel_active_run(); } },
+              QStringLiteral("Shift+F5"), true, [this] { return is_run_busy(); },
+              [this] { cancel_active_run(); } },
             { QStringLiteral("embedded.install_library"), QStringLiteral("Embedded"),
               QStringLiteral("Install Library..."), QString(), true,
               [this] { return !is_run_busy(); }, [this] { open_library_install_popover(); } },
@@ -310,6 +508,46 @@ private:
         }
 
         m_host.open_file_at_line(raw_path, target_line);
+    }
+
+    resolved_serial_port current_port_resolution() const {
+        return m_ports ? m_ports->resolve_port(m_port_name.toStdString(), m_baud_rate) : resolved_serial_port{};
+    }
+
+    bool can_flash() const {
+        if (is_run_busy()) {
+            return false;
+        }
+
+        resolved_serial_port port = current_port_resolution();
+        return m_port_name.isEmpty() || port.is_present;
+    }
+
+    bool can_open_monitor() const {
+        if (is_run_busy() && (m_active_run == active_run_kind::FLASH || m_flash_monitor.is_waiting_for_monitor_stop())) {
+            return false;
+        }
+
+        resolved_serial_port port = current_port_resolution();
+        return !port.name.empty() && port.is_present;
+    }
+
+    void set_baud_rate(uint32_t baud_rate) {
+        if (baud_rate == 0 || baud_rate == m_baud_rate || m_is_shutting_down) {
+            return;
+        }
+
+        m_baud_rate = baud_rate;
+        if (m_monitor_panel != nullptr) {
+            m_monitor_panel->set_baud_rate(m_baud_rate);
+        }
+
+        if (m_monitor_task.is_running() && !m_flash_monitor.is_waiting_for_monitor_stop()) {
+            m_flash_monitor.request_monitor_restart_after_stop();
+            m_monitor_task.stop();
+        }
+
+        refresh_strip();
     }
 
     void refresh_board_catalog() {
@@ -390,6 +628,36 @@ private:
         refresh_strip();
     }
 
+    QList<picker_choice> build_port_choices() const {
+        QList<picker_choice> choices;
+        resolved_serial_port resolved = current_port_resolution();
+        if (!m_port_name.isEmpty() && !resolved.is_present) {
+            choices.push_back({ m_port_name, m_port_name, QStringLiteral("/dev/serial/") + m_port_name,
+                                QStringLiteral("Unplugged"), false, true });
+        }
+
+        if (m_ports) {
+            for (const serial_port_entry& port : m_ports->ports()) {
+                QString name = QString::fromStdString(port.name);
+                QString detail = QString::fromStdString(format_serial_port_detail(port, m_baud_rate));
+                QString badge = name == QString::fromStdString(resolved.name) ? QStringLiteral("Active") : QString();
+                choices.push_back({ name, name, detail, badge, false, false });
+            }
+        }
+
+        return choices;
+    }
+
+    void select_port_choice(const QString& choice_id) {
+        m_port_name = QString::fromStdString(normalize_serial_port_name(choice_id.toStdString()));
+        if (m_monitor_task.is_running() && !m_flash_monitor.is_waiting_for_monitor_stop()) {
+            m_flash_monitor.request_monitor_restart_after_stop();
+            m_monitor_task.stop();
+        }
+
+        refresh_strip();
+    }
+
     readout_spec build_status_readout() const {
         if (is_run_busy()) {
             QString label = m_progress_label.isEmpty() ? QStringLiteral("Running...") : m_progress_label;
@@ -416,10 +684,29 @@ private:
         }
 
         bool busy = is_run_busy();
+        bool flash_active = busy && (m_active_run == active_run_kind::FLASH
+                                     || m_flash_monitor.is_waiting_for_monitor_stop());
         QString board_detail = !m_board_name.isEmpty() ? m_board_fqbn : QString();
+
+        resolved_serial_port port = current_port_resolution();
+        QString port_label = !port.name.empty()
+            ? QString::fromStdString(port.name)
+            : (m_ports && m_ports->ports().size() > 1 ? QStringLiteral("Select Port") : QStringLiteral("No Port"));
+        QString port_detail;
+        if (!port.name.empty()) {
+            port_detail = port.is_present
+                ? QString::fromStdString(port.short_description)
+                : QStringLiteral("Disconnected");
+        }
+
         QList<button_spec> buttons = {
             { QStringLiteral("build"), QStringLiteral("Build"), QStringLiteral("Compile sketch (Ctrl+B)"),
-              !busy, busy && m_active_run == active_run_kind::BUILD, [this] { run_build(); } },
+              !busy, busy && m_active_run == active_run_kind::BUILD, [this] { run_build_or_flash(false); } },
+            { QStringLiteral("flash"), QStringLiteral("Flash"), QStringLiteral("Build and upload to board (F5)"),
+              can_flash(), flash_active, [this] { run_build_or_flash(true); } },
+            { QStringLiteral("monitor"), QStringLiteral("Monitor"), QStringLiteral("Toggle Serial Monitor (F6)"),
+              m_monitor_task.is_running() || can_open_monitor(), m_monitor_task.is_running(),
+              [this] { toggle_monitor(); } },
         };
 
         if (busy) {
@@ -434,6 +721,10 @@ private:
               QStringLiteral("Filter boards by name or FQBN..."), !busy,
               [this] { return build_board_choices(); },
               [this](const QString& id) { select_board_choice(id); } },
+            { QStringLiteral("port"), port_label, port_detail,
+              QStringLiteral("Filter serial ports..."), !busy,
+              [this] { return build_port_choices(); },
+              [this](const QString& id) { select_port_choice(id); } },
         };
 
         strip.buttons = std::move(buttons);
@@ -604,7 +895,7 @@ private:
                         { QStringLiteral("clean"), m_sketch_dir, QStringLiteral("--events") });
     }
 
-    void run_build() {
+    void run_build_or_flash(bool is_flash) {
         if (is_run_busy() || m_is_shutting_down || !m_host.save_modified_files()) {
             return;
         }
@@ -621,7 +912,7 @@ private:
 
         m_last_error_summary.clear();
         m_status_summary.clear();
-        m_progress_label = QStringLiteral("Building...");
+        m_progress_label = is_flash ? QStringLiteral("Preparing flash...") : QStringLiteral("Building...");
         m_progress_percent = 0;
 
         if (m_build_log != nullptr) {
@@ -630,18 +921,36 @@ private:
 
         refresh_libraries_sidebar();
 
-        QStringList args = { QStringLiteral("build"), m_sketch_dir, QStringLiteral("--events") };
+        QStringList args = {
+            is_flash ? QStringLiteral("flash") : QStringLiteral("build"),
+            m_sketch_dir,
+            QStringLiteral("--events"),
+        };
+
         if (m_has_explicit_board && !m_board_fqbn.isEmpty()) {
             args << QStringLiteral("--board") << m_board_fqbn;
         }
 
-        start_mcufw_run(active_run_kind::BUILD, args);
+        if (is_flash && !m_port_name.isEmpty()) {
+            args << QStringLiteral("--port") << m_port_name;
+        }
+
+        if (is_flash && m_flash_monitor.begin_flash(m_monitor_task.is_running())) {
+            m_pending_flash_args = std::move(args);
+            append_monitor_mark(QStringLiteral("Pausing Serial Monitor for flash..."), false);
+            m_monitor_task.stop();
+            refresh_strip();
+            return;
+        }
+
+        start_mcufw_run(is_flash ? active_run_kind::FLASH : active_run_kind::BUILD, args);
     }
 
     void start_mcufw_run(active_run_kind kind, const QStringList& args) {
         m_active_run = kind;
         m_run_events = event_line_stream(event_protocol::TSV_MCUFW);
         m_saw_run_failure = false;
+        m_saw_flashed_event = false;
 
         process_spec spec = { QString::fromLatin1(MCUFW_PROGRAM), args, m_sketch_dir, process_io_mode::PIPES, false };
         QString start_error;
@@ -652,6 +961,10 @@ private:
 
             m_host.reveal_dock_panel(QStringLiteral("build"));
             m_host.update_dock_state(QStringLiteral("build"), false, 1);
+            if (kind == active_run_kind::FLASH) {
+                apply_flash_finish_action(m_flash_monitor.on_flash_finished(false));
+            }
+
             refresh_strip();
             return;
         }
@@ -663,9 +976,33 @@ private:
 
     void cancel_active_run() {
         m_rebuild_after_install = false;
+        m_pending_flash_args.clear();
+
+        bool was_waiting_for_monitor = m_flash_monitor.is_waiting_for_monitor_stop();
+        flash_cancel_action action = m_flash_monitor.cancel_flash(m_monitor_task.is_running());
+        if (was_waiting_for_monitor) {
+            m_progress_percent = -1;
+            m_progress_label.clear();
+            m_status_summary = QStringLiteral("Cancelled");
+        }
+
         if (m_run_task.is_running()) {
             m_run_task.stop();
         }
+
+        if (action == flash_cancel_action::START_MONITOR_NOW && can_open_monitor()) {
+            start_monitor(false);
+        }
+
+        refresh_strip();
+    }
+
+    void apply_flash_finish_action(flash_finish_action action) {
+        if (action == flash_finish_action::NONE || !can_open_monitor()) {
+            return;
+        }
+
+        start_monitor(action == flash_finish_action::RESUME_AND_REVEAL_MONITOR);
     }
 
     void sync_host_diagnostics() {
@@ -710,6 +1047,12 @@ private:
     void append_build_mark(const QString& caption, bool is_danger) {
         if (!m_is_shutting_down && m_build_log != nullptr) {
             m_build_log->append_mark(caption, is_danger);
+        }
+    }
+
+    void append_monitor_mark(const QString& caption, bool is_danger) {
+        if (!m_is_shutting_down && m_monitor_log != nullptr) {
+            m_monitor_log->append_mark(caption, is_danger);
         }
     }
 
@@ -805,6 +1148,20 @@ private:
             m_status_summary = QStringLiteral("Built");
             return;
 
+        case mcufw_event_kind::PORT:
+            append_build_mark(QStringLiteral("Uploading on %1").arg(QString::fromStdString(event.port_path)), false);
+            return;
+
+        case mcufw_event_kind::FLASHED:
+            m_saw_flashed_event = true;
+            if (!event.port_name.empty() && !m_port_name.isEmpty()) {
+                m_port_name = QString::fromStdString(event.port_name);
+            }
+
+            m_status_summary = QStringLiteral("Flashed");
+            append_build_mark(QStringLiteral("Flashed %1").arg(QString::fromStdString(event.port_path)), false);
+            return;
+
         case mcufw_event_kind::FAILED:
             handle_mcufw_failure_event(event);
             return;
@@ -844,7 +1201,7 @@ private:
         m_progress_label.clear();
 
         bool succeeded = result.exit_code == 0 && !result.was_stopped && !m_saw_run_failure;
-        if (finished_kind == active_run_kind::BUILD && succeeded) {
+        if ((finished_kind == active_run_kind::BUILD || finished_kind == active_run_kind::FLASH) && succeeded) {
             m_has_explicit_board = false;
         }
 
@@ -869,42 +1226,195 @@ private:
             refresh_board_catalog();
             if (m_rebuild_after_install) {
                 m_rebuild_after_install = false;
-                run_build();
+                run_build_or_flash(false);
                 return;
             }
         }
 
         m_rebuild_after_install = false;
+        if (finished_kind == active_run_kind::FLASH) {
+            apply_flash_finish_action(m_flash_monitor.on_flash_finished(succeeded && m_saw_flashed_event));
+        }
+
+        refresh_strip();
+    }
+
+    void toggle_monitor() {
+        if (m_monitor_task.is_running()) {
+            m_flash_monitor.clear_for_manual_monitor_toggle();
+            m_pending_flash_args.clear();
+            m_monitor_task.stop();
+            refresh_strip();
+            return;
+        }
+
+        m_flash_monitor.clear_for_manual_monitor_toggle();
+        m_pending_flash_args.clear();
+        start_monitor(true);
+    }
+
+    void start_monitor(bool reveal_panel) {
+        if (m_monitor_task.is_running() || m_is_shutting_down) {
+            return;
+        }
+
+        resolved_serial_port resolved = current_port_resolution();
+        if (resolved.name.empty() || !resolved.is_present) {
+            m_host.show_status_note(QStringLiteral("Connect or select a serial port before starting Serial Monitor"));
+            return;
+        }
+
+        m_crash_scanner.reset();
+        m_monitor_stderr_buffer.clear();
+
+        QStringList args = { QStringLiteral("monitor") };
+        if (!m_port_name.isEmpty()) {
+            args << QStringLiteral("--port") << m_port_name;
+        }
+
+        args << QStringLiteral("--baud") << QString::number(m_baud_rate);
+        args << QStringLiteral("--") << QStringLiteral("--events");
+
+        process_spec spec = { QString::fromLatin1(MCUFW_PROGRAM), args, m_sketch_dir, process_io_mode::PIPES, true };
+        QString start_error;
+        if (!m_monitor_task.start(spec, &start_error)) {
+            append_monitor_mark(start_error, true);
+            if (reveal_panel) {
+                m_host.reveal_dock_panel(QStringLiteral("monitor"));
+            }
+
+            m_host.update_dock_state(QStringLiteral("monitor"), false, 1);
+            refresh_strip();
+            return;
+        }
+
+        if (reveal_panel) {
+            m_host.reveal_dock_panel(QStringLiteral("monitor"));
+        }
+
+        m_host.update_dock_state(QStringLiteral("monitor"), true, 0);
+        refresh_strip();
+    }
+
+    void scan_monitor_crash_output(QByteArrayView chunk) {
+        std::string_view raw(chunk.data(), static_cast<size_t>(chunk.size()));
+        std::optional<backtrace_location> first = m_crash_scanner.feed_chunk(raw, [](const std::string& path) {
+            return QFileInfo::exists(QString::fromStdString(path));
+        });
+
+        if (first.has_value()) {
+            QString short_name = QFileInfo(QString::fromStdString(first->file_path)).fileName();
+            m_host.show_status_note(QStringLiteral("Decoded crash at %1:%2").arg(short_name).arg(first->line));
+        }
+    }
+
+    void handle_monitor_stderr_chunk(QByteArrayView chunk) {
+        m_monitor_stderr_buffer.append(chunk.data(), static_cast<size_t>(chunk.size()));
+        size_t start = 0;
+        while (true) {
+            size_t newline = m_monitor_stderr_buffer.find('\n', start);
+            if (newline == std::string::npos) {
+                break;
+            }
+
+            handle_monitor_event_line(std::string_view(m_monitor_stderr_buffer.data() + start, newline - start));
+            start = newline + 1;
+        }
+
+        if (start > 0) {
+            m_monitor_stderr_buffer.erase(0, start);
+        }
+    }
+
+    void handle_monitor_event_line(std::string_view line) {
+        serial_event event = parse_serial_event_line(line);
+        bool is_danger = false;
+        std::string mark = format_serial_monitor_mark(event, is_danger);
+        if (!mark.empty()) {
+            append_monitor_mark(QString::fromStdString(mark), is_danger);
+        }
+
+        if (event.kind == serial_event_kind::OPEN || event.kind == serial_event_kind::BACK) {
+            m_host.update_dock_state(QStringLiteral("monitor"), true, 0);
+        } else if (event.kind == serial_event_kind::GONE || event.kind == serial_event_kind::CLOSED) {
+            m_host.update_dock_state(QStringLiteral("monitor"), false, 0);
+        } else if (event.kind == serial_event_kind::FAILED) {
+            m_host.update_dock_state(QStringLiteral("monitor"), false, 1);
+        }
+    }
+
+    void on_monitor_finished(const process_exit& result) {
+        if (m_is_shutting_down) {
+            return;
+        }
+
+        if (!m_monitor_stderr_buffer.empty()) {
+            std::string tail = std::move(m_monitor_stderr_buffer);
+            m_monitor_stderr_buffer.clear();
+            handle_monitor_event_line(tail);
+        }
+
+        m_host.update_dock_state(
+            QStringLiteral("monitor"),
+            false,
+            result.exit_code != 0 && !result.was_stopped ? 1 : 0);
+
+        monitor_stop_action next_action = m_flash_monitor.on_monitor_stopped();
+        if (next_action == monitor_stop_action::START_PENDING_FLASH) {
+            QStringList flash_args = std::move(m_pending_flash_args);
+            m_pending_flash_args.clear();
+            start_mcufw_run(active_run_kind::FLASH, flash_args);
+            return;
+        }
+
+        if (next_action == monitor_stop_action::RESTART_MONITOR) {
+            if (can_open_monitor()) {
+                start_monitor(false);
+                return;
+            }
+        }
+
         refresh_strip();
     }
 
     extension_host& m_host;
+    std::shared_ptr<serial_port_watch> m_ports;
     ui::ui_section_list* m_libraries = nullptr;
     ui::ui_log_panel* m_build_log = nullptr;
+    serial_monitor_panel* m_monitor_panel = nullptr;
+    ui::ui_log_panel* m_monitor_log = nullptr;
     QPointer<QWidget> m_open_popover;
 
     process_task m_run_task;
+    process_task m_monitor_task;
     process_task m_boards_task;
     event_line_stream m_run_events;
     board_catalog m_board_catalog;
+    flash_monitor_coordinator m_flash_monitor;
+    crash_output_scanner m_crash_scanner;
 
     QString m_sketch_dir;
     QString m_board_fqbn;
     QString m_board_name;
+    QString m_port_name;
+    uint32_t m_baud_rate = DEFAULT_BAUD_RATE;
 
     std::vector<installed_library> m_installed_libraries;
     std::vector<installed_library> m_build_libraries;
     std::vector<embedded_diagnostic> m_diagnostics;
     memory_usage m_memory_usage;
 
+    std::string m_monitor_stderr_buffer;
     active_run_kind m_active_run = active_run_kind::NONE;
     QString m_progress_label;
     int m_progress_percent = -1;
     QString m_status_summary;
     QString m_last_error_summary;
+    QStringList m_pending_flash_args;
 
     bool m_has_explicit_board = false;
     bool m_saw_run_failure = false;
+    bool m_saw_flashed_event = false;
     bool m_rebuild_after_install = false;
     bool m_is_shutting_down = false;
 };
