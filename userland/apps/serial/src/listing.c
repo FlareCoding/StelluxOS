@@ -155,6 +155,21 @@ bool listing_holds(const listing* in, const listed_port* port) {
     return listed && listed->arrival == port->arrival;
 }
 
+bool listing_offers(const listing* in, const char* name, tried_arrival* tried) {
+    const listed_port* listed = listing_find(in, name);
+    if (!listed) {
+        tried->is_retrying = false;
+        return false;
+    }
+
+    if (tried->is_known && listed->arrival == tried->arrival) {
+        return tried->is_retrying;
+    }
+
+    *tried = (tried_arrival){ .is_known = true, .arrival = listed->arrival };
+    return true;
+}
+
 void listing_free(listing* in) {
     free(in->text);
     free(in->split);
