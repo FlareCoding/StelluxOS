@@ -57,6 +57,7 @@ rm -rf "$work"
 mkdir -p "$work"
 cp "$SCRIPT_DIR/versions.sh" "$work/versions.sh"
 cp "$SCRIPT_DIR/container.sh" "$work/build.sh"
+cp "$SCRIPT_DIR/fetch.sh" "$work/fetch.sh"
 
 for stage in mcm-stage1 mcm-stage2; do
     git clone -q "$TOP/mcm" "$work/$stage"

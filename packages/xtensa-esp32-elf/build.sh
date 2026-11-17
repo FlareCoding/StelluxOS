@@ -50,7 +50,7 @@ fetch_source() {
     fi
 
     echo "=== xtensa-esp32-elf: downloading $3 ==="
-    curl -fsSL --retry 3 -o "$file.tmp" "$1"
+    sh "$SCRIPT_DIR/fetch.sh" "$GNU_SITE" "$file.tmp" "$1"
     echo "$2  $file.tmp" | shasum -a 256 -c - > /dev/null || {
         rm -f "$file.tmp"
         echo "xtensa-esp32-elf: downloaded $3 does not match its pinned checksum" >&2

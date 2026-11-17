@@ -5,9 +5,9 @@
 #   stage 2: that cross toolchain rebuilds everything as static
 #            Stellux binaries
 # Expects the work tree prepared by build.sh mounted at /host: mcm-stage1/,
-# mcm-stage2/, tree/ with the tree paths RECIPE_TREE names, and versions.sh.
-# Leaves the package archives in /host/dist together with the downloaded
-# sources and the built trees.
+# mcm-stage2/, tree/ with the tree paths RECIPE_TREE names, versions.sh and
+# fetch.sh. Leaves the package archives in /host/dist together with the
+# downloaded sources and the built trees.
 #
 # STAGE=package skips the builds and repackages the existing trees.
 set -eu
@@ -54,7 +54,7 @@ GCC_VER = $GCC_VER
 BINUTILS_VER = $BINUTILS_VER
 MUSL_VER = $MUSL_VER
 GNU_SITE = $GNU_SITE
-DL_CMD = curl -fL --retry 10 --retry-delay 3 -C - -o
+DL_CMD = sh /work/fetch.sh $GNU_SITE
 COMMON_CONFIG += --disable-nls
 GCC_CONFIG += --enable-languages=c,c++
 GCC_CONFIG += --disable-libquadmath --disable-decimal-float
