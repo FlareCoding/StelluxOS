@@ -8,8 +8,12 @@ HOST_CXX ?= c++
 
 SRC_DIR   := ../src
 BUILD_DIR := ../build/host
-SOURCES   := $(SRC_DIR)/app/workspace_store.cpp $(SRC_DIR)/workspace/event_stream.cpp
-HEADERS   := $(SRC_DIR)/app/workspace_store.h $(SRC_DIR)/workspace/event_stream.h
+SOURCES   := $(SRC_DIR)/app/workspace_store.cpp \
+             $(SRC_DIR)/workspace/event_stream.cpp \
+             $(SRC_DIR)/extensions/embedded/embedded_protocol.cpp
+HEADERS   := $(SRC_DIR)/app/workspace_store.h \
+             $(SRC_DIR)/workspace/event_stream.h \
+             $(SRC_DIR)/extensions/embedded/embedded_protocol.h
 TESTS     := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))
 
 CXXFLAGS := -std=c++20 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)
