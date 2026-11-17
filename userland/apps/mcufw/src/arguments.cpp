@@ -139,6 +139,8 @@ bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& erro
             if (!parse_build_option(argc, argv, index, parsed, error)) {
                 return false;
             }
+        } else if (rule->command == command_name::clean && word == "--cores") {
+            parsed.cores = true;
         } else if (word.starts_with("-")) {
             error = std::string(rule->name) + " takes no option " + std::string(word);
             return false;

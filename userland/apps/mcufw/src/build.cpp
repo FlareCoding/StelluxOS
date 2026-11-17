@@ -3,6 +3,7 @@
 #include "build_plan.hpp"
 #include "cancel.hpp"
 #include "compiler_output.hpp"
+#include "core_cache.hpp"
 #include "discovery.hpp"
 #include "discovery_replay.hpp"
 #include "file_lock.hpp"
@@ -26,7 +27,6 @@
 
 constexpr const char* SKETCH_FOLDER = "sketch";
 constexpr const char* CORE_FOLDER = "core";
-constexpr const char* CORE_ARCHIVE = "core.a";
 constexpr const char* CORE_LIBRARIES_FOLDER = "libraries";
 constexpr const char* PREPROCESSED_FOLDER = "preproc";
 constexpr const char* PREPROCESSED_FILE = "sketch_merged.cpp";
@@ -48,6 +48,12 @@ struct probing {
     std::map<uint64_t, finished_job>             finished;
     uint64_t                                     last_id = 0;
     bool                                         ahead_started = false;
+};
+
+// The core's place in the core cache. `entry` is empty for a core with nothing to compile or one kept to its sketch.
+struct cached_core {
+    std::string entry;
+    bool        hit = false;  // a build placed the entry's archive already
 };
 
 // What one build shares between its stages
@@ -73,6 +79,8 @@ struct build_run {
     bool                        sketch_replayed;   // discovery's record answered every probe of the sketch's files
     std::vector<build_step>     sketch_needed;     // the sketch tree's compiles that must run
     std::vector<build_step>     sources_needed;    // its src/ folder's
+    cached_core                 cached;
+    std::string                 core_archive;      // the archive the link takes: the tree's, or the cache's
 };
 
 // The clock that file modification times use, since a record compares a step's start with them
@@ -359,6 +367,15 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
     }
 
     return fail(run, failure_kind::compile, errors.empty() ? first_failure : describe_errors(errors));
+}
+
+static std::vector<std::string> objects_of(const std::vector<build_step>& compiles) {
+    std::vector<std::string> objects;
+    for (const build_step& step : compiles) {
+        objects.push_back(step.output);
+    }
+
+    return objects;
 }
 
 // A compile's reason in the names a person knows: the merged sketch's C++ is named as the sketch's .ino file, or as
@@ -731,14 +748,86 @@ static bool add_prototypes(build_run& run, const sketch& sketch) {
     return true;
 }
 
+// The variant's compiles, and the core's unless the core cache holds its archive
+static std::vector<build_step> core_stage_compiles(const compile_plan& plan, const cached_core& cached) {
+    std::vector<build_step> steps = plan.variant;
+    if (!cached.hit) {
+        steps.insert(steps.end(), plan.core.begin(), plan.core.end());
+    }
+
+    return steps;
+}
+
+// The core's cache entry, keyed after the `prebuild` and `sketch.prebuild` hooks and before `core.prebuild`, whose
+// words the key covers, with the compiler's version line read as one job
+static bool look_up_core(build_run& run, const sketch& sketch, const selected_board& board) {
+    const compile_plan& plan = run.compiles;
+    if (plan.core.empty()) {
+        return true;
+    }
+
+    std::vector<std::string> objects = objects_of(plan.core);
+    std::sort(objects.begin(), objects.end());
+    std::vector<build_step> key_steps = plan.core;
+    build_step archiving;
+    std::string error;
+    if (!plan_archive(run.properties, objects, run.core_archive, archiving, error) ||
+        !plan_hooks(run.properties, "core.prebuild", key_steps, error) ||
+        !plan_hooks(run.properties, "core.postbuild", key_steps, error)) {
+        return fail(run, failure_kind::recipe, error);
+    }
+
+    key_steps.push_back(archiving);
+
+    const std::string& compiler = plan.core.front().commands[0][0];
+    job version = { 0, { compiler, "--version" }, "" };
+    finished_job finished;
+    bool ran = run.runner.start(version, error) && run.runner.wait_for_next(finished, error);
+    std::string problem = ran ? exit_problem(finished.exit_status) : error;
+    if (!problem.empty()) {
+        std::string reason = "cannot read the version of " + compiler + ": " + problem;
+        return fail_unless_cancelled(run, failure_kind::compile, reason);
+    }
+
+    std::string key;
+    std::string version_line = finished.output.substr(0, finished.output.find('\n'));
+    if (!core_cache_key(key_steps, run.directory, sketch.folder, version_line, key, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    cached_core& cached = run.cached;
+    cached.entry = core_cache_entry(run.layout, board.definition->id, key);
+    cached.hit = is_file(join_path(cached.entry, CORE_ARCHIVE_NAME));
+    if (!cached.hit) {
+        return true;
+    }
+
+    // A sketch that shadows a header the cached core read, or whose core in this tree read its folder, keeps a core of
+    // its own
+    std::vector<std::string> header_names;
+    bool shadows = true;
+    bool reads = false;
+    if ((published_header_names(cached.entry, header_names) &&
+         !sketch_shadows(sketch.folder, header_names, shadows, error)) ||
+        !core_reads_sketch(plan.core, sketch.folder, false, reads, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    if (shadows || reads) {
+        cached = {};
+    }
+
+    return true;
+}
+
 static std::vector<build_step> library_steps(const library_compiles& compiles) {
     std::vector<build_step> steps = compiles.sources;
     steps.insert(steps.end(), compiles.utility.begin(), compiles.utility.end());
     return steps;
 }
 
-// The count before any compile runs: the sketch's compiles decided, the libraries' as their records stand before their
-// hooks, and the variant's and the core's with no record, since their records match only after `core.prebuild` runs
+// The count before any compile runs: the sketch's compiles decided, the libraries' as their records stand, and the
+// variant's and, without a cached core, the core's with no record, since those match only after `core.prebuild` runs
 static bool estimate_compiles(build_run& run) {
     const compile_plan& plan = run.compiles;
     if (!select_needed(run, plan.sketch, run.needed[SKETCH_STAGE], run.sketch_needed) ||
@@ -753,26 +842,29 @@ static bool estimate_compiles(build_run& run) {
         }
     }
 
-    for (const std::vector<build_step>* group : { &plan.variant, &plan.core }) {
-        for (const build_step& step : *group) {
-            run.needed[CORE_STAGE].count += is_file(step_record_path(step, run.directory)) ? 0 : 1;
-        }
+    for (const build_step& step : core_stage_compiles(plan, run.cached)) {
+        run.needed[CORE_STAGE].count += is_file(step_record_path(step, run.directory)) ? 0 : 1;
     }
 
     report_compiles_needed(run);
     return true;
 }
 
-// Plans every compile before the first runs, so the compile count and the `Core` line print before any compile
-static bool plan_and_count_compiles(build_run& run, const selected_board& board) {
+// Plans every compile and looks the core up in the cache before the first compile runs, so the compile count and the
+// `Core` line print before any compile
+static bool plan_and_count_compiles(build_run& run, const sketch& sketch, const selected_board& board) {
     std::string error;
     compile_plan& plan = run.compiles;
     if (!plan_build_compiles(run.properties, run.includes, run.added, run.options.warnings, plan, error)) {
         return fail(run, failure_kind::compile, error);
     }
 
-    std::string core_archive = join_path(join_path(run.directory, CORE_FOLDER), CORE_ARCHIVE);
-    run.compiles_total = plan.sketch.size() + plan.sources.size() + plan.variant.size() + plan.core.size();
+    if (!look_up_core(run, sketch, board)) {
+        return false;
+    }
+
+    size_t core_compiles = core_stage_compiles(plan, run.cached).size();
+    run.compiles_total = plan.sketch.size() + plan.sources.size() + core_compiles;
     for (const library_compiles& compiles : plan.libraries) {
         run.compiles_total += compiles.sources.size() + compiles.utility.size();
     }
@@ -781,7 +873,12 @@ static bool plan_and_count_compiles(build_run& run, const selected_board& board)
         return false;
     }
 
-    run.report.core_compiling(*board.core, core_archive, plan.variant.size() + plan.core.size());
+    if (run.cached.hit) {
+        run.report.core_cached(join_path(run.cached.entry, CORE_ARCHIVE_NAME));
+    } else {
+        run.report.core_compiling(*board.core, run.core_archive, core_compiles);
+    }
+
     if (compiles_needed(run) > 0) {
         run.report.progress("compile", 0, compiles_needed(run), monotonic_clock_ns());
     }
@@ -891,15 +988,6 @@ static bool remove_unused_library_trees(build_run& run) {
     return true;
 }
 
-static std::vector<std::string> objects_of(const std::vector<build_step>& compiles) {
-    std::vector<std::string> objects;
-    for (const build_step& step : compiles) {
-        objects.push_back(step.output);
-    }
-
-    return objects;
-}
-
 // Each library in the order it joined: its source directory's files, then a flat library's utility/ folder's, each
 // group compiling up to `jobs` at once, then its archive for `dot_a_linkage`. The stage decides once its hooks ran.
 static bool compile_libraries(build_run& run) {
@@ -929,13 +1017,14 @@ static bool compile_libraries(build_run& run) {
     return true;
 }
 
-// The core's stage once `core.prebuild` ran: the variant's and the core's compiles and the final count
+// The core's stage once `core.prebuild` ran: the variant's compiles, the core's unless the cache holds it, and the
+// final count. A hit still runs the core's hooks, as arduino-cli does, since the variant reads the file they write.
 static bool compile_core(build_run& run) {
     needed_compiles decided;
     std::vector<build_step> variant_needed;
     std::vector<build_step> core_needed;
     if (!select_needed(run, run.compiles.variant, decided, variant_needed) ||
-        !select_needed(run, run.compiles.core, decided, core_needed)) {
+        (!run.cached.hit && !select_needed(run, run.compiles.core, decided, core_needed))) {
         return false;
     }
 
@@ -949,6 +1038,47 @@ static bool compile_core(build_run& run) {
     }
 
     return true;
+}
+
+// A core that read nothing in the sketch folder, for a sketch shadowing none of its headers, moves into its cache
+// entry, from which the build links
+static bool share_core(build_run& run, const sketch& sketch) {
+    const std::vector<build_step>& core = run.compiles.core;
+    bool reads = true;
+    std::string error;
+    if (!core_reads_sketch(core, sketch.folder, true, reads, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    std::vector<std::string> header_names;
+    bool shadows = true;
+    if (!reads && (!core_header_names(core, header_names, error) ||
+                   !sketch_shadows(sketch.folder, header_names, shadows, error))) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    if (reads || shadows) {
+        return true;
+    }
+
+    if (!publish_core(run.core_archive, header_names, run.cached.entry, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    run.core_archive = join_path(run.cached.entry, CORE_ARCHIVE_NAME);
+    return true;
+}
+
+// The core's archive unless the cache holds it, shared into its cache entry once made, after which the link takes the
+// cache's archive
+static bool archive_core(build_run& run, const sketch& sketch) {
+    if (run.cached.hit) {
+        run.core_archive = join_path(run.cached.entry, CORE_ARCHIVE_NAME);
+        return true;
+    }
+
+    return archive_objects(run, objects_of(run.compiles.core), run.core_archive) &&
+           (run.cached.entry.empty() || share_core(run, sketch));
 }
 
 // A long link's folder archives that must run, each emptied first, since `ar` adds to an archive and would keep an
@@ -1016,7 +1146,6 @@ static bool make_images(build_run& run) {
 }
 
 static bool run_stage(build_run& run, const stage_step& stage, const sketch& sketch, const selected_board& board) {
-    std::string core_archive = join_path(join_path(run.directory, CORE_FOLDER), CORE_ARCHIVE);
     switch (stage.stage) {
     case build_stage::hooks:
         return run_hooks(run, stage.hook_point);
@@ -1027,7 +1156,7 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
     case build_stage::prototypes:
         return add_prototypes(run, sketch);
     case build_stage::sketch_compiles:
-        return plan_and_count_compiles(run, board) && run_compiles(run, run.sketch_needed) &&
+        return plan_and_count_compiles(run, sketch, board) && run_compiles(run, run.sketch_needed) &&
                run_compiles(run, run.sources_needed);
     case build_stage::core_compiles:
         return compile_core(run);
@@ -1036,9 +1165,9 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
     case build_stage::library_compiles:
         return compile_libraries(run);
     case build_stage::core_archive:
-        return archive_objects(run, objects_of(run.compiles.core), core_archive);
+        return archive_core(run, sketch);
     case build_stage::link:
-        return link_sketch(run, core_archive);
+        return link_sketch(run, run.core_archive);
     case build_stage::objcopy:
         return make_images(run);
     case build_stage::size:
@@ -1054,6 +1183,7 @@ static bool build_in_tree(build_run& run, const sketch& sketch, const selected_b
     }
 
     std::string variant_folder = run.properties.get("build.variant.path");
+    run.core_archive = join_path(join_path(run.directory, CORE_FOLDER), CORE_ARCHIVE_NAME);
     run.includes = { run.properties.get("build.core.path") };
     if (!variant_folder.empty()) {
         run.includes.push_back(variant_folder);
@@ -1095,7 +1225,7 @@ bool build_sketch(
     property_table properties = build_properties(board_properties(board, tools), sketch, directory);
     build_run run = {
         layout, options, report, failed, runner, std::move(properties), directory, {}, {}, {}, 0, 0, {}, {}, {}, false,
-        sketch.main_file, !sketch.other_ino_files.empty(), false, {}, {},
+        sketch.main_file, !sketch.other_ino_files.empty(), false, {}, {}, {}, "",
     };
 
     if (!build_in_tree(run, sketch, board)) {

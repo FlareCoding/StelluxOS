@@ -11,7 +11,7 @@ constexpr const char* USAGE =
     "       mcufw install <board, core or library>[@<version>]... [--events]\n"
     "       mcufw remove <core or library>... [--events]\n"
     "       mcufw build [<sketch>] [--board <board>] [--jobs <n>] [--warnings <level>] [--verbose] [--events]\n"
-    "       mcufw clean [<sketch>] [--events]\n"
+    "       mcufw clean [<sketch>] [--cores] [--events]\n"
     "       mcufw hook copy-first <to> <from>... [--else <command>...]\n"
     "       mcufw hook write <file> [<line>...]\n";
 

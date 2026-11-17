@@ -96,8 +96,9 @@ static void check_clean() {
     check(parse({ "clean" }, parsed, error) && parsed.command == command_name::clean && parsed.operands.empty(),
           "a bare clean takes no sketch");
     check(parse({ "clean", "/sketches/Gone/Gone.ino" }, parsed, error) &&
-              parsed.operands == std::vector<std::string>{ "/sketches/Gone/Gone.ino" },
+              parsed.operands == std::vector<std::string>{ "/sketches/Gone/Gone.ino" } && !parsed.cores,
           "clean takes a sketch that may be gone");
+    check(parse({ "clean", "--cores" }, parsed, error) && parsed.cores, "clean takes --cores");
 }
 
 static void check_usage_errors() {
@@ -118,6 +119,7 @@ static void check_usage_errors() {
         { { "build", "--warnings", "loud" }, "--warnings takes none, default, more or all" },
         { { "clean", "a", "b" }, "clean takes 1 sketch at most" },
         { { "clean", "--jobs", "4" }, "clean takes no option --jobs" },
+        { { "build", "--cores" }, "build takes no option --cores" },
     };
 
     for (const usage_error& expected : usage_errors) {

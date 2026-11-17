@@ -17,6 +17,7 @@ struct arguments {
     uint32_t                 jobs = 0;              // build: `--jobs`, 0 for one per CPU
     std::string              warnings = "default";  // build: `--warnings`, `default` as decision 6 has it
     bool                     verbose = false;       // build: `--verbose`, which the other commands accept
+    bool                     cores = false;         // clean: `--cores`
 };
 
 // Fails on a missing or unknown command or a word the command does not take, which main reports as a usage error.

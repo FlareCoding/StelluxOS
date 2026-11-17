@@ -17,6 +17,7 @@ struct directory_layout {
     std::string overrides;      // the image's Stellux overrides, as <packager>/<architecture>/<version>.txt
     std::string libraries;      // libraries mcufw installs or a person places, one folder each
     std::string builds;         // one build tree per sketch folder
+    std::string core_cache;     // compiled cores, one folder per board and cache key
 };
 
 // The folders of a running system

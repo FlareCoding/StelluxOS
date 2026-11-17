@@ -61,6 +61,9 @@ public:
     void board_selected(const selected_board& board, bool saved);
     void core_compiling(const installed_core& core, const std::string& archive, size_t files);
 
+    // The core cache's archive a build links instead of compiling the core, `core cached <archive>` for a program
+    void core_cached(const std::string& archive);
+
     // The libraries the sketch uses, `library <name> <version> <folder>` each for a program
     void libraries_found(const std::vector<const library*>& libraries);
 
