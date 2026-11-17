@@ -1,6 +1,7 @@
 #include "ui/tab_strip.h"
 #include "ui/chrome.h"
 #include "ui/menu_style.h"
+#include "ui/ui_kit.h"
 
 #include <QContextMenuEvent>
 #include <QEvent>
@@ -432,9 +433,11 @@ QSize tab_list_button::sizeHint() const {
 
 tab_row::tab_row(QWidget* parent)
     : QWidget(parent), m_menu(new menu_button(this)), m_viewport(new QWidget(this)),
-      m_tabs(new tab_strip(m_viewport)), m_tab_list(new tab_list_button(this)) {
+      m_tabs(new tab_strip(m_viewport)), m_tab_list(new tab_list_button(this)),
+      m_open_folder(new sheen::ui::ui_pill_button(QStringLiteral("Open Folder"), this)) {
     setFixedHeight(ROW_HEIGHT);
     m_tab_list->hide();
+    m_open_folder->hide();
 
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(ROW_INSET_X, 0, ROW_INSET_X, 0);
@@ -444,11 +447,24 @@ tab_row::tab_row(QWidget* parent)
     layout->addSpacing(MENU_BUTTON_GAP);
     layout->addWidget(m_viewport, 1);
     layout->addWidget(m_tab_list, 0, Qt::AlignVCenter);
+    layout->addSpacing(MENU_BUTTON_GAP);
+    layout->addWidget(m_open_folder, 0, Qt::AlignVCenter);
+
+    connect(m_open_folder, &QAbstractButton::clicked, this, [this] {
+        if (on_open_folder_clicked) {
+            on_open_folder_clicked();
+        }
+    });
 
     // The strip and its hairline gap follow the open tab, wherever the strip scrolls
     QObject::connect(m_tabs, &QTabBar::currentChanged, this, [this] { place_strip(true); });
     m_tabs->installEventFilter(this);
     m_viewport->installEventFilter(this);
+}
+
+void tab_row::set_open_folder_visible(bool is_visible) {
+    m_open_folder->setVisible(is_visible);
+    place_strip(true);
 }
 
 bool tab_row::eventFilter(QObject* watched, QEvent* event) {

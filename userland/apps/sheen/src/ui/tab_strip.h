@@ -9,6 +9,10 @@
 
 #include <functional>
 
+namespace sheen::ui {
+class ui_pill_button;
+}
+
 class menu_button;
 
 class tab_strip : public QTabBar {
@@ -87,9 +91,11 @@ public:
     tab_strip* tabs() const { return m_tabs; }
     menu_button* menu() const { return m_menu; }
     tab_list_button* tab_list() const { return m_tab_list; }
+    void set_open_folder_visible(bool is_visible);
 
     /* A double click on the strip past the last tab */
     std::function<void()> on_empty_double_click;
+    std::function<void()> on_open_folder_clicked;
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -103,6 +109,7 @@ private:
     QWidget* m_viewport;
     tab_strip* m_tabs;
     tab_list_button* m_tab_list;
+    sheen::ui::ui_pill_button* m_open_folder = nullptr;
     int m_offset = 0;
 };
 

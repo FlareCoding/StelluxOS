@@ -4,6 +4,7 @@
 #include "app/instance.h"
 #include "app/settings.h"
 #include "app/shared_service.h"
+#include "app/workspace_store.h"
 #include "ui/file_sheet.h"
 
 #include <QDateTime>
@@ -28,7 +29,7 @@ struct orphan_process {
     bool kill_sent = false;
 };
 
-/* Process-wide coordinator owning settings, the single-instance socket, open windows, and shared services. */
+/* Process-wide coordinator owning settings, workspace_store, /tmp/sheen.sock, open windows, and shared services. */
 class sheen_app {
 public:
     sheen_app();
@@ -39,9 +40,14 @@ public:
 
     const sheen_settings& settings() const { return m_settings; }
     const QStringList& settings_problems() const { return m_settings_problems; }
+    workspace_store& store() { return m_store; }
+    const workspace_store& store() const { return m_store; }
 
     sheen_window* create_window();
     sheen_window* open_new_window();
+    sheen_window* open_workspace(const QString& root_path, sheen_window* requester = nullptr);
+    sheen_window* find_workspace_window(const QString& path_or_child) const;
+
     void note_window_activated(sheen_window* window);
     void remove_window(sheen_window* window);
     int window_count() const { return static_cast<int>(m_windows.size()); }
@@ -67,12 +73,13 @@ public:
     static void reap_orphan_process(int proc_handle, int pid, int grace_ms);
 
 private:
-    sheen_window* target_window();
+    sheen_window* target_plain_or_active_window();
     void enqueue_orphan_process(int proc_handle, int pid, int grace_ms);
     void poll_orphan_processes();
 
     sheen_settings m_settings;
     QStringList m_settings_problems;
+    workspace_store m_store;
     instance_server m_instance;
     std::vector<std::unique_ptr<sheen_window>> m_windows;
     QList<sheen_window*> m_recent_windows;

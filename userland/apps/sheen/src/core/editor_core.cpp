@@ -158,6 +158,7 @@ static QString palette_category(const command_entry& entry) {
 static row_glyph empty_glyph(command id) {
     switch (id) {
         case command::OPEN_FILE:
+        case command::OPEN_FOLDER:
             return row_glyph::FOLDER;
         case command::REOPEN_CLOSED_TAB:
             return row_glyph::CLOCK;
@@ -749,6 +750,19 @@ static bool paths_refer_to_same_file(const QString& first, const QString& second
     return resolved_first == resolved_second;
 }
 
+static bool is_path_within_workspace(const QString& file_path, const QString& normalized_root) {
+    if (file_path.isEmpty() || normalized_root.isEmpty()) {
+        return false;
+    }
+
+    QString abs = QFileInfo(file_path).absoluteFilePath();
+    if (normalized_root == QLatin1String("/")) {
+        return abs.startsWith(QLatin1Char('/'));
+    }
+
+    return abs == normalized_root || abs.startsWith(normalized_root + QLatin1Char('/'));
+}
+
 editor_core::editor_core(QMainWindow* window, sheen_app& app, QWidget* parent)
     : QWidget(parent), m_window(window), m_app(app), m_settings(app.settings()), m_tab_row(new tab_row(this)),
       m_banner(new banner(this)), m_stack(new QStackedWidget(this)), m_empty_state(new empty_state(this)),
@@ -767,7 +781,27 @@ editor_core::editor_core(QMainWindow* window, sheen_app& app, QWidget* parent)
     layout->addWidget(m_find_bar);
     layout->addWidget(m_stack, 1);
 
-    m_empty_state->on_file_chosen = [this](const QString& path) { open_paths({ path }); };
+    m_empty_state->on_file_chosen = [this](const QString& path) {
+        if (QFileInfo(path).isDir() && on_open_folder_requested) {
+            on_open_folder_requested(path);
+            return;
+        }
+
+        open_paths({ path });
+    };
+
+    m_empty_state->on_typed_text = [this](const QString& typed) {
+        new_document();
+        document* doc = current_document();
+        if (!doc) {
+            return;
+        }
+
+        QByteArray utf8 = typed.toUtf8();
+        doc->view()->send(SCI_ADDTEXT, utf8.size(), reinterpret_cast<sptr_t>(utf8.constData()));
+        doc->view()->setFocus();
+    };
+
     m_stack->addWidget(m_empty_state);
 
     create_commands();
@@ -776,6 +810,7 @@ editor_core::editor_core(QMainWindow* window, sheen_app& app, QWidget* parent)
 
     tabs()->on_context_menu = [this](int index, const QPoint& anchor) { show_tab_menu(index, anchor); };
     m_tab_row->on_empty_double_click = [this] { new_document(); };
+    m_tab_row->on_open_folder_clicked = [this] { handle_top_bar_open_folder(); };
     connect(m_tab_row->tab_list(), &QAbstractButton::clicked, this, [this] { show_tab_list(); });
     m_status->on_item_clicked = [this](status_kind kind, const QPoint& anchor) { show_status_menu(kind, anchor); };
     m_banner->on_dismissed = [this] {
@@ -823,12 +858,13 @@ void editor_core::open_paths(const QStringList& paths) {
         open_path(path, QByteArray(), insertion_index());
     }
 
-    if (m_documents.empty()) {
-        new_document();
+    if (!folder.isEmpty() && on_open_folder_requested) {
+        on_open_folder_requested(folder);
+        return;
     }
 
-    if (!folder.isEmpty() && !m_open_sheet) {
-        QTimer::singleShot(0, this, [this, folder] { choose_files_to_open(folder); });
+    if (m_documents.empty()) {
+        show_welcome_state();
     }
 }
 
@@ -1138,6 +1174,11 @@ void editor_core::run(command id) {
 
     if (id == command::OPEN_FILE) {
         choose_files_to_open(sheet_folder());
+        return;
+    }
+
+    if (id == command::OPEN_FOLDER) {
+        choose_folder_to_open(sheet_folder());
         return;
     }
 
@@ -1533,6 +1574,7 @@ void editor_core::focus_current_document() {
 }
 
 document* editor_core::add_document(std::unique_ptr<document> owned, int index) {
+    m_has_opened_any_tab = true;
     document* doc = owned.get();
     ScintillaEditBase* view = doc->view();
     index = qBound(0, index, static_cast<int>(m_documents.size()));
@@ -1653,6 +1695,7 @@ document* editor_core::add_document(std::unique_ptr<document> owned, int index) 
     }
 
     refresh_tab(doc);
+    sync_open_folder_button();
     if (!m_open_sheet || tabs()->currentIndex() == index) {
         select_tab(index);
     }
@@ -2027,6 +2070,10 @@ bool editor_core::write_document(document* doc, const QString& path) {
             take_settings_from_text();
         }
 
+        if (on_file_saved) {
+            on_file_saved(QFileInfo(path).absoluteFilePath());
+        }
+
         return true;
     }
 
@@ -2203,20 +2250,22 @@ prompt_answer editor_core::ask_about_unsaved(document* doc, const QString& purpo
 
 // A closed tab joins the reopen stack, keeping its Scintilla document when its text exists nowhere else, except a
 // large file's, which keeps only its path
-void editor_core::remove_document(int index, bool keeps_text) {
+void editor_core::remove_document(int index, bool keeps_text, bool records_closed) {
     document* doc = m_documents.at(index).get();
-    bool has_only_copy = keeps_text || (doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) > 0);
-    has_only_copy = has_only_copy && !doc->is_large();
-    closed_tab closed = { doc->file(), doc->lang(), doc->current_view_state(), index, doc->untitled_number(),
-                          has_only_copy ? doc->keep_scintilla_document() : 0 };
-    if (!doc->is_page() && (!doc->is_untitled() || closed.scintilla_document)) {
-        m_closed_tabs.prepend(closed);
-    }
+    if (records_closed) {
+        bool has_only_copy = keeps_text || (doc->is_untitled() && doc->view()->send(SCI_GETLENGTH) > 0);
+        has_only_copy = has_only_copy && !doc->is_large();
+        closed_tab closed = { doc->file(), doc->lang(), doc->current_view_state(), index, doc->untitled_number(),
+                              has_only_copy ? doc->keep_scintilla_document() : 0 };
+        if (!doc->is_page() && (!doc->is_untitled() || closed.scintilla_document)) {
+            m_closed_tabs.prepend(closed);
+        }
 
-    while (m_closed_tabs.size() > CLOSED_TAB_LIMIT) {
-        closed_tab dropped = m_closed_tabs.takeLast();
-        if (dropped.scintilla_document) {
-            doc->view()->send(SCI_RELEASEDOCUMENT, 0, dropped.scintilla_document);
+        while (m_closed_tabs.size() > CLOSED_TAB_LIMIT) {
+            closed_tab dropped = m_closed_tabs.takeLast();
+            if (dropped.scintilla_document) {
+                doc->view()->send(SCI_RELEASEDOCUMENT, 0, dropped.scintilla_document);
+            }
         }
     }
 
@@ -2257,6 +2306,7 @@ void editor_core::remove_document(int index, bool keeps_text) {
         }
     }
 
+    sync_open_folder_button();
     refresh_commands();
     if (!m_diagnostics_by_owner.isEmpty() && on_diagnostics_changed) {
         on_diagnostics_changed();
@@ -2353,13 +2403,21 @@ void editor_core::check_disk(document* doc) {
 
 // The empty state's rows run the same commands as their menu rows, so their keycaps follow the shortcuts
 void editor_core::show_empty_state() {
-    QList<std::pair<command, QString>> rows = { { command::NEW_FILE, QStringLiteral("New File") },
-                                                { command::OPEN_FILE, QStringLiteral("Open File...") } };
+    m_empty_state->set_welcome_mode(!m_has_opened_any_tab);
+    QList<std::pair<command, QString>> rows = {
+        { command::NEW_FILE, QStringLiteral("New File") },
+        { command::OPEN_FILE, QStringLiteral("Open File...") },
+        { command::OPEN_FOLDER, QStringLiteral("Open Folder...") },
+    };
+
     if (!m_closed_tabs.isEmpty()) {
         rows.append({ command::REOPEN_CLOSED_TAB, QStringLiteral("Reopen Closed Tab") });
     }
 
-    rows.append({ command::COMMAND_PALETTE, QStringLiteral("Command Palette") });
+    if (m_has_opened_any_tab) {
+        rows.append({ command::COMMAND_PALETTE, QStringLiteral("Command Palette") });
+    }
+
     QList<empty_action> actions;
     for (const auto& [id, label] : rows) {
         actions.append({ label, action_keys(m_actions.value(id)), [this, id] { run(id); }, empty_glyph(id) });
@@ -3476,6 +3534,7 @@ QString editor_core::sheet_folder() const {
 
 void editor_core::set_workspace_root(const QString& root_path) {
     m_workspace_root = root_path;
+    sync_open_folder_button();
     apply_annotations_to_all_documents();
 }
 
@@ -3796,6 +3855,159 @@ void editor_core::step_problem(bool is_next) {
 
     const diagnostic_item& target = problems.at(m_problem_cursor);
     open_file_at_line(target.file_path, target.line, target.column);
+}
+
+QString editor_core::active_tab_title() const {
+    document* doc = current_document();
+    return doc ? doc->display_name() : QStringLiteral("Sheen");
+}
+
+void editor_core::show_welcome_state() {
+    if (!m_documents.empty()) {
+        return;
+    }
+
+    m_has_opened_any_tab = false;
+    sync_open_folder_button();
+    show_empty_state();
+    notify_title_changed(QStringLiteral("Sheen"));
+
+    refresh_banner();
+    refresh_commands();
+    refresh_status();
+}
+
+void editor_core::focus_active_surface() {
+    focus_current_document();
+}
+
+bool editor_core::can_promote_in_place_for(const QString& root_path) const {
+    for (const std::unique_ptr<document>& doc : m_documents) {
+        if (doc->is_pristine()) {
+            continue;
+        }
+
+        if (doc->is_page() && !doc->is_custom_page() && !doc->is_modified()) {
+            continue;
+        }
+
+        if (doc->is_page() || !is_path_within_workspace(doc->file().path, root_path)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void editor_core::drop_pristine_untitled_tabs() {
+    for (int index = static_cast<int>(m_documents.size()) - 1; index >= 0; index--) {
+        if (m_documents[index]->is_pristine()) {
+            remove_document(index, false, false);
+        }
+    }
+}
+
+bool editor_core::has_modified_document(const QString& path) const {
+    document* doc = find_open(path);
+    return doc && doc->is_modified();
+}
+
+QList<migrated_tab> editor_core::extract_tabs_under(const QString& root_path, const editor_core* destination) {
+    QList<migrated_tab> extracted;
+    for (int index = 0; index < static_cast<int>(m_documents.size());) {
+        document* doc = m_documents[index].get();
+        if (doc->is_page() || doc->placeholder() || !is_path_within_workspace(doc->file().path, root_path)) {
+            index++;
+            continue;
+        }
+
+        if (doc->is_modified() && destination && destination->has_modified_document(doc->file().path)) {
+            index++;
+            continue;
+        }
+
+        migrated_tab entry;
+        entry.file = doc->file();
+        entry.lang = doc->lang();
+        entry.view = doc->current_view_state();
+        entry.untitled_number = doc->untitled_number();
+
+        entry.scintilla_document = doc->keep_scintilla_document();
+        entry.is_deleted = doc->is_deleted();
+        entry.is_modified = doc->is_modified();
+        extracted.append(entry);
+
+        remove_document(index, false, false);
+    }
+
+    return extracted;
+}
+
+void editor_core::adopt_migrated_tabs(const QList<migrated_tab>& migrated) {
+    for (const migrated_tab& entry : migrated) {
+        document* existing = find_open(entry.file.path);
+        if (existing && (!entry.is_modified || !existing->is_modified())) {
+            if (entry.is_modified) {
+                existing->adopt(entry.scintilla_document, entry.file, entry.lang);
+                existing->set_deleted(entry.is_deleted);
+                existing->refresh_read_only();
+
+                existing->restore_view_state(entry.view);
+                apply_annotations_to_document(existing);
+                refresh_tab(existing);
+            } else {
+                existing->view()->send(SCI_RELEASEDOCUMENT, 0, entry.scintilla_document);
+            }
+
+            select_tab(index_of(existing));
+            continue;
+        }
+
+        int number = m_app.next_untitled_number(entry.untitled_number);
+        auto doc = std::make_unique<document>(m_stack, number, m_settings);
+        doc->adopt(entry.scintilla_document, entry.file, entry.lang);
+        doc->set_deleted(entry.is_deleted);
+        doc->refresh_read_only();
+        doc->restore_view_state(entry.view);
+
+        document* added = add_document(std::move(doc), insertion_index());
+        apply_annotations_to_document(added);
+    }
+}
+
+void editor_core::choose_folder_to_open(const QString& start_folder) {
+    file_sheet chooser(m_window, file_sheet_mode::OPEN_FOLDER, start_folder, recent_files());
+    QString chosen_folder;
+    set_open_sheet(&chooser);
+    bool is_chosen = chooser.choose_folder(&chosen_folder);
+    set_open_sheet(nullptr);
+    if (!is_chosen || chosen_folder.isEmpty()) {
+        return;
+    }
+
+    m_last_sheet_folder = chosen_folder;
+    if (on_open_folder_requested) {
+        on_open_folder_requested(chosen_folder);
+    }
+}
+
+void editor_core::handle_top_bar_open_folder() {
+    document* doc = current_document();
+    if (doc && !doc->is_untitled() && !doc->is_page() && QFileInfo(doc->file().path).isFile()) {
+        QString parent_dir = QFileInfo(doc->file().path).absolutePath();
+        if (on_open_folder_requested) {
+            on_open_folder_requested(parent_dir);
+        }
+
+        return;
+    }
+
+    choose_folder_to_open(sheet_folder());
+}
+
+void editor_core::sync_open_folder_button() {
+    bool should_show = m_workspace_root.isEmpty() && !m_documents.empty();
+    m_tab_row->set_open_folder_visible(should_show);
 }
 
 } // namespace sheen
