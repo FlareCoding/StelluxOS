@@ -341,6 +341,113 @@ void dock_host::set_problems(const QList<diagnostic_item>& problems,
     rebuild_tab_buttons();
 }
 
+void dock_host::tear_down_popped_window(const QString& key) {
+    auto it = m_popped_windows.find(key.toStdString());
+    if (it == m_popped_windows.end()) {
+        return;
+    }
+
+    std::unique_ptr<dock_window> floating = std::move(it->second);
+    m_popped_windows.erase(it);
+
+    floating->set_closing_from_host(true);
+    floating->on_dock_back_requested = nullptr;
+    if (QWidget* panel_widget = floating->release_panel_widget()) {
+        panel_widget->hide();
+        panel_widget->setParent(nullptr);
+    }
+
+    floating->close();
+    floating.release()->deleteLater();
+}
+
+void dock_host::set_extension_panels(const QString& extension_id, const QList<dock_panel_spec>& panels) {
+    QList<QString> incoming_keys;
+    QList<QWidget*> incoming_widgets;
+    for (const dock_panel_spec& spec : panels) {
+        if (spec.widget && !spec.id.isEmpty()) {
+            incoming_keys.append(make_key(extension_id, spec.id));
+            incoming_widgets.append(spec.widget);
+        }
+    }
+
+    for (qsizetype i = m_panels.size() - 1; i >= 0; i--) {
+        if (m_panels.at(i).owner_id != extension_id) {
+            continue;
+        }
+
+        dock_panel_entry& existing = m_panels[i];
+        if (!incoming_keys.contains(existing.key) || !incoming_widgets.contains(existing.spec.widget)) {
+            tear_down_popped_window(existing.key);
+            if (existing.popped_placeholder) {
+                m_stack->removeWidget(existing.popped_placeholder);
+                existing.popped_placeholder->deleteLater();
+            }
+
+            if (existing.spec.widget && !incoming_widgets.contains(existing.spec.widget)) {
+                m_stack->removeWidget(existing.spec.widget);
+                existing.spec.widget->hide();
+                existing.spec.widget->setParent(nullptr);
+                existing.spec.widget->deleteLater();
+            }
+
+            m_panels.removeAt(i);
+        }
+    }
+
+    bool added_first_ext_panel = (m_panels.size() == 1);
+    for (const dock_panel_spec& spec : panels) {
+        if (!spec.widget || spec.id.isEmpty()) {
+            continue;
+        }
+
+        QString key = make_key(extension_id, spec.id);
+        int idx = find_panel_index(key);
+        if (idx >= 0) {
+            m_panels[idx].spec = spec;
+            auto it = m_popped_windows.find(key.toStdString());
+            if (it != m_popped_windows.end() && it->second) {
+                it->second->setWindowTitle(spec.title);
+            }
+        } else {
+            m_stack->addWidget(spec.widget);
+            m_panels.append({ key, extension_id, spec, nullptr });
+        }
+    }
+
+    if (added_first_ext_panel && m_panels.size() > 1
+        && m_active_key == make_key(QStringLiteral("__core__"), QStringLiteral("problems"))) {
+        m_active_key = m_panels.at(1).key;
+    }
+
+    if (find_panel_index(m_active_key) < 0 && !m_panels.isEmpty()) {
+        m_active_key = m_panels.first().key;
+    }
+
+    rebuild_tab_buttons();
+    sync_geometry_and_controls();
+}
+
+void dock_host::remove_extension_panels(const QString& extension_id) {
+    set_extension_panels(extension_id, {});
+}
+
+void dock_host::update_panel_state(const QString& extension_id, const QString& panel_id, bool has_activity_dot,
+                                   int error_count) {
+    int index = find_panel_index(make_key(extension_id, panel_id));
+    if (index < 0) {
+        return;
+    }
+
+    m_panels[index].spec.has_activity_dot = has_activity_dot;
+    m_panels[index].spec.error_badge_count = error_count;
+    rebuild_tab_buttons();
+}
+
+void dock_host::reveal_panel(const QString& extension_id, const QString& panel_id) {
+    select_panel_by_key(make_key(extension_id, panel_id));
+}
+
 void dock_host::pop_out_active_panel() {
     pop_out(m_active_key);
 }

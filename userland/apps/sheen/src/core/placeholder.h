@@ -4,16 +4,24 @@
 /* What a tab shows instead of text: why a file that looks binary waits and the ways to open it as text anyway, or
  * how much of a large file has arrived. Either sits in the tab, so Ctrl W and Ctrl Shift T work on it. */
 #include <QByteArray>
+#include <QList>
+#include <QString>
 #include <QWidget>
 
 #include <functional>
 
 class QLabel;
 
+struct binary_opener_action {
+    QString label;
+    std::function<void()> run;
+};
+
 class binary_placeholder : public QWidget {
 public:
     /* `utf16_encoding` names UTF-16 LE or BE when the file's NULs fall on every other byte, empty otherwise */
-    binary_placeholder(QWidget* parent, const QString& name, const QByteArray& utf16_encoding);
+    binary_placeholder(QWidget* parent, const QString& name, const QByteArray& utf16_encoding,
+                       const QList<binary_opener_action>& custom_openers = {});
 
     std::function<void(const QByteArray& encoding)> on_open_as;
     std::function<void()> on_close;

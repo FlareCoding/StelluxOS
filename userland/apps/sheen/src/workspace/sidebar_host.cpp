@@ -78,23 +78,27 @@ public:
 
 } // namespace
 
-static QWidget* make_files_header(QWidget* parent) {
+static std::pair<QWidget*, QLabel*> make_section_header(const QString& title, QWidget* parent, bool draws_top_line) {
     auto* container = new QWidget(parent);
     container->setFixedHeight(HEADER_HEIGHT);
 
     auto* layout = new QHBoxLayout(container);
-    layout->setContentsMargins(HEADER_PADDING_X, 0, HEADER_PADDING_X, 0);
+    layout->setContentsMargins(HEADER_PADDING_X, draws_top_line ? 1 : 0, HEADER_PADDING_X, 0);
     layout->setSpacing(0);
 
-    auto* label = new QLabel(QStringLiteral("FILES"), container);
+    auto* label = new QLabel(title.toUpper(), container);
     QFont font = ui_font(STLXTHEME_CAPTION_SIZE, QFont::DemiBold);
     font.setLetterSpacing(QFont::PercentageSpacing, CAPTION_SPACING);
     label->setFont(font);
-    label->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                             .arg(token(STLXTHEME_TEXT_DIM).name()));
+
+    QString top_border = draws_top_line
+                       ? QStringLiteral("1px solid %1").arg(token(STLXTHEME_LINE).name(QColor::HexArgb))
+                       : QStringLiteral("none");
+    label->setStyleSheet(QStringLiteral("color: %1; background: transparent; border-top: %2;")
+                             .arg(token(STLXTHEME_TEXT_DIM).name(), top_border));
     layout->addWidget(label, 1);
 
-    return container;
+    return { container, label };
 }
 
 sidebar_host::sidebar_host(const QString& root_path, QWidget* parent)
@@ -105,7 +109,7 @@ sidebar_host::sidebar_host(const QString& root_path, QWidget* parent)
     layout->setContentsMargins(0, 0, 1, 0);
     layout->setSpacing(0);
 
-    layout->addWidget(make_files_header(this));
+    layout->addWidget(make_section_header(QStringLiteral("Files"), this, false).first);
 
     m_file_tree = new QTreeWidget(this);
     m_file_tree->setHeaderHidden(true);
@@ -117,7 +121,14 @@ sidebar_host::sidebar_host(const QString& root_path, QWidget* parent)
     m_file_tree->viewport()->setMouseTracking(true);
     m_file_tree->setItemDelegate(new file_tree_delegate(m_file_tree));
     m_file_tree->setStyleSheet(QStringLiteral("QTreeWidget { background: transparent; border: none; outline: none; }"));
-    layout->addWidget(m_file_tree, 1);
+    layout->addWidget(m_file_tree, 2);
+
+    m_sections_container = new QWidget(this);
+    m_sections_layout = new QVBoxLayout(m_sections_container);
+    m_sections_layout->setContentsMargins(0, 0, 0, 0);
+    m_sections_layout->setSpacing(0);
+    m_sections_container->hide();
+    layout->addWidget(m_sections_container, 1);
 
     connect(m_file_tree, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item) {
         if (!item || item->data(0, LOADED_CHILDREN_ROLE).toBool()) {
@@ -235,6 +246,98 @@ void sidebar_host::highlight_active_file(const QString& file_path) {
             stack.append(item->child(c));
         }
     }
+}
+
+void sidebar_host::set_extension_sections(const QString& extension_id, const QList<sidebar_section_spec>& sections) {
+    QList<QWidget*> incoming_widgets;
+    for (const sidebar_section_spec& spec : sections) {
+        if (spec.widget) {
+            incoming_widgets.append(spec.widget);
+        }
+    }
+
+    for (qsizetype i = m_sections.size() - 1; i >= 0; i--) {
+        if (m_sections.at(i).extension_id != extension_id) {
+            continue;
+        }
+
+        owned_sidebar_section& existing = m_sections[i];
+        if (!incoming_widgets.contains(existing.spec.widget)) {
+            m_sections_layout->removeWidget(existing.header_widget);
+            existing.header_widget->deleteLater();
+            if (existing.spec.widget) {
+                m_sections_layout->removeWidget(existing.spec.widget);
+                existing.spec.widget->hide();
+                existing.spec.widget->setParent(nullptr);
+                existing.spec.widget->deleteLater();
+            }
+
+            m_sections.removeAt(i);
+        }
+    }
+
+    QList<owned_sidebar_section> retained_other;
+    QList<owned_sidebar_section> existing_for_owner;
+    for (const owned_sidebar_section& entry : m_sections) {
+        if (entry.extension_id == extension_id) {
+            existing_for_owner.append(entry);
+        } else {
+            retained_other.append(entry);
+        }
+    }
+
+    QList<owned_sidebar_section> updated_owner;
+    for (const sidebar_section_spec& spec : sections) {
+        if (!spec.widget) {
+            continue;
+        }
+
+        int match_idx = -1;
+        for (int i = 0; i < existing_for_owner.size(); i++) {
+            if (existing_for_owner.at(i).spec.widget == spec.widget) {
+                match_idx = i;
+                break;
+            }
+        }
+
+        if (match_idx >= 0) {
+            owned_sidebar_section reused = existing_for_owner.takeAt(match_idx);
+            reused.spec = spec;
+            reused.header_label->setText(spec.title.toUpper());
+            updated_owner.append(reused);
+        } else {
+            auto [header, label] = make_section_header(spec.title, m_sections_container, true);
+            spec.widget->setParent(m_sections_container);
+            spec.widget->show();
+            updated_owner.append({ extension_id, spec, header, label });
+        }
+    }
+
+    for (const owned_sidebar_section& leftover : existing_for_owner) {
+        m_sections_layout->removeWidget(leftover.header_widget);
+        leftover.header_widget->deleteLater();
+    }
+
+    m_sections = retained_other;
+    m_sections.append(updated_owner);
+    rebuild_sections_layout();
+}
+
+void sidebar_host::remove_extension_sections(const QString& extension_id) {
+    set_extension_sections(extension_id, {});
+}
+
+void sidebar_host::rebuild_sections_layout() {
+    while (m_sections_layout->count() > 0) {
+        m_sections_layout->takeAt(0);
+    }
+
+    for (const owned_sidebar_section& entry : m_sections) {
+        m_sections_layout->addWidget(entry.header_widget);
+        m_sections_layout->addWidget(entry.spec.widget, 1);
+    }
+
+    m_sections_container->setVisible(!m_sections.isEmpty());
 }
 
 void sidebar_host::paintEvent(QPaintEvent*) {

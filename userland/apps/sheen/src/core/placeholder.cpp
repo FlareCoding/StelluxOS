@@ -66,7 +66,8 @@ static QLabel* make_label(const QString& text, const QFont& font, uint32_t color
     return label;
 }
 
-binary_placeholder::binary_placeholder(QWidget* parent, const QString& name, const QByteArray& utf16_encoding)
+binary_placeholder::binary_placeholder(QWidget* parent, const QString& name, const QByteArray& utf16_encoding,
+                                       const QList<binary_opener_action>& custom_openers)
     : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setSpacing(SECTION_GAP);
@@ -82,11 +83,28 @@ binary_placeholder::binary_placeholder(QWidget* parent, const QString& name, con
     buttons->setSpacing(BUTTON_GAP);
     buttons->addStretch(1);
     QPushButton* first_choice = nullptr;
+
+    for (const binary_opener_action& opener : custom_openers) {
+        auto* button = new QPushButton(opener.label, this);
+        std::function<void()> run = opener.run;
+        connect(button, &QPushButton::clicked, this, [run] {
+            if (run) {
+                run();
+            }
+        });
+        buttons->addWidget(button);
+        if (!first_choice) {
+            first_choice = button;
+        }
+    }
+
     if (!utf16_encoding.isEmpty()) {
         auto* utf16 = new QPushButton(QStringLiteral("Open as %1").arg(encoding_label(utf16_encoding)), this);
         connect(utf16, &QPushButton::clicked, this, [this, utf16_encoding] { on_open_as(utf16_encoding); });
         buttons->addWidget(utf16);
-        first_choice = utf16;
+        if (!first_choice) {
+            first_choice = utf16;
+        }
     }
 
     auto* text = new QPushButton(QStringLiteral("Open as Text"), this);

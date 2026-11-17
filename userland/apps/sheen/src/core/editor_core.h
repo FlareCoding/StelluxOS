@@ -115,6 +115,7 @@ public:
 
     void open_custom_tab(const QString& owner_id, const custom_tab_spec& tab);
     QWidget* focus_custom_tab(const QString& owner_id, const QString& tab_id);
+    bool has_custom_tab(const QString& owner_id, const QString& tab_id) const;
     void close_custom_tabs(const QString& owner_id);
     void set_diagnostics(const QString& owner_id, const QList<diagnostic_item>& diagnostics);
     void clear_diagnostics(const QString& owner_id);

@@ -92,6 +92,7 @@ public:
      * `open_held` decodes them */
     void hold(const QString& path, const QByteArray& bytes, QWidget* placeholder);
     bool open_held(const QByteArray& encoding);
+    void clear_held_binary();
     QWidget* placeholder() const { return m_placeholder; }
 
     /* Shows `page` in place of any text, the document then owning it: the Settings tab, named `name`, whose unsaved
