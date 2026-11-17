@@ -68,7 +68,7 @@ GCC_VER = $CROSS_GCC_VER
 MUSL_VER = $MUSL_VER
 GNU_SITE = $GNU_SITE
 OUTPUT = $CROSS
-DL_CMD = curl -fL --retry 10 --retry-delay 3 -C - -o
+DL_CMD = sh /recipe/fetch.sh $GNU_SITE
 COMMON_CONFIG += --disable-nls
 GCC_CONFIG += --enable-languages=c,c++
 GCC_CONFIG += --disable-libquadmath --disable-decimal-float
