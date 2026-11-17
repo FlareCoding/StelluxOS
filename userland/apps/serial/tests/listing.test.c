@@ -85,6 +85,29 @@ static void check_matching(void) {
     listing_free(&after);
 }
 
+static void check_offers(void) {
+    listing none = { 0 };
+    listing first;
+    listing returned;
+    parse(BRIDGE_LINE "\n", &first);
+    parse(RETURN_LINE "\n", &returned);
+
+    tried_arrival tried = { 0 };
+    check(!listing_offers(&none, "cp2102-0007", &tried) && !tried.is_known, "an unlisted port is not offered");
+    check(listing_offers(&first, "cp2102-0007", &tried) && tried.is_known && tried.arrival == 7,
+          "a listed port is offered once, and its arrival recorded");
+    check(!listing_offers(&first, "cp2102-0007", &tried), "the arrival an open tried is not offered again");
+
+    tried.is_retrying = true;
+    check(listing_offers(&first, "cp2102-0007", &tried), "the arrival whose open failed is offered again");
+    check(!listing_offers(&none, "cp2102-0007", &tried) && !tried.is_retrying, "a port that leaves ends the retry");
+    check(listing_offers(&returned, "cp2102-0007", &tried) && tried.arrival == 9 && !tried.is_retrying,
+          "a later arrival is offered");
+
+    listing_free(&first);
+    listing_free(&returned);
+}
+
 static void check_reads(void) {
     char path[PATH_SIZE];
     snprintf(path, sizeof(path), "/tmp/serial-listing-%d", (int)getpid());
@@ -109,6 +132,7 @@ static void check_reads(void) {
 int main(void) {
     check_snapshots();
     check_matching();
+    check_offers();
     check_reads();
 
     if (g_failures != 0) {

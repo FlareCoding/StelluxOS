@@ -36,6 +36,13 @@ typedef struct {
     size_t       count;
 } listing;
 
+// The arrival of a port that an open last tried
+typedef struct {
+    bool     is_known;    // a snapshot before an open listed the port
+    uint64_t arrival;     // the arrival that snapshot listed
+    bool     is_retrying; // the open of that arrival failed while it stayed listed, so it is offered again
+} tried_arrival;
+
 /**
  * @brief Cuts a snapshot's bytes into ports. Takes `text`, which must hold `length` bytes and room for a NUL, and frees
  * it on failure. A line with fewer than KNOWN_FIELDS fields, or with no number for its arrival, is left out.
@@ -61,6 +68,12 @@ const listed_port* listing_find(const listing* in, const char* name);
  * snapshot is not held.
  */
 bool listing_holds(const listing* in, const listed_port* port);
+
+/**
+ * @brief Whether `in` offers the port named `name` to open: under an arrival `tried` does not know, or under the one
+ * whose open failed. Records the arrival offered, and ends a retry once `in` no longer lists the port.
+ */
+bool listing_offers(const listing* in, const char* name, tried_arrival* tried);
 
 void listing_free(listing* in);
 

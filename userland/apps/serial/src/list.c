@@ -40,7 +40,7 @@ static int wait_for_change(int fd, listing* now) {
 }
 
 int run_list(const serial_args* args) {
-    report_use(stdout, args->has_events);
+    report_use(stdout, args->has_events, false);
 
     int fd = open(LISTING_PATH, O_RDONLY);
     if (fd < 0) {
@@ -62,7 +62,7 @@ int run_list(const serial_args* args) {
 }
 
 int run_watch(const serial_args* args) {
-    report_use(stdout, args->has_events);
+    report_use(stdout, args->has_events, false);
 
     int fd = open(LISTING_PATH, O_RDONLY);
     if (fd < 0) {
