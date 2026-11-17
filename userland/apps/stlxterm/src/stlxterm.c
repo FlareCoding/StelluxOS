@@ -581,6 +581,24 @@ static void drop_unsent_paste(void) {
     g_paste_text_to = from;
 }
 
+/* The byte a character sends with Ctrl: @ through _ and the letters send 0x00 to 0x1F,
+ * and Space and / send what @ and _ send, since those need Shift */
+static char ctrl_byte(uint32_t ch) {
+    if (ch == ' ') {
+        return '@' & 0x1F;
+    }
+
+    if (ch == '/') {
+        return '_' & 0x1F;
+    }
+
+    if ((ch >= '@' && ch <= '_') || (ch >= 'a' && ch <= 'z')) {
+        return (char)(ch & 0x1F);
+    }
+
+    return (char)ch;
+}
+
 /* Translated characters come from the display manager, escape
  * sequences from the local special-key table, control codes from the
  * modifier bit. Returns 1 when the key sent input. */
@@ -598,11 +616,7 @@ static int handle_key(int master_fd, uint32_t ch, uint16_t usage,
         return 0;
     }
 
-    char byte = (char)ch;
-    uint32_t low = ch | 32u;
-    if ((modifiers & STLXWIN_MOD_CTRL) && low >= 'a' && low <= 'z') {
-        byte = (char)(low & 0x1F);
-    }
+    char byte = (modifiers & STLXWIN_MOD_CTRL) ? ctrl_byte(ch) : (char)ch;
 
     /* Ctrl C stops a paste still being sent */
     if (byte == CTRL_C_BYTE) {
