@@ -4,10 +4,16 @@ APP_QT := 1
 # Scintilla's Qt layer and the legacy code pages convert text through QTextCodec, which Qt 6 keeps in Core5Compat
 APP_QT_MODULES := core5compat
 
+EXTENSION_DIRS  := $(patsubst src/%/,%,$(wildcard src/extensions/*/))
+APP_SOURCE_DIRS := app core ui workspace extensions $(EXTENSION_DIRS)
+
 include ../../mk/cxxapp.mk
 
 # Scintilla and Lexilla compile from their release tarballs, unpacked unmodified, which packages/sheen pins
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifneq ($(shell grep -rn Q_OBJECT src/ 2>/dev/null),)
+  $(error Q_OBJECT is unsupported in src/ subdirectories, connect signals with lambdas and std::function)
+endif
 ifeq ($(and $(SCINTILLA_DIR),$(LEXILLA_DIR)),)
   $(error SCINTILLA_DIR and LEXILLA_DIR must name unpacked Scintilla and Lexilla releases, see packages/sheen)
 endif
@@ -31,7 +37,7 @@ UPSTREAM_INCLUDES := $(SCINTILLA_DIR)/include $(SCINTILLA_DIR)/src $(SCINTILLA_Q
                      $(LEXILLA_DIR)/include $(LEXILLA_DIR)/lexlib
 UPSTREAM_DEFINES  := -DSCINTILLA_QT=1 -DEXPORT_IMPORT_API= -DNDEBUG=1
 
-APP_CXXFLAGS += $(addprefix -isystem ,$(UPSTREAM_INCLUDES)) $(UPSTREAM_DEFINES)
+APP_CXXFLAGS += -Isrc $(addprefix -isystem ,$(UPSTREAM_INCLUDES)) $(UPSTREAM_DEFINES)
 OBJECTS += $(UPSTREAM_OBJECTS)
 
 $(TARGET): $(UPSTREAM_OBJECTS)
@@ -61,4 +67,4 @@ $(BUILD_DIR)/scintilla/moc_%.o: $(BUILD_DIR)/scintilla/moc_%.cpp
 	@echo "[CXX] $(notdir $<) ($(ARCH))"
 	$(UQ)$(CXX) $(CXXFLAGS_COMMON) $(APP_CXXFLAGS) -w -c $< -o $@
 
--include $(UPSTREAM_OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d)

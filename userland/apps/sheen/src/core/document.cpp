@@ -1,0 +1,712 @@
+#include "core/document.h"
+#include "core/file_loader.h"
+#include "core/kiln.h"
+
+#include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
+
+#include <ScintillaEditBase.h>
+
+#include <cerrno>
+#include <sys/stat.h>
+
+struct key_binding {
+    int key;
+    int modifiers;
+    int message;
+};
+
+// Enough of the first line to read the program a #! line names, or to name an untitled document
+static constexpr qsizetype FIRST_LINE_PROBE_BYTES = 256;
+static constexpr int MAX_NAME_CHARS = 32;
+static constexpr qsizetype MAX_UTF8_BYTES = 4;
+static constexpr int INDENT_PROBE_LINES = 1000;
+static constexpr qsizetype SELECTION_HISTORY_LIMIT = 50;
+static constexpr int MIN_INDENT_STEP = 2;
+static constexpr int MAX_INDENT_STEP = 8;
+static constexpr int KEY_MODIFIER_SHIFT = 16;
+static constexpr mode_t PERMISSION_BITS = 07777;
+static constexpr QChar ELLIPSIS(0x2026);
+
+static constexpr int CHANGE_HISTORY_SHOWN = SC_CHANGE_HISTORY_ENABLED | SC_CHANGE_HISTORY_MARKERS;
+static constexpr qint64 BYTES_PER_MB = 1024 * 1024;
+static constexpr qint64 LARGE_TEXT_BYTES = qint64(1) << 31;
+
+// Wrapping in the background costs about a quarter second of a core per megabyte, so past this text stays unwrapped
+static constexpr qint64 WRAP_LIMIT_BYTES = 4 * BYTES_PER_MB;
+static constexpr int CHANGED_LINE_MARKERS =
+    (1 << SC_MARKNUM_HISTORY_MODIFIED) | (1 << SC_MARKNUM_HISTORY_REVERTED_TO_MODIFIED);
+
+static constexpr int SHIFT = SCMOD_SHIFT;
+static constexpr int CTRL = SCMOD_CTRL;
+static constexpr int ALT_SHIFT = SCMOD_ALT | SCMOD_SHIFT;
+static constexpr int CTRL_SHIFT = SCMOD_CTRL | SCMOD_SHIFT;
+
+// Scintilla's own keys that stay: caret movement, selection, deletion, the clipboard and the keys that type. Every
+// other key belongs to Sheen's action table, so no default acts behind it unlisted
+static const key_binding KEPT_KEYS[] = {
+    { SCK_DOWN, SCMOD_NORM, SCI_LINEDOWN },
+    { SCK_DOWN, SHIFT, SCI_LINEDOWNEXTEND },
+    { SCK_DOWN, CTRL, SCI_LINESCROLLDOWN },
+    { SCK_UP, SCMOD_NORM, SCI_LINEUP },
+    { SCK_UP, SHIFT, SCI_LINEUPEXTEND },
+    { SCK_UP, CTRL, SCI_LINESCROLLUP },
+    { SCK_LEFT, SCMOD_NORM, SCI_CHARLEFT },
+    { SCK_LEFT, SHIFT, SCI_CHARLEFTEXTEND },
+    { SCK_LEFT, CTRL, SCI_WORDLEFT },
+    { SCK_LEFT, CTRL_SHIFT, SCI_WORDLEFTEXTEND },
+    { SCK_LEFT, ALT_SHIFT, SCI_CHARLEFTRECTEXTEND },
+    { SCK_RIGHT, SCMOD_NORM, SCI_CHARRIGHT },
+    { SCK_RIGHT, SHIFT, SCI_CHARRIGHTEXTEND },
+    { SCK_RIGHT, CTRL, SCI_WORDRIGHT },
+    { SCK_RIGHT, CTRL_SHIFT, SCI_WORDRIGHTEXTEND },
+    { SCK_RIGHT, ALT_SHIFT, SCI_CHARRIGHTRECTEXTEND },
+    { SCK_HOME, SCMOD_NORM, SCI_VCHOME },
+    { SCK_HOME, SHIFT, SCI_VCHOMEEXTEND },
+    { SCK_HOME, CTRL, SCI_DOCUMENTSTART },
+    { SCK_HOME, CTRL_SHIFT, SCI_DOCUMENTSTARTEXTEND },
+    { SCK_HOME, ALT_SHIFT, SCI_VCHOMERECTEXTEND },
+    { SCK_END, SCMOD_NORM, SCI_LINEEND },
+    { SCK_END, SHIFT, SCI_LINEENDEXTEND },
+    { SCK_END, CTRL, SCI_DOCUMENTEND },
+    { SCK_END, CTRL_SHIFT, SCI_DOCUMENTENDEXTEND },
+    { SCK_END, ALT_SHIFT, SCI_LINEENDRECTEXTEND },
+    { SCK_PRIOR, SCMOD_NORM, SCI_PAGEUP },
+    { SCK_PRIOR, SHIFT, SCI_PAGEUPEXTEND },
+    { SCK_PRIOR, ALT_SHIFT, SCI_PAGEUPRECTEXTEND },
+    { SCK_NEXT, SCMOD_NORM, SCI_PAGEDOWN },
+    { SCK_NEXT, SHIFT, SCI_PAGEDOWNEXTEND },
+    { SCK_NEXT, ALT_SHIFT, SCI_PAGEDOWNRECTEXTEND },
+    { SCK_DELETE, SCMOD_NORM, SCI_CLEAR },
+    { SCK_DELETE, SHIFT, SCI_CUTALLOWLINE },
+    { SCK_DELETE, CTRL, SCI_DELWORDRIGHT },
+    { SCK_DELETE, CTRL_SHIFT, SCI_DELLINERIGHT },
+    { SCK_INSERT, SCMOD_NORM, SCI_EDITTOGGLEOVERTYPE },
+    { SCK_INSERT, SHIFT, SCI_PASTE },
+    { SCK_INSERT, CTRL, SCI_COPYALLOWLINE },
+    { SCK_BACK, SCMOD_NORM, SCI_DELETEBACK },
+    { SCK_BACK, SHIFT, SCI_DELETEBACK },
+    { SCK_BACK, CTRL, SCI_DELWORDLEFT },
+    { SCK_BACK, CTRL_SHIFT, SCI_DELLINELEFT },
+    { 'X', CTRL, SCI_CUTALLOWLINE },
+    { 'C', CTRL, SCI_COPYALLOWLINE },
+    { 'V', CTRL, SCI_PASTE },
+    { SCK_TAB, SCMOD_NORM, SCI_TAB },
+    { SCK_TAB, SHIFT, SCI_BACKTAB },
+    { SCK_RETURN, SCMOD_NORM, SCI_NEWLINE },
+    { SCK_RETURN, SHIFT, SCI_NEWLINE },
+};
+
+eol_counts count_eols(QByteArrayView text) {
+    eol_counts counts;
+    for (qsizetype i = 0; i < text.size(); i++) {
+        if (text[i] == '\n') {
+            counts.lf++;
+        } else if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+            counts.crlf++;
+            i++;
+        } else if (text[i] == '\r') {
+            counts.cr++;
+        }
+    }
+
+    return counts;
+}
+
+// The ending most lines use, LF on a tie or when the text has a single line
+static int majority_eol_mode(const eol_counts& counts) {
+    if (counts.crlf > counts.lf && counts.crlf >= counts.cr) {
+        return SC_EOL_CRLF;
+    }
+
+    return counts.cr > counts.lf && counts.cr > counts.crlf ? SC_EOL_CR : SC_EOL_LF;
+}
+
+static bool has_mixed_eols(const eol_counts& counts) {
+    return (counts.crlf > 0) + (counts.cr > 0) + (counts.lf > 0) > 1;
+}
+
+document::document(QWidget* parent, int untitled_number, const sheen_settings& settings)
+    : m_view(new ScintillaEditBase(parent)), m_untitled_number(untitled_number), m_settings(settings) {
+    m_file.encoding = { settings.encoding, false };
+    m_file.eol_mode = settings.line_ending;
+    configure_view();
+}
+
+document::~document() {
+    end_load();
+    delete m_view;
+}
+
+void document::show_page(QWidget* page, const QString& name) {
+    m_placeholder = page;
+    m_page_name = name;
+}
+
+QWidget* document::shown_widget() const {
+    return m_placeholder ? m_placeholder : static_cast<QWidget*>(m_view);
+}
+
+void document::remember_selection() {
+    selection_state state;
+    for (sptr_t index = 0; index < m_view->send(SCI_GETSELECTIONS); index++) {
+        sptr_t caret = m_view->send(SCI_GETSELECTIONNCARET, index);
+        state.ranges.append({ caret, m_view->send(SCI_GETSELECTIONNANCHOR, index) });
+    }
+
+    state.main = m_view->send(SCI_GETMAINSELECTION);
+    m_selections.append(state);
+    if (m_selections.size() > SELECTION_HISTORY_LIMIT) {
+        m_selections.removeFirst();
+    }
+}
+
+bool document::undo_selection() {
+    if (m_selections.isEmpty()) {
+        return false;
+    }
+
+    selection_state state = m_selections.takeLast();
+    for (qsizetype index = 0; index < state.ranges.size(); index++) {
+        auto [caret, anchor] = state.ranges.at(index);
+        m_view->send(index == 0 ? SCI_SETSELECTION : SCI_ADDSELECTION, caret, anchor);
+    }
+
+    m_view->send(SCI_SETMAINSELECTION, state.main);
+    m_view->send(SCI_SCROLLCARET);
+    return true;
+}
+
+void document::apply_settings() {
+    apply_text_size(m_view);
+    m_view->send(SCI_SETCARETPERIOD, m_settings.caret_blink_ms);
+    std::optional<indentation> indent = m_settings.detect_indentation ? detect_indentation() : std::nullopt;
+    set_indentation(indent ? *indent : indentation { !m_settings.insert_spaces, m_settings.tab_width });
+    set_mode(m_mode, false);
+}
+
+// No encoding yet, so the tab reopened after a close looks at the bytes again
+void document::hold(const QString& path, const QByteArray& bytes, QWidget* placeholder) {
+    m_file.path = path;
+    m_file.encoding = {};
+    m_held_bytes = bytes;
+    m_placeholder = placeholder;
+    remember_disk_state();
+}
+
+bool document::open_held(const QByteArray& encoding) {
+    if (!load(m_file.path, m_held_bytes, encoding)) {
+        return false;
+    }
+
+    m_held_bytes.clear();
+    m_placeholder->deleteLater();
+    m_placeholder = nullptr;
+    return true;
+}
+
+// No encoding yet, so the tab reopened after a close detects it again
+file_loader* document::begin_load(const QString& path, qint64 size, const QByteArray& encoding, QWidget* placeholder) {
+    m_file.path = path;
+    m_file.encoding = {};
+    m_placeholder = placeholder;
+    m_is_large = size >= m_settings.large_file_mb * BYTES_PER_MB;
+
+    int options = m_is_large ? SC_DOCUMENTOPTION_STYLES_NONE : SC_DOCUMENTOPTION_DEFAULT;
+    options |= size >= LARGE_TEXT_BYTES ? SC_DOCUMENTOPTION_TEXT_LARGE : 0;
+    auto* loader = reinterpret_cast<Scintilla::ILoader*>(m_view->send(SCI_CREATELOADER, size, options));
+    m_loader = std::make_unique<file_loader>(path, encoding, loader);
+    return m_loader.get();
+}
+
+// A loaded document starts with undo collection off, as the loader filled it
+void document::finish_load(const load_result& result) {
+    sptr_t loaded = m_loader->take_document();
+    end_load();
+
+    m_view->send(SCI_SETDOCPOINTER, 0, loaded);
+    m_view->send(SCI_RELEASEDOCUMENT, 0, loaded);
+    m_view->send(SCI_SETUNDOCOLLECTION, 1);
+
+    m_file.encoding = result.encoding;
+    settle_text(result.eols);
+    if (m_is_large) {
+        enter_large_file_mode();
+    } else {
+        detect_language();
+    }
+}
+
+// The placeholder may be closing its own tab from a button's signal, so it goes once control returns
+void document::end_load() {
+    m_loader.reset();
+    if (m_placeholder) {
+        m_placeholder->deleteLater();
+        m_placeholder = nullptr;
+    }
+}
+
+bool document::load(const QString& path, const QByteArray& bytes, const QByteArray& encoding) {
+    decoded_text text;
+    if (encoding.isEmpty()) {
+        text = decode_detected(bytes);
+    } else if (!decode_as(bytes, encoding, &text)) {
+        return false;
+    }
+
+    m_file.path = path;
+    m_file.encoding = text.encoding;
+    replace_text(text.utf8);
+    detect_language();
+    return true;
+}
+
+bool document::reload_as(const QByteArray& encoding, QString* error) {
+    QFile file(m_file.path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = file.errorString();
+        return false;
+    }
+
+    decoded_text text;
+    if (!decode_as(file.readAll(), encoding, &text)) {
+        *error = QStringLiteral(" is not valid %1").arg(encoding_label(encoding));
+        return false;
+    }
+
+    m_file.encoding = text.encoding;
+    replace_text(text.utf8);
+    return true;
+}
+
+bool document::reload_from_disk(QString* error) {
+    QFile file(m_file.path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = file.errorString();
+        return false;
+    }
+
+    QByteArray bytes = file.readAll();
+    decoded_text text;
+    if (!decode_as(bytes, m_file.encoding.name, &text)) {
+        text = decode_detected(bytes);
+    }
+
+    sptr_t caret = m_view->send(SCI_GETCURRENTPOS);
+    sptr_t line = m_view->send(SCI_LINEFROMPOSITION, caret);
+    sptr_t column = m_view->send(SCI_GETCOLUMN, caret);
+    sptr_t first_line = m_view->send(SCI_GETFIRSTVISIBLELINE);
+
+    // One undo step, so Ctrl Z brings back the text from before the reload
+    m_view->send(SCI_BEGINUNDOACTION);
+    m_view->send(SCI_TARGETWHOLEDOCUMENT);
+    m_view->send(SCI_REPLACETARGET, text.utf8.size(), reinterpret_cast<sptr_t>(text.utf8.constData()));
+    m_view->send(SCI_ENDUNDOACTION);
+    m_view->send(SCI_SETSAVEPOINT);
+
+    sptr_t last_line = m_view->send(SCI_GETLINECOUNT) - 1;
+    m_view->send(SCI_GOTOPOS, m_view->send(SCI_FINDCOLUMN, qMin(line, last_line), column));
+    m_view->send(SCI_SETFIRSTVISIBLELINE, first_line);
+
+    eol_counts counts = count_eols(text.utf8);
+    m_file.encoding = text.encoding;
+    set_eol_mode(majority_eol_mode(counts));
+    m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
+
+    m_is_deleted = false;
+    remember_disk_state();
+    return true;
+}
+
+bool document::save(const QString& path, QString* error, unencodable_char* unencodable) {
+    QByteArray utf8 = text();
+    encoded_text encoded = encode_text(utf8, m_file.encoding);
+    if (encoded.unencodable_at >= 0) {
+        unencodable->line = m_view->send(SCI_LINEFROMPOSITION, encoded.unencodable_at) + 1;
+        unencodable->code = QString::fromUtf8(utf8.mid(encoded.unencodable_at, MAX_UTF8_BYTES)).toUcs4().value(0);
+        return false;
+    }
+
+    // QFileInfo also reports what this user may do, which QSaveFile writes back as owner bits, so the file's own
+    // mode is read first and restored after the rename
+    QByteArray native_path = QFile::encodeName(path);
+    struct stat original = {};
+    bool has_mode = ::stat(native_path.constData(), &original) == 0;
+
+    // A folder that takes no new files, such as devfs, is named in plain words instead of by its errno
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        bool is_refused = errno == ENOSYS || errno == EROFS;
+        *error = is_refused ? QStringLiteral("%1 takes no new files").arg(QFileInfo(path).absolutePath())
+                            : file.errorString();
+        return false;
+    }
+
+    if (file.write(encoded.bytes) != encoded.bytes.size() || !file.commit()) {
+        *error = file.errorString();
+        return false;
+    }
+
+    if (has_mode) {
+        (void)::chmod(native_path.constData(), original.st_mode & PERMISSION_BITS);
+    }
+
+    m_view->send(SCI_SETSAVEPOINT);
+    bool is_renamed = path != m_file.path;
+    m_file.path = path;
+    m_is_deleted = false;
+    remember_disk_state();
+    if (is_renamed) {
+        detect_language();
+    }
+
+    return true;
+}
+
+void document::adopt(sptr_t scintilla_document, const file_record& file, const language* lang) {
+    m_view->send(SCI_SETDOCPOINTER, 0, scintilla_document);
+    m_view->send(SCI_RELEASEDOCUMENT, 0, scintilla_document);
+    m_file = file;
+    set_language(lang);
+}
+
+sptr_t document::keep_scintilla_document() const {
+    sptr_t scintilla_document = m_view->send(SCI_GETDOCPOINTER);
+    m_view->send(SCI_ADDREFDOCUMENT, 0, scintilla_document);
+    return scintilla_document;
+}
+
+void document::set_encoding(const file_encoding& encoding) {
+    m_file.encoding = encoding;
+}
+
+void document::set_language(const language* lang) {
+    m_language = lang;
+    apply_language(m_view, m_language);
+    if (!m_is_mode_chosen) {
+        set_mode(is_code_language(lang) ? edit_mode::CODE : edit_mode::TEXT, false);
+    }
+}
+
+void document::set_mode(edit_mode mode, bool is_chosen) {
+    m_mode = mode;
+    m_is_mode_chosen = m_is_mode_chosen || is_chosen;
+    set_folding_shown(m_view, mode == edit_mode::CODE && !m_is_large);
+    apply_mode_defaults(m_view, mode == edit_mode::CODE ? m_settings.code : m_settings.text);
+    limit_wrap();
+    if (mode == edit_mode::TEXT) {
+        clear_function_names(m_view);
+    } else {
+        refresh_function_names();
+    }
+}
+
+bool document::is_wrap_over_limit() const {
+    bool is_wrapped = m_view->send(SCI_GETWRAPMODE) != SC_WRAP_NONE;
+    return is_wrapped && !m_is_large && !m_is_wrap_chosen && m_view->send(SCI_GETLENGTH) >= WRAP_LIMIT_BYTES;
+}
+
+bool document::limit_wrap() {
+    if (!is_wrap_over_limit()) {
+        return false;
+    }
+
+    m_view->send(SCI_SETWRAPMODE, SC_WRAP_NONE);
+    m_is_wrap_limited = true;
+    return true;
+}
+
+void document::choose_wrap(bool is_wrapped) {
+    m_is_wrap_chosen = true;
+    m_is_wrap_limited = false;
+    m_view->send(SCI_SETWRAPMODE, is_wrapped ? SC_WRAP_WORD : SC_WRAP_NONE);
+}
+
+void document::fit_text_width() {
+    if (m_mode == edit_mode::TEXT) {
+        fit_reading_width(m_view, m_settings.text.wrap_column);
+    }
+}
+
+void document::refresh_function_names() {
+    if (m_mode == edit_mode::CODE) {
+        mark_function_names(m_view, m_language);
+    }
+}
+
+void document::set_eol_mode(int eol_mode) {
+    m_file.eol_mode = eol_mode;
+    m_view->send(SCI_SETEOLMODE, eol_mode);
+}
+
+void document::convert_eols(int eol_mode) {
+    m_view->send(SCI_CONVERTEOLS, eol_mode);
+    set_eol_mode(eol_mode);
+    m_file.has_mixed_eols = false;
+}
+
+bool document::claim_eol_recount() {
+    bool is_first = !m_is_eol_recount_queued;
+    m_is_eol_recount_queued = true;
+    return is_first;
+}
+
+void document::recount_eols() {
+    m_is_eol_recount_queued = false;
+    eol_counts counts = count_eols(text());
+    set_eol_mode(majority_eol_mode(counts));
+    m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
+}
+
+std::optional<indentation> document::detect_indentation() const {
+    int tab_lines = 0;
+    int space_lines = 0;
+    int steps[MAX_INDENT_STEP + 1] = {};
+    sptr_t previous = 0;
+    sptr_t line_count = m_view->send(SCI_GETLINECOUNT);
+    for (sptr_t line = 0; line < line_count && tab_lines + space_lines < INDENT_PROBE_LINES; line++) {
+        sptr_t start = m_view->send(SCI_POSITIONFROMLINE, line);
+        sptr_t text_start = m_view->send(SCI_GETLINEINDENTPOSITION, line);
+        if (text_start == m_view->send(SCI_GETLINEENDPOSITION, line)) {
+            continue;
+        }
+
+        sptr_t indent = m_view->send(SCI_GETLINEINDENTATION, line);
+        char first = static_cast<char>(m_view->send(SCI_GETCHARAT, start));
+        tab_lines += text_start > start && first == '\t';
+        space_lines += text_start > start && first == ' ';
+        sptr_t step = qAbs(indent - previous);
+        if (first == ' ' && step >= MIN_INDENT_STEP && step <= MAX_INDENT_STEP) {
+            steps[step]++;
+        }
+
+        previous = indent;
+    }
+
+    if (tab_lines + space_lines == 0) {
+        return std::nullopt;
+    }
+
+    int width = MIN_INDENT_STEP;
+    for (int step = MIN_INDENT_STEP; step <= MAX_INDENT_STEP; step++) {
+        width = steps[step] > steps[width] ? step : width;
+    }
+
+    bool uses_tabs = tab_lines > space_lines;
+    int tab_width = static_cast<int>(m_view->send(SCI_GETTABWIDTH));
+    return indentation { uses_tabs, uses_tabs || steps[width] == 0 ? tab_width : width };
+}
+
+void document::set_indentation(const indentation& indent) {
+    m_view->send(SCI_SETUSETABS, indent.uses_tabs);
+    m_view->send(SCI_SETTABWIDTH, indent.width);
+    m_view->send(SCI_SETINDENT, indent.width);
+}
+
+void document::convert_indentation(bool to_tabs) {
+    m_view->send(SCI_SETUSETABS, to_tabs);
+    m_view->send(SCI_BEGINUNDOACTION);
+    sptr_t line_count = m_view->send(SCI_GETLINECOUNT);
+    for (sptr_t line = 0; line < line_count; line++) {
+        sptr_t indent = m_view->send(SCI_GETLINEINDENTATION, line);
+        if (indent > 0) {
+            m_view->send(SCI_SETLINEINDENTATION, line, indent);
+        }
+    }
+
+    m_view->send(SCI_ENDUNDOACTION);
+}
+
+void document::set_new_path(const QString& path) {
+    m_file.path = path;
+    detect_language();
+}
+
+disk_state document::check_disk() const {
+    if (m_file.path.isEmpty() || m_file.size < 0) {
+        return disk_state::SAME;
+    }
+
+    QFileInfo info(m_file.path);
+    if (!info.isFile()) {
+        return disk_state::DELETED;
+    }
+
+    bool is_changed = info.size() != m_file.size || info.lastModified() != m_file.modified;
+    return is_changed ? disk_state::CHANGED : disk_state::SAME;
+}
+
+void document::accept_disk_state() {
+    remember_disk_state();
+}
+
+void document::set_deleted(bool is_deleted) {
+    m_is_deleted = is_deleted;
+}
+
+view_state document::current_view_state() const {
+    view_state state;
+    state.caret = m_view->send(SCI_GETCURRENTPOS);
+    state.anchor = m_view->send(SCI_GETANCHOR);
+    state.first_line = m_view->send(SCI_GETFIRSTVISIBLELINE);
+    state.wrap_mode = static_cast<int>(m_view->send(SCI_GETWRAPMODE));
+    return state;
+}
+
+void document::restore_view_state(const view_state& state) {
+    m_view->send(SCI_SETWRAPMODE, state.wrap_mode);
+    m_view->send(SCI_SETSEL, state.anchor, state.caret);
+    m_view->send(SCI_SETFIRSTVISIBLELINE, state.first_line);
+}
+
+// A file deleted on disk counts as unsaved, since its text now lives only here
+bool document::is_modified() const {
+    return m_is_deleted || m_is_page_modified || m_view->send(SCI_GETMODIFY) != 0;
+}
+
+// An untouched untitled document, which a file opened next takes the place of
+bool document::is_pristine() const {
+    return m_file.path.isEmpty() && !is_page() && !is_modified() && m_view->send(SCI_GETLENGTH) == 0;
+}
+
+int document::changed_line_count() const {
+    int count = 0;
+    for (sptr_t line = m_view->send(SCI_MARKERNEXT, 0, CHANGED_LINE_MARKERS); line >= 0;
+         line = m_view->send(SCI_MARKERNEXT, line + 1, CHANGED_LINE_MARKERS)) {
+        count++;
+    }
+
+    return count;
+}
+
+QString document::display_name() const {
+    if (is_page()) {
+        return m_page_name;
+    }
+
+    if (!m_file.path.isEmpty()) {
+        return QFileInfo(m_file.path).fileName();
+    }
+
+    QString first_line = first_line_name();
+    if (!first_line.isEmpty()) {
+        return first_line;
+    }
+
+    return m_untitled_number == 1 ? QStringLiteral("Untitled") : QStringLiteral("Untitled %1").arg(m_untitled_number);
+}
+
+// The first line without heading marks, cut to a tab's length
+QString document::first_line_name() const {
+    QString line = QString::fromUtf8(first_line()).trimmed();
+    while (line.startsWith(QLatin1Char('#'))) {
+        line.remove(0, 1);
+    }
+
+    line = line.trimmed();
+    return line.size() > MAX_NAME_CHARS ? line.left(MAX_NAME_CHARS).trimmed() + ELLIPSIS : line;
+}
+
+void document::configure_view() {
+    m_view->send(SCI_SETCODEPAGE, SC_CP_UTF8);
+    m_view->send(SCI_SETEOLMODE, m_file.eol_mode);
+    m_view->send(SCI_CLEARALLCMDKEYS);
+    for (const key_binding& binding : KEPT_KEYS) {
+        m_view->send(SCI_ASSIGNCMDKEY, binding.key | (binding.modifiers << KEY_MODIFIER_SHIFT), binding.message);
+    }
+
+    m_view->send(SCI_SETMULTIPLESELECTION, 1);
+    m_view->send(SCI_SETADDITIONALSELECTIONTYPING, 1);
+    m_view->send(SCI_SETMULTIPASTE, SC_MULTIPASTE_EACH);
+
+    apply_text_area_look(m_view);
+    set_indentation({ !m_settings.insert_spaces, m_settings.tab_width });
+    m_view->send(SCI_SETCARETPERIOD, m_settings.caret_blink_ms);
+    m_view->send(SCI_SETCHANGEHISTORY, CHANGE_HISTORY_SHOWN);
+    set_mode(edit_mode::TEXT, false);
+}
+
+void document::replace_text(const QByteArray& utf8) {
+    m_view->send(SCI_SETCHANGEHISTORY, SC_CHANGE_HISTORY_DISABLED);
+    m_view->send(SCI_SETUNDOCOLLECTION, 0);
+    m_view->send(SCI_CLEARALL);
+    m_view->send(SCI_APPENDTEXT, utf8.size(), reinterpret_cast<sptr_t>(utf8.constData()));
+    m_view->send(SCI_SETUNDOCOLLECTION, 1);
+    settle_text(count_eols(utf8));
+}
+
+// A new text starts with no undo, at the save point, with its line endings and indentation read from it
+void document::settle_text(const eol_counts& counts) {
+    m_view->send(SCI_EMPTYUNDOBUFFER);
+    m_view->send(SCI_SETSAVEPOINT);
+
+    // Change history starts only on an empty undo buffer
+    m_view->send(SCI_SETCHANGEHISTORY, CHANGE_HISTORY_SHOWN);
+    m_view->send(SCI_GOTOPOS, 0);
+
+    set_eol_mode(majority_eol_mode(counts));
+    m_file.has_mixed_eols = has_mixed_eols(counts);
+    m_file.eols = counts;
+    std::optional<indentation> indent = m_settings.detect_indentation ? detect_indentation() : std::nullopt;
+    set_indentation(indent ? *indent : indentation { !m_settings.insert_spaces, m_settings.tab_width });
+
+    m_is_deleted = false;
+    remember_disk_state();
+    fit_line_numbers(m_view);
+}
+
+void document::enter_large_file_mode() {
+    set_mode(edit_mode::CODE, true);
+    set_language(nullptr);
+    m_view->send(SCI_SETWRAPMODE, SC_WRAP_NONE);
+    m_view->send(SCI_SETLAYOUTCACHE, SC_CACHE_PAGE);
+}
+
+void document::remember_disk_state() {
+    QFileInfo info(m_file.path);
+    m_file.size = info.isFile() ? info.size() : -1;
+    m_file.modified = info.lastModified();
+    refresh_read_only();
+}
+
+bool document::refresh_read_only() {
+    QFileInfo info(m_file.path);
+    bool is_read_only = info.isFile() && !(info.permissions() & QFileDevice::WriteOwner);
+    bool is_changed = is_read_only != m_is_read_only;
+    m_is_read_only = is_read_only;
+    return is_changed;
+}
+
+bool document::claim_read_only_note() {
+    bool is_first = m_is_read_only && !m_is_read_only_noted;
+    m_is_read_only_noted = m_is_read_only_noted || is_first;
+    return is_first;
+}
+
+void document::detect_language() {
+    set_language(find_language(QFileInfo(m_file.path).fileName(), first_line()));
+}
+
+// Copied rather than pointed at, since a pointer into the text moves Scintilla's gap, which change notifications
+// must not do
+QByteArray document::first_line() const {
+    Sci_TextRangeFull range;
+    range.chrg.cpMin = 0;
+    range.chrg.cpMax = qMin<sptr_t>(m_view->send(SCI_GETLINEENDPOSITION, 0), FIRST_LINE_PROBE_BYTES);
+    QByteArray line(range.chrg.cpMax + 1, '\0');
+    range.lpstrText = line.data();
+    m_view->send(SCI_GETTEXTRANGEFULL, 0, reinterpret_cast<sptr_t>(&range));
+
+    line.resize(range.chrg.cpMax);
+    return line;
+}
+
+// The pointer stays valid while the text is unchanged, which holds for as long as the caller uses it
+QByteArray document::text() const {
+    sptr_t length = m_view->send(SCI_GETLENGTH);
+    const char* characters = reinterpret_cast<const char*>(m_view->send(SCI_GETCHARACTERPOINTER));
+    return QByteArray::fromRawData(characters, length);
+}
