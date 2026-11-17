@@ -1,0 +1,19 @@
+# 1 "/build/TaskStyle/sketch/TaskStyle.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/TaskStyle/sketch/TaskStyle.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/TaskStyle/sketch/TaskStyle.ino.cpp.merged" 2
+# 1 "/sketches/TaskStyle/TaskStyle.ino"
+
+class Task { public: Task(long, long, void (*)()); };
+Task t1(1000, -1, &t1Callback);
+Task t2(500, -1, &t2Callback);
+
+void t1Callback() {}
+void t2Callback() {}
+void setup() {}
+void loop() {}

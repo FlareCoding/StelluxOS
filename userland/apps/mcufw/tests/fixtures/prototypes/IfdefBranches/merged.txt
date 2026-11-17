@@ -1,0 +1,17 @@
+#include <Arduino.h>
+#line 1 "/sketches/IfdefBranches/IfdefBranches.ino"
+
+#define USE_FAST 1
+#if USE_FAST
+void run(int fast_value) { (void)fast_value; }
+#else
+void run(UnknownType* slow) { (void)slow; }
+#endif
+
+#ifdef NOT_DEFINED
+void only_elsewhere(OtherBoardType& t) {}
+#endif
+
+void setup() { run(1); }
+void loop() {}
+

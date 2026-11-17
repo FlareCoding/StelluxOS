@@ -154,6 +154,7 @@ static bool plan_stage(const property_table& properties, const stage_step& stage
     case build_stage::hooks:
         return plan_hooks(properties, stage.hook_point, steps, error);
     case build_stage::sketch_tree:
+    case build_stage::prototypes:
         return true;
     case build_stage::sketch_compiles:
         if (!plan_build_compiles(properties, includes, "none", compiles, error)) {

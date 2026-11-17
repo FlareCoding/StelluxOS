@@ -1,0 +1,21 @@
+# 1 "/build/MacroParameter/sketch/MacroParameter.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/MacroParameter/sketch/MacroParameter.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/MacroParameter/sketch/MacroParameter.ino.cpp.merged" 2
+# 1 "/sketches/MacroParameter/MacroParameter.ino"
+
+
+void setup() {
+  configure(1, 2);
+}
+
+void loop() {}
+
+void configure(int pin,
+               int mode) {
+}

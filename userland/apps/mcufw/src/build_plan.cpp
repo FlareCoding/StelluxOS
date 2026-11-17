@@ -28,6 +28,7 @@ constexpr const char* NO_WARNINGS = "none";
 constexpr stage_step BUILD_STAGES[] = {
     { build_stage::hooks, "prebuild" },
     { build_stage::sketch_tree, "" },
+    { build_stage::prototypes, "" },
     { build_stage::hooks, "sketch.prebuild" },
     { build_stage::sketch_compiles, "" },
     { build_stage::hooks, "sketch.postbuild" },

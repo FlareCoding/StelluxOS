@@ -1,0 +1,21 @@
+#include <Arduino.h>
+#line 1 "/sketches/StaticInline/StaticInline.ino"
+
+static int counter;
+#line 3 "/sketches/StaticInline/StaticInline.ino"
+static int square(int x);
+#line 4 "/sketches/StaticInline/StaticInline.ino"
+void hello();
+#line 5 "/sketches/StaticInline/StaticInline.ino"
+static void bump(void);
+#line 6 "/sketches/StaticInline/StaticInline.ino"
+void setup();
+#line 7 "/sketches/StaticInline/StaticInline.ino"
+void loop();
+#line 3 "/sketches/StaticInline/StaticInline.ino"
+static inline int square(int x) { return x * x; }
+inline void hello() {}
+static void bump(void) { counter++; }
+void setup() { square(2); hello(); bump(); }
+void loop() {}
+

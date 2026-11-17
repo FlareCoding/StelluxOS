@@ -1,0 +1,10 @@
+#include <Arduino.h>
+#line 1 "/sketches/MacroLinkage/MacroLinkage.ino"
+#define C_LINKAGE extern "C"
+
+void setup() {}
+
+void loop() {}
+
+C_LINKAGE void on_event(int code) {}
+

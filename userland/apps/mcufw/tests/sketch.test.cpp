@@ -109,9 +109,12 @@ static void check_merge(const std::string& root) {
                          "#line 1 \"" + folder + "/Colors.ino\"\nvoid set_color(int color) {}\n\n",
           "Arduino.h first, then each file after its mark, the byte order mark dropped");
 
+    check(merged.line_offset == 2, "the merge counts the include it added and the main file's mark");
+
     check(load_sketch(join_path(root, "Glow"), found, error) && merge_ino_files(found, merged, error),
           "a main file including Arduino.h merges");
     check(merged.text.rfind("#line 1 ", 0) == 0, "and gets no include of its own");
+    check(merged.line_offset == 1, "so the merge counts only the main file's mark");
 
     for (const char* name : { "Later", "Quoted" }) {
         check(load_sketch(join_path(root, name), found, error) && merge_ino_files(found, merged, error) &&

@@ -1,0 +1,26 @@
+# 1 "/build/MultiLine/sketch/MultiLine.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/MultiLine/sketch/MultiLine.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/MultiLine/sketch/MultiLine.ino.cpp.merged" 2
+# 1 "/sketches/MultiLine/MultiLine.ino"
+
+unsigned long
+compute(int a,
+        int b)
+{
+  return a + b;
+}
+
+void setup() { compute(1, 2); later(); }
+
+static
+void later()
+{
+}
+
+void loop() {}

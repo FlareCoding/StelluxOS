@@ -190,9 +190,11 @@ bool merge_ino_files(const sketch& sketch, merged_sketch& merged, std::string& e
     merged = {};
     if (!std::regex_search(main_text, includes_arduino)) {
         merged.text = "#include <Arduino.h>\n";
+        merged.line_offset++;
     }
 
     merged.text += line_mark(1, join_path(sketch.folder, sketch.main_file)) + "\n" + main_text + "\n";
+    merged.line_offset++;
     for (const std::string& name : sketch.other_ino_files) {
         std::string text;
         if (!read_sketch_file(sketch, name, text, error)) {

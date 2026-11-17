@@ -1,0 +1,13 @@
+#include <Arduino.h>
+#line 1 "/sketches/TemplateSpaces/TemplateSpaces.ino"
+template< typename T >  
+T twice(T value) {
+  return value * 2;
+}
+
+void setup() {
+  twice(1);
+}
+
+void loop() {}
+

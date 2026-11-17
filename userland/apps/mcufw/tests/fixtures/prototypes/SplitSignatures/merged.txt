@@ -1,0 +1,22 @@
+#include <Arduino.h>
+#line 1 "/sketches/SplitSignatures/SplitSignatures.ino"
+void setup() {
+  scale(1, 2);
+  report();
+  blend(3);
+}
+
+void loop() {}
+
+void scale(int a, /* the input */
+           int b) {}
+
+void
+// prints the state
+report() {}
+
+int
+blend(int amount /* how much */) {
+  return amount;
+}
+

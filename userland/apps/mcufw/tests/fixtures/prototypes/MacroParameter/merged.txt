@@ -1,0 +1,14 @@
+#include <Arduino.h>
+#line 1 "/sketches/MacroParameter/MacroParameter.ino"
+#define PIN_TYPE int
+
+void setup() {
+  configure(1, 2);
+}
+
+void loop() {}
+
+void configure(int pin,
+               PIN_TYPE mode) {
+}
+

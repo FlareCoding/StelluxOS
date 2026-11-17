@@ -1,0 +1,15 @@
+#include <Arduino.h>
+#line 1 "/sketches/Tabs/Tabs.ino"
+
+void setup() { from_tab(); }
+void loop() {}
+
+#line 1 "/sketches/Tabs/Second.ino"
+
+void from_tab() {}
+static void tab_static() {}
+
+#line 1 "/sketches/Tabs/third.ino"
+
+int third_tab(int a) { return a; }
+

@@ -1,0 +1,17 @@
+# 1 "/build/StaticInline/sketch/StaticInline.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/StaticInline/sketch/StaticInline.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/StaticInline/sketch/StaticInline.ino.cpp.merged" 2
+# 1 "/sketches/StaticInline/StaticInline.ino"
+
+static int counter;
+static inline int square(int x) { return x * x; }
+inline void hello() {}
+static void bump(void) { counter++; }
+void setup() { square(2); hello(); bump(); }
+void loop() {}

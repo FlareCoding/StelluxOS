@@ -7,6 +7,8 @@
 #include "files.hpp"
 #include "hooks.hpp"
 #include "jobs.hpp"
+#include "prototypes.hpp"
+#include "recipes.hpp"
 #include "sizes.hpp"
 
 #include <unistd.h>
@@ -19,6 +21,8 @@ constexpr const char* LOCK_FILE = "lock";
 constexpr const char* SKETCH_FOLDER = "sketch";
 constexpr const char* CORE_FOLDER = "core";
 constexpr const char* CORE_ARCHIVE = "core.a";
+constexpr const char* PREPROCESSED_FOLDER = "preproc";
+constexpr const char* PREPROCESSED_FILE = "sketch_merged.cpp";
 
 // What one build shares between its stages
 struct build_run {
@@ -32,6 +36,7 @@ struct build_run {
     uint64_t                 compiled = 0;      // compiles finished, for the progress count
     uint64_t                 compiles_total = 0;
     compile_plan             compiles;
+    merged_sketch            merged;
 };
 
 static bool fail(build_run& run, failure_kind kind, const std::string& reason) {
@@ -272,17 +277,15 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
     return fail(run, failure_kind::compile, errors.empty() ? first_failure : describe_errors(errors));
 }
 
-// Writes the merged .ino text as `<main>.ino.cpp` and its `.merged` copy, and copies every other sketch file after a
-// `#line 1` mark naming the original
+// Writes the merged .ino text as `<main>.ino.cpp.merged`, and copies every other sketch file after a `#line 1` mark
+// naming the original
 static bool prepare_sketch_tree(build_run& run, const sketch& sketch) {
     std::string sketch_tree = join_path(run.directory, SKETCH_FOLDER);
     std::string error;
-    merged_sketch merged;
     bool changed = false;
-    std::string main_source = join_path(sketch_tree, sketch.main_file + ".cpp");
-    if (!make_directories(sketch_tree, error) || !merge_ino_files(sketch, merged, error) ||
-        !write_file_if_changed(main_source + ".merged", merged.text, changed, error) ||
-        !write_file_if_changed(main_source, merged.text, changed, error)) {
+    std::string merged_file = join_path(sketch_tree, sketch.main_file + ".cpp.merged");
+    if (!make_directories(sketch_tree, error) || !merge_ino_files(sketch, run.merged, error) ||
+        !write_file_if_changed(merged_file, run.merged.text, changed, error)) {
         return fail(run, failure_kind::io, error);
     }
 
@@ -295,6 +298,78 @@ static bool prepare_sketch_tree(build_run& run, const sketch& sketch) {
             !write_file_if_changed(target, text, changed, error)) {
             return fail(run, failure_kind::io, error);
         }
+    }
+
+    return true;
+}
+
+// Writes `<main>.ino.cpp`, the merged sketch with arduino-cli's prototypes, only when its content changes. The
+// preprocessor runs as arduino-cli builds it, outside the long-command rule.
+static bool add_prototypes(build_run& run, const sketch& sketch) {
+    std::string sketch_tree = join_path(run.directory, SKETCH_FOLDER);
+    std::string merged_file = join_path(sketch_tree, sketch.main_file + ".cpp.merged");
+    std::string preprocessed_file = join_path(join_path(run.directory, PREPROCESSED_FOLDER), PREPROCESSED_FILE);
+    build_step step = { step_kind::compile, "recipe.preproc.macros", {}, merged_file, preprocessed_file, { 0 } };
+
+    std::vector<std::string> words;
+    std::string error;
+    if (!make_directories(parent_directory(preprocessed_file), error) ||
+        !preprocess_words(run.properties, merged_file, preprocessed_file, run.includes, "", words, error)) {
+        return fail(run, failure_kind::compile, error);
+    }
+
+    finished_job finished;
+    step.commands.push_back(words);
+    bool ran = run_command(run, step, 0, finished);
+
+    std::string preprocessed;
+    bool read = ran && read_file(preprocessed_file, preprocessed, error);
+    unlink(preprocessed_file.c_str());
+    if (!ran) {
+        return false;
+    }
+
+    std::vector<compiler_problem> errors;
+    show_compiler_output(run, finished.error_output, errors);
+    std::string problem = exit_problem(finished.exit_status);
+    if (!problem.empty()) {
+        std::string reason = words[0] + " " + problem + " preprocessing " + sketch.main_file;
+        return fail(run, failure_kind::compile, errors.empty() ? reason : describe_errors(errors));
+    }
+
+    if (!read) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    std::vector<std::string> ino_files = { join_path(sketch.folder, sketch.main_file) };
+    std::vector<ino_text> files;
+    for (const std::string& name : sketch.other_ino_files) {
+        ino_files.push_back(join_path(sketch.folder, name));
+    }
+
+    for (const std::string& path : ino_files) {
+        std::string text;
+        std::string ignored;
+        read_file(path, text, ignored);
+        files.push_back({ path, text });
+    }
+
+    bool line_too_long = false;
+    std::string lines = sketch_lines(preprocessed, ino_files, line_too_long);
+
+    // arduino-cli 1.6.0 also only reports this and goes on with the lines read before the long one
+    if (line_too_long) {
+        run.report.tool_output("compile", "An error occurred adding prototypes: line too long");
+    }
+
+    std::string source;
+    bool changed = false;
+    prototype_plan plan = find_prototypes(lines, ino_files[0], files);
+
+    // A first function past the merged text leaves `<main>.ino.cpp` unwritten, as arduino-cli 1.6.0 leaves it
+    if (insert_prototypes(run.merged, plan, source) &&
+        !write_file_if_changed(join_path(sketch_tree, sketch.main_file + ".cpp"), source, changed, error)) {
+        return fail(run, failure_kind::io, error);
     }
 
     return true;
@@ -444,6 +519,8 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
         return run_hooks(run, stage.hook_point);
     case build_stage::sketch_tree:
         return prepare_sketch_tree(run, sketch);
+    case build_stage::prototypes:
+        return add_prototypes(run, sketch);
     case build_stage::sketch_compiles:
         return plan_and_count_compiles(run, board) && run_compiles(run, run.compiles.sketch) &&
                run_compiles(run, run.compiles.sources);
@@ -507,7 +584,7 @@ bool build_sketch(
 
     job_runner runner(options.jobs);
     property_table properties = build_properties(board_properties(board, tools), sketch, directory);
-    build_run run = { options, report, failed, runner, std::move(properties), directory, {}, 0, 0, {} };
+    build_run run = { options, report, failed, runner, std::move(properties), directory, {}, 0, 0, {}, {} };
     if (!build_in_tree(run, sketch, board)) {
         return false;
     }

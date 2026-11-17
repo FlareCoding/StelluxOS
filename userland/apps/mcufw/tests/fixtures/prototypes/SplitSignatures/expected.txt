@@ -1,0 +1,31 @@
+#include <Arduino.h>
+#line 1 "/sketches/SplitSignatures/SplitSignatures.ino"
+#line 1 "/sketches/SplitSignatures/SplitSignatures.ino"
+void setup();
+#line 7 "/sketches/SplitSignatures/SplitSignatures.ino"
+void loop();
+#line 9 "/sketches/SplitSignatures/SplitSignatures.ino"
+void scale(int a, int b);
+#line 11 "/sketches/SplitSignatures/SplitSignatures.ino"
+void report();
+#line 1 "/sketches/SplitSignatures/SplitSignatures.ino"
+void setup() {
+  scale(1, 2);
+  report();
+  blend(3);
+}
+
+void loop() {}
+
+void scale(int a, /* the input */
+           int b) {}
+
+void
+// prints the state
+report() {}
+
+int
+blend(int amount /* how much */) {
+  return amount;
+}
+

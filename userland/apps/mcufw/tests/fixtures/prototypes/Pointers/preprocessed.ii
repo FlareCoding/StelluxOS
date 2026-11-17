@@ -1,0 +1,24 @@
+# 1 "/build/Pointers/sketch/Pointers.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/Pointers/sketch/Pointers.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/Pointers/sketch/Pointers.ino.cpp.merged" 2
+# 1 "/sketches/Pointers/Pointers.ino"
+
+typedef void (*handler_t)(int);
+handler_t handlers[] = { &first_handler, &second_handler };
+
+void first_handler(int x) { (void)x; }
+void second_handler(int x) { (void)x; }
+
+void (*current)(int) = first_handler;
+int (*picker(int which))(int) { return 0; }
+
+void setup() { attach(isr_routine); }
+void isr_routine() {}
+void loop() { register_cb(&loop_cb); }
+void loop_cb() {}

@@ -1,0 +1,23 @@
+#include <Arduino.h>
+#line 1 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+#if 0
+extern "C" {
+#endif
+#line 4 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+ extern "C" void helper(int a);
+#line 9 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+void setup();
+#line 13 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+void loop();
+#line 4 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+void helper(int a) {}
+#if 0
+}
+#endif
+
+void setup() {
+  helper(1);
+}
+
+void loop() {}
+

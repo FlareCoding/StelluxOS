@@ -22,10 +22,11 @@ bool load_sketch(const std::string& path, sketch& found, std::string& error);
 
 struct merged_sketch {
     std::string text;
+    uint32_t    line_offset;  // the lines the merge adds before the main file's first line
 };
 
-// The C++ the .ino files compile as, arduino-cli's merge: `#include <Arduino.h>` first unless the main file includes
-// it, then the main file and the others, each after a `#line 1` mark naming it, so GCC's messages name .ino lines
+// The .ino files merged into one C++ text, arduino-cli's merge: `#include <Arduino.h>` first unless the main file
+// includes it, then the main file and the others, each after a `#line 1` mark naming it, so GCC names .ino lines
 bool merge_ino_files(const sketch& sketch, merged_sketch& merged, std::string& error);
 
 // `#line <line> "<path>"` with the path's `\` and `"` escaped, which makes GCC name that file in its messages

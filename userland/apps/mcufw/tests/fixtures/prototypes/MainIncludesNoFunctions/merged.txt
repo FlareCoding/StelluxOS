@@ -1,0 +1,10 @@
+#line 1 "/sketches/MainIncludesNoFunctions/MainIncludesNoFunctions.ino"
+#include <Arduino.h>
+int shared = 0;
+
+#line 1 "/sketches/MainIncludesNoFunctions/Helpers.ino"
+
+void setup() { helper(); }
+void helper() {}
+void loop() {}
+

@@ -1,0 +1,16 @@
+#include <Arduino.h>
+#line 1 "/sketches/ShiftTemplates/ShiftTemplates.ino"
+template <int Bits> class Mask {};
+Mask< 1<<4 > low;
+
+template<int N> void fill(Mask< 1<<N > & mask) {
+}
+
+void show() {}
+
+void setup() {
+  show();
+}
+
+void loop() {}
+

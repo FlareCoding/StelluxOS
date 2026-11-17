@@ -1,0 +1,20 @@
+# 1 "/build/Tabs/sketch/Tabs.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/Tabs/sketch/Tabs.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/Tabs/sketch/Tabs.ino.cpp.merged" 2
+# 1 "/sketches/Tabs/Tabs.ino"
+
+void setup() { from_tab(); }
+void loop() {}
+# 1 "/sketches/Tabs/Second.ino"
+
+void from_tab() {}
+static void tab_static() {}
+# 1 "/sketches/Tabs/third.ino"
+
+int third_tab(int a) { return a; }

@@ -1,0 +1,9 @@
+#include <Arduino.h>
+#line 1 "/sketches/Defaults/Defaults.ino"
+
+void blink(int pin = 13, int times = 2) { (void)pin; (void)times; }
+void say(const char* text = "hi, there") { (void)text; }
+void plain(int a) { (void)a; }
+void setup() { blink(); say(); plain(1); }
+void loop() {}
+

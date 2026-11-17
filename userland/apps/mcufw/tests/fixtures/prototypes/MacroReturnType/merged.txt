@@ -1,0 +1,15 @@
+#include <Arduino.h>
+#line 1 "/sketches/MacroReturnType/MacroReturnType.ino"
+#define PGM_TEXT const char *
+
+void setup() {
+  name_of(1);
+}
+
+PGM_TEXT
+name_of(int index) {
+  return "x";
+}
+
+void loop() {}
+
