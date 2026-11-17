@@ -18,7 +18,7 @@ constexpr uint32_t MAX_REPORTS = 8;
 constexpr uint64_t BUILD_START_NS = 1'000'000'000;
 
 static const sketch LAMP = { "/sketches/My Lamp", "My Lamp", "My Lamp.ino", {}, {}, {} };
-static const build_result LAMP_RESULT = { "/b", "/b/My Lamp.ino.elf", "/b/My Lamp.ino.bin" };
+static const build_result LAMP_RESULT = { "/b", "/b/My Lamp.ino.elf", "/b/My Lamp.ino.bin", false };
 
 /* esp32da's partition schemes in Arduino-ESP32 3.3.12, enough to wrap a line at 120 columns */
 constexpr const char* PARTITION_SCHEMES[] = {
@@ -212,6 +212,34 @@ static void check_build_lines() {
     check(read_back(person.out) == expected,
           "a person sees labeled lines, and counts only at the end when stdout is no terminal");
     check(read_back(person.err) == "My Lamp.ino:3:1: warning: unused\n", "a tool's output goes to stderr whole");
+}
+
+static void check_rebuild_lines() {
+    capture person = open_capture();
+    reporter shown(false, person.out, person.err);
+    shown.compiles_needed(1, 75, "My Lamp.ino changed");
+    shown.progress("compile", 0, 1, BUILD_START_NS);
+    shown.progress("compile", 1, 1, BUILD_START_NS + 50'000'000);
+    shown.built(LAMP_RESULT, 4'100'000'000);
+
+    build_result untouched = LAMP_RESULT;
+    untouched.up_to_date = true;
+    shown.built(untouched, 300'000'000);
+
+    std::string expected =
+        "Compiling  1 of 75, My Lamp.ino changed\n"
+        "Built      /b/My Lamp.ino.bin in 4 s\n"
+        "Built      /b/My Lamp.ino.bin is up to date\n";
+    check(read_back(person.out) == expected,
+          "a rebuild's last count gives the compiles it needs of all planned, with the first reason");
+    fclose(person.err);
+
+    capture program = open_capture();
+    reporter events(true, program.out, program.err);
+    events.compiles_needed(1, 75, "My Lamp.ino changed");
+    events.progress("compile", 1, 1, BUILD_START_NS);
+    check(read_back(program.out) == "progress\tcompile\t1\t1\n", "a program counts only the compiles that run");
+    fclose(program.err);
 }
 
 static void check_build_events() {
@@ -425,6 +453,7 @@ int main() {
     check_warnings();
 
     check_build_lines();
+    check_rebuild_lines();
     check_build_events();
     check_commands();
     check_library_lines();

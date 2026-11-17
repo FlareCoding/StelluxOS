@@ -4,6 +4,7 @@
 #include "cancel.hpp"
 #include "compiler_output.hpp"
 #include "discovery.hpp"
+#include "discovery_replay.hpp"
 #include "file_lock.hpp"
 #include "files.hpp"
 #include "hooks.hpp"
@@ -13,7 +14,9 @@
 #include "prototypes.hpp"
 #include "recipes.hpp"
 #include "sizes.hpp"
+#include "step_records.hpp"
 
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -21,13 +24,31 @@
 #include <cstring>
 #include <map>
 
-constexpr const char* LOCK_FILE = "lock";
 constexpr const char* SKETCH_FOLDER = "sketch";
 constexpr const char* CORE_FOLDER = "core";
 constexpr const char* CORE_ARCHIVE = "core.a";
 constexpr const char* CORE_LIBRARIES_FOLDER = "libraries";
 constexpr const char* PREPROCESSED_FOLDER = "preproc";
 constexpr const char* PREPROCESSED_FILE = "sketch_merged.cpp";
+constexpr int64_t     NS_PER_SECOND = 1'000'000'000;
+
+enum compile_stage { SKETCH_STAGE, LIBRARIES_STAGE, CORE_STAGE, STAGE_COUNT };
+
+// A stage's compiles that must run, with no record or one that no longer matches. Each stage decides after the hooks
+// before it, which may rewrite a response file its compiles read, and the count before then is an estimate.
+struct needed_compiles {
+    uint64_t    count = 0;
+    std::string reason;  // the reason of the first of them that has one
+};
+
+// Discovery's probes running ahead of the turn by their words, and those that finished before their turn. Probing
+// ahead starts once a file completes alone.
+struct probing {
+    std::map<std::vector<std::string>, uint64_t> ahead;
+    std::map<uint64_t, finished_job>             finished;
+    uint64_t                                     last_id = 0;
+    bool                                         ahead_started = false;
+};
 
 // What one build shares between its stages
 struct build_run {
@@ -45,11 +66,38 @@ struct build_run {
     uint64_t                    compiles_total = 0;
     compile_plan                compiles;
     merged_sketch               merged;
+    needed_compiles             needed[STAGE_COUNT];
+    bool                        ran_step = false;  // a step that keeps a record ran, so the build is not up to date
+    std::string                 main_file;         // the sketch's main .ino file, the merged C++'s name for a person
+    bool                        merges_ino_files;  // the sketch has other .ino files merged with it
+    bool                        sketch_replayed;   // discovery's record answered every probe of the sketch's files
+    std::vector<build_step>     sketch_needed;     // the sketch tree's compiles that must run
+    std::vector<build_step>     sources_needed;    // its src/ folder's
 };
+
+// The clock that file modification times use, since a record compares a step's start with them
+static int64_t wall_clock_ns() {
+    timespec now = {};
+    clock_gettime(CLOCK_REALTIME, &now);
+    return static_cast<int64_t>(now.tv_sec) * NS_PER_SECOND + now.tv_nsec;
+}
 
 static bool fail(build_run& run, failure_kind kind, const std::string& reason) {
     run.failed = { kind, reason };
     return false;
+}
+
+// Whether `step` must run: it keeps no record, or its record no longer matches for `reason`
+static bool step_needed(build_run& run, const build_step& step, bool& needed, std::string& reason) {
+    std::string error;
+    needed = !step_is_current(step, run.directory, reason, error);
+    return error.empty() || fail(run, failure_kind::io, error);
+}
+
+static bool record_step(build_run& run, const build_step& step, int64_t started_ns) {
+    std::string error;
+    run.ran_step = run.ran_step || !step_record_path(step, run.directory).empty();
+    return record_finished_step(step, run.directory, started_ns, error) || fail(run, failure_kind::io, error);
 }
 
 static bool fail_unless_cancelled(build_run& run, failure_kind kind, const std::string& reason) {
@@ -101,7 +149,7 @@ static failure_kind failure_of(step_kind kind) {
 static bool run_step(build_run& run, const build_step& step);
 
 // A `mcufw hook` command, run inside mcufw. A copy-first finding no source runs its `--else` command as a hook step of
-// its own, whose output is the copy-first's target.
+// its own, whose output is the copy-first's target unless the `--else` command is itself `mcufw hook`.
 static bool run_hook_words(build_run& run, const build_step& step, const std::vector<std::string>& words) {
     hook_command command;
     std::string error;
@@ -111,7 +159,9 @@ static bool run_hook_words(build_run& run, const build_step& step, const std::ve
         return fail(run, failure_kind::recipe, step.recipe + ": " + error);
     }
 
-    build_step otherwise = { step_kind::hook, step.recipe, { command.otherwise }, "", command.target, {} };
+    // A `--else` that is itself `mcufw hook` keeps no record, since a file it copies may appear between builds
+    std::string target = runs_inside_mcufw(command.otherwise) ? "" : command.target;
+    build_step otherwise = { step_kind::hook, step.recipe, { command.otherwise }, "", target, {} };
 
     return !run_otherwise || run_step(run, otherwise);
 }
@@ -154,8 +204,9 @@ static void show_tool_output(build_run& run, step_kind kind, const finished_job&
     }
 }
 
-// Runs a step's commands in order
-static bool run_step(build_run& run, const build_step& step) {
+// Runs a step's commands in order and records it once they succeed
+static bool run_step_commands(build_run& run, const build_step& step) {
+    int64_t started_ns = wall_clock_ns();
     for (size_t i = 0; i < step.commands.size(); i++) {
         finished_job finished;
         if (!run_command(run, step, i, finished)) {
@@ -173,7 +224,14 @@ static bool run_step(build_run& run, const build_step& step) {
         }
     }
 
-    return true;
+    return record_step(run, step, started_ns);
+}
+
+// Runs a step unless its record still matches
+static bool run_step(build_run& run, const build_step& step) {
+    bool needed = true;
+    std::string reason;
+    return step_needed(run, step, needed, reason) && (!needed || run_step_commands(run, step));
 }
 
 static bool run_steps(build_run& run, const std::vector<build_step>& steps) {
@@ -228,10 +286,20 @@ static void show_compiler_output(build_run& run, const std::string& output, std:
     }
 }
 
-// Runs one group's compiles up to `jobs` at once, each one's output shown whole as it exits. After a failure no
-// compile starts, the running ones finish, and the build fails naming the errors.
+static uint64_t compiles_needed(const build_run& run) {
+    uint64_t needed = 0;
+    for (const needed_compiles& stage : run.needed) {
+        needed += stage.count;
+    }
+
+    return needed;
+}
+
+// Runs one group's compiles up to `jobs` at once, each shown whole and recorded once it succeeds. After a failure none
+// starts and the build fails naming the errors once the running ones finish. `compile_core` reports the last count.
 static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
     std::vector<compiler_problem> errors;
+    std::vector<int64_t> started_ns(steps.size());
     std::string first_failure;
     size_t next = 0;
     while (next < steps.size() || !run.runner.idle()) {
@@ -246,6 +314,7 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
             }
 
             std::string error;
+            started_ns[next] = wall_clock_ns();
             if (!make_directories(parent_directory(step.output), error) || !run.runner.start(started, error)) {
                 first_failure = "cannot compile " + file_name(step.source) + ": " + error;
                 break;
@@ -266,7 +335,10 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
 
         const build_step& step = steps[finished.id];
         run.compiled++;
-        run.report.progress("compile", run.compiled, run.compiles_total, monotonic_clock_ns());
+        if (run.compiled < compiles_needed(run)) {
+            run.report.progress("compile", run.compiled, compiles_needed(run), monotonic_clock_ns());
+        }
+
         if (run.options.verbose && !finished.output.empty()) {
             run.report.tool_output("compile", finished.output);
         }
@@ -276,6 +348,10 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
         if (!problem.empty() && first_failure.empty()) {
             first_failure = step.commands[0][0] + " " + problem + " compiling " + file_name(step.source);
         }
+
+        if (problem.empty() && !record_step(run, step, started_ns[finished.id])) {
+            return false;
+        }
     }
 
     if (first_failure.empty()) {
@@ -283,6 +359,65 @@ static bool run_compiles(build_run& run, const std::vector<build_step>& steps) {
     }
 
     return fail(run, failure_kind::compile, errors.empty() ? first_failure : describe_errors(errors));
+}
+
+// A compile's reason in the names a person knows: the merged sketch's C++ is named as the sketch's .ino file, or as
+// its .ino files when there are several
+static std::string reason_for_person(const build_run& run, const build_step& compile, const std::string& reason) {
+    std::string source = file_name(compile.source);
+    bool is_merged_sketch = source == run.main_file + ".cpp";
+    if (is_merged_sketch && reason == COMMAND_CHANGED_REASON) {
+        return run.main_file + "'s command changed";
+    }
+
+    if (is_merged_sketch && reason == source + " changed") {
+        return run.merges_ino_files ? "the sketch's .ino files changed" : run.main_file + " changed";
+    }
+
+    return reason.starts_with("its ") ? source + "'s " + reason.substr(4) : reason;
+}
+
+// The compiles of `steps` that must run, counted into `decided`
+static bool select_needed(build_run& run, const std::vector<build_step>& steps, needed_compiles& decided,
+                          std::vector<build_step>& needed) {
+    for (const build_step& step : steps) {
+        bool is_needed = true;
+        std::string reason;
+        if (!step_needed(run, step, is_needed, reason)) {
+            return false;
+        }
+
+        if (!is_needed) {
+            continue;
+        }
+
+        if (decided.reason.empty() && !reason.empty()) {
+            decided.reason = reason_for_person(run, step, reason);
+        }
+
+        decided.count++;
+        needed.push_back(step);
+    }
+
+    return true;
+}
+
+static void report_compiles_needed(build_run& run) {
+    std::string reason;
+    for (const needed_compiles& stage : run.needed) {
+        reason = reason.empty() ? stage.reason : reason;
+    }
+
+    run.report.compiles_needed(compiles_needed(run), run.compiles_total, reason);
+}
+
+// Replaces a stage's estimate with what it decided, reporting the count again when they differ
+static void settle_stage(build_run& run, compile_stage stage, const needed_compiles& decided) {
+    bool changed = decided.count != run.needed[stage].count || decided.reason != run.needed[stage].reason;
+    run.needed[stage] = decided;
+    if (changed) {
+        report_compiles_needed(run);
+    }
 }
 
 // Writes the merged .ino text as `<main>.ino.cpp.merged`, and copies every other sketch file after a `#line 1` mark
@@ -394,8 +529,82 @@ static void warn_about_architectures(build_run& run, const selected_board& board
     }
 }
 
-// arduino-cli's library discovery. The turn's probe takes the result of a probe ahead with its words, else every
-// probe ahead stops and it runs alone, and once a file completes after that, later files are probed ahead.
+// The turn's probe as arduino-cli's runner runs it: a probe ahead with its words counts, else every probe ahead stops
+// and it runs alone
+static bool probe_turn(build_run& run, const probe& turn, probing& state, probe_result& probed, bool& ran_alone) {
+    auto running = state.ahead.find(turn.words);
+    ran_alone = running == state.ahead.end();
+    if (ran_alone) {
+        run.runner.stop_all();
+        state.ahead.clear();
+        state.finished.clear();
+    }
+
+    finished_job result;
+    uint64_t id = ran_alone ? ++state.last_id : running->second;
+    if ((ran_alone && !start_probe(run, turn, id)) || !wait_for_job(run, id, state.finished, result)) {
+        return false;
+    }
+
+    probed = read_probe_result(result.exit_status, result.error_output);
+    return true;
+}
+
+// The turns of arduino-cli's library discovery, the record answering each until the first it cannot. Tells whether
+// it answered every probe of the sketch's own files, which come first.
+static bool take_turns(build_run& run, const selected_board& board, const std::vector<std::string>& sketch_sources,
+                       library_discovery& discovery, discovery_replay& replay, bool& sketch_replayed) {
+    probing state;
+    sketch_replayed = true;
+    while (const probe* turn = discovery.turn_probe()) {
+        run.report.progress("libraries", discovery.files_done(), discovery.files_queued(), monotonic_clock_ns());
+        probe_result probed;
+        bool replayed = replay.answer(*turn, probed);
+        bool is_sketch_file =
+            std::find(sketch_sources.begin(), sketch_sources.end(), turn->source) != sketch_sources.end();
+        sketch_replayed = sketch_replayed && (replayed || !is_sketch_file);
+
+        bool ran_alone = false;
+        if (!replayed && !probe_turn(run, *turn, state, probed, ran_alone)) {
+            return false;
+        }
+
+        discovery_failure failure;
+        probe_result again;
+        if (!discovery.take_turn_result(probed, failure)) {
+            run.runner.stop_all();
+
+            // A recorded missing header carries no messages, so a failed turn the record answered is probed again for
+            // them, as arduino-cli does for a header no library resolves
+            if (replayed && !probe_turn(run, *turn, state, again, ran_alone)) {
+                return false;
+            }
+
+            failure.output = replayed ? again.output : failure.output;
+            return fail_discovery(run, board, failure);
+        }
+
+        bool completed = probed.status == probe_status::complete;
+        state.ahead_started = state.ahead_started || (ran_alone && completed);
+        if (!state.ahead_started || !completed) {
+            continue;
+        }
+
+        for (const probe& later : discovery.probes_ahead(run.runner.free_slots())) {
+            if (!start_probe(run, later, ++state.last_id)) {
+                return false;
+            }
+
+            state.ahead[later.words] = state.last_id;
+        }
+    }
+
+    run.runner.stop_all();
+    return true;
+}
+
+// arduino-cli's library discovery, its record `<build>/libraries.record` kept only when it finishes, as arduino-cli
+// removes its includes cache on a failure
 static bool discover_libraries(build_run& run, const sketch& sketch, const selected_board& board) {
     std::vector<std::string> sources;
     std::string error;
@@ -407,51 +616,23 @@ static bool discover_libraries(build_run& run, const sketch& sketch, const selec
         return fail(run, failure_kind::library, error);
     }
 
-    library_discovery discovery(run.properties, run.libraries, board.core->architecture, run.directory, sources,
-                                run.includes);
-    std::map<std::vector<std::string>, uint64_t> ahead;
-    std::map<uint64_t, finished_job> finished;
-    uint64_t last_id = 0;
-    bool probing_ahead = false;
-    while (const probe* turn = discovery.turn_probe()) {
-        run.report.progress("libraries", discovery.files_done(), discovery.files_queued(), monotonic_clock_ns());
-        auto running = ahead.find(turn->words);
-        bool runs_alone = running == ahead.end();
-        if (runs_alone) {
-            run.runner.stop_all();
-            ahead.clear();
-            finished.clear();
-        }
-
-        finished_job result;
-        uint64_t id = runs_alone ? ++last_id : running->second;
-        if ((runs_alone && !start_probe(run, *turn, id)) || !wait_for_job(run, id, finished, result)) {
-            return false;
-        }
-
-        probe_result probed = read_probe_result(result.exit_status, result.error_output);
-        discovery_failure failure;
-        if (!discovery.take_turn_result(probed, failure)) {
-            run.runner.stop_all();
-            return fail_discovery(run, board, failure);
-        }
-
-        bool completed = probed.status == probe_status::complete;
-        probing_ahead = probing_ahead || (runs_alone && completed);
-        if (!probing_ahead || !completed) {
-            continue;
-        }
-
-        for (const probe& later : discovery.probes_ahead(run.runner.free_slots())) {
-            if (!start_probe(run, later, ++last_id)) {
-                return false;
-            }
-
-            ahead[later.words] = last_id;
-        }
+    std::string record = join_path(run.directory, DISCOVERY_RECORD_NAME);
+    discovery_replay replay;
+    if (!replay.load(record, error)) {
+        return fail(run, failure_kind::io, error);
     }
 
-    run.runner.stop_all();
+    library_discovery discovery(run.properties, run.libraries, board.core->architecture, run.directory, sources,
+                                run.includes);
+    if (!take_turns(run, board, sources, discovery, replay, run.sketch_replayed)) {
+        unlink(record.c_str());
+        return false;
+    }
+
+    if (!save_discovery_record(record, discovery.reached(), error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
     run.report.progress("libraries", discovery.files_done(), discovery.files_queued(), monotonic_clock_ns());
     run.includes = discovery.include_directories();
     run.added = discovery.libraries_added();
@@ -462,11 +643,28 @@ static bool discover_libraries(build_run& run, const sketch& sketch, const selec
     return true;
 }
 
+// Whether the file at `path` changed no earlier than the one at `than`, both existing
+static bool is_no_older(const std::string& path, const std::string& than) {
+    uint64_t size = 0;
+    int64_t path_ns = 0;
+    int64_t than_ns = 0;
+    return read_file_size_and_time(path, size, path_ns) && read_file_size_and_time(than, size, than_ns) &&
+           path_ns >= than_ns;
+}
+
 // Writes `<main>.ino.cpp`, the merged sketch with arduino-cli's prototypes, only when its content changes. The
 // preprocessor runs as arduino-cli builds it, outside the long-command rule.
 static bool add_prototypes(build_run& run, const sketch& sketch) {
     std::string sketch_tree = join_path(run.directory, SKETCH_FOLDER);
     std::string merged_file = join_path(sketch_tree, sketch.main_file + ".cpp.merged");
+    std::string source_file = join_path(sketch_tree, sketch.main_file + ".cpp");
+
+    // Skipped while the C++ is no older than the merge and the record answered each sketch file's probes, where
+    // arduino-cli checks the merged sketch's .libsdetect.d
+    if (run.sketch_replayed && is_no_older(source_file, merged_file)) {
+        return true;
+    }
+
     std::string preprocessed_file = join_path(join_path(run.directory, PREPROCESSED_FOLDER), PREPROCESSED_FILE);
     build_step step = { step_kind::compile, "recipe.preproc.macros", {}, merged_file, preprocessed_file, { 0 } };
 
@@ -526,15 +724,46 @@ static bool add_prototypes(build_run& run, const sketch& sketch) {
     prototype_plan plan = find_prototypes(lines, ino_files[0], files);
 
     // A first function past the merged text leaves `<main>.ino.cpp` unwritten, as arduino-cli 1.6.0 leaves it
-    if (insert_prototypes(run.merged, plan, source) &&
-        !write_file_if_changed(join_path(sketch_tree, sketch.main_file + ".cpp"), source, changed, error)) {
+    if (insert_prototypes(run.merged, plan, source) && !write_file_if_changed(source_file, source, changed, error)) {
         return fail(run, failure_kind::io, error);
     }
 
     return true;
 }
 
-// Plans every compile before the first runs, so the compile total and the `Core` line print before any compile
+static std::vector<build_step> library_steps(const library_compiles& compiles) {
+    std::vector<build_step> steps = compiles.sources;
+    steps.insert(steps.end(), compiles.utility.begin(), compiles.utility.end());
+    return steps;
+}
+
+// The count before any compile runs: the sketch's compiles decided, the libraries' as their records stand before their
+// hooks, and the variant's and the core's with no record, since their records match only after `core.prebuild` runs
+static bool estimate_compiles(build_run& run) {
+    const compile_plan& plan = run.compiles;
+    if (!select_needed(run, plan.sketch, run.needed[SKETCH_STAGE], run.sketch_needed) ||
+        !select_needed(run, plan.sources, run.needed[SKETCH_STAGE], run.sources_needed)) {
+        return false;
+    }
+
+    std::vector<build_step> estimated;
+    for (const library_compiles& compiles : plan.libraries) {
+        if (!select_needed(run, library_steps(compiles), run.needed[LIBRARIES_STAGE], estimated)) {
+            return false;
+        }
+    }
+
+    for (const std::vector<build_step>* group : { &plan.variant, &plan.core }) {
+        for (const build_step& step : *group) {
+            run.needed[CORE_STAGE].count += is_file(step_record_path(step, run.directory)) ? 0 : 1;
+        }
+    }
+
+    report_compiles_needed(run);
+    return true;
+}
+
+// Plans every compile before the first runs, so the compile count and the `Core` line print before any compile
 static bool plan_and_count_compiles(build_run& run, const selected_board& board) {
     std::string error;
     compile_plan& plan = run.compiles;
@@ -548,8 +777,14 @@ static bool plan_and_count_compiles(build_run& run, const selected_board& board)
         run.compiles_total += compiles.sources.size() + compiles.utility.size();
     }
 
+    if (!estimate_compiles(run)) {
+        return false;
+    }
+
     run.report.core_compiling(*board.core, core_archive, plan.variant.size() + plan.core.size());
-    run.report.progress("compile", 0, run.compiles_total, monotonic_clock_ns());
+    if (compiles_needed(run) > 0) {
+        run.report.progress("compile", 0, compiles_needed(run), monotonic_clock_ns());
+    }
 
     return true;
 }
@@ -608,11 +843,8 @@ static bool check_size(build_run& run) {
     return verdict.failure.empty() || fail(run, failure_kind::size, verdict.failure);
 }
 
+// An archive that must run is made from empty, since `ar` only adds and replaces
 static bool archive_objects(build_run& run, std::vector<std::string> objects, const std::string& archive) {
-    if (unlink(archive.c_str()) != 0 && errno != ENOENT) {
-        return fail(run, failure_kind::io, "cannot remove " + archive + ": " + strerror(errno));
-    }
-
     std::sort(objects.begin(), objects.end());
     build_step archiving;
     std::string error;
@@ -620,7 +852,21 @@ static bool archive_objects(build_run& run, std::vector<std::string> objects, co
         return fail(run, failure_kind::recipe, error);
     }
 
-    return run_step(run, archiving);
+    bool needed = true;
+    std::string reason;
+    if (!step_needed(run, archiving, needed, reason)) {
+        return false;
+    }
+
+    if (!needed) {
+        return true;
+    }
+
+    if (unlink(archive.c_str()) != 0 && errno != ENOENT) {
+        return fail(run, failure_kind::io, "cannot remove " + archive + ": " + strerror(errno));
+    }
+
+    return run_step_commands(run, archiving);
 }
 
 // arduino-cli deletes each library tree in the build that no library the sketch uses names as its folder
@@ -655,16 +901,27 @@ static std::vector<std::string> objects_of(const std::vector<build_step>& compil
 }
 
 // Each library in the order it joined: its source directory's files, then a flat library's utility/ folder's, each
-// group compiling up to `jobs` at once, then its archive for `dot_a_linkage`
+// group compiling up to `jobs` at once, then its archive for `dot_a_linkage`. The stage decides once its hooks ran.
 static bool compile_libraries(build_run& run) {
-    for (const library_compiles& compiles : run.compiles.libraries) {
-        if (!run_compiles(run, compiles.sources) || !run_compiles(run, compiles.utility)) {
+    const std::vector<library_compiles>& libraries = run.compiles.libraries;
+    needed_compiles decided;
+    std::vector<library_compiles> needed(libraries.size());
+    for (size_t i = 0; i < libraries.size(); i++) {
+        if (!select_needed(run, libraries[i].sources, decided, needed[i].sources) ||
+            !select_needed(run, libraries[i].utility, decided, needed[i].utility)) {
+            return false;
+        }
+    }
+
+    settle_stage(run, LIBRARIES_STAGE, decided);
+    for (size_t i = 0; i < libraries.size(); i++) {
+        if (!run_compiles(run, needed[i].sources) || !run_compiles(run, needed[i].utility)) {
             return false;
         }
 
-        const library& compiled = *compiles.library;
+        const library& compiled = *libraries[i].library;
         std::string archive = library_archive(run.directory, compiled);
-        if (compiled.dot_a_linkage && !archive_objects(run, objects_of(compiles.sources), archive)) {
+        if (compiled.dot_a_linkage && !archive_objects(run, objects_of(libraries[i].sources), archive)) {
             return false;
         }
     }
@@ -672,14 +929,48 @@ static bool compile_libraries(build_run& run) {
     return true;
 }
 
-// A long link's folder archives, each emptied first, since `ar` adds to an archive and would keep an older build's
-// members. A failing one only shows its output, as arduino-cli's linker goes on to the link.
+// The core's stage once `core.prebuild` ran: the variant's and the core's compiles and the final count
+static bool compile_core(build_run& run) {
+    needed_compiles decided;
+    std::vector<build_step> variant_needed;
+    std::vector<build_step> core_needed;
+    if (!select_needed(run, run.compiles.variant, decided, variant_needed) ||
+        !select_needed(run, run.compiles.core, decided, core_needed)) {
+        return false;
+    }
+
+    settle_stage(run, CORE_STAGE, decided);
+    if (!run_compiles(run, variant_needed) || !run_compiles(run, core_needed)) {
+        return false;
+    }
+
+    if (compiles_needed(run) > 0) {
+        run.report.progress("compile", run.compiled, compiles_needed(run), monotonic_clock_ns());
+    }
+
+    return true;
+}
+
+// A long link's folder archives that must run, each emptied first, since `ar` adds to an archive and would keep an
+// older build's members. A failing one only shows its output, as arduino-cli's linker goes on to the link.
 static bool run_folder_archives(build_run& run, const std::vector<build_step>& archives) {
     for (const build_step& archive : archives) {
+        bool needed = true;
+        std::string reason;
+        if (!step_needed(run, archive, needed, reason)) {
+            return false;
+        }
+
+        if (!needed) {
+            continue;
+        }
+
+        int64_t started_ns = wall_clock_ns();
         if (unlink(archive.output.c_str()) != 0 && errno != ENOENT) {
             return fail(run, failure_kind::io, "cannot remove " + archive.output + ": " + strerror(errno));
         }
 
+        bool succeeded = true;
         for (size_t i = 0; i < archive.commands.size(); i++) {
             finished_job finished;
             if (!run_command(run, archive, i, finished)) {
@@ -687,9 +978,14 @@ static bool run_folder_archives(build_run& run, const std::vector<build_step>& a
             }
 
             show_tool_output(run, archive.kind, finished);
+            succeeded = succeeded && exit_problem(finished.exit_status).empty();
             if (cancel_requested()) {
                 return fail(run, failure_kind::cancelled, "the build was cancelled");
             }
+        }
+
+        if (succeeded && !record_step(run, archive, started_ns)) {
+            return false;
         }
     }
 
@@ -731,10 +1027,10 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
     case build_stage::prototypes:
         return add_prototypes(run, sketch);
     case build_stage::sketch_compiles:
-        return plan_and_count_compiles(run, board) && run_compiles(run, run.compiles.sketch) &&
-               run_compiles(run, run.compiles.sources);
+        return plan_and_count_compiles(run, board) && run_compiles(run, run.sketch_needed) &&
+               run_compiles(run, run.sources_needed);
     case build_stage::core_compiles:
-        return run_compiles(run, run.compiles.variant) && run_compiles(run, run.compiles.core);
+        return compile_core(run);
     case build_stage::library_trees:
         return remove_unused_library_trees(run);
     case build_stage::library_compiles:
@@ -790,15 +1086,18 @@ bool build_sketch(
     }
 
     file_lock lock;
-    if (!lock.acquire(join_path(directory, LOCK_FILE), lock_mode::exclusive, error)) {
+    if (!lock.acquire(join_path(directory, BUILD_LOCK_NAME), lock_mode::exclusive, error)) {
         failed = { failure_kind::lock, error };
         return false;
     }
 
     job_runner runner(options.jobs);
     property_table properties = build_properties(board_properties(board, tools), sketch, directory);
-    build_run run = { layout, options, report, failed, runner, std::move(properties), directory, {}, {}, {}, 0, 0, {},
-                      {} };
+    build_run run = {
+        layout, options, report, failed, runner, std::move(properties), directory, {}, {}, {}, 0, 0, {}, {}, {}, false,
+        sketch.main_file, !sketch.other_ino_files.empty(), false, {}, {},
+    };
+
     if (!build_in_tree(run, sketch, board)) {
         return false;
     }
@@ -808,6 +1107,7 @@ bool build_sketch(
     result.directory = directory;
     result.elf = join_path(directory, project + ".elf");
     result.image = image.empty() ? result.elf : join_path(directory, image);
+    result.up_to_date = !run.ran_step;
 
     return true;
 }

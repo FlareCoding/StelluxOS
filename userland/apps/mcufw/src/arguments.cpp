@@ -20,6 +20,7 @@ constexpr command_rule COMMAND_RULES[] = {
     { "install", command_name::install, SIZE_MAX, "", "install needs a board, a core or a library, such as FastLED" },
     { "remove", command_name::remove, SIZE_MAX, "", "remove needs a core or a library, such as FastLED" },
     { "build", command_name::build, 1, "sketch", "" },
+    { "clean", command_name::clean, 1, "sketch", "" },
 };
 
 // arduino-cli's warning levels, each a `compiler.warning_flags.<level>` key

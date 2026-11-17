@@ -90,6 +90,16 @@ static void check_build() {
           "85 compiles at once, the most the kernel's poll lets a build wait on");
 }
 
+static void check_clean() {
+    arguments parsed;
+    std::string error;
+    check(parse({ "clean" }, parsed, error) && parsed.command == command_name::clean && parsed.operands.empty(),
+          "a bare clean takes no sketch");
+    check(parse({ "clean", "/sketches/Gone/Gone.ino" }, parsed, error) &&
+              parsed.operands == std::vector<std::string>{ "/sketches/Gone/Gone.ino" },
+          "clean takes a sketch that may be gone");
+}
+
 static void check_usage_errors() {
     const usage_error usage_errors[] = {
         { {}, "no command given" },
@@ -106,6 +116,8 @@ static void check_usage_errors() {
         { { "build", "--jobs", "86" }, JOBS_MISTAKE },
         { { "build", "--jobs", "-1" }, JOBS_MISTAKE },
         { { "build", "--warnings", "loud" }, "--warnings takes none, default, more or all" },
+        { { "clean", "a", "b" }, "clean takes 1 sketch at most" },
+        { { "clean", "--jobs", "4" }, "clean takes no option --jobs" },
     };
 
     for (const usage_error& expected : usage_errors) {
@@ -119,6 +131,7 @@ int main() {
     check_boards();
     check_build();
     check_hook();
+    check_clean();
     check_usage_errors();
 
     if (g_failures != 0) {

@@ -20,6 +20,9 @@ struct sketch {
 // `path` is the sketch's folder or its main file
 bool load_sketch(const std::string& path, sketch& found, std::string& error);
 
+// The folder an absolute sketch path names, itself or the folder of a main file, which need not exist any more
+std::string sketch_folder_of(const std::string& path);
+
 struct merged_sketch {
     std::string text;
     uint32_t    line_offset;  // the lines the merge adds before the main file's first line

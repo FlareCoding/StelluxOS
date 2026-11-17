@@ -16,6 +16,8 @@ constexpr size_t READ_CHUNK_BYTES = 16 * 1024;
 // The directories musl's `execvp` and `posix_spawnp` search when `PATH` is unset
 constexpr const char* DEFAULT_PROGRAM_PATH = "/usr/local/bin:/bin:/usr/bin";
 
+constexpr int64_t NS_PER_SECOND = 1000000000;
+
 constexpr mode_t DIRECTORY_MODE = 0755;
 constexpr mode_t FILE_MODE = 0644;
 
@@ -96,6 +98,24 @@ bool is_directory(const std::string& path) {
 bool is_file(const std::string& path) {
     struct stat status;
     return stat(path.c_str(), &status) == 0 && S_ISREG(status.st_mode);
+}
+
+bool read_file_size_and_time(const std::string& path, uint64_t& size, int64_t& modified_ns) {
+    struct stat status;
+    if (stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode)) {
+        return false;
+    }
+
+    // The host tests also build on macOS, which names the field st_mtimespec
+#ifdef __APPLE__
+    const timespec& modified = status.st_mtimespec;
+#else
+    const timespec& modified = status.st_mtim;
+#endif
+
+    size = static_cast<uint64_t>(status.st_size);
+    modified_ns = static_cast<int64_t>(modified.tv_sec) * NS_PER_SECOND + modified.tv_nsec;
+    return true;
 }
 
 bool list_directory(const std::string& path, std::vector<std::string>& names, std::string& error) {
@@ -408,4 +428,13 @@ bool find_source_files(const std::string& folder, bool recursive, std::vector<st
     sources.clear();
 
     return add_source_files(folder, recursive, walked, sources, error);
+}
+
+bool rename_path(const std::string& from, const std::string& to, std::string& error) {
+    if (rename(from.c_str(), to.c_str()) != 0) {
+        error = "cannot rename " + from + " to " + to + ": " + strerror(errno);
+        return false;
+    }
+
+    return true;
 }
