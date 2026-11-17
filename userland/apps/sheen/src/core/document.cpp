@@ -226,6 +226,11 @@ bool document::open_held(const QByteArray& encoding) {
     return true;
 }
 
+void document::clear_held_binary() {
+    m_held_bytes.clear();
+    end_load();
+}
+
 // No encoding yet, so the tab reopened after a close detects it again
 file_loader* document::begin_load(const QString& path, qint64 size, const QByteArray& encoding, QWidget* placeholder) {
     m_file.path = path;

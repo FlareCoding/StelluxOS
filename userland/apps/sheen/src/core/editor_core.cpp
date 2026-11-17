@@ -7,6 +7,7 @@
 #include "core/palette.h"
 #include "core/placeholder.h"
 #include "core/settings_page.h"
+#include "extensions/registry.h"
 #include "ui/banner.h"
 #include "ui/chrome.h"
 #include "ui/file_sheet.h"
@@ -1936,7 +1937,37 @@ void editor_core::finish_loading(document* doc, const load_result& result) {
 
 // The file's bytes wait behind a placeholder in its tab until the user picks how to read them
 void editor_core::hold_binary(document* doc, const QString& path, const QByteArray& bytes) {
-    auto* placeholder = new binary_placeholder(m_stack, QFileInfo(path).fileName(), guess_utf16(bytes));
+    QList<binary_opener_action> custom_openers;
+    for (const extension_descriptor& desc : registered_extensions()) {
+        QString owner_id = QString::fromLatin1(desc.id);
+        for (const file_opener_spec& opener : desc.file_openers) {
+            if (!opener.can_open_file || !opener.create_file_view || !opener.can_open_file(path, bytes)) {
+                continue;
+            }
+
+            QString opener_id = QString::fromLatin1(opener.id);
+            QString action_label = QString::fromLatin1(opener.action_label);
+            auto create_fn = opener.create_file_view;
+            custom_openers.append({ action_label, [this, doc, path, owner_id, opener_id, create_fn] {
+                QWidget* view = create_fn(*this, path);
+                if (!view) {
+                    return;
+                }
+
+                if (QWidget* previous = doc->placeholder()) {
+                    m_stack->removeWidget(previous);
+                }
+
+                doc->clear_held_binary();
+                m_stack->addWidget(view);
+                doc->show_custom_page(view, QFileInfo(path).fileName(), owner_id, opener_id);
+                refresh_tab(doc);
+                show_current_document();
+            } });
+        }
+    }
+
+    auto* placeholder = new binary_placeholder(m_stack, QFileInfo(path).fileName(), guess_utf16(bytes), custom_openers);
     m_stack->addWidget(placeholder);
     doc->hold(path, bytes, placeholder);
     placeholder->on_close = [this, doc] { close_document(index_of(doc)); };
@@ -3584,6 +3615,16 @@ QWidget* editor_core::focus_custom_tab(const QString& owner_id, const QString& t
     }
 
     return nullptr;
+}
+
+bool editor_core::has_custom_tab(const QString& owner_id, const QString& tab_id) const {
+    for (const std::unique_ptr<document>& open : m_documents) {
+        if (open->custom_owner() == owner_id && open->custom_tab_id() == tab_id) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void editor_core::close_custom_tabs(const QString& owner_id) {

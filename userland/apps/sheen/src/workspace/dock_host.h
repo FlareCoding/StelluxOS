@@ -49,6 +49,12 @@ public:
     void set_problems(const QList<diagnostic_item>& problems,
                       const std::function<void(const QString& path, int line)>& on_open_location);
 
+    void set_extension_panels(const QString& extension_id, const QList<dock_panel_spec>& panels);
+    void remove_extension_panels(const QString& extension_id);
+    void update_panel_state(const QString& extension_id, const QString& panel_id, bool has_activity_dot,
+                            int error_count);
+    void reveal_panel(const QString& extension_id, const QString& panel_id);
+
     void pop_out_active_panel();
     void dock_back(const QString& panel_key, bool from_window_close = false);
     void shutdown_for_close();
@@ -64,6 +70,7 @@ private:
     bool is_popped_out(const QString& key) const;
     bool has_any_docked_panel() const;
     void pop_out(const QString& key);
+    void tear_down_popped_window(const QString& key);
     void sync_geometry_and_controls();
     void rebuild_tab_buttons();
 

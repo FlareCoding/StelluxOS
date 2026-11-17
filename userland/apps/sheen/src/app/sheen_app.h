@@ -20,6 +20,7 @@
 
 namespace sheen {
 
+class dependency_installer;
 class sheen_window;
 
 struct orphan_process {
@@ -65,6 +66,7 @@ public:
 
     void reload_settings();
     void notify_dependencies_changed();
+    dependency_installer& installer() { return *m_installer; }
 
     std::shared_ptr<shared_service> acquire_service(
         const QString& key,
@@ -86,6 +88,7 @@ private:
     QStringList m_recent_files;
     QHash<QString, QDateTime> m_recent_opened;
     QHash<QString, std::weak_ptr<shared_service>> m_services;
+    std::unique_ptr<dependency_installer> m_installer;
     QList<orphan_process> m_orphan_processes;
     QTimer m_orphan_timer;
 };

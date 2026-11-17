@@ -1,6 +1,7 @@
 #include "app/sheen_app.h"
 #include "core/editor_core.h"
 #include "core/kiln.h"
+#include "workspace/dependency_installer.h"
 #include "workspace/sheen_window.h"
 
 #include <QApplication>
@@ -32,6 +33,9 @@ sheen_app::sheen_app() {
     m_orphan_timer.setInterval(ORPHAN_POLL_MS);
     QObject::connect(&m_orphan_timer, &QTimer::timeout, [this] { poll_orphan_processes(); });
 
+    m_installer = std::make_unique<dependency_installer>();
+    m_installer->on_dependencies_installed = [this] { notify_dependencies_changed(); };
+
     for (const std::string& path : m_store.load_recent_paths()) {
         QString decoded = QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size()));
         m_recent_files.append(decoded);
@@ -43,6 +47,7 @@ sheen_app::sheen_app() {
 }
 
 sheen_app::~sheen_app() {
+    m_installer.reset();
     if (s_active_app == this) {
         s_active_app = nullptr;
     }
