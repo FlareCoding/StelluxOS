@@ -111,6 +111,16 @@ public:
     // `flashed <port>`, naming the port the board answers on after the upload.
     void flashed(const std::string& port, uint64_t elapsed_ns);
 
+    // The ELF a monitor decodes crash addresses with, or why it decodes none, either of which may come while `serial`
+    // keeps the terminal raw, so each ends in CR LF. The monitor prints no events.
+    void decoding(const std::string& elf);
+    void decoding_off(const std::string& why);
+
+    // The board's bytes as `serial monitor` relayed them, and the decoded lines after them, each ending in CR LF since
+    // `serial` keeps the terminal raw
+    void board_output(std::string_view bytes);
+    void decoded_lines(const std::vector<std::string>& lines);
+
     // `mcufw: <reason>` on stderr, or `failed <kind> <reason>`
     void failed(const failure& failure);
 
