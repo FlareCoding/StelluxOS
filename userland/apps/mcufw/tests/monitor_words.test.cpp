@@ -51,17 +51,18 @@ static void check_levels() {
 
 static void check_words() {
     std::vector<std::string> plain = { "/bin/serial", "monitor", PORT, "--baud", "115200" };
-    check(serial_monitor_words({ PORT, 115200, false, false, {} }) == plain,
+    check(serial_monitor_words({ PORT, 115200, false, false, {}, nullptr, {}, "" }) == plain,
           "starts serial monitor on the port at mcufw's rate");
 
     std::vector<std::string> options = { "--", "--events", "--baud", "9600" };
     std::vector<std::string> lowered = { "/bin/serial", "monitor", PORT, "--baud", "115200", "--dtr", "off",
                                          "--rts",       "off",     "--", "--events", "--baud", "9600" };
-    check(serial_monitor_words({ PORT, 115200, true, true, options }) == lowered,
+    check(serial_monitor_words({ PORT, 115200, true, true, options, nullptr, {}, "" }) == lowered,
           "puts the board's levels after the rate and the words after -- last, unchanged");
 
     std::vector<std::string> dtr_only = { "/bin/serial", "monitor", PORT, "--baud", "115200", "--dtr", "off" };
-    check(serial_monitor_words({ PORT, 115200, true, false, {} }) == dtr_only, "passes only the level asked for");
+    check(serial_monitor_words({ PORT, 115200, true, false, {}, nullptr, {}, "" }) == dtr_only,
+          "passes only the level asked for");
 }
 
 int main() {

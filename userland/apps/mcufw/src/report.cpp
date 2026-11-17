@@ -626,6 +626,29 @@ void reporter::flashed(const std::string& port, uint64_t elapsed_ns) {
     labeled("Flashed", "in " + duration(elapsed_ns));
 }
 
+void reporter::decoding(const std::string& elf) {
+    fprintf(m_out, "%s%s\r\n", padded("Decoding", LABEL_WIDTH).c_str(), elf.c_str());
+    fflush(m_out);
+}
+
+void reporter::decoding_off(const std::string& why) {
+    fprintf(m_out, "%soff, %s\r\n", padded("Decoding", LABEL_WIDTH).c_str(), why.c_str());
+    fflush(m_out);
+}
+
+void reporter::board_output(std::string_view bytes) {
+    fwrite(bytes.data(), 1, bytes.size(), m_out);
+    fflush(m_out);
+}
+
+void reporter::decoded_lines(const std::vector<std::string>& lines) {
+    for (const std::string& line : lines) {
+        fprintf(m_out, "%s\r\n", line.c_str());
+    }
+
+    fflush(m_out);
+}
+
 void reporter::failed(const failure& failure) {
     hide_progress();
     if (!m_events && m_terminal && !m_progress_line.empty()) {

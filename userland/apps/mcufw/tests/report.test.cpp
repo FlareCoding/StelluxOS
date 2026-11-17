@@ -286,6 +286,28 @@ static void check_flash_lines() {
     fclose(program.err);
 }
 
+static void check_decoding_lines() {
+    capture before = open_capture();
+    reporter(false, before.out, before.err).decoding("/b/My Lamp.ino.elf");
+    check(read_back(before.out) == "Decoding   /b/My Lamp.ino.elf\r\n", "a person reads the ELF that decodes");
+    fclose(before.err);
+
+    capture session = open_capture();
+    reporter shown(false, session.out, session.err);
+    shown.board_output("Backtrace: 0x400d1683:0x3ffb2160");
+    shown.board_output(" 0x400d3d98:0x3ffb2180\r\n");
+    shown.decoded_lines({ "0x400d1683: loop() at /sketches/My Lamp/My Lamp.ino:12", "0x400d3d98: loopTask(void*)" });
+    shown.decoding_off("the board runs another build than /b/My Lamp.ino.elf");
+
+    std::string expected =
+        "Backtrace: 0x400d1683:0x3ffb2160 0x400d3d98:0x3ffb2180\r\n"
+        "0x400d1683: loop() at /sketches/My Lamp/My Lamp.ino:12\r\n"
+        "0x400d3d98: loopTask(void*)\r\n"
+        "Decoding   off, the board runs another build than /b/My Lamp.ino.elf\r\n";
+    check(read_back(session.out) == expected, "the board's bytes pass as they came, and mcufw's lines end in CR LF");
+    fclose(session.err);
+}
+
 static void check_build_events() {
     installed_core core = esp32_core();
     selected_board board = default_board(core);
@@ -504,6 +526,8 @@ int main() {
     check_build_events();
     check_commands();
     check_library_lines();
+
+    check_decoding_lines();
 
     if (g_failures != 0) {
         printf("report: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

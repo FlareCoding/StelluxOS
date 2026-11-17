@@ -70,9 +70,9 @@ private:
 // waiting, so a child that owns the terminal can restore it.
 bool run_attached(const std::vector<std::string>& words, int& exit_status, std::string& error);
 
-// Runs `words` as `run_attached` does, but hands its stdout, and its stderr with `stderr_to_output`, to `on_output`
-// as the bytes arrive
-bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
+// Runs `words` as `run_attached` does, but hands its stdout, and its stderr with `stderr_to_output`, to `on_output` as
+// the bytes arrive, and calls it with no bytes once per silence of a nonzero `quiet_ns` after output
+bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output, uint64_t quiet_ns,
                   const std::function<void(std::string_view bytes)>& on_output, int& exit_status, std::string& error);
 
 // How a child ended, from `exit_status` as proc_wait gives it: empty for status 0, else what went wrong

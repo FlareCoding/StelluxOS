@@ -3,7 +3,7 @@
 monitor_request board_monitor_request(const std::string& port, uint32_t baud, const property_table& board_properties,
                                       const std::vector<std::string>& serial_options) {
     return { port, baud, property_is_true(board_properties, "serial.disableDTR"),
-             property_is_true(board_properties, "serial.disableRTS"), serial_options };
+             property_is_true(board_properties, "serial.disableRTS"), serial_options, nullptr, {}, "" };
 }
 
 std::vector<std::string> serial_monitor_words(const monitor_request& request) {

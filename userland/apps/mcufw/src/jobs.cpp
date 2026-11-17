@@ -16,6 +16,7 @@
 #include <cstring>
 
 constexpr size_t READ_CHUNK = 4096;
+constexpr uint64_t NANOSECONDS_PER_SECOND = 1'000'000'000;
 
 static sigset_t cancel_signals() {
     sigset_t signals;
@@ -26,8 +27,9 @@ static sigset_t cancel_signals() {
     return signals;
 }
 
-// poll's result, or -1 with errno EINTR at once when `until_cancel` is set and a cancel arrived
-static int wait_for(std::vector<pollfd>& fds, bool until_cancel) {
+// poll's result, 0 once `timeout` passed when one is given, or -1 with errno EINTR at once when `until_cancel` is
+// set and a cancel arrived
+static int wait_for(std::vector<pollfd>& fds, bool until_cancel, const timespec* timeout = nullptr) {
     sigset_t blocked = cancel_signals();
     sigset_t previous;
 
@@ -37,7 +39,7 @@ static int wait_for(std::vector<pollfd>& fds, bool until_cancel) {
     int ready = -1;
     errno = EINTR;
     if (!until_cancel || !cancel_requested()) {
-        ready = ppoll(fds.data(), fds.size(), nullptr, &previous);
+        ready = ppoll(fds.data(), fds.size(), timeout, &previous);
     }
 
     int saved = errno;
@@ -300,7 +302,7 @@ bool run_attached(const std::vector<std::string>& words, int& exit_status, std::
     return true;
 }
 
-bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
+bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output, uint64_t quiet_ns,
                   const std::function<void(std::string_view bytes)>& on_output, int& exit_status, std::string& error) {
     int handle = -1;
     if (!create_child(words, "", handle, error)) {
@@ -329,11 +331,22 @@ bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
 
     // The child's exit ends the reading, so a grandchild that keeps the pipe open cannot hold the run
     std::vector<pollfd> watched = { { output[0], POLLIN, 0 }, { handle, POLLIN, 0 } };
+    timespec quiet = { static_cast<time_t>(quiet_ns / NANOSECONDS_PER_SECOND),
+                       static_cast<long>(quiet_ns % NANOSECONDS_PER_SECOND) };
+    bool is_silent = true;
+
     bool terminated = false;
     bool is_waited = true;
     char buffer[READ_CHUNK];
     while (true) {
-        if (wait_for(watched, !terminated) < 0) {
+        int ready = wait_for(watched, !terminated, quiet_ns > 0 && !is_silent ? &quiet : nullptr);
+        if (ready == 0) {
+            on_output({});
+            is_silent = true;
+            continue;
+        }
+
+        if (ready < 0) {
             if (errno != EINTR) {
                 error = std::string("cannot wait for ") + words[0] + ": " + strerror(errno);
                 proc_kill(handle);
@@ -362,6 +375,7 @@ bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
         ssize_t length = read(output[0], buffer, sizeof(buffer));
         if (length > 0) {
             on_output(std::string_view(buffer, static_cast<size_t>(length)));
+            is_silent = false;
         } else if (length == 0 || errno != EINTR) {
             watched[0].fd = -1;
         }

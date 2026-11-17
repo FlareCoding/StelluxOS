@@ -16,6 +16,8 @@
 #include "tools.hpp"
 #include "upload.hpp"
 
+#include <optional>
+
 // What a build of the sketch the command line names needs, gathered and checked before it starts
 struct prepared_build {
     sketch                      found;
@@ -169,7 +171,7 @@ static bool upload_sketch(const arguments& parsed, reporter& report, const prope
         };
 
         int exit_status = 0;
-        if (!run_streamed(words, true, take, exit_status, error)) {
+        if (!run_streamed(words, true, 0, take, exit_status, error)) {
             return fail(report, failure_kind::flash, error);
         }
 
@@ -263,8 +265,11 @@ int run_flash(const arguments& parsed, const directory_layout& layout, reporter&
     tree_lock.release();
     build.state_lock.release();
     monitor_request request = board_monitor_request(answering_port, parsed.baud, properties, parsed.serial_options);
+    std::optional<crash_decoder> decoder;
+    prepare_crash_decoding(properties, report, decoder, request);
+
     int exit_status = 0;
-    if (!run_monitor(request, exit_status, failed)) {
+    if (!run_monitor(request, report, exit_status, failed)) {
         report.failed(failed);
         return 1;
     }

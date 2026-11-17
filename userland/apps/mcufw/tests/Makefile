@@ -22,7 +22,7 @@ SOURCES     := $(SRC_DIR)/properties.cpp $(SRC_DIR)/files.cpp $(SRC_DIR)/fqbn.cp
                $(SRC_DIR)/prototypes.cpp $(SRC_DIR)/discovery.cpp $(SRC_DIR)/library_hint.cpp \
                $(SRC_DIR)/step_records.cpp $(SRC_DIR)/discovery_replay.cpp $(SRC_DIR)/clean.cpp \
                $(SRC_DIR)/core_cache.cpp $(SRC_DIR)/upload.cpp $(SRC_DIR)/serial_ports.cpp $(SRC_DIR)/cancel.cpp \
-               $(SRC_DIR)/monitor_words.cpp
+               $(SRC_DIR)/monitor_words.cpp $(SRC_DIR)/elf.cpp $(SRC_DIR)/crash_decoder.cpp $(SRC_DIR)/board_relay.cpp
 HEADERS     := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hpp $(SRC_DIR)/recipes.hpp \
                $(SRC_DIR)/versions.hpp $(SRC_DIR)/layout.hpp $(SRC_DIR)/cores.hpp $(SRC_DIR)/tools.hpp \
                $(SRC_DIR)/boards.hpp $(SRC_DIR)/requirements.hpp $(SRC_DIR)/failure.hpp $(SRC_DIR)/report.hpp \
@@ -33,7 +33,7 @@ HEADERS     := $(SRC_DIR)/properties.hpp $(SRC_DIR)/files.hpp $(SRC_DIR)/fqbn.hp
                $(SRC_DIR)/sizes.hpp $(SRC_DIR)/prototypes.hpp $(SRC_DIR)/discovery.hpp $(SRC_DIR)/library_hint.hpp \
                $(SRC_DIR)/step_records.hpp $(SRC_DIR)/discovery_replay.hpp $(SRC_DIR)/clean.hpp \
                $(SRC_DIR)/core_cache.hpp $(SRC_DIR)/upload.hpp $(SRC_DIR)/serial_ports.hpp $(SRC_DIR)/cancel.hpp \
-               $(SRC_DIR)/monitor.hpp
+               $(SRC_DIR)/monitor.hpp $(SRC_DIR)/elf.hpp $(SRC_DIR)/crash_decoder.hpp $(SRC_DIR)/board_relay.hpp
 # The vendored C the modules call: all of zlib, and libbearssl's SHA-256
 C_SOURCES   := $(wildcard $(ZLIB_DIR)/*.c) $(BEARSSL_DIR)/src/hash/sha2small.c \
                $(BEARSSL_DIR)/src/codec/dec32be.c $(BEARSSL_DIR)/src/codec/enc32be.c
