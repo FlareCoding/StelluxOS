@@ -1,0 +1,6 @@
+lamp.name=Lamp Board
+lamp.build.core=gcc
+lamp.build.variant=lamp
+lamp.build.board=LAMP
+lamp.upload.maximum_size=16000000
+lamp.upload.maximum_data_size=4000000

@@ -1,0 +1,24 @@
+mcufw	hook	write	{build}/file_opts
+mcufw	hook	copy-first	{build}/settings.txt	{sketch}/settings.txt	{core}/settings.txt
+mcufw	hook	copy-first	{build}/build_opt.h	{sketch}/build_opt.h	--else	mcufw	hook	write	{build}/build_opt.h
+mcufw	hook	write	{build}/sketch.prebuild.txt
+g++	-MMD	-c	-w	-Os	-std=gnu++17	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{build}/sketch/Lamp.ino.cpp	-o	{build}/sketch/Lamp.ino.cpp.o
+g++	-MMD	-c	-w	-Os	-std=gnu++17	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{build}/sketch/helpers.cpp	-o	{build}/sketch/helpers.cpp.o
+g++	-MMD	-c	-w	-Os	-std=gnu++17	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{build}/sketch/src/effects/fade.cpp	-o	{build}/sketch/src/effects/fade.cpp.o
+mcufw	hook	write	{build}/sketch.postbuild.txt
+mcufw	hook	write	{build}/libraries.prebuild.txt
+mcufw	hook	write	{build}/libraries.postbuild.txt
+mcufw	hook	write	{build}/file_opts	-DFIXTURE_CORE_BUILD
+g++	-MMD	-c	-w	-Os	-std=gnu++17	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{core}/variants/lamp/variant.cpp	-o	{build}/core/variant.cpp.o
+g++	-MMD	-c	-w	-Os	-std=gnu++17	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{core}/cores/gcc/main.cpp	-o	{build}/core/main.cpp.o
+gcc	-MMD	-c	-w	-Os	-DARDUINO=10607	-DARDUINO_LAMP	-DFIXTURE_BOARD="LAMP"	-I{core}/cores/gcc	-I{core}/variants/lamp	@{build}/file_opts	{core}/cores/gcc/print.c	-o	{build}/core/print.c.o
+ar	rcs	{build}/core/core.a	{build}/core/main.cpp.o
+ar	rcs	{build}/core/core.a	{build}/core/print.c.o
+mcufw	hook	write	{build}/file_opts
+mcufw	hook	write	{build}/linking.prelink.txt
+g++	-w	-o	{build}/Lamp.ino.elf	{build}/sketch/Lamp.ino.cpp.o	{build}/sketch/helpers.cpp.o	{build}/sketch/src/effects/fade.cpp.o	{build}/core/variant.cpp.o	{build}/core/core.a
+mcufw	hook	write	{build}/linking.postlink.txt
+mcufw	hook	write	{build}/objcopy.preobjcopy.txt
+cp	{build}/Lamp.ino.elf	{build}/Lamp.ino.bin
+mcufw	hook	write	{build}/objcopy.postobjcopy.txt
+mcufw	hook	write	{build}/postbuild.txt

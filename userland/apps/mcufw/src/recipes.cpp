@@ -64,7 +64,15 @@ bool split_recipe_line(std::string_view line, std::vector<std::string>& words, s
 
 bool recipe_words(const property_table& properties, const std::string& key, std::vector<std::string>& words,
                   std::string& error) {
-    if (!split_recipe_line(properties.expand(properties.get(key)), words, error)) {
+    size_t ignored = 0;
+    return recipe_words(properties, key, words, ignored, error);
+}
+
+bool recipe_words(const property_table& properties, const std::string& key, std::vector<std::string>& words,
+                  size_t& text_length, std::string& error) {
+    std::string text = properties.expand(properties.get(key));
+    text_length = text.size();
+    if (!split_recipe_line(text, words, error)) {
         error = key + " does not split into words, since " + error;
         return false;
     }

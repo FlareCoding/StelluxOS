@@ -13,7 +13,10 @@
 // both dropped, so the quotes inside `-DBOARD="DA"` stay. Blank words are dropped, and an unclosed quote fails.
 bool split_recipe_line(std::string_view line, std::vector<std::string>& words, std::string& error);
 
-// The recipe `key` expanded and split. Fails when the recipe is unset or holds no words, or a quote does not close.
+// The recipe `key` expanded and split, with `text_length` the expanded text's length, which arduino-cli's 30,000
+// character rule measures. Fails when the recipe is unset or holds no words, or a quote does not close.
+bool recipe_words(const property_table& properties, const std::string& key, std::vector<std::string>& words,
+                  size_t& text_length, std::string& error);
 bool recipe_words(const property_table& properties, const std::string& key, std::vector<std::string>& words,
                   std::string& error);
 

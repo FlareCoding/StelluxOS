@@ -16,6 +16,7 @@ struct directory_layout {
     std::string state;          // Arduino's indexes, the staging folder and the lock
     std::string overrides;      // the image's Stellux overrides, as <packager>/<architecture>/<version>.txt
     std::string libraries;      // libraries mcufw installs or a person places, one folder each
+    std::string builds;         // one build tree per sketch folder
 };
 
 // The folders of a running system

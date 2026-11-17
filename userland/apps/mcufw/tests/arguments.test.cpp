@@ -1,5 +1,5 @@
-/* arguments, run on the build machine: each command with its words and `--events`, `hook` taking every word after it,
- * and the command lines that fail as usage errors */
+/* arguments, run on the build machine: each command's operands and options, both forms of an option's value, `hook`
+ * taking every word after it, and the command lines that fail as usage errors */
 
 #include "arguments.hpp"
 
@@ -9,6 +9,7 @@
 #include <vector>
 
 constexpr uint32_t MAX_REPORTS = 8;
+constexpr const char* JOBS_MISTAKE = "--jobs takes how many compiles run at once, 1 to 85, or 0 for one per CPU";
 
 /* A command line the parser refuses, with the reason it gives */
 struct usage_error {
@@ -67,6 +68,28 @@ static void check_hook() {
           "hook takes every word after it as an operand");
 }
 
+static void check_build() {
+    arguments parsed;
+    std::string error;
+    check(parse({ "build" }, parsed, error) && parsed.command == command_name::build && parsed.operands.empty() &&
+              parsed.jobs == 0 && parsed.warnings == "default" && !parsed.verbose && !parsed.events,
+          "a bare build takes the defaults");
+
+    bool parsed_all = parse({ "build", "Lamp", "--board", "esp32da", "--jobs", "4", "--warnings", "all", "--verbose",
+                              "--events" },
+                            parsed, error);
+    check(parsed_all && parsed.operands == std::vector<std::string>{ "Lamp" } && parsed.board == "esp32da" &&
+              parsed.jobs == 4 && parsed.warnings == "all" && parsed.verbose && parsed.events,
+          "every build option is read");
+
+    check(parse({ "build", "--board=esp32da:FlashSize=8M", "--jobs=0", "--warnings=more" }, parsed, error) &&
+              parsed.board == "esp32da:FlashSize=8M" && parsed.jobs == 0 && parsed.warnings == "more",
+          "an option's value may follow an equals sign");
+
+    check(parse({ "build", "--jobs", "85" }, parsed, error) && parsed.jobs == 85,
+          "85 compiles at once, the most the kernel's poll lets a build wait on");
+}
+
 static void check_usage_errors() {
     const usage_error usage_errors[] = {
         { {}, "no command given" },
@@ -76,6 +99,13 @@ static void check_usage_errors() {
         { { "install" }, "install needs a board, a core or a library, such as FastLED" },
         { { "remove", "--force" }, "remove takes no option --force" },
         { { "remove" }, "remove needs a core or a library, such as FastLED" },
+        { { "build", "a", "b" }, "build takes 1 sketch at most" },
+        { { "build", "--port", "x" }, "build takes no option --port" },
+        { { "build", "--board" }, "--board needs a value" },
+        { { "build", "--jobs", "x" }, JOBS_MISTAKE },
+        { { "build", "--jobs", "86" }, JOBS_MISTAKE },
+        { { "build", "--jobs", "-1" }, JOBS_MISTAKE },
+        { { "build", "--warnings", "loud" }, "--warnings takes none, default, more or all" },
     };
 
     for (const usage_error& expected : usage_errors) {
@@ -87,6 +117,7 @@ static void check_usage_errors() {
 
 int main() {
     check_boards();
+    check_build();
     check_hook();
     check_usage_errors();
 
