@@ -7,19 +7,51 @@
 #include <QFileInfo>
 #include <QPointer>
 
+#include <stlx/proc.h>
+
+#include <cerrno>
+#include <poll.h>
+
 namespace sheen {
 
 static constexpr int RECENT_FILE_LIMIT = 20;
+static constexpr int ORPHAN_POLL_MS = 25;
+static sheen_app* s_active_app = nullptr;
+
+static void reap_handle_blocking(int proc_handle) {
+    int wait_status = 0;
+    while (proc_wait(proc_handle, &wait_status) < 0 && errno == EINTR) {
+    }
+}
 
 sheen_app::sheen_app() {
+    s_active_app = this;
     m_settings_problems = read_settings(QString::fromLatin1(SETTINGS_PATH), &m_settings);
     set_text_size(m_settings.font_size);
+
+    m_orphan_timer.setInterval(ORPHAN_POLL_MS);
+    QObject::connect(&m_orphan_timer, &QTimer::timeout, [this] { poll_orphan_processes(); });
 
     m_instance.on_paths = [this](const QStringList& handed) { receive_paths(handed); };
     m_instance.listen();
 }
 
-sheen_app::~sheen_app() = default;
+sheen_app::~sheen_app() {
+    if (s_active_app == this) {
+        s_active_app = nullptr;
+    }
+
+    m_orphan_timer.stop();
+    for (const orphan_process& entry : m_orphan_processes) {
+        if (!entry.kill_sent) {
+            proc_kill(entry.proc_handle);
+        }
+
+        reap_handle_blocking(entry.proc_handle);
+    }
+
+    m_orphan_processes.clear();
+}
 
 sheen_window* sheen_app::create_window() {
     auto owned = std::make_unique<sheen_window>(*this);
@@ -224,6 +256,62 @@ std::shared_ptr<shared_service> sheen_app::acquire_service(
     }
 
     return created;
+}
+
+void sheen_app::reap_orphan_process(int proc_handle, int pid, int grace_ms) {
+    if (proc_handle < 0) {
+        return;
+    }
+
+    pollfd status_poll = { proc_handle, POLLIN, 0 };
+    if (::poll(&status_poll, 1, 0) > 0 && (status_poll.revents & (POLLIN | POLLHUP))) {
+        reap_handle_blocking(proc_handle);
+        return;
+    }
+
+    if (!s_active_app) {
+        proc_kill(proc_handle);
+        reap_handle_blocking(proc_handle);
+        return;
+    }
+
+    s_active_app->enqueue_orphan_process(proc_handle, pid, grace_ms);
+}
+
+void sheen_app::enqueue_orphan_process(int proc_handle, int pid, int grace_ms) {
+    bool send_kill_now = grace_ms <= 0;
+    if (send_kill_now) {
+        proc_kill(proc_handle);
+    }
+
+    qint64 deadline = QDateTime::currentMSecsSinceEpoch() + qMax(0, grace_ms);
+    m_orphan_processes.append({ proc_handle, pid, deadline, send_kill_now });
+    if (!m_orphan_timer.isActive()) {
+        m_orphan_timer.start();
+    }
+}
+
+void sheen_app::poll_orphan_processes() {
+    qint64 now_ms = QDateTime::currentMSecsSinceEpoch();
+    for (qsizetype i = m_orphan_processes.size() - 1; i >= 0; i--) {
+        orphan_process& entry = m_orphan_processes[i];
+        pollfd status_poll = { entry.proc_handle, POLLIN, 0 };
+        if (::poll(&status_poll, 1, 0) > 0 && (status_poll.revents & (POLLIN | POLLHUP))) {
+            int handle = entry.proc_handle;
+            m_orphan_processes.removeAt(i);
+            reap_handle_blocking(handle);
+            continue;
+        }
+
+        if (!entry.kill_sent && now_ms >= entry.kill_deadline_ms) {
+            proc_kill(entry.proc_handle);
+            entry.kill_sent = true;
+        }
+    }
+
+    if (m_orphan_processes.isEmpty()) {
+        m_orphan_timer.stop();
+    }
 }
 
 } // namespace sheen

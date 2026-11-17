@@ -193,6 +193,7 @@ host-test:
 	$(Q)$(MAKE) --no-print-directory -C userland/lib/libstlxconf/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/mcufw/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/serial/tests
+	$(Q)$(MAKE) --no-print-directory -C userland/apps/sheen/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/shell/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxdm/tests
 	$(Q)$(MAKE) --no-print-directory -C userland/apps/stlxpkg/tests
