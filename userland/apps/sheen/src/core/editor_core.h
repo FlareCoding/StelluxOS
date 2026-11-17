@@ -6,11 +6,13 @@
 #include "app/settings.h"
 #include "core/actions.h"
 #include "core/document.h"
+#include "extensions/extension_host.h"
 #include "ui/sheet.h"
 #include "ui/status_bar.h"
 
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QWidget>
 
 #include <functional>
@@ -58,6 +60,12 @@ struct caret_place {
     bool operator==(const caret_place&) const = default;
 };
 
+struct bound_extension_command {
+    QString owner_id;
+    extension_command_spec spec;
+    QAction* action = nullptr;
+};
+
 class editor_core : public QWidget {
 public:
     editor_core(QMainWindow* window, sheen_app& app, QWidget* parent = nullptr);
@@ -83,8 +91,24 @@ public:
     QString active_file_path() const;
     bool focus_if_open(const QString& path);
     bool is_untitled_number_taken(int number) const;
+    void set_workspace_root(const QString& root_path);
+
+    void open_custom_tab(const QString& owner_id, const custom_tab_spec& tab);
+    QWidget* focus_custom_tab(const QString& owner_id, const QString& tab_id);
+    void close_custom_tabs(const QString& owner_id);
+    void set_diagnostics(const QString& owner_id, const QList<diagnostic_item>& diagnostics);
+    void clear_diagnostics(const QString& owner_id);
+    void set_line_badges(const QString& owner_id, const QList<line_badge_item>& badges);
+    void clear_line_badges(const QString& owner_id);
+    void set_extension_commands(const QString& owner_id, const QList<extension_command_spec>& commands);
+    void clear_extension_commands(const QString& owner_id);
+    bool save_modified_files();
+    void open_file_at_line(const QString& path, int line, int column = 0);
+    void show_extension_status_note(const QString& note);
 
     std::function<void(const QString& title)> on_title_changed;
+    std::function<void(const QString& file_path)> on_active_file_changed;
+    std::function<void()> on_diagnostics_changed;
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -165,11 +189,17 @@ private:
     void reopen_with_encoding(const QByteArray& name);
     void save_with_encoding(const file_encoding& encoding);
     void show_about();
+    void apply_annotations_to_document(document* doc);
+    void apply_annotations_to_all_documents();
+    QList<diagnostic_item> all_diagnostics() const;
+    void step_problem(bool is_next);
+    void rebuild_extension_menus();
     QString sheet_folder() const;
 
     QMainWindow* m_window;
     sheen_app& m_app;
     sheen_settings m_settings;
+    QString m_workspace_root;
     tab_row* m_tab_row;
     banner* m_banner;
     find_bar* m_find_bar = nullptr;
@@ -180,6 +210,11 @@ private:
     menu_style* m_menu_style;
     QMenu* m_main_menu;
     QList<QMenu*> m_menus;
+    QList<QMenu*> m_extension_menus;
+    QList<bound_extension_command> m_extension_commands;
+    QMap<QString, QList<diagnostic_item>> m_diagnostics_by_owner;
+    QMap<QString, QList<line_badge_item>> m_line_badges_by_owner;
+    int m_problem_cursor = -1;
     std::vector<std::unique_ptr<document>> m_documents;
     QList<document*> m_recent_tabs;
     QList<closed_tab> m_closed_tabs;

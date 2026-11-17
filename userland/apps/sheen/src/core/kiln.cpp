@@ -67,6 +67,12 @@ static constexpr double CARET_LINE_ALPHA = 0.045;
 static constexpr double INDENT_GUIDE_ALPHA = 0.10;
 static constexpr double EDGE_ALPHA = 0.07;
 static constexpr double WHITESPACE_ALPHA = 0.35;
+static constexpr double ANNOTATION_ERROR_ALPHA = 0.16;
+static constexpr double ANNOTATION_WARNING_ALPHA = 0.12;
+static constexpr double BADGE_DIM_ALPHA = 0.06;
+static constexpr double BADGE_HOT_ALPHA = 0.15;
+static constexpr double DIAG_ERROR_LINE_ALPHA = 0.14;
+static constexpr double DIAG_WARNING_LINE_ALPHA = 0.10;
 static constexpr int WHITESPACE_DOT_SIZE = 2;
 
 static float s_text_size = STLXTHEME_TERMINAL_SIZE;
@@ -284,7 +290,7 @@ static constexpr bidi_control BIDI_CONTROLS[] = {
     { "\u2068", "FSI" }, { "\u2069", "PDI" },
 };
 
-static sptr_t scintilla_rgb(uint32_t argb) {
+sptr_t scintilla_rgb(uint32_t argb) {
     return static_cast<sptr_t>(((argb & 0xFF) << 16) | (argb & 0xFF00) | ((argb >> 16) & 0xFF));
 }
 
@@ -399,6 +405,22 @@ static void reset_styles(ScintillaEditBase* view) {
     view->send(SCI_STYLESETFORE, STYLE_LINENUMBER, scintilla_rgb(STLXTHEME_TEXT_DISABLED));
     view->send(SCI_STYLESETBACK, STYLE_LINENUMBER, scintilla_rgb(STLXTHEME_OPAQUE_POCKET));
     view->send(SCI_STYLESETFORE, STYLE_INDENTGUIDE, scintilla_rgb(blend_over_pocket(BRASS, INDENT_GUIDE_ALPHA)));
+
+    view->send(SCI_STYLESETFORE, STYLE_ANNOTATION_ERROR, scintilla_rgb(STLXTHEME_DANGER_TEXT));
+    view->send(SCI_STYLESETBACK, STYLE_ANNOTATION_ERROR,
+               scintilla_rgb(blend_over_pocket(STLXTHEME_DANGER, ANNOTATION_ERROR_ALPHA)));
+    view->send(SCI_STYLESETFORE, STYLE_ANNOTATION_WARNING, scintilla_rgb(STLXTHEME_TEXT));
+    view->send(SCI_STYLESETBACK, STYLE_ANNOTATION_WARNING,
+               scintilla_rgb(blend_over_pocket(STLXTHEME_ACCENT, ANNOTATION_WARNING_ALPHA)));
+    view->send(SCI_STYLESETFORE, STYLE_ANNOTATION_SPACER, scintilla_rgb(STLXTHEME_OPAQUE_POCKET));
+    view->send(SCI_STYLESETBACK, STYLE_ANNOTATION_SPACER, scintilla_rgb(STLXTHEME_OPAQUE_POCKET));
+
+    view->send(SCI_STYLESETFORE, STYLE_BADGE_DIM, scintilla_rgb(STLXTHEME_TEXT_DIM));
+    view->send(SCI_STYLESETBACK, STYLE_BADGE_DIM,
+               scintilla_rgb(blend_over_pocket(STLXTHEME_TEXT, BADGE_DIM_ALPHA)));
+    view->send(SCI_STYLESETFORE, STYLE_BADGE_HOT, scintilla_rgb(STLXTHEME_ACCENT));
+    view->send(SCI_STYLESETBACK, STYLE_BADGE_HOT,
+               scintilla_rgb(blend_over_pocket(STLXTHEME_ACCENT, BADGE_HOT_ALPHA)));
 }
 
 // A fold header's chevron in the dimmest readable tone, pointing down while its block is open
@@ -556,6 +578,13 @@ void apply_text_area_look(ScintillaEditBase* view) {
 
     view->send(SCI_INDICSETSTYLE, FUNCTION_INDICATOR, INDIC_TEXTFORE);
     view->send(SCI_INDICSETFORE, FUNCTION_INDICATOR, scintilla_rgb(STLXTHEME_TEXT));
+
+    view->send(SCI_INDICSETSTYLE, DIAG_ERROR_INDICATOR, INDIC_SQUIGGLE);
+    view->send(SCI_INDICSETFORE, DIAG_ERROR_INDICATOR, scintilla_rgb(STLXTHEME_DANGER));
+    view->send(SCI_INDICSETSTYLE, DIAG_WARNING_INDICATOR, INDIC_SQUIGGLE);
+    view->send(SCI_INDICSETFORE, DIAG_WARNING_INDICATOR, scintilla_rgb(STLXTHEME_ACCENT));
+    define_line_tint(view, DIAG_ERROR_MARKER, with_alpha(STLXTHEME_DANGER, DIAG_ERROR_LINE_ALPHA));
+    define_line_tint(view, DIAG_WARNING_MARKER, with_alpha(STLXTHEME_ACCENT, DIAG_WARNING_LINE_ALPHA));
 
     // The bracket pair at the caret is boxed in cream, and a bracket without a partner in the danger color
     for (auto [indicator, color] : { std::pair { BRACKET_INDICATOR, STLXTHEME_TEXT },

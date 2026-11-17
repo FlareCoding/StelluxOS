@@ -5,6 +5,7 @@
  * the encoding and line ending it keeps. A document without a path has never been saved. */
 #include "app/settings.h"
 #include "core/encoding.h"
+#include "extensions/extension_host.h"
 #include "ui/banner.h"
 
 #include <QDateTime>
@@ -21,6 +22,16 @@ class QWidget;
 class file_loader;
 struct language;
 struct load_result;
+
+namespace sheen::ui {
+class ui_inline_diagnostic;
+}
+
+struct placed_diagnostic_bar {
+    int marker_handle = -1;
+    int reserved_rows = 1;
+    sheen::ui::ui_inline_diagnostic* widget = nullptr;
+};
 
 struct eol_counts {
     qsizetype crlf = 0;
@@ -86,7 +97,12 @@ public:
     /* Shows `page` in place of any text, the document then owning it: the Settings tab, named `name`, whose unsaved
      * changes set_page_modified reports */
     void show_page(QWidget* page, const QString& name);
+    void show_custom_page(QWidget* page, const QString& title, const QString& owner_id, const QString& tab_id);
+    void set_page_title(const QString& title) { m_page_name = title; }
     bool is_page() const { return !m_page_name.isEmpty(); }
+    bool is_custom_page() const { return !m_custom_owner.isEmpty(); }
+    const QString& custom_owner() const { return m_custom_owner; }
+    const QString& custom_tab_id() const { return m_custom_tab_id; }
     void set_page_modified(bool is_modified) { m_is_page_modified = is_modified; }
 
     /* Applies the settings again once Settings saves them: the text size, the caret, indentation and mode defaults */
@@ -214,7 +230,13 @@ public:
     const file_record& file() const { return m_file; }
     const language* lang() const { return m_language; }
 
+    void apply_diagnostics(const QList<sheen::diagnostic_item>& diagnostics);
+    void clear_diagnostics_on_line(int line);
+    void layout_diagnostic_bars();
+    void apply_line_badges(const QList<sheen::line_badge_item>& badges);
+
 private:
+    void clear_diagnostic_bars();
     void configure_view();
     void replace_text(const QByteArray& utf8);
     void settle_text(const eol_counts& counts);
@@ -239,12 +261,15 @@ private:
     QByteArray m_held_bytes;
     QWidget* m_placeholder = nullptr;
     QString m_page_name;
+    QString m_custom_owner;
+    QString m_custom_tab_id;
     bool m_is_page_modified = false;
     std::unique_ptr<file_loader> m_loader;
     bool m_is_large = false;
     bool m_is_wrap_limited = false;
     bool m_is_wrap_chosen = false;
     QList<selection_state> m_selections;
+    QList<placed_diagnostic_bar> m_diagnostic_bars;
 };
 
 /* Counts each kind of line ending in UTF-8 text, a CR LF pair as one */

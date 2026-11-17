@@ -50,8 +50,19 @@ QString language_name(const language* lang);
 /* The comment syntax of `lang`, none for plain text */
 comment_syntax comment_syntax_of(const language* lang);
 
-/* A theme color as Scintilla takes it, 0xAABBGGRR */
+/* A theme color as Scintilla takes it, 0x00BBGGRR or 0xAABBGGRR */
+sptr_t scintilla_rgb(uint32_t argb);
 sptr_t scintilla_rgba(uint32_t argb);
+
+inline constexpr int DIAG_ERROR_INDICATOR = INDICATOR_CONTAINER + 6;
+inline constexpr int DIAG_WARNING_INDICATOR = INDICATOR_CONTAINER + 7;
+inline constexpr int DIAG_ERROR_MARKER = 2;
+inline constexpr int DIAG_WARNING_MARKER = 3;
+inline constexpr int STYLE_ANNOTATION_ERROR = 240;
+inline constexpr int STYLE_ANNOTATION_WARNING = 241;
+inline constexpr int STYLE_ANNOTATION_SPACER = 242;
+inline constexpr int STYLE_BADGE_DIM = 243;
+inline constexpr int STYLE_BADGE_HOT = 244;
 
 /* Defines `marker` to tint the lines it marks with `argb`, under their text */
 void define_line_tint(ScintillaEditBase* view, int marker, uint32_t argb);

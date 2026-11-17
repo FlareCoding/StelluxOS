@@ -1,9 +1,11 @@
 #include "core/document.h"
 #include "core/file_loader.h"
 #include "core/kiln.h"
+#include "ui/ui_kit.h"
 
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QSaveFile>
 
 #include <ScintillaEditBase.h>
@@ -42,6 +44,12 @@ static constexpr int SHIFT = SCMOD_SHIFT;
 static constexpr int CTRL = SCMOD_CTRL;
 static constexpr int ALT_SHIFT = SCMOD_ALT | SCMOD_SHIFT;
 static constexpr int CTRL_SHIFT = SCMOD_CTRL | SCMOD_SHIFT;
+static constexpr int GUTTER_COUNT = 4;
+static constexpr int DIAG_BAR_HEIGHT_PX = 28;
+static constexpr int DIAG_BAR_MIN_WIDTH = 160;
+static constexpr int DIAG_BAR_RIGHT_INSET = 12;
+
+static const QRegularExpression QUOTED_SPAN_PATTERN(QStringLiteral("<([^>\\s]+)>|'([^']+)'|\"([^\"]+)\""));
 
 // Scintilla's own keys that stay: caret movement, selection, deletion, the clipboard and the keys that type. Every
 // other key belongs to Sheen's action table, so no default acts behind it unlisted
@@ -135,6 +143,7 @@ document::document(QWidget* parent, int untitled_number, const sheen_settings& s
 }
 
 document::~document() {
+    clear_diagnostic_bars();
     end_load();
     delete m_view;
 }
@@ -142,6 +151,17 @@ document::~document() {
 void document::show_page(QWidget* page, const QString& name) {
     m_placeholder = page;
     m_page_name = name;
+}
+
+void document::show_custom_page(QWidget* page, const QString& title, const QString& owner_id, const QString& tab_id) {
+    if (m_placeholder && m_placeholder != page) {
+        m_placeholder->deleteLater();
+    }
+
+    m_placeholder = page;
+    m_page_name = title;
+    m_custom_owner = owner_id;
+    m_custom_tab_id = tab_id;
 }
 
 QWidget* document::shown_widget() const {
@@ -709,4 +729,215 @@ QByteArray document::text() const {
     sptr_t length = m_view->send(SCI_GETLENGTH);
     const char* characters = reinterpret_cast<const char*>(m_view->send(SCI_GETCHARACTERPOINTER));
     return QByteArray::fromRawData(characters, length);
+}
+
+static std::pair<sptr_t, sptr_t> find_squiggle_span(ScintillaEditBase* view, sptr_t doc_line,
+                                                    const sheen::diagnostic_item& diag) {
+    sptr_t line_start = view->send(SCI_POSITIONFROMLINE, doc_line);
+    sptr_t indent_start = view->send(SCI_GETLINEINDENTPOSITION, doc_line);
+    sptr_t line_end = view->send(SCI_GETLINEENDPOSITION, doc_line);
+    if (line_end <= indent_start) {
+        return { line_start, qMax(line_start + 1, line_end) };
+    }
+
+    const char* raw = reinterpret_cast<const char*>(view->send(SCI_GETRANGEPOINTER, line_start, line_end - line_start));
+    QString line_text = QString::fromUtf8(raw, line_end - line_start);
+
+    QRegularExpressionMatch match = QUOTED_SPAN_PATTERN.match(diag.message);
+    if (match.hasMatch()) {
+        QString token = !match.captured(1).isEmpty() ? match.captured(1)
+                      : !match.captured(2).isEmpty() ? match.captured(2)
+                                                     : match.captured(3);
+        qsizetype pos = line_text.indexOf(token);
+        if (pos >= 0) {
+            qsizetype from = pos;
+            qsizetype to = pos + token.size();
+            if (from > 0 && line_text.at(from - 1) == QLatin1Char('<')
+                && to < line_text.size() && line_text.at(to) == QLatin1Char('>')) {
+                from--;
+                to++;
+            }
+
+            sptr_t byte_start = line_start + line_text.left(from).toUtf8().size();
+            sptr_t byte_len = line_text.mid(from, to - from).toUtf8().size();
+            return { byte_start, byte_len };
+        }
+    }
+
+    if (diag.column > 0) {
+        sptr_t at = qBound(indent_start, view->send(SCI_FINDCOLUMN, doc_line, diag.column - 1), line_end - 1);
+        sptr_t word_end = view->send(SCI_WORDENDPOSITION, at, 1);
+        if (word_end > at && word_end <= line_end) {
+            return { at, word_end - at };
+        }
+
+        return { at, 1 };
+    }
+
+    return { indent_start, line_end - indent_start };
+}
+
+void document::clear_diagnostic_bars() {
+    for (const placed_diagnostic_bar& entry : m_diagnostic_bars) {
+        if (entry.widget) {
+            entry.widget->hide();
+            entry.widget->setParent(nullptr);
+            entry.widget->deleteLater();
+        }
+    }
+
+    m_diagnostic_bars.clear();
+}
+
+void document::apply_diagnostics(const QList<sheen::diagnostic_item>& diagnostics) {
+    clear_diagnostic_bars();
+    sptr_t length = m_view->send(SCI_GETLENGTH);
+    m_view->send(SCI_SETINDICATORCURRENT, DIAG_ERROR_INDICATOR);
+    m_view->send(SCI_INDICATORCLEARRANGE, 0, length);
+    m_view->send(SCI_SETINDICATORCURRENT, DIAG_WARNING_INDICATOR);
+    m_view->send(SCI_INDICATORCLEARRANGE, 0, length);
+
+    m_view->send(SCI_MARKERDELETEALL, DIAG_ERROR_MARKER);
+    m_view->send(SCI_MARKERDELETEALL, DIAG_WARNING_MARKER);
+    m_view->send(SCI_ANNOTATIONCLEARALL);
+
+    if (diagnostics.isEmpty()) {
+        m_view->send(SCI_ANNOTATIONSETVISIBLE, ANNOTATION_HIDDEN);
+        return;
+    }
+
+    m_view->send(SCI_ANNOTATIONSETVISIBLE, ANNOTATION_BOXED);
+    sptr_t line_count = qMax<sptr_t>(1, m_view->send(SCI_GETLINECOUNT));
+    QHash<sptr_t, bool> line_has_fix_bar;
+
+    for (const sheen::diagnostic_item& diag : diagnostics) {
+        sptr_t doc_line = qBound(sptr_t(0), static_cast<sptr_t>(diag.line - 1), line_count - 1);
+        bool is_error = diag.severity == sheen::diagnostic_severity::ERROR;
+
+        int marker_handle = static_cast<int>(
+            m_view->send(SCI_MARKERADD, doc_line, is_error ? DIAG_ERROR_MARKER : DIAG_WARNING_MARKER));
+        auto [span_start, span_len] = find_squiggle_span(m_view, doc_line, diag);
+        if (span_len > 0) {
+            m_view->send(SCI_SETINDICATORCURRENT, is_error ? DIAG_ERROR_INDICATOR : DIAG_WARNING_INDICATOR);
+            m_view->send(SCI_INDICATORFILLRANGE, span_start, span_len);
+        }
+
+        if (!diag.fix.label.isEmpty() && diag.fix.apply && !line_has_fix_bar.value(doc_line)) {
+            line_has_fix_bar.insert(doc_line, true);
+            int line_height = qMax(1, static_cast<int>(m_view->send(SCI_TEXTHEIGHT, doc_line)));
+            int spacer_rows = qMax(1, (DIAG_BAR_HEIGHT_PX + line_height - 1) / line_height);
+
+            QByteArray spacer(spacer_rows - 1, '\n');
+            spacer += ' ';
+            m_view->send(SCI_ANNOTATIONSETTEXT, doc_line, reinterpret_cast<sptr_t>(spacer.constData()));
+            m_view->send(SCI_ANNOTATIONSETSTYLE, doc_line, STYLE_ANNOTATION_SPACER);
+
+            auto* bar = new sheen::ui::ui_inline_diagnostic(diag, m_view->viewport());
+            m_diagnostic_bars.append({ marker_handle, spacer_rows, bar });
+            continue;
+        }
+
+        if (!line_has_fix_bar.value(doc_line) && !diag.message.isEmpty()) {
+            QByteArray utf8 = diag.message.toUtf8();
+            m_view->send(SCI_ANNOTATIONSETTEXT, doc_line, reinterpret_cast<sptr_t>(utf8.constData()));
+            m_view->send(SCI_ANNOTATIONSETSTYLE, doc_line,
+                         is_error ? STYLE_ANNOTATION_ERROR : STYLE_ANNOTATION_WARNING);
+        }
+    }
+
+    layout_diagnostic_bars();
+}
+
+void document::clear_diagnostics_on_line(int line) {
+    sptr_t line_count = m_view->send(SCI_GETLINECOUNT);
+    if (line < 0 || line >= line_count) {
+        return;
+    }
+
+    sptr_t start = m_view->send(SCI_POSITIONFROMLINE, line);
+    sptr_t end = m_view->send(SCI_GETLINEENDPOSITION, line);
+    if (end > start) {
+        m_view->send(SCI_SETINDICATORCURRENT, DIAG_ERROR_INDICATOR);
+        m_view->send(SCI_INDICATORCLEARRANGE, start, end - start);
+        m_view->send(SCI_SETINDICATORCURRENT, DIAG_WARNING_INDICATOR);
+        m_view->send(SCI_INDICATORCLEARRANGE, start, end - start);
+    }
+
+    m_view->send(SCI_MARKERDELETE, line, DIAG_ERROR_MARKER);
+    m_view->send(SCI_MARKERDELETE, line, DIAG_WARNING_MARKER);
+    m_view->send(SCI_ANNOTATIONSETTEXT, line, 0);
+
+    for (qsizetype i = m_diagnostic_bars.size() - 1; i >= 0; i--) {
+        sptr_t live_line = m_view->send(SCI_MARKERLINEFROMHANDLE, m_diagnostic_bars.at(i).marker_handle);
+        if (live_line == line || live_line < 0) {
+            if (QWidget* widget = m_diagnostic_bars.at(i).widget) {
+                widget->hide();
+                widget->setParent(nullptr);
+                widget->deleteLater();
+            }
+
+            m_diagnostic_bars.removeAt(i);
+        }
+    }
+
+    layout_diagnostic_bars();
+}
+
+void document::layout_diagnostic_bars() {
+    if (m_diagnostic_bars.isEmpty()) {
+        return;
+    }
+
+    int gutter_width = 0;
+    for (int margin = 0; margin < GUTTER_COUNT; margin++) {
+        gutter_width += static_cast<int>(m_view->send(SCI_GETMARGINWIDTHN, margin));
+    }
+
+    QWidget* area = m_view->viewport();
+    int width = qMax(DIAG_BAR_MIN_WIDTH, area->width() - gutter_width - DIAG_BAR_RIGHT_INSET);
+
+    for (const placed_diagnostic_bar& entry : m_diagnostic_bars) {
+        sptr_t doc_line = m_view->send(SCI_MARKERLINEFROMHANDLE, entry.marker_handle);
+        if (doc_line < 0 || !m_view->send(SCI_GETLINEVISIBLE, doc_line)) {
+            entry.widget->hide();
+            continue;
+        }
+
+        int line_height = qMax(1, static_cast<int>(m_view->send(SCI_TEXTHEIGHT, doc_line)));
+        int reserved_px = entry.reserved_rows * line_height;
+        int bar_height = entry.widget->height();
+
+        sptr_t line_end = m_view->send(SCI_GETLINEENDPOSITION, doc_line);
+        int top_y = static_cast<int>(m_view->send(SCI_POINTYFROMPOSITION, 0, line_end)) + line_height;
+        int y = top_y + qMax(0, (reserved_px - bar_height) / 2);
+        if (y + bar_height <= 0 || y >= area->height()) {
+            entry.widget->hide();
+            continue;
+        }
+
+        entry.widget->setGeometry(gutter_width, y, width, bar_height);
+        entry.widget->show();
+        entry.widget->raise();
+    }
+}
+
+void document::apply_line_badges(const QList<sheen::line_badge_item>& badges) {
+    m_view->send(SCI_EOLANNOTATIONCLEARALL);
+    if (badges.isEmpty()) {
+        m_view->send(SCI_EOLANNOTATIONSETVISIBLE, EOLANNOTATION_HIDDEN);
+        return;
+    }
+
+    m_view->send(SCI_EOLANNOTATIONSETVISIBLE, EOLANNOTATION_STADIUM);
+    sptr_t line_count = qMax<sptr_t>(1, m_view->send(SCI_GETLINECOUNT));
+    for (const sheen::line_badge_item& badge : badges) {
+        sptr_t doc_line = badge.line - 1;
+        if (doc_line < 0 || doc_line >= line_count || badge.label.isEmpty()) {
+            continue;
+        }
+
+        QByteArray utf8 = (QStringLiteral(" ") + badge.label + QStringLiteral(" ")).toUtf8();
+        m_view->send(SCI_EOLANNOTATIONSETTEXT, doc_line, reinterpret_cast<sptr_t>(utf8.constData()));
+        m_view->send(SCI_EOLANNOTATIONSETSTYLE, doc_line, badge.is_hot ? STYLE_BADGE_HOT : STYLE_BADGE_DIM);
+    }
 }
