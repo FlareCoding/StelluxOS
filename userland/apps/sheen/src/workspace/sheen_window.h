@@ -7,12 +7,17 @@
 #include <QString>
 #include <QStringList>
 
+#include <memory>
+
+class QVBoxLayout;
+
 namespace sheen {
 
 class editor_core;
 class sheen_app;
+class workspace_shell;
 
-/* Top-level Sheen window hosting an editor_core surface and its window-wide status bar. */
+/* Top-level Sheen window serving as a Plain editor window or promoting in place into a folder Workspace window. */
 class sheen_window : public QMainWindow {
 public:
     explicit sheen_window(sheen_app& app);
@@ -20,6 +25,10 @@ public:
 
     editor_core& editor() { return *m_editor; }
     const editor_core& editor() const { return *m_editor; }
+
+    bool is_workspace() const { return m_workspace != nullptr; }
+    QString workspace_root() const;
+    void promote_to_workspace(const QString& root_path);
 
     void open_paths(const QStringList& paths);
     void receive_paths(const QStringList& paths);
@@ -42,8 +51,12 @@ protected:
     void dropEvent(QDropEvent* event) override;
 
 private:
+    void update_window_title(const QString& active_doc_title);
+
     sheen_app& m_app;
+    QVBoxLayout* m_central_layout = nullptr;
     editor_core* m_editor = nullptr;
+    std::unique_ptr<workspace_shell> m_workspace;
     bool m_close_confirmed = false;
 };
 

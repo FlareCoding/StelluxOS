@@ -96,6 +96,11 @@ void empty_state::set_entries(const QList<empty_action>& actions, const QStringL
     update();
 }
 
+void empty_state::set_welcome_mode(bool is_welcome) {
+    m_is_welcome = is_welcome;
+    update();
+}
+
 int empty_state::icon_room() const {
     return m_icon.isNull() ? 0 : m_icon.height() + ICON_TITLE_GAP;
 }
@@ -164,12 +169,15 @@ void empty_state::paintEvent(QPaintEvent*) {
     QRect title(0, top + icon_room(), width(), TITLE_HEIGHT);
     painter.setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::DemiBold));
     painter.setPen(token(STLXTHEME_TEXT));
-    painter.drawText(title, Qt::AlignCenter, QStringLiteral("No open files"));
+    painter.drawText(title, Qt::AlignCenter,
+                     m_is_welcome ? QStringLiteral("Sheen") : QStringLiteral("No open files"));
 
     QRect hint(0, title.bottom() + 1, width(), HINT_HEIGHT);
     painter.setFont(ui_font(STLXTHEME_CAPTION_SIZE));
     painter.setPen(token(STLXTHEME_TEXT_DIM));
-    painter.drawText(hint, Qt::AlignCenter, QStringLiteral("Ctrl W again closes the window"));
+    painter.drawText(hint, Qt::AlignCenter,
+                     m_is_welcome ? QStringLiteral("Type anywhere or press Ctrl N for a scratch buffer.")
+                                  : QStringLiteral("Ctrl W again closes the window"));
 
     for (int row = 0; row < row_count(); row++) {
         QRect rect = row_rect(row);
@@ -182,7 +190,9 @@ void empty_state::paintEvent(QPaintEvent*) {
 
         QRect room = rect.adjusted(ROW_PADDING_X, 0, -ROW_PADDING_X, 0);
         QColor text = token(is_lit ? STLXTHEME_TEXT : STLXTHEME_TEXT_SECONDARY);
-        row_glyph glyph = row < m_actions.size() ? m_actions.at(row).glyph : row_glyph::DOC;
+        row_glyph glyph = row < m_actions.size()
+                        ? m_actions.at(row).glyph
+                        : (QFileInfo(m_files.at(row - m_actions.size())).isDir() ? row_glyph::FOLDER : row_glyph::DOC);
         painter.drawPixmap(room.left(), rect.center().y() - GLYPH_SIZE / 2, glyph_pixmap(glyph, text));
         room.setLeft(room.left() + GLYPH_SIZE + GLYPH_GAP);
         if (row < m_actions.size()) {
@@ -222,10 +232,18 @@ void empty_state::paintEvent(QPaintEvent*) {
 
     painter.setFont(caption_font);
     painter.setPen(token(STLXTHEME_TEXT_DIM));
-    painter.drawText(caption, Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("Closed this session"));
+    painter.drawText(caption, Qt::AlignLeft | Qt::AlignVCenter,
+                     m_is_welcome ? QStringLiteral("Recent") : QStringLiteral("Closed this session"));
 }
 
 void empty_state::keyPressEvent(QKeyEvent* event) {
+    bool has_cmd_mod = event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    QString typed = event->text();
+    if (m_is_welcome && !has_cmd_mod && !typed.isEmpty() && typed.at(0).isPrint() && on_typed_text) {
+        on_typed_text(typed);
+        return;
+    }
+
     int count = row_count();
     if (count == 0) {
         QWidget::keyPressEvent(event);

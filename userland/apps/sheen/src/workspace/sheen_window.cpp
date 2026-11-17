@@ -2,12 +2,15 @@
 #include "app/sheen_app.h"
 #include "core/editor_core.h"
 #include "ui/status_bar.h"
+#include "workspace/workspace_shell.h"
 
 #include <QCloseEvent>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QScreen>
 #include <QVBoxLayout>
@@ -22,18 +25,19 @@ static constexpr int WINDOW_MIN_H = 480;
 
 sheen_window::sheen_window(sheen_app& app) : m_app(app) {
     auto* central = new QWidget(this);
-    auto* layout = new QVBoxLayout(central);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    m_central_layout = new QVBoxLayout(central);
+    m_central_layout->setContentsMargins(0, 0, 0, 0);
+    m_central_layout->setSpacing(0);
 
     setWindowTitle(QStringLiteral("Sheen"));
     m_editor = new editor_core(this, m_app, central);
-    m_editor->on_title_changed = [this](const QString& title) {
-        setWindowTitle(title.isEmpty() ? QStringLiteral("Sheen") : title);
+    m_editor->on_title_changed = [this](const QString& title) { update_window_title(title); };
+    m_editor->on_open_folder_requested = [this](const QString& root_path) {
+        m_app.open_workspace(root_path, this);
     };
 
-    layout->addWidget(m_editor, 1);
-    layout->addWidget(m_editor->status_widget());
+    m_central_layout->addWidget(m_editor, 1);
+    m_central_layout->addWidget(m_editor->status_widget());
     setCentralWidget(central);
 
     setAcceptDrops(true);
@@ -43,7 +47,58 @@ sheen_window::sheen_window(sheen_app& app) : m_app(app) {
 
 sheen_window::~sheen_window() = default;
 
+QString sheen_window::workspace_root() const {
+    return m_workspace ? m_workspace->root_path() : QString();
+}
+
+void sheen_window::promote_to_workspace(const QString& root_path) {
+    if (m_workspace) {
+        return;
+    }
+
+    m_editor->drop_pristine_untitled_tabs();
+    m_central_layout->removeWidget(m_editor);
+
+    m_workspace = std::make_unique<workspace_shell>(m_app, *m_editor, root_path, centralWidget());
+    m_central_layout->insertWidget(0, m_workspace.get(), 1);
+
+    if (m_editor->document_count() == 0) {
+        QDir dir(m_workspace->root_path());
+        QString sketch_ino = dir.filePath(m_workspace->folder_name() + QStringLiteral(".ino"));
+        QString readme = dir.filePath(QStringLiteral("README.md"));
+        if (QFileInfo(sketch_ino).isFile()) {
+            m_editor->open_paths({ sketch_ino });
+        } else if (QFileInfo(readme).isFile()) {
+            m_editor->open_paths({ readme });
+        } else {
+            m_editor->show_welcome_state();
+        }
+    }
+
+    update_window_title(m_editor->active_tab_title());
+    m_editor->focus_active_surface();
+}
+
+void sheen_window::update_window_title(const QString& active_doc_title) {
+    if (m_workspace) {
+        if (active_doc_title.isEmpty() || active_doc_title == QLatin1String("Sheen")) {
+            setWindowTitle(m_workspace->folder_name());
+        } else {
+            setWindowTitle(QStringLiteral("%1 - %2").arg(active_doc_title, m_workspace->folder_name()));
+        }
+
+        return;
+    }
+
+    setWindowTitle(active_doc_title.isEmpty() ? QStringLiteral("Sheen") : active_doc_title);
+}
+
 void sheen_window::open_paths(const QStringList& paths) {
+    if (paths.size() == 1 && QFileInfo(paths.first()).isDir() && !m_workspace && m_editor->document_count() == 0) {
+        m_app.open_workspace(QFileInfo(paths.first()).absoluteFilePath(), this);
+        return;
+    }
+
     m_editor->open_paths(paths);
 }
 
@@ -55,7 +110,7 @@ void sheen_window::receive_paths(const QStringList& paths) {
 
     raise();
     activateWindow();
-    m_editor->open_paths(paths);
+    open_paths(paths);
 }
 
 bool sheen_window::confirm_close(bool is_quitting_app) {
@@ -87,17 +142,28 @@ void sheen_window::refresh_empty_state() {
 }
 
 void sheen_window::on_dependencies_changed() {
+    if (m_workspace) {
+        m_workspace->on_dependencies_changed();
+    }
 }
 
 QString sheen_window::window_label() const {
+    if (m_workspace) {
+        return m_workspace->folder_name();
+    }
+
     QString title = windowTitle();
     return title.isEmpty() ? QStringLiteral("Sheen") : title;
 }
 
 QString sheen_window::window_note() const {
+    if (m_workspace) {
+        return m_workspace->root_path();
+    }
+
     int count = m_editor->document_count();
     if (count == 0) {
-        return QStringLiteral("No open files");
+        return QStringLiteral("Welcome");
     }
 
     return count == 1 ? QStringLiteral("1 tab") : QStringLiteral("%1 tabs").arg(count);
@@ -107,6 +173,10 @@ void sheen_window::closeEvent(QCloseEvent* event) {
     if (!confirm_close(false)) {
         event->ignore();
         return;
+    }
+
+    if (m_workspace) {
+        m_workspace->shutdown_for_close();
     }
 
     event->accept();

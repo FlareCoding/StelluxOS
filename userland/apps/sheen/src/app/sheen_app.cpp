@@ -32,6 +32,12 @@ sheen_app::sheen_app() {
     m_orphan_timer.setInterval(ORPHAN_POLL_MS);
     QObject::connect(&m_orphan_timer, &QTimer::timeout, [this] { poll_orphan_processes(); });
 
+    for (const std::string& path : m_store.load_recent_paths()) {
+        QString decoded = QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size()));
+        m_recent_files.append(decoded);
+        m_recent_opened.insert(decoded, QFileInfo(decoded).lastModified());
+    }
+
     m_instance.on_paths = [this](const QStringList& handed) { receive_paths(handed); };
     m_instance.listen();
 }
@@ -70,6 +76,71 @@ sheen_window* sheen_app::open_new_window() {
     window->activateWindow();
 
     return window;
+}
+
+sheen_window* sheen_app::find_workspace_window(const QString& path_or_child) const {
+    QString normalized = QString::fromStdString(
+        workspace_store::normalize_workspace_path(path_or_child.toStdString()));
+
+    for (sheen_window* window : m_recent_windows) {
+        if (!window->is_workspace()) {
+            continue;
+        }
+
+        const QString& ws_root = window->workspace_root();
+        if (normalized == ws_root || normalized.startsWith(ws_root + QLatin1Char('/'))) {
+            return window;
+        }
+    }
+
+    return nullptr;
+}
+
+sheen_window* sheen_app::open_workspace(const QString& root_path, sheen_window* requester) {
+    QString normalized = QString::fromStdString(workspace_store::normalize_workspace_path(root_path.toStdString()));
+    if (!QFileInfo(normalized).isDir()) {
+        return nullptr;
+    }
+
+    remember_recent_file(normalized);
+
+    for (sheen_window* existing : m_recent_windows) {
+        if (existing->is_workspace() && existing->workspace_root() == normalized) {
+            if (requester && requester != existing) {
+                QList<migrated_tab> moved = requester->editor().extract_tabs_under(normalized, &existing->editor());
+                existing->editor().adopt_migrated_tabs(moved);
+            }
+
+            if (existing->isMinimized()) {
+                existing->showNormal();
+            }
+
+            existing->raise();
+            existing->activateWindow();
+            return existing;
+        }
+    }
+
+    if (requester && !requester->is_workspace() && requester->editor().can_promote_in_place_for(normalized)) {
+        requester->promote_to_workspace(normalized);
+        requester->show();
+        requester->raise();
+        requester->activateWindow();
+        return requester;
+    }
+
+    sheen_window* created = create_window();
+    if (requester) {
+        QList<migrated_tab> moved = requester->editor().extract_tabs_under(normalized, &created->editor());
+        created->editor().adopt_migrated_tabs(moved);
+    }
+
+    created->promote_to_workspace(normalized);
+    created->show();
+    created->raise();
+    created->activateWindow();
+
+    return created;
 }
 
 void sheen_app::note_window_activated(sheen_window* window) {
@@ -160,7 +231,13 @@ int sheen_app::next_untitled_number(int preferred) const {
     return number;
 }
 
-sheen_window* sheen_app::target_window() {
+sheen_window* sheen_app::target_plain_or_active_window() {
+    for (sheen_window* window : m_recent_windows) {
+        if (!window->is_workspace()) {
+            return window;
+        }
+    }
+
     if (!m_recent_windows.isEmpty()) {
         return m_recent_windows.first();
     }
@@ -173,32 +250,50 @@ sheen_window* sheen_app::target_window() {
 
 void sheen_app::receive_paths(const QStringList& paths) {
     if (paths.isEmpty()) {
-        target_window()->receive_paths({});
+        sheen_window* window = target_plain_or_active_window();
+        window->receive_paths({});
         return;
     }
 
-    QStringList unopened;
+    QStringList remaining_files;
     for (const QString& path : paths) {
         QFileInfo info(path);
-        if (!info.isDir() && focus_open_document(info.absoluteFilePath())) {
+        if (info.isDir()) {
+            open_workspace(info.absoluteFilePath(), nullptr);
             continue;
         }
 
-        unopened.append(path);
+        if (focus_open_document(info.absoluteFilePath())) {
+            continue;
+        }
+
+        if (sheen_window* ws = find_workspace_window(info.absoluteFilePath())) {
+            ws->receive_paths({ info.absoluteFilePath() });
+            continue;
+        }
+
+        remaining_files.append(path);
     }
 
-    if (!unopened.isEmpty()) {
-        target_window()->receive_paths(unopened);
+    if (!remaining_files.isEmpty()) {
+        sheen_window* window = target_plain_or_active_window();
+        window->receive_paths(remaining_files);
     }
 }
 
 void sheen_app::remember_recent_file(const QString& path) {
+    if (path.isEmpty()) {
+        return;
+    }
+
     m_recent_opened.insert(path, QDateTime::currentDateTime());
     m_recent_files.removeAll(path);
     m_recent_files.prepend(path);
     while (m_recent_files.size() > RECENT_FILE_LIMIT) {
         m_recent_files.removeLast();
     }
+
+    m_store.record_recent_path(path.toStdString());
 }
 
 QList<recent_file> sheen_app::recent_file_entries() const {
@@ -213,6 +308,7 @@ QList<recent_file> sheen_app::recent_file_entries() const {
 void sheen_app::clear_recent_files() {
     m_recent_files.clear();
     m_recent_opened.clear();
+    m_store.clear_recent_paths();
     for (const std::unique_ptr<sheen_window>& window : m_windows) {
         window->refresh_empty_state();
     }

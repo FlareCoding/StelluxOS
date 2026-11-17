@@ -25,8 +25,10 @@ public:
 
     /* Lists `actions` as rows with their keycaps and up to five of `files`, newest first, under them */
     void set_entries(const QList<empty_action>& actions, const QStringList& files);
+    void set_welcome_mode(bool is_welcome);
 
     std::function<void(const QString& path)> on_file_chosen;
+    std::function<void(const QString& typed)> on_typed_text;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -47,6 +49,7 @@ private:
     QStringList m_files;
     QPixmap m_icon;
     int m_lit = 0;
+    bool m_is_welcome = true;
 };
 
 #endif

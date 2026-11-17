@@ -674,12 +674,17 @@ static QIcon place_icon(place_glyph glyph) {
 file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& folder, const QList<recent_file>& recent)
     : sheet(window, SHEET_WIDTH), m_mode(mode), m_model(new folder_model(this)), m_recent(recent) {
     bool is_open = mode == file_sheet_mode::OPEN;
+    bool is_folder_picker = mode == file_sheet_mode::OPEN_FOLDER;
+    bool is_save = mode == file_sheet_mode::SAVE_AS;
     auto* layout = new QVBoxLayout(panel());
     layout->setContentsMargins(HEADER_MARGIN_X, HEADER_MARGIN_TOP, HEADER_MARGIN_X, HEADER_MARGIN_TOP);
     layout->setSpacing(SECTION_GAP);
 
     auto* header = new QHBoxLayout;
-    m_title = new QLabel(is_open ? QStringLiteral("Open") : QStringLiteral("Save As"), panel());
+    QString heading = is_folder_picker ? QStringLiteral("Open Folder")
+                    : is_open          ? QStringLiteral("Open")
+                                       : QStringLiteral("Save As");
+    m_title = new QLabel(heading, panel());
     m_title->setFont(ui_font(STLXTHEME_BODY_SIZE, QFont::DemiBold));
     header->addWidget(m_title);
 
@@ -695,7 +700,7 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
                                       panel()));
     layout->addLayout(header);
 
-    if (!is_open) {
+    if (is_save) {
         auto* name_row = new QHBoxLayout;
         name_row->addWidget(make_caption(QStringLiteral("Name"), panel()));
         m_name = new QLineEdit(panel());
@@ -792,34 +797,37 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
     layout->addLayout(body, 1);
 
     auto* footer = new QHBoxLayout;
-    footer->addWidget(make_caption(QStringLiteral("Encoding"), panel()));
-    m_encoding = new QComboBox(panel());
-    m_encoding->setMinimumWidth(COMBO_MIN_WIDTH);
-    if (is_open) {
-        m_encoding->addItem(QStringLiteral("Detect"), QByteArray());
-    }
-
-    for (const QByteArray& name : available_encodings()) {
-        m_encoding->addItem(encoding_label(name), name);
-        if (!is_open && name == "UTF-8") {
-            m_encoding->addItem(encoding_label(file_encoding { name, true }), name);
-            m_encoding->setItemData(m_encoding->count() - 1, true, BOM_ROLE);
+    if (!is_folder_picker) {
+        footer->addWidget(make_caption(QStringLiteral("Encoding"), panel()));
+        m_encoding = new QComboBox(panel());
+        m_encoding->setMinimumWidth(COMBO_MIN_WIDTH);
+        if (is_open) {
+            m_encoding->addItem(QStringLiteral("Detect"), QByteArray());
         }
-    }
 
-    footer->addWidget(m_encoding);
-    if (!is_open) {
+        for (const QByteArray& name : available_encodings()) {
+            m_encoding->addItem(encoding_label(name), name);
+            if (!is_open && name == "UTF-8") {
+                m_encoding->addItem(encoding_label(file_encoding { name, true }), name);
+                m_encoding->setItemData(m_encoding->count() - 1, true, BOM_ROLE);
+            }
+        }
+
+        footer->addWidget(m_encoding);
+        if (is_save) {
+            footer->addSpacing(SECTION_GAP);
+            footer->addWidget(make_caption(QStringLiteral("Line endings"), panel()));
+            m_eol = new QComboBox(panel());
+            for (const eol_entry& entry : EOL_ENTRIES) {
+                m_eol->addItem(QString::fromLatin1(entry.label), entry.mode);
+            }
+
+            footer->addWidget(m_eol);
+        }
+
         footer->addSpacing(SECTION_GAP);
-        footer->addWidget(make_caption(QStringLiteral("Line endings"), panel()));
-        m_eol = new QComboBox(panel());
-        for (const eol_entry& entry : EOL_ENTRIES) {
-            m_eol->addItem(QString::fromLatin1(entry.label), entry.mode);
-        }
-
-        footer->addWidget(m_eol);
     }
 
-    footer->addSpacing(SECTION_GAP);
     m_footer_note = new QLabel(panel());
     m_footer_note->setFont(ui_font(STLXTHEME_BODY_SIZE));
     m_footer_note->setWordWrap(true);
@@ -830,8 +838,11 @@ file_sheet::file_sheet(QWidget* window, file_sheet_mode mode, const QString& fol
     footer->addWidget(cancel_button);
 
     // Opening changes nothing, so only Save takes the amber of a pending change
-    m_primary = new QPushButton(is_open ? QStringLiteral("Open") : QStringLiteral("Save"), panel());
-    m_primary->setDefault(!is_open);
+    QString primary_label = is_folder_picker ? QStringLiteral("Open Folder")
+                          : is_open          ? QStringLiteral("Open")
+                                             : QStringLiteral("Save");
+    m_primary = new QPushButton(primary_label, panel());
+    m_primary->setDefault(is_save);
     connect(m_primary, &QPushButton::clicked, this, [this] { accept(); });
     footer->addWidget(m_primary);
     layout->addLayout(footer);
@@ -862,6 +873,18 @@ bool file_sheet::choose_to_open(open_request* request, const QString& current_pa
     }
 
     *request = m_open;
+    return true;
+}
+
+bool file_sheet::choose_folder(QString* folder_path) {
+    point_at_start();
+    refresh_primary();
+    set_focus_target(m_list);
+    if (run() == 0 || m_open.paths.isEmpty()) {
+        return false;
+    }
+
+    *folder_path = m_open.paths.first();
     return true;
 }
 
@@ -1089,6 +1112,17 @@ void file_sheet::accept_path_field() {
         return;
     }
 
+    if (m_mode == file_sheet_mode::OPEN_FOLDER) {
+        if (!target.isDir()) {
+            m_footer_note->setText(QStringLiteral("%1 is not a folder").arg(typed));
+            return;
+        }
+
+        m_open = { { target.absoluteFilePath() }, {} };
+        finish(1);
+        return;
+    }
+
     if (!target.isFile()) {
         QString refusal = refusal_by_kind(target.absoluteFilePath());
         m_footer_note->setText(refusal.isEmpty() ? QStringLiteral("%1 does not exist").arg(typed)
@@ -1158,6 +1192,25 @@ void file_sheet::fit_columns() {
 }
 
 void file_sheet::accept() {
+    if (m_mode == file_sheet_mode::OPEN_FOLDER) {
+        QString chosen = current_folder();
+        QModelIndexList selected = m_list->selectionModel()->selectedRows();
+        if (!selected.isEmpty()) {
+            const QFileInfo& entry = m_model->entry(selected.first().row());
+            if (entry.isDir()) {
+                chosen = entry.absoluteFilePath();
+            }
+        }
+
+        if (chosen.isEmpty() || !QFileInfo(chosen).isDir()) {
+            return;
+        }
+
+        m_open = { { QFileInfo(chosen).absoluteFilePath() }, {} };
+        finish(1);
+        return;
+    }
+
     if (m_mode == file_sheet_mode::OPEN) {
         QStringList files = selected_files();
         if (files.isEmpty()) {
@@ -1202,6 +1255,18 @@ void file_sheet::accept() {
 }
 
 void file_sheet::refresh_primary() {
+    if (m_mode == file_sheet_mode::OPEN_FOLDER) {
+        QString chosen = current_folder();
+        QModelIndexList selected = m_list->selectionModel()->selectedRows();
+        if (!selected.isEmpty() && m_model->entry(selected.first().row()).isDir()) {
+            chosen = m_model->entry(selected.first().row()).absoluteFilePath();
+        }
+
+        m_primary->setEnabled(!chosen.isEmpty() && QFileInfo(chosen).isDir());
+        m_footer_note->setText(chosen);
+        return;
+    }
+
     if (m_mode == file_sheet_mode::OPEN) {
         m_primary->setEnabled(!selected_files().isEmpty());
         return;

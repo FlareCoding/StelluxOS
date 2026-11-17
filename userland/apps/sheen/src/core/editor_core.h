@@ -66,6 +66,16 @@ struct bound_extension_command {
     QAction* action = nullptr;
 };
 
+struct migrated_tab {
+    file_record file;
+    const language* lang = nullptr;
+    view_state view;
+    int untitled_number = 1;
+    sptr_t scintilla_document = 0;
+    bool is_deleted = false;
+    bool is_modified = false;
+};
+
 class editor_core : public QWidget {
 public:
     editor_core(QMainWindow* window, sheen_app& app, QWidget* parent = nullptr);
@@ -89,9 +99,19 @@ public:
     tab_row* tab_row_widget() const { return m_tab_row; }
     int document_count() const { return static_cast<int>(m_documents.size()); }
     QString active_file_path() const;
+    QString active_tab_title() const;
+    QList<diagnostic_item> current_diagnostics() const { return all_diagnostics(); }
     bool focus_if_open(const QString& path);
     bool is_untitled_number_taken(int number) const;
     void set_workspace_root(const QString& root_path);
+
+    void show_welcome_state();
+    void focus_active_surface();
+    bool can_promote_in_place_for(const QString& root_path) const;
+    bool has_modified_document(const QString& path) const;
+    void drop_pristine_untitled_tabs();
+    QList<migrated_tab> extract_tabs_under(const QString& root_path, const editor_core* destination = nullptr);
+    void adopt_migrated_tabs(const QList<migrated_tab>& migrated);
 
     void open_custom_tab(const QString& owner_id, const custom_tab_spec& tab);
     QWidget* focus_custom_tab(const QString& owner_id, const QString& tab_id);
@@ -109,6 +129,8 @@ public:
     std::function<void(const QString& title)> on_title_changed;
     std::function<void(const QString& file_path)> on_active_file_changed;
     std::function<void()> on_diagnostics_changed;
+    std::function<void(const QString& file_path)> on_file_saved;
+    std::function<void(const QString& root_path)> on_open_folder_requested;
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -137,6 +159,9 @@ private:
 
     void open_dropped(const QList<QUrl>& urls);
     void choose_files_to_open(const QString& folder);
+    void choose_folder_to_open(const QString& start_folder);
+    void handle_top_bar_open_folder();
+    void sync_open_folder_button();
     bool load_in_background(const QString& path, qint64 size, const QByteArray& encoding, int index);
     void finish_loading(document* doc, const load_result& result);
     void hold_binary(document* doc, const QString& path, const QByteArray& bytes);
@@ -148,7 +173,7 @@ private:
     bool close_document(int index);
     bool close_documents(const QList<document*>& docs, const QString& purpose, bool closes_tabs = true);
     prompt_answer ask_about_unsaved(document* doc, const QString& purpose);
-    void remove_document(int index, bool keeps_text);
+    void remove_document(int index, bool keeps_text, bool records_closed = true);
     void reopen_closed_tab();
     void check_disk(document* doc);
     void select_tab(int index);
@@ -231,6 +256,7 @@ private:
     sheet* m_open_sheet = nullptr;
     tab_switcher* m_switcher;
     bool m_is_switching_tabs = false;
+    bool m_has_opened_any_tab = false;
     int m_switch_index = 0;
     QString m_status_note;
 };

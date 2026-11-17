@@ -22,7 +22,7 @@ class crumb_bar;
 class folder_model;
 class name_match_delegate;
 
-enum class file_sheet_mode { OPEN, SAVE_AS };
+enum class file_sheet_mode { OPEN, OPEN_FOLDER, SAVE_AS };
 
 /* A file opened this session and when, as Recent lists it */
 struct recent_file {
@@ -48,6 +48,7 @@ public:
 
     /* Starts on `current_path` when the folder shown holds it, on the first row otherwise */
     bool choose_to_open(open_request* request, const QString& current_path);
+    bool choose_folder(QString* folder_path);
 
     /* Replaces the header's own title, as when several files are named in turn */
     void set_title(const QString& title);
@@ -95,7 +96,7 @@ private:
     QLabel* m_note;
     QLabel* m_filter_hint;
     QLabel* m_footer_note;
-    QComboBox* m_encoding;
+    QComboBox* m_encoding = nullptr;
     QComboBox* m_eol = nullptr;
     QPushButton* m_primary;
     QToolButton* m_back;
