@@ -52,4 +52,9 @@ bool discard_directory(const std::string& path, const std::string& discard, std:
 bool replace_directory(const std::string& staged, const std::string& installed, const std::string& discard,
                        std::string& error);
 
+// Writes `text` through a temporary file unless the file holds it already, so its modification time changes only when
+// its content does
+bool write_file_if_changed(const std::string& path, std::string_view text, bool& changed, std::string& error);
+bool copy_file_if_changed(const std::string& from, const std::string& to, bool& changed, std::string& error);
+
 #endif // MCUFW_FILES_HPP

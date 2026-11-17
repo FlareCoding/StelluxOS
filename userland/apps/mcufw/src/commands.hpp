@@ -10,5 +10,9 @@
 int run_boards(const arguments& parsed, const directory_layout& layout, reporter& report);
 int run_install(const arguments& parsed, const directory_layout& layout, reporter& report);
 int run_remove(const arguments& parsed, const directory_layout& layout, reporter& report);
+int run_hook_command(const arguments& parsed, reporter& report);
+
+// Prints `error` and mcufw's usage on stderr, and returns the status a usage mistake exits with
+int usage_error(const std::string& error);
 
 #endif // MCUFW_COMMANDS_HPP

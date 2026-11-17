@@ -6,6 +6,7 @@
 #include <string_view>
 
 constexpr const char* COMPILE_RECIPE = "recipe.cpp.o.pattern";
+constexpr std::string_view PATTERN_SUFFIX = ".pattern";
 constexpr std::string_view TOOL_PATH_START = "{runtime.tools.";
 constexpr std::string_view TOOL_PATH_END = ".path";
 
@@ -51,13 +52,55 @@ static bool is_named(const tool_dependency& tool, const std::string& name) {
     return tool.name == name || tool.name + "-" + tool.version == name;
 }
 
+// The upload tool a serial port uses, as arduino-cli picks it, with a bare `upload.tool` read as the default as on
+// older platforms
+static std::string serial_upload_tool(const property_table& properties) {
+    for (const char* key : { "upload.tool.serial", "upload.tool.default", "upload.tool" }) {
+        if (const std::string* tool = properties.find(key)) {
+            return *tool;
+        }
+    }
+
+    return {};
+}
+
+// The tools every recipe names, and the upload tool's pattern with that tool's own properties over the board's
+static std::vector<std::string> tools_named(const property_table& properties) {
+    std::vector<std::string> patterns;
+    for (const std::string& key : properties.keys()) {
+        if (key.starts_with("recipe.") && key.ends_with(PATTERN_SUFFIX)) {
+            patterns.push_back(properties.expand(properties.get(key)));
+        }
+    }
+
+    std::string tool = serial_upload_tool(properties);
+    if (!tool.empty()) {
+        property_table uploading = properties;
+        uploading.merge(properties.subtree("tools." + tool));
+        patterns.push_back(uploading.expand(uploading.get("upload.pattern")));
+    }
+
+    std::vector<std::string> names;
+    for (const std::string& pattern : patterns) {
+        std::vector<std::string> named = named_tools(pattern);
+        names.insert(names.end(), named.begin(), named.end());
+    }
+
+    return names;
+}
+
 board_requirements check_requirements(const selected_board& board, const std::vector<located_tool>& tools) {
     board_requirements requirements;
+    const installed_core& core = *board.core;
+    if (!core.newest_overridden_version.empty()) {
+        requirements.missing_overrides = core.packager + ":" + core.architecture + " " + core.newest_overridden_version;
+    }
+
     property_table without_tools = board_properties(board, {});
     property_table with_tools = without_tools;
     set_tool_paths(tools, with_tools);
 
-    for (const std::string& name : named_tools(without_tools.expand(without_tools.get(COMPILE_RECIPE)))) {
+    for (const std::string& name : tools_named(without_tools)) {
         bool is_dependency = false;
         bool is_located = with_tools.find("runtime.tools." + name + ".path");
         for (const located_tool& tool : tools) {
@@ -90,6 +133,10 @@ board_requirements check_requirements(const selected_board& board, const std::ve
 
 std::string describe_missing(const board_requirements& requirements) {
     std::string description = requirements.missing_program;
+    if (!requirements.missing_overrides.empty()) {
+        description = requirements.missing_overrides + (description.empty() ? "" : ", " + description);
+    }
+
     for (const tool_dependency& tool : requirements.missing_tools) {
         if (!description.empty()) {
             description += ", ";

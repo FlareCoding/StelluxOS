@@ -1,8 +1,8 @@
 #ifndef MCUFW_REQUIREMENTS_HPP
 #define MCUFW_REQUIREMENTS_HPP
 
-// What a board's build is missing, read from its compile recipe: each tool the recipe names that is not installed or
-// that the core does not depend on, and the program the recipe runs when it cannot be found
+// What a board's build is missing: the core at a version the image has overrides for, each tool its recipes name that
+// is not installed or that the core does not depend on, and the program the compile recipe runs when it is not found
 
 #include "boards.hpp"
 #include "tools.hpp"
@@ -11,9 +11,10 @@
 #include <vector>
 
 struct board_requirements {
-    std::vector<tool_dependency> tools;            // the core's dependencies the compile recipe names, located or not
-    std::vector<tool_dependency> missing_tools;    // uninstalled dependencies, and names the core does not depend on
-    std::string                  missing_program;  // the compile recipe's program, by file name, when it is not found
+    std::vector<tool_dependency> tools;              // the core's dependencies the recipes name, located or not
+    std::vector<tool_dependency> missing_tools;      // uninstalled dependencies, and names the core does not depend on
+    std::string                  missing_program;    // the compile recipe's program, by file name, when it is not found
+    std::string                  missing_overrides;  // as `esp32:esp32 3.3.12`, its newest overridden version
 };
 
 // Each tool named once. The program is checked only once its path holds no placeholder, so a missing tool hides the

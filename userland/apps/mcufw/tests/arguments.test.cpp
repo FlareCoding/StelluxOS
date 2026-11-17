@@ -1,5 +1,5 @@
-/* arguments, run on the build machine: each command with its words and `--events`, and the command lines that fail as
- * usage errors */
+/* arguments, run on the build machine: each command with its words and `--events`, `hook` taking every word after it,
+ * and the command lines that fail as usage errors */
 
 #include "arguments.hpp"
 
@@ -58,6 +58,15 @@ static void check_boards() {
           "remove parses with a target");
 }
 
+static void check_hook() {
+    arguments parsed;
+    std::string error;
+    std::vector<std::string> words = { "copy-first", "a", "b", "--else", "x", "--events", "-DX" };
+    check(parse({ "hook", "copy-first", "a", "b", "--else", "x", "--events", "-DX" }, parsed, error) &&
+              parsed.command == command_name::hook && parsed.operands == words && !parsed.events,
+          "hook takes every word after it as an operand");
+}
+
 static void check_usage_errors() {
     const usage_error usage_errors[] = {
         { {}, "no command given" },
@@ -78,6 +87,7 @@ static void check_usage_errors() {
 
 int main() {
     check_boards();
+    check_hook();
     check_usage_errors();
 
     if (g_failures != 0) {

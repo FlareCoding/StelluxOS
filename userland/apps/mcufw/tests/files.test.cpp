@@ -133,6 +133,18 @@ static void check_writes(const std::string& root) {
     close(fd);
 }
 
+static void check_changed_writes(const std::string& root) {
+    std::string path = join_path(root, "flash_args");
+    write_text(path + ".partial", "--flash-mode dio --flash-freq 80m\n");
+
+    bool changed = false;
+    std::string text;
+    std::string error;
+    check(write_file_if_changed(path, "--flash-mode qio\n", changed, error) && changed &&
+              read_file(path, text, error) && text == "--flash-mode qio\n",
+          "a partial file an interrupted write left behind is replaced whole");
+}
+
 static void check_trees(const std::string& root) {
     std::string error;
     std::string outside = join_path(root, "outside");
@@ -193,6 +205,7 @@ int main() {
     setenv("PATH", path.c_str(), 1);
 
     check_writes(root);
+    check_changed_writes(root);
     check_trees(root);
     check_replacing(root);
 
