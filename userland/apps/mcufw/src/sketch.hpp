@@ -46,7 +46,9 @@ struct sketch_settings {
 
 bool read_sketch_settings(const sketch& sketch, sketch_settings& settings, std::string& error);
 
-// Sets sketch.yaml's `default_fqbn`, creating the file when missing and leaving every other line as it was
+// Sets sketch.yaml's `default_fqbn` or `default_port`, creating the file when missing and leaving every other line as
+// it was. The port is saved only when `typed`, the `--port` given, is set, so the only port plugged in is never saved.
 bool save_sketch_fqbn(const sketch& sketch, const std::string& fqbn, std::string& error);
+bool save_sketch_port(const sketch& sketch, const std::string& typed, const std::string& port, std::string& error);
 
 #endif // MCUFW_SKETCH_HPP

@@ -46,3 +46,8 @@ recipe.output.tmp_file={build.project_name}.bin
 recipe.size.pattern="{compiler.size.cmd}" -A "{build.path}/{build.project_name}.elf"
 recipe.size.regex=^(?:\.text|\.rodata|\.data)\s+([0-9]+).*
 recipe.size.regex.data=^(?:\.data|\.bss)\s+([0-9]+).*
+
+# A stand-in upload tool that prints an upload's progress, so a flash runs where no board is attached
+tools.standin.upload.pattern=cat "{runtime.platform.path}/upload.txt"
+tools.standin.upload.params.verbose=
+tools.standin.upload.params.quiet=

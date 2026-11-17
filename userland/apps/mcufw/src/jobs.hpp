@@ -5,7 +5,9 @@
 // A child takes mcufw's working directory when it is created.
 
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // The most children run at once, since the kernel polls at most 256 descriptors in one call and each child takes three:
@@ -67,6 +69,11 @@ private:
 // Runs `words` with mcufw's stdin, stdout and stderr and waits for it. A cancel sends the child SIGTERM and keeps
 // waiting, so a child that owns the terminal can restore it.
 bool run_attached(const std::vector<std::string>& words, int& exit_status, std::string& error);
+
+// Runs `words` as `run_attached` does, but hands its stdout, and its stderr with `stderr_to_output`, to `on_output`
+// as the bytes arrive
+bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
+                  const std::function<void(std::string_view bytes)>& on_output, int& exit_status, std::string& error);
 
 // How a child ended, from `exit_status` as proc_wait gives it: empty for status 0, else what went wrong
 std::string exit_problem(int exit_status);

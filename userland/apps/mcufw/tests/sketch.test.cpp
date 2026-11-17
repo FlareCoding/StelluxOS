@@ -190,6 +190,12 @@ static void check_settings(const std::string& root) {
     check(save_sketch_fqbn(found, "esp32:esp32:esp32da", error) &&
               read_text(yaml) == "default_fqbn: esp32:esp32:esp32da\n",
           "saving a board creates sketch.yaml");
+    check(save_sketch_port(found, "", "/dev/serial/cp2102-0001", error) &&
+              read_text(yaml) == "default_fqbn: esp32:esp32:esp32da\n",
+          "saving a port no one typed leaves sketch.yaml");
+    check(save_sketch_port(found, "cp2102-0001", "/dev/serial/cp2102-0001", error) &&
+              read_text(yaml) == "default_fqbn: esp32:esp32:esp32da\ndefault_port: /dev/serial/cp2102-0001\n",
+          "saving a typed port adds its path beside the board's");
 }
 
 int main() {

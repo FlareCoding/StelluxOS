@@ -155,6 +155,16 @@ static void check_expansion() {
     check(looping.expand("{a}") == "{a}xxxxxxxxxx", "expansion stops after its pass limit");
 }
 
+static void check_flags() {
+    property_table table = parsed("serial.disableDTR=true\nupload.verify=false\nyes=True\n");
+    table.set("serial.disableRTS", " true ");
+    check(property_is_true(table, "serial.disableDTR") && property_is_true(table, "serial.disableRTS"),
+          "true, even with spaces around it, sets a flag");
+    check(!property_is_true(table, "upload.verify") && !property_is_true(table, "yes"),
+          "false or another spelling does not");
+    check(!property_is_true(table, "upload.use_1200bps_touch"), "a missing key does not");
+}
+
 int main() {
     check_lines();
     check_linux_keys();
@@ -162,6 +172,8 @@ int main() {
     check_encoding();
     check_trees();
     check_expansion();
+
+    check_flags();
 
     if (g_failures != 0) {
         printf("properties: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

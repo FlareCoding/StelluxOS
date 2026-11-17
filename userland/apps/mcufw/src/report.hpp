@@ -100,6 +100,17 @@ public:
     // `Built <image> in <time>`, or `built <image>`
     void built(const build_result& result, uint64_t elapsed_ns);
 
+    // The port a flash uses and why it was chosen. A program sees `port <path>`.
+    void port_chosen(const std::string& path, const std::string& why);
+
+    // The upload tool's output, which a person sees as printed. A program sees `log flash <line>` per nonempty line
+    // ended by CR or LF, and `progress flash <percent> 100` after each line naming a percentage.
+    void upload_output(std::string_view bytes);
+
+    // That the upload finished and how long the flash took, the touch and the waits included. A program sees
+    // `flashed <port>`, naming the port the board answers on after the upload.
+    void flashed(const std::string& port, uint64_t elapsed_ns);
+
     // `mcufw: <reason>` on stderr, or `failed <kind> <reason>`
     void failed(const failure& failure);
 
@@ -107,6 +118,7 @@ private:
     void event(const std::vector<std::string>& fields);
     void labeled(std::string_view label, const std::string& text);
     void hide_progress();
+    void end_upload_line();
 
     bool        m_events;
     bool        m_terminal;          // stdout is a terminal, so counts update in place
@@ -118,6 +130,7 @@ private:
     size_t      m_compiles_needed = 0;
     size_t      m_compiles_total = 0;
     std::string m_compile_reason;
+    std::string m_upload_line;       // the upload tool's line not yet ended, for a program's events
 };
 
 // The monotonic clock in nanoseconds, which progress counts and a build's time are measured against

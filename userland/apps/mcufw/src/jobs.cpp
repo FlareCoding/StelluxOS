@@ -300,6 +300,78 @@ bool run_attached(const std::vector<std::string>& words, int& exit_status, std::
     return true;
 }
 
+bool run_streamed(const std::vector<std::string>& words, bool stderr_to_output,
+                  const std::function<void(std::string_view bytes)>& on_output, int& exit_status, std::string& error) {
+    int handle = -1;
+    if (!create_child(words, "", handle, error)) {
+        return false;
+    }
+
+    int output[2];
+    if (pipe2(output, O_CLOEXEC) != 0) {
+        error = "cannot make a pipe for " + words[0] + ": " + strerror(errno);
+        close(handle);
+        return false;
+    }
+
+    process_info info = {};
+    bool started = proc_set_handle(handle, STDOUT_FILENO, output[1]) == 0 &&
+                   (!stderr_to_output || proc_set_handle(handle, STDERR_FILENO, output[1]) == 0) &&
+                   proc_info(handle, &info) == 0 && proc_start(handle) == 0;
+    int start_error = errno;
+    close(output[1]);
+    if (!started) {
+        error = "cannot start " + words[0] + ": " + strerror(start_error);
+        close(output[0]);
+        close(handle);
+        return false;
+    }
+
+    // The child's exit ends the reading, so a grandchild that keeps the pipe open cannot hold the run
+    std::vector<pollfd> watched = { { output[0], POLLIN, 0 }, { handle, POLLIN, 0 } };
+    bool terminated = false;
+    bool is_waited = true;
+    char buffer[READ_CHUNK];
+    while (true) {
+        if (wait_for(watched, !terminated) < 0) {
+            if (errno != EINTR) {
+                error = std::string("cannot wait for ") + words[0] + ": " + strerror(errno);
+                proc_kill(handle);
+                is_waited = false;
+                break;
+            }
+
+            if (cancel_requested() && !terminated) {
+                kill(info.pid, SIGTERM);
+                terminated = true;
+            }
+
+            continue;
+        }
+
+        if (watched[1].revents & POLLIN) {
+            std::string rest;
+            drain(output[0], rest);
+            if (!rest.empty()) {
+                on_output(rest);
+            }
+
+            break;
+        }
+
+        ssize_t length = read(output[0], buffer, sizeof(buffer));
+        if (length > 0) {
+            on_output(std::string_view(buffer, static_cast<size_t>(length)));
+        } else if (length == 0 || errno != EINTR) {
+            watched[0].fd = -1;
+        }
+    }
+
+    close(output[0]);
+    wait_for_exit(handle, exit_status);
+    return is_waited;
+}
+
 std::string exit_problem(int exit_status) {
     if (STLX_WIFSIGNALED(exit_status)) {
         return "was terminated by signal " + std::to_string(STLX_WTERMSIG(exit_status));

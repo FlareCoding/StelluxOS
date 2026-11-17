@@ -263,14 +263,15 @@ bool read_sketch_settings(const sketch& sketch, sketch_settings& settings, std::
     return true;
 }
 
-bool save_sketch_fqbn(const sketch& sketch, const std::string& fqbn, std::string& error) {
+// Sets sketch.yaml's top-level `key`, creating the file when missing and leaving every other line as it was
+static bool save_setting(const sketch& sketch, const char* key, const std::string& value, std::string& error) {
     std::string path = settings_path(sketch);
     std::string text;
     if (is_file(path) && !read_file(path, text, error)) {
         return false;
     }
 
-    std::string setting = "default_fqbn: " + fqbn;
+    std::string setting = std::string(key) + ": " + value;
     std::string updated;
     bool replaced = false;
     size_t start = 0;
@@ -278,7 +279,7 @@ bool save_sketch_fqbn(const sketch& sketch, const std::string& fqbn, std::string
         size_t end = text.find('\n', start);
         std::string_view line = std::string_view(text).substr(start, end - start);
         std::string ignored;
-        if (!replaced && read_setting(line, "default_fqbn", ignored)) {
+        if (!replaced && read_setting(line, key, ignored)) {
             updated += setting;
             replaced = true;
         } else {
@@ -303,4 +304,12 @@ bool save_sketch_fqbn(const sketch& sketch, const std::string& fqbn, std::string
     bool changed = false;
 
     return write_file_if_changed(path, updated, changed, error);
+}
+
+bool save_sketch_fqbn(const sketch& sketch, const std::string& fqbn, std::string& error) {
+    return save_setting(sketch, "default_fqbn", fqbn, error);
+}
+
+bool save_sketch_port(const sketch& sketch, const std::string& typed, const std::string& port, std::string& error) {
+    return typed.empty() || save_setting(sketch, "default_port", port, error);
 }
