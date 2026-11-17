@@ -14,6 +14,11 @@ GCC_VER="14.3.0"
 BINUTILS_VER="2.45"
 MUSL_VER="1.2.5"
 
+# The tree's musl patches and the libstlx headers they include, which the
+# native stage builds its musl with, as the tree builds its own
+STLX_HEADERS="userland/lib/libstlx/include"
+RECIPE_TREE="userland/musl/patches $STLX_HEADERS/stlx/proc.h $STLX_HEADERS/stlx/syscall_nums.h"
+
 # Package release numbers, bumped when a recipe changes without its
 # upstream version changing
 GCC_PKG_REL="2"

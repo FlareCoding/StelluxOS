@@ -111,7 +111,9 @@ archives in the cache and a `versions.sh` whose `package_version <name>`
 prints the version-release the recipe builds today. One recipe may emit
 several packages: `toolchain` builds the GCC toolchain in one container run
 and can emit gcc and binutils, leaving in the cache only the ones it was
-asked for.
+asked for. `toolchain` builds the gcc package's musl with the tree's musl
+patches, so changing those patches or the libstlx headers they include
+needs a release bump of gcc and binutils.
 
 ## The chromium recipe
 
