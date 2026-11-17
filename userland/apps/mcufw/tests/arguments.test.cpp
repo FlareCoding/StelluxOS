@@ -17,6 +17,9 @@ struct usage_error {
     const char*              error;
 };
 
+constexpr const char* MONITOR_EVENTS_MISTAKE =
+    "the monitor prints no events, so a program runs serial monitor --events on the port itself";
+
 static uint64_t g_checks;
 static uint64_t g_failures;
 
@@ -101,10 +104,29 @@ static void check_clean() {
     check(parse({ "clean", "--cores" }, parsed, error) && parsed.cores, "clean takes --cores");
 }
 
+static void check_flash_and_monitor() {
+    arguments parsed;
+    std::string error;
+    check(parse({ "flash", "Lamp", "--board", "esp32da", "--jobs", "2", "--port", "/dev/serial/cp2102-0001" }, parsed,
+                error) &&
+              parsed.command == command_name::flash && parsed.board == "esp32da" && parsed.jobs == 2 &&
+              parsed.port == "/dev/serial/cp2102-0001" && !parsed.monitor && parsed.baud == 115200,
+          "flash takes the build options and a port");
+
+    check(parse({ "flash", "--monitor", "--baud=9600", "--", "--echo", "on", "--events" }, parsed, error) &&
+              parsed.monitor && parsed.baud == 9600 &&
+              parsed.serial_options == std::vector<std::string>({ "--echo", "on", "--events" }) && !parsed.events,
+          "flash --monitor hands every word after -- to serial monitor");
+    check(parse({ "monitor", "--port", "cp2102-0001", "--", "--dtr", "off" }, parsed, error) &&
+              parsed.command == command_name::monitor && parsed.port == "cp2102-0001" &&
+              parsed.serial_options == std::vector<std::string>({ "--dtr", "off" }),
+          "monitor takes a port and words for serial monitor");
+}
+
 static void check_usage_errors() {
     const usage_error usage_errors[] = {
         { {}, "no command given" },
-        { { "flash" }, "unknown command flash" },
+        { { "frob" }, "unknown command frob" },
         { { "boards", "--json" }, "boards takes no option --json" },
         { { "boards", "esp32da", "esp32s3" }, "boards takes 1 word at most" },
         { { "install" }, "install needs a board, a core or a library, such as FastLED" },
@@ -120,6 +142,13 @@ static void check_usage_errors() {
         { { "clean", "a", "b" }, "clean takes 1 sketch at most" },
         { { "clean", "--jobs", "4" }, "clean takes no option --jobs" },
         { { "build", "--cores" }, "build takes no option --cores" },
+        { { "monitor", "--jobs", "4" }, "monitor takes no option --jobs" },
+        { { "build", "--monitor" }, "build takes no option --monitor" },
+        { { "flash", "--baud", "0" }, "--baud takes a speed in baud from 1 to 4294967295" },
+        { { "monitor", "--events" }, MONITOR_EVENTS_MISTAKE },
+        { { "flash", "--monitor", "--events" }, MONITOR_EVENTS_MISTAKE },
+        { { "flash", "--", "--echo", "on" },
+          "the words after -- go to serial monitor, which flash starts only with --monitor" },
     };
 
     for (const usage_error& expected : usage_errors) {
@@ -134,6 +163,7 @@ int main() {
     check_build();
     check_hook();
     check_clean();
+    check_flash_and_monitor();
     check_usage_errors();
 
     if (g_failures != 0) {

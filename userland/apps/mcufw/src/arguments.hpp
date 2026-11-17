@@ -7,17 +7,21 @@
 #include <string>
 #include <vector>
 
-enum class command_name { boards, install, remove, hook, build, clean };
+enum class command_name { boards, install, remove, hook, build, clean, flash, monitor };
 
 struct arguments {
     command_name             command = command_name::boards;
     std::vector<std::string> operands;
     bool                     events = false;
-    std::string              board;                 // build: `--board`
-    uint32_t                 jobs = 0;              // build: `--jobs`, 0 for one per CPU
-    std::string              warnings = "default";  // build: `--warnings`, `default` as decision 6 has it
-    bool                     verbose = false;       // build: `--verbose`, which the other commands accept
+    std::string              board;                 // build and flash: `--board`
+    uint32_t                 jobs = 0;              // build and flash: `--jobs`, 0 for one per CPU
+    std::string              warnings = "default";  // build and flash: `--warnings`, `default` as decision 6 has it
+    bool                     verbose = false;       // build and flash: `--verbose`, which the other commands accept
     bool                     cores = false;         // clean: `--cores`
+    std::string              port;                  // flash and monitor: `--port`
+    uint32_t                 baud = 115200;         // flash and monitor: `--baud`
+    bool                     monitor = false;       // flash: `--monitor`
+    std::vector<std::string> serial_options;        // flash and monitor: the words after `--`
 };
 
 // Fails on a missing or unknown command or a word the command does not take, which main reports as a usage error.

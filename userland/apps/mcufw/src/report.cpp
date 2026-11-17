@@ -1,6 +1,7 @@
 #include "report.hpp"
 
 #include "build.hpp"
+#include "upload.hpp"
 
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -574,6 +575,55 @@ void reporter::built(const build_result& result, uint64_t elapsed_ns) {
     }
 
     labeled("Built", result.image + (result.up_to_date ? " is up to date" : " in " + duration(elapsed_ns)));
+}
+
+void reporter::port_chosen(const std::string& path, const std::string& why) {
+    if (m_events) {
+        event({ "port", path });
+        return;
+    }
+
+    labeled("Port", path + ", " + why);
+}
+
+void reporter::end_upload_line() {
+    if (m_upload_line.empty()) {
+        return;
+    }
+
+    event({ "log", "flash", m_upload_line });
+    int percent = last_percentage(m_upload_line);
+    if (percent >= 0) {
+        event({ "progress", "flash", std::to_string(percent), "100" });
+    }
+
+    m_upload_line.clear();
+}
+
+void reporter::upload_output(std::string_view bytes) {
+    if (!m_events) {
+        fwrite(bytes.data(), 1, bytes.size(), m_err);
+        fflush(m_err);
+        return;
+    }
+
+    for (char c : bytes) {
+        if (c == '\r' || c == '\n') {
+            end_upload_line();
+        } else {
+            m_upload_line += c;
+        }
+    }
+}
+
+void reporter::flashed(const std::string& port, uint64_t elapsed_ns) {
+    if (m_events) {
+        end_upload_line();
+        event({ "flashed", port });
+        return;
+    }
+
+    labeled("Flashed", "in " + duration(elapsed_ns));
 }
 
 void reporter::failed(const failure& failure) {

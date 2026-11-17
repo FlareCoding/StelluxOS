@@ -1205,6 +1205,7 @@ bool build_sketch(
     const std::vector<located_tool>& tools,
     const build_options& options,
     reporter& report,
+    file_lock& tree_lock,
     build_result& result,
     failure& failed
 ) {
@@ -1215,8 +1216,7 @@ bool build_sketch(
         return false;
     }
 
-    file_lock lock;
-    if (!lock.acquire(join_path(directory, BUILD_LOCK_NAME), lock_mode::exclusive, error)) {
+    if (!tree_lock.acquire(join_path(directory, BUILD_LOCK_NAME), lock_mode::exclusive, error)) {
         failed = { failure_kind::lock, error };
         return false;
     }

@@ -21,6 +21,8 @@ constexpr command_rule COMMAND_RULES[] = {
     { "remove", command_name::remove, SIZE_MAX, "", "remove needs a core or a library, such as FastLED" },
     { "build", command_name::build, 1, "sketch", "" },
     { "clean", command_name::clean, 1, "sketch", "" },
+    { "flash", command_name::flash, 1, "sketch", "" },
+    { "monitor", command_name::monitor, 1, "sketch", "" },
 };
 
 // arduino-cli's warning levels, each a `compiler.warning_flags.<level>` key
@@ -108,6 +110,27 @@ static bool parse_build_option(int argc, char** argv, int& index, arguments& par
     return true;
 }
 
+// `--port <port>` or `--baud <rate>`, the options of the commands that open a serial port
+static bool parse_port_option(int argc, char** argv, int& index, arguments& parsed, std::string& error) {
+    if (is_option(argv[index], "--port")) {
+        return option_value(argc, argv, index, "--port", parsed.port, error);
+    }
+
+    std::string value;
+    if (!option_value(argc, argv, index, "--baud", value, error)) {
+        return false;
+    }
+
+    const char* end = value.data() + value.size();
+    std::from_chars_result read = std::from_chars(value.data(), end, parsed.baud);
+    if (value.empty() || read.ec != std::errc() || read.ptr != end || parsed.baud == 0) {
+        error = "--baud takes a speed in baud from 1 to 4294967295";
+        return false;
+    }
+
+    return true;
+}
+
 bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& error) {
     if (argc < 2) {
         error = "no command given";
@@ -128,19 +151,31 @@ bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& erro
     }
 
     parsed.command = rule->command;
+    bool is_flash = rule->command == command_name::flash;
+    bool opens_port = is_flash || rule->command == command_name::monitor;
     for (int index = 2; index < argc; index++) {
         std::string_view word = argv[index];
         bool is_build_option = is_option(word, "--board") || is_option(word, "--jobs") || is_option(word, "--warnings");
+        bool is_port_option = is_option(word, "--port") || is_option(word, "--baud");
         if (word == "--events") {
             parsed.events = true;
         } else if (word == "--verbose") {
             parsed.verbose = true;
-        } else if (rule->command == command_name::build && is_build_option) {
+        } else if ((rule->command == command_name::build || is_flash) && is_build_option) {
             if (!parse_build_option(argc, argv, index, parsed, error)) {
                 return false;
             }
         } else if (rule->command == command_name::clean && word == "--cores") {
             parsed.cores = true;
+        } else if (opens_port && is_port_option) {
+            if (!parse_port_option(argc, argv, index, parsed, error)) {
+                return false;
+            }
+        } else if (is_flash && word == "--monitor") {
+            parsed.monitor = true;
+        } else if (opens_port && word == "--") {
+            parsed.serial_options.assign(argv + index + 1, argv + argc);
+            break;
         } else if (word.starts_with("-")) {
             error = std::string(rule->name) + " takes no option " + std::string(word);
             return false;
@@ -157,6 +192,17 @@ bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& erro
     if (parsed.operands.size() > rule->operands_max) {
         error = std::string(rule->name) + " takes " + std::to_string(rule->operands_max) + " " +
                 std::string(rule->operand) + " at most";
+        return false;
+    }
+
+    bool starts_monitor = rule->command == command_name::monitor || parsed.monitor;
+    if (starts_monitor && parsed.events) {
+        error = "the monitor prints no events, so a program runs serial monitor --events on the port itself";
+        return false;
+    }
+
+    if (is_flash && !parsed.monitor && !parsed.serial_options.empty()) {
+        error = "the words after -- go to serial monitor, which flash starts only with --monitor";
         return false;
     }
 

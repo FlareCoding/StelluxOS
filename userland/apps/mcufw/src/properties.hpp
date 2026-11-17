@@ -62,4 +62,7 @@ size_t utf8_character_size(std::string_view text, size_t at);
 // Reads the file at `path` as parse_properties does
 bool load_properties(const std::string& path, property_table& table, std::string& error);
 
+// Whether `key` is set to `true` once spaces are trimmed, as arduino-cli reads a board's boolean keys
+bool property_is_true(const property_table& properties, const std::string& key);
+
 #endif // MCUFW_PROPERTIES_HPP

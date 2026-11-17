@@ -266,3 +266,8 @@ bool load_properties(const std::string& path, property_table& table, std::string
 
     return true;
 }
+
+bool property_is_true(const property_table& properties, const std::string& key) {
+    const std::string* value = properties.find(key);
+    return value && trimmed(*value) == "true";
+}

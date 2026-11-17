@@ -255,6 +255,37 @@ static void check_cached_core() {
     fclose(program.err);
 }
 
+static void check_flash_lines() {
+    capture person = open_capture();
+    reporter shown(false, person.out, person.err);
+    shown.port_chosen("/dev/serial/ft232r-0001", "the only serial port");
+    shown.upload_output("Writing at 0x00010000 [==>   ]  33.3% 4096/12288 bytes...\r");
+    shown.flashed("/dev/serial/ft232r-0001", 12'400'000'000);
+    check(read_back(person.out) == "Port       /dev/serial/ft232r-0001, the only serial port\nFlashed    in 12 s\n",
+          "a person sees the port and how long the flash took");
+    check(read_back(person.err) == "Writing at 0x00010000 [==>   ]  33.3% 4096/12288 bytes...\r",
+          "and the upload tool's bytes as it wrote them");
+
+    capture program = open_capture();
+    reporter events(true, program.out, program.err);
+    events.port_chosen("/dev/serial/ft232r-0001", "the only serial port");
+    events.upload_output("Connecting....\nWriting at 0x00010000  33.3% 4096/12288 bytes...\rWriting at 0x0001");
+    events.upload_output("1000  66.7% 8192/12288 bytes...\rHash of data verified.");
+    events.flashed("/dev/serial/ft232r-0002", 1);
+
+    std::string expected =
+        "port\t/dev/serial/ft232r-0001\n"
+        "log\tflash\tConnecting....\n"
+        "log\tflash\tWriting at 0x00010000  33.3% 4096/12288 bytes...\n"
+        "progress\tflash\t33\t100\n"
+        "log\tflash\tWriting at 0x00011000  66.7% 8192/12288 bytes...\n"
+        "progress\tflash\t66\t100\n"
+        "log\tflash\tHash of data verified.\n"
+        "flashed\t/dev/serial/ft232r-0002\n";
+    check(read_back(program.out) == expected, "a program sees each upload line split at CR or LF, with its percentage");
+    fclose(program.err);
+}
+
 static void check_build_events() {
     installed_core core = esp32_core();
     selected_board board = default_board(core);
@@ -468,6 +499,8 @@ int main() {
     check_build_lines();
     check_rebuild_lines();
     check_cached_core();
+    check_flash_lines();
+
     check_build_events();
     check_commands();
     check_library_lines();

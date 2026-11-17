@@ -1,6 +1,17 @@
+menu.UploadMode=Upload Mode
+
 lamp.name=Lamp Board
 lamp.build.core=gcc
 lamp.build.variant=lamp
 lamp.build.board=LAMP
 lamp.upload.maximum_size=16000000
 lamp.upload.maximum_data_size=4000000
+lamp.upload.tool=standin
+lamp.upload.tool.default=standin
+lamp.upload.protocol=serial
+lamp.serial.disableDTR=true
+lamp.serial.disableRTS=true
+lamp.menu.UploadMode.uart=UART
+lamp.menu.UploadMode.cdc=USB CDC, touched at 1200 baud
+lamp.menu.UploadMode.cdc.upload.use_1200bps_touch=true
+lamp.menu.UploadMode.cdc.upload.wait_for_upload_port=true

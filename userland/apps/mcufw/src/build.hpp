@@ -6,6 +6,7 @@
 
 #include "boards.hpp"
 #include "failure.hpp"
+#include "file_lock.hpp"
 #include "layout.hpp"
 #include "report.hpp"
 #include "sketch.hpp"
@@ -31,8 +32,8 @@ struct build_result {
     bool        up_to_date;  // no step that keeps a record ran, which `reporter::built` reports as up to date
 };
 
-// Builds `sketch` in its tree under `layout.builds`, holding the tree's lock so a second build fails at once as `lock`.
-// The caller holds the state lock shared throughout, since the link may read a core `clean --cores` deletes.
+// Builds `sketch` in its tree, taking the tree's lock into `tree_lock`, which a flash keeps through the upload. The
+// caller holds the state lock shared throughout, since the link may read a core `clean --cores` deletes.
 bool build_sketch(
     const directory_layout& layout,
     const sketch& sketch,
@@ -40,6 +41,7 @@ bool build_sketch(
     const std::vector<located_tool>& tools,
     const build_options& options,
     reporter& report,
+    file_lock& tree_lock,
     build_result& result,
     failure& failed
 );
