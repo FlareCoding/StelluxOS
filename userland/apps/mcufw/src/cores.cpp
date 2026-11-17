@@ -97,10 +97,34 @@ static bool read_boards(const std::string& directory, std::vector<board_definiti
     return true;
 }
 
-static bool load_core(const std::string& packager, const std::string& architecture, const std::string& version,
-                      const std::string& directory, installed_core& core, std::string& error) {
-    core = { packager, architecture, version, directory, {}, {}, {} };
-    if (!load_properties(join_path(directory, "platform.txt"), core.platform, error)) {
+// The image's Stellux overrides of the core's version, over its platform.txt. A core with overrides only for other
+// versions keeps the newest of them, which its build needs instead.
+static bool load_overrides(const directory_layout& layout, installed_core& core, std::string& error) {
+    std::vector<std::string> versions;
+    if (!overridden_versions(layout, core.packager, core.architecture, versions, error)) {
+        return false;
+    }
+
+    if (versions.empty()) {
+        return true;
+    }
+
+    if (std::find(versions.begin(), versions.end(), core.version) == versions.end()) {
+        core.newest_overridden_version = versions.front();
+        return true;
+    }
+
+    std::string folder = join_path(join_path(layout.overrides, core.packager), core.architecture);
+
+    return load_properties(join_path(folder, core.version + ".txt"), core.platform, error);
+}
+
+static bool load_core(const directory_layout& layout, const std::string& packager, const std::string& architecture,
+                      const std::string& version, const std::string& directory, installed_core& core,
+                      std::string& error) {
+    core = { packager, architecture, version, directory, {}, {}, {}, {} };
+    if (!load_properties(join_path(directory, "platform.txt"), core.platform, error) ||
+        !load_overrides(layout, core, error)) {
         return false;
     }
 
@@ -151,13 +175,11 @@ bool load_installed_cores(const directory_layout& layout, std::vector<installed_
                 continue;
             }
 
-            installed_core core;
-            if (!load_core(packager, architecture, versions[0], join_path(architecture_directory, versions[0]),
+            installed_core& core = cores.emplace_back();
+            if (!load_core(layout, packager, architecture, versions[0], join_path(architecture_directory, versions[0]),
                            core, error)) {
                 return false;
             }
-
-            cores.push_back(std::move(core));
         }
     }
 

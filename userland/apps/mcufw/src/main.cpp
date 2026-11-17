@@ -9,14 +9,20 @@ constexpr int USAGE_STATUS = 2;
 constexpr const char* USAGE =
     "usage: mcufw boards [<word>] [--events]\n"
     "       mcufw install <board, core or library>[@<version>]... [--events]\n"
-    "       mcufw remove <core or library>... [--events]\n";
+    "       mcufw remove <core or library>... [--events]\n"
+    "       mcufw hook copy-first <to> <from>... [--else <command>...]\n"
+    "       mcufw hook write <file> [<line>...]\n";
+
+int usage_error(const std::string& error) {
+    fprintf(stderr, "mcufw: %s\n%s", error.c_str(), USAGE);
+    return USAGE_STATUS;
+}
 
 int main(int argc, char** argv) {
     arguments parsed;
     std::string error;
     if (!parse_arguments(argc, argv, parsed, error)) {
-        fprintf(stderr, "mcufw: %s\n%s", error.c_str(), USAGE);
-        return USAGE_STATUS;
+        return usage_error(error);
     }
 
     reporter report(parsed.events, stdout, stderr);
@@ -28,5 +34,7 @@ int main(int argc, char** argv) {
         return run_install(parsed, layout, report);
     case command_name::remove:
         return run_remove(parsed, layout, report);
+    case command_name::hook:
+        return run_hook_command(parsed, report);
     }
 }

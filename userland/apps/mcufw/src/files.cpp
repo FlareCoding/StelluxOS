@@ -18,6 +18,9 @@ constexpr const char* DEFAULT_PROGRAM_PATH = "/usr/local/bin:/bin:/usr/bin";
 constexpr mode_t DIRECTORY_MODE = 0755;
 constexpr mode_t FILE_MODE = 0644;
 
+// A changed file is written whole beside its target under this suffix, then renamed over it
+constexpr const char* PARTIAL_SUFFIX = ".partial";
+
 std::string join_path(std::string_view directory, std::string_view name) {
     if (directory.empty()) {
         return std::string(name);
@@ -300,4 +303,42 @@ bool replace_directory(const std::string& staged, const std::string& installed, 
     }
 
     return remove_tree(discard, error);
+}
+
+bool write_file_if_changed(const std::string& path, std::string_view text, bool& changed, std::string& error) {
+    std::string current;
+    std::string ignored;
+    changed = !read_file(path, current, ignored) || current != text;
+    if (!changed) {
+        return true;
+    }
+
+    std::string partial = path + PARTIAL_SUFFIX;
+    int fd = open(partial.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, FILE_MODE);
+    if (fd < 0) {
+        error = describe_errno("cannot create", partial, errno);
+        return false;
+    }
+
+    bool written = write_all(fd, partial, text, error);
+    if (close(fd) != 0 && written) {
+        error = describe_errno("cannot write", partial, errno);
+        written = false;
+    }
+
+    if (written && rename(partial.c_str(), path.c_str()) != 0) {
+        error = describe_errno("cannot replace", path, errno);
+        written = false;
+    }
+
+    if (!written) {
+        unlink(partial.c_str());
+    }
+
+    return written;
+}
+
+bool copy_file_if_changed(const std::string& from, const std::string& to, bool& changed, std::string& error) {
+    std::string text;
+    return read_file(from, text, error) && write_file_if_changed(to, text, changed, error);
 }

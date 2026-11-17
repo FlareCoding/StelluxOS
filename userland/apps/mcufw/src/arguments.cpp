@@ -33,13 +33,19 @@ bool parse_arguments(int argc, char** argv, arguments& parsed, std::string& erro
         return false;
     }
 
+    parsed = {};
+    if (std::string_view(argv[1]) == "hook") {
+        parsed.command = command_name::hook;
+        parsed.operands.assign(argv + 2, argv + argc);
+        return true;
+    }
+
     const command_rule* rule = find_rule(argv[1]);
     if (!rule) {
         error = "unknown command " + std::string(argv[1]);
         return false;
     }
 
-    parsed = {};
     parsed.command = rule->command;
     for (int index = 2; index < argc; index++) {
         std::string_view word = argv[index];

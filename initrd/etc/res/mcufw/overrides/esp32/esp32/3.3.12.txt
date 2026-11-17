@@ -1,0 +1,23 @@
+# Arduino-ESP32 3.3.12's recipes as Stellux runs them: mcufw's hook verbs in place of its bash hooks, esptool run by
+# python3, and ar, since gcc-ar needs the LTO plugin loader the toolchain package leaves out
+compiler.ar.cmd={compiler.prefix}ar
+# One copy-first does the work of prebuild.1 to .3, as another does of .5 and .6
+recipe.hooks.prebuild.1.pattern=mcufw hook copy-first "{build.path}/partitions.csv" "{build.source.path}/partitions.csv" "{build.variant.path}/{build.custom_partitions}.csv" "{runtime.platform.path}/tools/partitions/{build.partitions}.csv"
+recipe.hooks.prebuild.2.pattern=
+recipe.hooks.prebuild.3.pattern=
+recipe.hooks.prebuild.4.pattern=mcufw hook copy-first "{build.path}/{build.project_name}.bootloader.bin" "{build.source.path}/bootloader.bin" "{build.variant.path}/{build.custom_bootloader}.bin" --else python3 -m esptool {recipe.hooks.prebuild.4.pattern_args} "{build.path}/{build.project_name}.bootloader.bin" "{compiler.sdk.path}/bin/bootloader_{build.boot}_{build.boot_freq}.elf"
+recipe.hooks.prebuild.5.pattern=mcufw hook copy-first "{build.path}/build_opt.h" "{build.source.path}/build_opt.h" --else mcufw hook write "{build.path}/build_opt.h"
+recipe.hooks.prebuild.6.pattern=
+recipe.hooks.prebuild.7.pattern=mcufw hook write "{file_opts.path}"
+recipe.hooks.prebuild.8.pattern=mcufw hook copy-first "{build.path}/sdkconfig" "{compiler.sdk.path}/sdkconfig"
+recipe.hooks.core.prebuild.1.pattern=mcufw hook write "{file_opts.path}" -DARDUINO_CORE_BUILD
+recipe.hooks.core.postbuild.1.pattern=mcufw hook write "{file_opts.path}"
+recipe.objcopy.bin.pattern=python3 -m esptool {recipe.objcopy.bin.pattern_args}
+# The Insights package, the speech model copy and the merged 4 MB image, which nothing on Stellux needs
+recipe.hooks.objcopy.postobjcopy.1.pattern=
+recipe.hooks.objcopy.postobjcopy.2.pattern=
+recipe.hooks.objcopy.postobjcopy.3.pattern=
+recipe.hooks.objcopy.postobjcopy.4.pattern=mcufw hook write "{build.path}/flash_args" "--flash-mode {build.flash_mode} --flash-freq {build.img_freq} --flash-size {build.flash_size}" "{build.bootloader_addr} {build.project_name}.bootloader.bin" "0x8000 {build.project_name}.partitions.bin" "0xe000 boot_app0.bin" "0x10000 {build.project_name}.bin"
+recipe.hooks.objcopy.postobjcopy.5.pattern=mcufw hook copy-first "{build.path}/boot_app0.bin" "{runtime.platform.path}/tools/partitions/boot_app0.bin"
+tools.esptool_py.upload.pattern=python3 -m esptool {upload.pattern_args}
+tools.esptool_py_app_only.upload.pattern=python3 -m esptool {upload.pattern_args}

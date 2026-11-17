@@ -42,9 +42,12 @@ struct installed_core {
     std::string                   architecture;
     std::string                   version;
     std::string                   directory;
-    property_table                platform;  // platform.txt, then the core's platform.local.txt
+    property_table                platform;  // platform.txt, the image's overrides of it, then platform.local.txt
     std::vector<board_definition> boards;    // boards.txt with boards.local.txt over it, in boards.txt order
     std::vector<tool_dependency>  tools;     // from the install record, in its order
+
+    // Set when the image has overrides for this core, but none for its version
+    std::string newest_overridden_version;
 };
 
 // Loads every installed core, ordered by packager, then architecture. A missing hardware folder holds none. Fails on
