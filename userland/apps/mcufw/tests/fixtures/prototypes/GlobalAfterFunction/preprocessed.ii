@@ -1,0 +1,22 @@
+# 1 "/build/GlobalAfterFunction/sketch/GlobalAfterFunction.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/GlobalAfterFunction/sketch/GlobalAfterFunction.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/GlobalAfterFunction/sketch/GlobalAfterFunction.ino.cpp.merged" 2
+# 1 "/sketches/GlobalAfterFunction/GlobalAfterFunction.ino"
+int counter = 0;
+# 1 "/sketches/GlobalAfterFunction/handlers.ino"
+void blink() {
+  counter++;
+}
+void* address = (void*) &blink;
+
+void setup() {
+}
+
+void loop() {
+}

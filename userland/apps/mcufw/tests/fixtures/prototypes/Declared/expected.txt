@@ -1,0 +1,22 @@
+#include <Arduino.h>
+#line 1 "/sketches/Declared/Declared.ino"
+
+void already(int);
+int also_declared(char c);
+
+#line 5 "/sketches/Declared/Declared.ino"
+void setup();
+#line 6 "/sketches/Declared/Declared.ino"
+void loop();
+#line 8 "/sketches/Declared/Declared.ino"
+void already(int value);
+#line 10 "/sketches/Declared/Declared.ino"
+void fresh();
+#line 5 "/sketches/Declared/Declared.ino"
+void setup() { already(1); also_declared('x'); }
+void loop() {}
+
+void already(int value) { (void)value; }
+int also_declared(char c) { return c; }
+void fresh() {}
+

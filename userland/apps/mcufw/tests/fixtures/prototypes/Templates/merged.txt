@@ -1,0 +1,16 @@
+#include <Arduino.h>
+#line 1 "/sketches/Templates/Templates.ino"
+
+template <typename T> T twice(T v) { return v + v; }
+
+template <typename T>
+T thrice(T v)
+{
+  return v * 3;
+}
+
+template<class A, class B> void pair_up(A a, B b) { (void)a; (void)b; }
+
+void setup() { twice(1); thrice(2); pair_up(1, 2.0); }
+void loop() {}
+

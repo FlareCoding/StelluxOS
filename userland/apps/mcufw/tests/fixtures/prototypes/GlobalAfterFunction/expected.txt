@@ -1,0 +1,23 @@
+#include <Arduino.h>
+#line 1 "/sketches/GlobalAfterFunction/GlobalAfterFunction.ino"
+int counter = 0;
+
+#line 1 "/sketches/GlobalAfterFunction/handlers.ino"
+#line 1 "/sketches/GlobalAfterFunction/handlers.ino"
+void blink();
+#line 6 "/sketches/GlobalAfterFunction/handlers.ino"
+void setup();
+#line 9 "/sketches/GlobalAfterFunction/handlers.ino"
+void loop();
+#line 4 "/sketches/GlobalAfterFunction/handlers.ino"
+void blink() {
+  counter++;
+}
+void* address = (void*) &blink;
+
+void setup() {
+}
+
+void loop() {
+}
+

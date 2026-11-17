@@ -103,3 +103,74 @@ std::vector<std::string> recipe_keys(const property_table& properties, std::stri
 
     return keys;
 }
+
+// A placeholder is `{`, at least one character other than a newline, and the first `}` after them
+std::string drop_unknown_placeholders(std::string_view text) {
+    std::string kept;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == '{') {
+            size_t close = text.find('}', i + 2);
+            bool on_one_line = close != std::string_view::npos &&
+                               text.substr(i, close - i).find('\n') == std::string_view::npos;
+            if (on_one_line) {
+                i = close + 1;
+                continue;
+            }
+        }
+
+        kept += text[i];
+        i++;
+    }
+
+    return kept;
+}
+
+static void replace_first(std::string& text, std::string_view placeholder, std::string_view replacement) {
+    size_t at = text.find(placeholder);
+    if (at != std::string::npos) {
+        text.replace(at, placeholder.size(), replacement);
+    }
+}
+
+bool preprocess_words(const property_table& properties, const std::string& source, const std::string& output,
+                      const std::vector<std::string>& include_directories, const std::string& depfile,
+                      std::vector<std::string>& words, std::string& error) {
+    property_table preprocessing;
+    preprocessing.set("preproc.macros.flags", "-w -x c++ -E -CC");
+    preprocessing.merge(properties);
+    preprocessing.set("build.library_discovery_phase", "1");
+    preprocessing.set("source_file", source);
+    preprocessing.set("preprocessed_file_path", output);
+
+    std::string includes;
+    for (const std::string& directory : include_directories) {
+        includes += (includes.empty() ? "\"-I" : " \"-I") + directory + "\"";
+    }
+
+    preprocessing.set("includes", includes);
+
+    std::string pattern = preprocessing.get("recipe.preproc.macros");
+    if (pattern.empty()) {
+        pattern = preprocessing.get("recipe.cpp.o.pattern");
+        replace_first(pattern, "{compiler.cpp.flags}", "{compiler.cpp.flags} {preproc.macros.flags}");
+        replace_first(pattern, "{object_file}", "{preprocessed_file_path}");
+    }
+
+    if (!split_recipe_line(drop_unknown_placeholders(preprocessing.expand(pattern)), words, error)) {
+        error = "the preprocessor's recipe cannot split, since " + error;
+        return false;
+    }
+
+    std::erase(words, "-MMD");
+    if (words.empty()) {
+        error = "the board's preprocessor recipe holds no words";
+        return false;
+    }
+
+    if (!depfile.empty()) {
+        words.insert(words.end(), { "-MMD", "-MF", depfile });
+    }
+
+    return true;
+}

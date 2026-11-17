@@ -1,5 +1,5 @@
 /* recipes, run on the build machine: splitting a recipe line as Arduino's builder splits it, recipes that cannot
- * run, and the order of numbered recipes */
+ * run, the order of numbered recipes, and the board's preprocessor run built from its compile recipe */
 
 #include "recipes.hpp"
 
@@ -107,10 +107,55 @@ static void check_recipe_keys() {
     check(recipe_keys(properties, "recipe.hooks.linking.prelink").empty(), "no recipe means nothing runs");
 }
 
+static void check_dropping_placeholders() {
+    check(drop_unknown_placeholders("g++ {unset} -c {a{b}c} {} {}} x") == "g++  -c c} } x",
+          "a placeholder ends at the first closing brace after at least one character");
+    check(drop_unknown_placeholders("a {line\nbreak} b") == "a {line\nbreak} b", "a placeholder stays on one line");
+}
+
+static void check_preprocess_words() {
+    property_table properties = parsed(
+        "compiler.cpp.flags=-MMD -c \"@{compiler.sdk.path}/flags/cpp_flags\" -Os\n"
+        "compiler.sdk.path=/tools/libs\n"
+        "recipe.cpp.o.pattern=\"/tools/bin/g++\" {compiler.cpp.flags} -DPHASE={build.library_discovery_phase} "
+        "{compiler.cpp.extra} {includes} \"{source_file}\" -o \"{object_file}\"\n"
+        "build.library_discovery_phase=0\n");
+
+    std::vector<std::string> words;
+    std::string error;
+    check(preprocess_words(properties, "/b/sketch/A.ino.cpp.merged", "/dev/null", { "/core", "/variant" },
+                           "/b/sketch/A.ino.cpp.merged.libsdetect.d", words, error),
+          "a probe's words come from the C++ compile recipe");
+
+    std::vector<std::string> expected = {
+        "/tools/bin/g++", "-c", "@/tools/libs/flags/cpp_flags", "-Os", "-w", "-x", "c++", "-E", "-CC", "-DPHASE=1",
+        "-I/core", "-I/variant", "/b/sketch/A.ino.cpp.merged", "-o", "/dev/null",
+        "-MMD", "-MF", "/b/sketch/A.ino.cpp.merged.libsdetect.d",
+    };
+
+    check(words == expected, "the preprocessor's flags follow the compile flags, -MMD moves to the end with -MF, "
+                             "the discovery phase is 1, and an unknown placeholder is dropped");
+
+    check(preprocess_words(properties, "/b/A.merged", "/b/prototypes.cpp", {}, "", words, error) &&
+              words.back() == "/b/prototypes.cpp" && words[words.size() - 2] == "-o",
+          "without a dependency file, nothing follows the output");
+
+    properties.set("preproc.macros.flags", "-E");
+    properties.set("recipe.preproc.macros", "cpp {preproc.macros.flags} -MMD \"{source_file}\"");
+    check(preprocess_words(properties, "/b/A.merged", "/dev/null", {}, "", words, error) &&
+              words == std::vector<std::string>({ "cpp", "-E", "/b/A.merged" }),
+          "a core's own preprocessor recipe and flags replace the default");
+
+    property_table empty;
+    check(!preprocess_words(empty, "/b/A.merged", "/dev/null", {}, "", words, error), "no compile recipe fails");
+}
+
 int main() {
     check_splitting();
     check_recipe_words();
     check_recipe_keys();
+    check_dropping_placeholders();
+    check_preprocess_words();
 
     if (g_failures != 0) {
         printf("recipes: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

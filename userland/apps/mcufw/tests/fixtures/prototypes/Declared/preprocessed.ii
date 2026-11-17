@@ -1,0 +1,20 @@
+# 1 "/build/Declared/sketch/Declared.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/Declared/sketch/Declared.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/Declared/sketch/Declared.ino.cpp.merged" 2
+# 1 "/sketches/Declared/Declared.ino"
+
+void already(int);
+int also_declared(char c);
+
+void setup() { already(1); also_declared('x'); }
+void loop() {}
+
+void already(int value) { (void)value; }
+int also_declared(char c) { return c; }
+void fresh() {}

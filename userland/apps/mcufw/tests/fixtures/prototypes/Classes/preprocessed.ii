@@ -1,0 +1,39 @@
+# 1 "/build/Classes/sketch/Classes.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/Classes/sketch/Classes.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/Classes/sketch/Classes.ino.cpp.merged" 2
+# 1 "/sketches/Classes/Classes.ino"
+
+struct Point {
+  int x, y;
+  Point(int a, int b) : x(a), y(b) {}
+  int sum() const { return x + y; }
+};
+
+class Blinker {
+ public:
+  explicit Blinker(int pin);
+  void toggle();
+ private:
+  int pin_;
+};
+
+Blinker::Blinker(int pin) : pin_(pin) {}
+void Blinker::toggle() {}
+
+namespace helpers {
+void inner() {}
+int deeper(int a) { return a; }
+}
+
+union Bits { int i; float f; void clear() { i = 0; } };
+
+struct Point make_point() { return Point(1, 2); }
+
+void setup() { make_point(); helpers::inner(); }
+void loop() {}

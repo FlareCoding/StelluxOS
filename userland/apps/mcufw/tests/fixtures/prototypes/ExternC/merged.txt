@@ -1,0 +1,18 @@
+#include <Arduino.h>
+#line 1 "/sketches/ExternC/ExternC.ino"
+
+extern "C" void c_side(int x) { (void)x; }
+
+extern "C" {
+void in_block(void) {}
+int other_in_block(int a) { return a; }
+}
+
+extern "C"
+{
+void spaced_block() {}
+}
+
+void setup() { c_side(1); in_block(); other_in_block(2); spaced_block(); }
+void loop() {}
+

@@ -1,0 +1,23 @@
+# 1 "/build/ShiftTemplates/sketch/ShiftTemplates.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/ShiftTemplates/sketch/ShiftTemplates.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/ShiftTemplates/sketch/ShiftTemplates.ino.cpp.merged" 2
+# 1 "/sketches/ShiftTemplates/ShiftTemplates.ino"
+template <int Bits> class Mask {};
+Mask< 1<<4 > low;
+
+template<int N> void fill(Mask< 1<<N > & mask) {
+}
+
+void show() {}
+
+void setup() {
+  show();
+}
+
+void loop() {}

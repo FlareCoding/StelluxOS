@@ -1,0 +1,19 @@
+#include <Arduino.h>
+#line 1 "/sketches/MultiLine/MultiLine.ino"
+
+unsigned long
+compute(int a,
+        int b)
+{
+  return a + b;
+}
+
+void setup() { compute(1, 2); later(); }
+
+static
+void later()
+{
+}
+
+void loop() {}
+

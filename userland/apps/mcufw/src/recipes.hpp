@@ -24,4 +24,13 @@ bool recipe_words(const property_table& properties, const std::string& key, std:
 // when it holds a value, as arduino-cli 1.6.0 finds recipes. A hook point's prefix is `recipe.hooks.<point>`.
 std::vector<std::string> recipe_keys(const property_table& properties, std::string_view prefix);
 
+// `text` with every `{...}` left in it removed, as Arduino's builder removes them before a preprocessor run
+std::string drop_unknown_placeholders(std::string_view text);
+
+// The board's preprocessor on `source` into `output` as arduino-cli's `preprocessor.GCC` builds it, from the core's
+// preprocessor recipe or its C++ recipe, `-MMD` dropped and `-MMD -MF <depfile>` added for a `depfile`
+bool preprocess_words(const property_table& properties, const std::string& source, const std::string& output,
+                      const std::vector<std::string>& include_directories, const std::string& depfile,
+                      std::vector<std::string>& words, std::string& error);
+
 #endif // MCUFW_RECIPES_HPP

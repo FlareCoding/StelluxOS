@@ -1,0 +1,17 @@
+# 1 "/build/MacroLinkage/sketch/MacroLinkage.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/MacroLinkage/sketch/MacroLinkage.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/MacroLinkage/sketch/MacroLinkage.ino.cpp.merged" 2
+# 1 "/sketches/MacroLinkage/MacroLinkage.ino"
+
+
+void setup() {}
+
+void loop() {}
+
+extern "C" void on_event(int code) {}

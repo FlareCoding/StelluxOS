@@ -1,0 +1,17 @@
+# 1 "/build/IfdefBranches/sketch/IfdefBranches.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/IfdefBranches/sketch/IfdefBranches.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/IfdefBranches/sketch/IfdefBranches.ino.cpp.merged" 2
+# 1 "/sketches/IfdefBranches/IfdefBranches.ino"
+
+
+
+void run(int fast_value) { (void)fast_value; }
+# 13 "/sketches/IfdefBranches/IfdefBranches.ino"
+void setup() { run(1); }
+void loop() {}

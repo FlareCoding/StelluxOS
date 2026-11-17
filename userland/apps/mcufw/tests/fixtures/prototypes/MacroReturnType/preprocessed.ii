@@ -1,0 +1,22 @@
+# 1 "/build/MacroReturnType/sketch/MacroReturnType.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/MacroReturnType/sketch/MacroReturnType.ino.cpp.merged" 2
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/build/MacroReturnType/sketch/MacroReturnType.ino.cpp.merged" 2
+# 1 "/sketches/MacroReturnType/MacroReturnType.ino"
+
+
+void setup() {
+  name_of(1);
+}
+
+const char *
+name_of(int index) {
+  return "x";
+}
+
+void loop() {}

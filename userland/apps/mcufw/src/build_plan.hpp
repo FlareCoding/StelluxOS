@@ -16,7 +16,17 @@
 enum class step_kind { hook, compile, archive, link, objcopy, size };
 
 // A build's stages, each run as a step of its own or as the recipes of a hook point
-enum class build_stage { hooks, sketch_tree, sketch_compiles, core_compiles, core_archive, link, objcopy, size };
+enum class build_stage {
+    hooks,
+    sketch_tree,
+    prototypes,
+    sketch_compiles,
+    core_compiles,
+    core_archive,
+    link,
+    objcopy,
+    size,
+};
 
 struct stage_step {
     build_stage stage;

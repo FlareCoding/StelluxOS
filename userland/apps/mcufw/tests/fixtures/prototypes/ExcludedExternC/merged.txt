@@ -1,0 +1,16 @@
+#include <Arduino.h>
+#line 1 "/sketches/ExcludedExternC/ExcludedExternC.ino"
+#if 0
+extern "C" {
+#endif
+void helper(int a) {}
+#if 0
+}
+#endif
+
+void setup() {
+  helper(1);
+}
+
+void loop() {}
+

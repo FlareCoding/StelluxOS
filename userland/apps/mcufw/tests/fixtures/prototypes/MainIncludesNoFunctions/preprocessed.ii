@@ -1,0 +1,16 @@
+# 1 "/build/MainIncludesNoFunctions/sketch/MainIncludesNoFunctions.ino.cpp.merged"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 532 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "/build/MainIncludesNoFunctions/sketch/MainIncludesNoFunctions.ino.cpp.merged" 2
+# 1 "/sketches/MainIncludesNoFunctions/MainIncludesNoFunctions.ino"
+# 1 "/hardware/fixture/cores/corpus/Arduino.h" 1
+# 2 "/sketches/MainIncludesNoFunctions/MainIncludesNoFunctions.ino" 2
+int shared = 0;
+# 1 "/sketches/MainIncludesNoFunctions/Helpers.ino"
+
+void setup() { helper(); }
+void helper() {}
+void loop() {}
