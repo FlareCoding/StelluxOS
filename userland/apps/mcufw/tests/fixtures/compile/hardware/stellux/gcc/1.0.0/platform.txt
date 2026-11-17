@@ -1,0 +1,48 @@
+# A core built the way Arduino's cores are, whose recipes call the gcc that Stellux's gcc package installs and
+# binutils' ar and size
+name=Stellux GCC
+version=1.0.0
+
+compiler.path=/usr/gcc/bin/
+compiler.c.cmd=gcc
+compiler.cpp.cmd=g++
+compiler.ar.cmd=ar
+compiler.size.cmd=size
+
+compiler.warning_flags=-w
+compiler.warning_flags.none=-w
+compiler.warning_flags.default=
+compiler.warning_flags.all=-Wall -Wextra
+compiler.optimization_flags=-O0
+compiler.optimization_flags.release=-Os
+
+compiler.c.flags=-MMD -c {compiler.warning_flags} {compiler.optimization_flags}
+compiler.cpp.flags=-MMD -c {compiler.warning_flags} {compiler.optimization_flags} -std=gnu++17
+compiler.ar.flags=rcs
+build.extra_flags=-DFIXTURE_BOARD="{build.board}"
+
+recipe.hooks.prebuild.1.pattern=mcufw hook write "{build.path}/file_opts"
+recipe.hooks.prebuild.2.pattern=mcufw hook copy-first "{build.path}/settings.txt" "{build.source.path}/settings.txt" "{runtime.platform.path}/settings.txt"
+recipe.hooks.prebuild.3.pattern=mcufw hook copy-first "{build.path}/build_opt.h" "{build.source.path}/build_opt.h" --else mcufw hook write "{build.path}/build_opt.h"
+recipe.hooks.core.prebuild.1.pattern=mcufw hook write "{build.path}/file_opts" -DFIXTURE_CORE_BUILD
+recipe.hooks.core.postbuild.1.pattern=mcufw hook write "{build.path}/file_opts"
+recipe.hooks.sketch.prebuild.1.pattern=mcufw hook write "{build.path}/sketch.prebuild.txt"
+recipe.hooks.sketch.postbuild.1.pattern=mcufw hook write "{build.path}/sketch.postbuild.txt"
+recipe.hooks.libraries.prebuild.1.pattern=mcufw hook write "{build.path}/libraries.prebuild.txt"
+recipe.hooks.libraries.postbuild.1.pattern=mcufw hook write "{build.path}/libraries.postbuild.txt"
+recipe.hooks.linking.prelink.1.pattern=mcufw hook write "{build.path}/linking.prelink.txt"
+recipe.hooks.linking.postlink.1.pattern=mcufw hook write "{build.path}/linking.postlink.txt"
+recipe.hooks.objcopy.preobjcopy.1.pattern=mcufw hook write "{build.path}/objcopy.preobjcopy.txt"
+recipe.hooks.objcopy.postobjcopy.1.pattern=mcufw hook write "{build.path}/objcopy.postobjcopy.txt"
+recipe.hooks.postbuild.1.pattern=mcufw hook write "{build.path}/postbuild.txt"
+
+recipe.c.o.pattern="{compiler.path}{compiler.c.cmd}" {compiler.c.flags} -DARDUINO={runtime.ide.version} -DARDUINO_{build.board} {build.extra_flags} {includes} "@{build.path}/file_opts" "{source_file}" -o "{object_file}"
+recipe.cpp.o.pattern="{compiler.path}{compiler.cpp.cmd}" {compiler.cpp.flags} -DARDUINO={runtime.ide.version} -DARDUINO_{build.board} {build.extra_flags} {includes} "@{build.path}/file_opts" "{source_file}" -o "{object_file}"
+recipe.ar.pattern="{compiler.ar.cmd}" {compiler.ar.flags} "{archive_file_path}" "{object_file}"
+recipe.c.combine.pattern="{compiler.path}{compiler.cpp.cmd}" {compiler.warning_flags} -o "{build.path}/{build.project_name}.elf" {object_files} "{archive_file_path}"
+recipe.objcopy.bin.pattern=cp "{build.path}/{build.project_name}.elf" "{build.path}/{build.project_name}.bin"
+recipe.output.tmp_file={build.project_name}.bin
+
+recipe.size.pattern="{compiler.size.cmd}" -A "{build.path}/{build.project_name}.elf"
+recipe.size.regex=^(?:\.text|\.rodata|\.data)\s+([0-9]+).*
+recipe.size.regex.data=^(?:\.data|\.bss)\s+([0-9]+).*

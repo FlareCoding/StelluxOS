@@ -193,6 +193,39 @@ static void check_replacing(const std::string& root) {
     check(is_file(join_path(installed, "newer")) && !is_directory(discard), "the installed folder moves back");
 }
 
+static void check_source_walk(const std::string& root) {
+    std::string folder = join_path(root, "walk");
+    std::string error;
+    for (const char* file : { "b.cpp", "a.c", "notes.h", ".hidden.cpp", "CVS/x.cpp", "sub/c.S", "sub/.git/y.cpp",
+                              "sub/deep/d.cc", "z.cxx" }) {
+        std::string path = join_path(folder, file);
+        make_directories(parent_directory(path), error);
+        write_text(path, "");
+    }
+
+    std::vector<std::string> sources;
+    std::vector<std::string> top = { join_path(folder, "a.c"), join_path(folder, "b.cpp"), join_path(folder, "z.cxx") };
+    check(find_source_files(folder, false, sources, error) && sources == top,
+          "a folder's sources by name, leaving out dot files and headers");
+
+    std::vector<std::string> all = { join_path(folder, "a.c"), join_path(folder, "b.cpp"), join_path(folder, "sub/c.S"),
+                                     join_path(folder, "sub/deep/d.cc"), join_path(folder, "z.cxx") };
+    check(find_source_files(folder, true, sources, error) && sources == all,
+          "and below it in walk order, leaving out version control folders");
+
+    std::string looped = join_path(root, "looped");
+    make_directories(join_path(looped, "inner"), error);
+    write_text(join_path(looped, "a.cpp"), "");
+    bool linked = symlink("..", join_path(looped, "inner/up").c_str()) == 0;
+    check(linked && !find_source_files(looped, true, sources, error) &&
+              error.find("symbolic link loop") != std::string::npos,
+          "a link back to a folder holding it fails, as arduino-cli's walk does");
+
+    bool twice = symlink(".", join_path(looped, "self").c_str()) == 0;
+    check(twice && !find_source_files(looped, true, sources, error), "two loops fail rather than walk forever");
+    check(find_source_files(looped, false, sources, error) && sources.size() == 1, "a walk of one folder follows none");
+}
+
 int main() {
     char root_template[] = "/tmp/mcufw-files-XXXXXX";
     std::string root = mkdtemp(root_template);
@@ -208,6 +241,7 @@ int main() {
     check_changed_writes(root);
     check_trees(root);
     check_replacing(root);
+    check_source_walk(root);
 
     std::string cleanup = "rm -rf " + root;
     if (system(cleanup.c_str()) != 0) {

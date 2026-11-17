@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
@@ -341,4 +342,70 @@ bool write_file_if_changed(const std::string& path, std::string_view text, bool&
 bool copy_file_if_changed(const std::string& from, const std::string& to, bool& changed, std::string& error) {
     std::string text;
     return read_file(from, text, error) && write_file_if_changed(to, text, changed, error);
+}
+
+static bool is_version_control_folder(const std::string& name) {
+    static const std::vector<std::string> folders = {
+        "CVS", "RCS", ".git", ".github", ".svn", ".hg", ".bzr", ".vscode", ".settings", ".pioenvs", ".piolibdeps",
+    };
+
+    return std::find(folders.begin(), folders.end(), name) != folders.end();
+}
+
+static bool is_source_file(const std::string& name) {
+    static const std::vector<std::string> extensions = { ".c", ".cpp", ".cxx", ".cc", ".S" };
+    return std::any_of(extensions.begin(), extensions.end(),
+                       [&](const std::string& extension) { return name.ends_with(extension); });
+}
+
+bool enter_folder(const std::string& folder, std::vector<std::string>& walked, std::string& error) {
+    char resolved[PATH_MAX];
+    if (realpath(folder.c_str(), resolved) == nullptr) {
+        error = describe_errno("cannot read", folder, errno);
+        return false;
+    }
+
+    if (std::find(walked.begin(), walked.end(), resolved) != walked.end()) {
+        error = folder + " leads back to a folder holding it, a symbolic link loop";
+        return false;
+    }
+
+    walked.push_back(resolved);
+
+    return true;
+}
+
+static bool add_source_files(const std::string& folder, bool recursive, std::vector<std::string>& walked,
+                             std::vector<std::string>& sources, std::string& error) {
+    std::vector<std::string> names;
+    if (!enter_folder(folder, walked, error) || !list_directory(folder, names, error)) {
+        return false;
+    }
+
+    for (const std::string& name : names) {
+        if (name[0] == '.' || is_version_control_folder(name)) {
+            continue;
+        }
+
+        std::string path = join_path(folder, name);
+        if (!is_directory(path)) {
+            if (is_source_file(name)) {
+                sources.push_back(path);
+            }
+        } else if (recursive && !add_source_files(path, recursive, walked, sources, error)) {
+            return false;
+        }
+    }
+
+    walked.pop_back();
+
+    return true;
+}
+
+bool find_source_files(const std::string& folder, bool recursive, std::vector<std::string>& sources,
+                       std::string& error) {
+    std::vector<std::string> walked;
+    sources.clear();
+
+    return add_source_files(folder, recursive, walked, sources, error);
 }

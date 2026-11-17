@@ -57,4 +57,13 @@ bool replace_directory(const std::string& staged, const std::string& installed, 
 bool write_file_if_changed(const std::string& path, std::string_view text, bool& changed, std::string& error);
 bool copy_file_if_changed(const std::string& from, const std::string& to, bool& changed, std::string& error);
 
+// Enters `folder` on a walk as arduino-cli's walk does: fails on a folder whose canonical path `walked` already holds,
+// a symbolic link loop, else adds it, for the caller to take off once the folder is read
+bool enter_folder(const std::string& folder, std::vector<std::string>& walked, std::string& error);
+
+// The .c, .cpp, .cxx, .cc and .S files in `folder`, and below it when `recursive`, in the order Arduino's builder walks
+// them: each folder's names sorted, those starting with a dot and version control folders left out
+bool find_source_files(const std::string& folder, bool recursive, std::vector<std::string>& sources,
+                       std::string& error);
+
 #endif // MCUFW_FILES_HPP

@@ -1,15 +1,24 @@
 /* report, run on the build machine: the listing's aligned columns, a board's description with its choices wrapped,
- * the lines `--events` writes, and failures */
+ * a build's lines, the lines `--events` writes, and failures */
 
+#include "build.hpp"
 #include "report.hpp"
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 constexpr uint32_t MAX_REPORTS = 8;
+constexpr uint64_t BUILD_START_NS = 1'000'000'000;
+
+static const sketch LAMP = { "/sketches/My Lamp", "My Lamp", "My Lamp.ino", {}, {}, {} };
+static const build_result LAMP_RESULT = { "/b", "/b/My Lamp.ino.elf", "/b/My Lamp.ino.bin" };
 
 /* esp32da's partition schemes in Arduino-ESP32 3.3.12, enough to wrap a line at 120 columns */
 constexpr const char* PARTITION_SCHEMES[] = {
@@ -26,7 +35,7 @@ constexpr const char* EXACT_WIDTH_CHOICES[] = {
 static uint64_t g_checks;
 static uint64_t g_failures;
 
-static void check(bool holds, const char* what) {
+static void check(bool holds, const std::string& what) {
     g_checks++;
     if (holds) {
         return;
@@ -34,7 +43,7 @@ static void check(bool holds, const char* what) {
 
     g_failures++;
     if (g_failures <= MAX_REPORTS) {
-        printf("  FAIL: %s\n", what);
+        printf("  FAIL: %s\n", what.c_str());
     }
 }
 
@@ -170,6 +179,91 @@ static void check_description() {
     check(std::count(lines.begin(), lines.end(), '\n') == 30, "one line per choice");
 }
 
+static selected_board default_board(const installed_core& core) {
+    std::vector<option_setting> defaults = { { "UploadSpeed", "921600" }, { "PartitionScheme", "default" } };
+    return { &core, &core.boards[0], {}, defaults };
+}
+
+static void check_build_lines() {
+    installed_core core = esp32_core();
+    selected_board board = default_board(core);
+    capture person = open_capture();
+    reporter shown(false, person.out, person.err);
+
+    shown.sketch_found(LAMP);
+    shown.board_selected(board, true);
+    shown.core_compiling(core, "/b/core/core.a", 60);
+
+    shown.progress("compile", 0, 75, BUILD_START_NS);
+    shown.progress("compile", 40, 75, BUILD_START_NS + 200'000'000);
+    shown.tool_output("compile", "My Lamp.ino:3:1: warning: unused");
+    shown.progress("compile", 75, 75, BUILD_START_NS + 250'000'000);
+
+    shown.built(LAMP_RESULT, 108'400'000'000);
+
+    std::string expected =
+        "Board      ESP32-WROOM-DA Module (esp32:esp32:esp32da), saved in sketch.yaml\n"
+        "Core       ESP32 Arduino 3.3.12, 60 files\n"
+        "Compiling  75 of 75\n"
+        "Built      /b/My Lamp.ino.bin in 1 min 48 s\n";
+    check(read_back(person.out) == expected,
+          "a person sees labeled lines, and counts only at the end when stdout is no terminal");
+    check(read_back(person.err) == "My Lamp.ino:3:1: warning: unused\n", "a tool's output goes to stderr whole");
+}
+
+static void check_build_events() {
+    installed_core core = esp32_core();
+    selected_board board = default_board(core);
+    capture program = open_capture();
+    reporter events(true, program.out, program.err);
+
+    events.sketch_found(LAMP);
+    events.board_selected(board, false);
+    events.core_compiling(core, "/b/core/core.a", 60);
+
+    events.progress("compile", 0, 75, BUILD_START_NS);
+    events.progress("compile", 1, 75, BUILD_START_NS + 50'000'000);
+    events.progress("compile", 2, 75, BUILD_START_NS + 100'000'000);
+    events.tool_output("compile", "a.ino:1:2: error: x\r\n  1 | y\n");
+    events.problem({ problem_severity::error, "/sketches/My Lamp/a.ino", 1, 2, "x" });
+    events.progress("compile", 75, 75, BUILD_START_NS + 120'000'000);
+
+    events.built(LAMP_RESULT, 1);
+
+    std::string expected =
+        "sketch\tMy Lamp\t/sketches/My Lamp\n"
+        "board\tesp32:esp32:esp32da:UploadSpeed=921600,PartitionScheme=default\tESP32-WROOM-DA Module\n"
+        "core\tcompile\t/b/core/core.a\n"
+        "progress\tcompile\t0\t75\n"
+        "progress\tcompile\t2\t75\n"
+        "log\tcompile\ta.ino:1:2: error: x\n"
+        "log\tcompile\t  1 | y\n"
+        "problem\terror\t/sketches/My Lamp/a.ino\t1\t2\tx\n"
+        "progress\tcompile\t75\t75\n"
+        "built\t/b/My Lamp.ino.bin\n";
+    check(read_back(program.out) == expected, "a program sees each fact, counts at most every 100 ms and at the end");
+    check(read_back(program.err).empty(), "a program's build writes nothing on stderr");
+}
+
+static void check_commands() {
+    capture person = open_capture();
+    reporter shown(false, person.out, person.err);
+    shown.command_started({ "g++", "-DBOARD=\"LAMP\"", "/my sketch/a.cpp", "-o", "" });
+    check(read_back(person.out) == "g++ \"-DBOARD=\\\"LAMP\\\"\" \"/my sketch/a.cpp\" -o \n",
+          "a command's words are quoted and escaped as arduino-cli prints them");
+    fclose(person.err);
+
+    capture tabbed = open_capture();
+    reporter(false, tabbed.out, tabbed.err).command_started({ "g++", "a\tb" });
+    check(read_back(tabbed.out) == "g++ \"a\tb\"\n", "a word holding a tab is quoted");
+    fclose(tabbed.err);
+
+    capture program = open_capture();
+    reporter(true, program.out, program.err).command_started({ "g++" });
+    check(read_back(program.out).empty(), "a program sees no commands");
+    fclose(program.err);
+}
+
 static void check_failures() {
     capture person = open_capture();
     reporter(false, person.out, person.err).failed({ failure_kind::board, "no installed core defines board x" });
@@ -181,6 +275,37 @@ static void check_failures() {
     check(read_back(program.out) == "failed\tcancelled\tstopped by a signal\n",
           "a field's tabs and newlines are spaces");
     check(read_back(program.err).empty(), "a program's failure leaves stderr alone");
+}
+
+// On a terminal, a failure clears the in-place compile count before its reason, so the reason starts a clean line
+static void check_failure_on_terminal() {
+    int controller = posix_openpt(O_RDWR | O_NOCTTY);
+    if (controller < 0 || grantpt(controller) != 0 || unlockpt(controller) != 0) {
+        check(false, "a pseudo-terminal opens");
+        return;
+    }
+
+    FILE* terminal = fopen(ptsname(controller), "w");
+    capture person = open_capture();
+    if (terminal == nullptr) {
+        check(false, "the pseudo-terminal's other end opens");
+        return;
+    }
+
+    reporter shown(false, terminal, person.err);
+    shown.progress("compile", 1, 10, BUILD_START_NS);
+    shown.failed({ failure_kind::compile, "1 error in Lamp.ino" });
+    fflush(terminal);
+
+    char buffer[256] = {};
+    ssize_t length = read(controller, buffer, sizeof(buffer) - 1);
+    fclose(terminal);
+
+    std::string shown_text = length > 0 ? std::string(buffer, static_cast<size_t>(length)) : "";
+    check(shown_text.find("Compiling  1 of 10") != std::string::npos && shown_text.ends_with("\r\x1b[K"),
+          "the count is cleared before the failure: " + shown_text);
+    check(read_back(person.err) == "mcufw: 1 error in Lamp.ino\n", "and the reason goes to stderr");
+    close(controller);
 }
 
 static void check_installs() {
@@ -242,8 +367,14 @@ int main() {
     check_empty_listing();
     check_description();
     check_failures();
+    check_failure_on_terminal();
+
     check_installs();
     check_warnings();
+
+    check_build_lines();
+    check_build_events();
+    check_commands();
 
     if (g_failures != 0) {
         printf("report: %llu of %llu checks failed\n", static_cast<unsigned long long>(g_failures),

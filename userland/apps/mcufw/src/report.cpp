@@ -1,9 +1,12 @@
 #include "report.hpp"
 
+#include "build.hpp"
+
 #include <sys/ioctl.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <ctime>
 
 constexpr size_t LISTING_GAP = 3;
 constexpr size_t MENU_GAP = 2;
@@ -13,6 +16,20 @@ constexpr const char* NO_VERSION = "-";
 constexpr uint64_t PROGRESS_INTERVAL_NS = 100'000'000;
 constexpr double BYTES_PER_MB = 1e6;
 constexpr const char* CLEAR_TO_END = "\x1b[K";
+
+constexpr size_t LABEL_WIDTH = 11;
+constexpr uint64_t NANOSECONDS_PER_SECOND = 1'000'000'000;
+constexpr uint64_t SECONDS_PER_MINUTE = 60;
+
+struct stage_label {
+    const char* stage;
+    const char* label;
+};
+
+constexpr stage_label STAGE_LABELS[] = {
+    { "libraries", "Libraries" },
+    { "compile", "Compiling" },
+};
 
 reporter::reporter(bool events, FILE* out, FILE* err)
     : m_events(events), m_terminal(isatty(fileno(out)) != 0), m_out(out), m_err(err) {}
@@ -266,7 +283,187 @@ void reporter::warned(const std::string& reason) {
     fprintf(m_err, "mcufw: %s\n", reason.c_str());
 }
 
+static std::string platform_name(const installed_core& core) {
+    std::string name = core.platform.get("name");
+    return name.empty() ? core.packager + ":" + core.architecture : name;
+}
+
+static std::string duration(uint64_t elapsed_ns) {
+    uint64_t seconds = (elapsed_ns + NANOSECONDS_PER_SECOND / 2) / NANOSECONDS_PER_SECOND;
+    if (seconds < SECONDS_PER_MINUTE) {
+        return std::to_string(seconds) + " s";
+    }
+
+    return std::to_string(seconds / SECONDS_PER_MINUTE) + " min " + std::to_string(seconds % SECONDS_PER_MINUTE) + " s";
+}
+
+void reporter::labeled(std::string_view label, const std::string& text) {
+    hide_progress();
+    fprintf(m_out, "%s%s\n", padded(std::string(label), LABEL_WIDTH).c_str(), text.c_str());
+    fflush(m_out);
+}
+
+void reporter::hide_progress() {
+    if (m_shown_count.empty()) {
+        return;
+    }
+
+    fprintf(m_out, "\r%s", CLEAR_TO_END);
+    fflush(m_out);
+    m_shown_count.clear();
+}
+
+void reporter::sketch_found(const sketch& sketch) {
+    if (m_events) {
+        event({ "sketch", sketch.name, sketch.folder });
+    }
+}
+
+void reporter::board_selected(const selected_board& board, bool saved) {
+    if (m_events) {
+        event({ "board", full_fqbn(board), board.definition->name });
+        return;
+    }
+
+    std::string text = board.definition->name + " (" + requested_fqbn(board) + ")";
+    labeled("Board", saved ? text + ", saved in sketch.yaml" : text);
+}
+
+void reporter::core_compiling(const installed_core& core, const std::string& archive, size_t files) {
+    if (m_events) {
+        event({ "core", "compile", archive });
+        return;
+    }
+
+    std::string count = files == 1 ? "1 file" : std::to_string(files) + " files";
+    labeled("Core", platform_name(core) + " " + core.version + ", " + count);
+}
+
+void reporter::progress(std::string_view stage, uint64_t done, uint64_t total, uint64_t now_ns) {
+    bool finished = done >= total;
+    if (!finished && now_ns - m_last_progress_ns < PROGRESS_INTERVAL_NS) {
+        return;
+    }
+
+    m_last_progress_ns = finished ? 0 : now_ns;
+    if (m_events) {
+        event({ "progress", std::string(stage), std::to_string(done), std::to_string(total) });
+        return;
+    }
+
+    std::string label(stage);
+    for (const stage_label& known : STAGE_LABELS) {
+        if (stage == known.stage) {
+            label = known.label;
+        }
+    }
+
+    std::string count = std::to_string(done) + " of " + std::to_string(total);
+    if (finished) {
+        labeled(label, count);
+        return;
+    }
+
+    if (m_terminal) {
+        m_shown_count = padded(label, LABEL_WIDTH) + count;
+        fprintf(m_out, "\r%s%s", m_shown_count.c_str(), CLEAR_TO_END);
+        fflush(m_out);
+    }
+}
+
+void reporter::command_started(const std::vector<std::string>& words) {
+    if (m_events) {
+        return;
+    }
+
+    std::string command;
+    for (const std::string& word : words) {
+        command += command.empty() ? "" : " ";
+        if (word.find_first_of("\"\\ \t") == std::string::npos) {
+            command += word;
+            continue;
+        }
+
+        command += '"';
+        for (char c : word) {
+            command += c == '"' || c == '\\' ? std::string("\\") + c : std::string(1, c);
+        }
+
+        command += '"';
+    }
+
+    std::string shown = m_shown_count;
+    hide_progress();
+    fprintf(m_out, "%s\n", command.c_str());
+    if (!shown.empty()) {
+        fprintf(m_out, "%s", shown.c_str());
+        fflush(m_out);
+        m_shown_count = shown;
+    }
+}
+
+void reporter::tool_output(std::string_view stage, std::string_view text) {
+    if (m_events) {
+        while (!text.empty()) {
+            size_t end = text.find('\n');
+            std::string_view line = text.substr(0, end);
+            if (!line.empty() && line.back() == '\r') {
+                line.remove_suffix(1);
+            }
+
+            event({ "log", std::string(stage), std::string(line) });
+            text.remove_prefix(end == std::string_view::npos ? text.size() : end + 1);
+        }
+
+        return;
+    }
+
+    std::string shown = m_shown_count;
+    hide_progress();
+    fwrite(text.data(), 1, text.size(), m_err);
+    if (!text.empty() && text.back() != '\n') {
+        fputc('\n', m_err);
+    }
+
+    fflush(m_err);
+    if (!shown.empty()) {
+        fprintf(m_out, "%s", shown.c_str());
+        fflush(m_out);
+        m_shown_count = shown;
+    }
+}
+
+static const char* severity_name(problem_severity severity) {
+    switch (severity) {
+    case problem_severity::error:
+        return "error";
+    case problem_severity::warning:
+        return "warning";
+    case problem_severity::note:
+        return "note";
+    }
+
+    return "error";
+}
+
+void reporter::problem(const compiler_problem& problem) {
+    if (m_events) {
+        event({ "problem", severity_name(problem.severity), problem.file, std::to_string(problem.line),
+                std::to_string(problem.column), problem.message });
+    }
+}
+
+void reporter::built(const build_result& result, uint64_t elapsed_ns) {
+    if (m_events) {
+        event({ "built", result.image });
+        return;
+    }
+
+    labeled("Built", result.image + " in " + duration(elapsed_ns));
+}
+
 void reporter::failed(const failure& failure) {
+    hide_progress();
     if (!m_events && m_terminal && !m_progress_line.empty()) {
         fprintf(m_out, "\n");
         m_progress_line.clear();
@@ -278,4 +475,11 @@ void reporter::failed(const failure& failure) {
     }
 
     fprintf(m_err, "mcufw: %s\n", failure.reason.c_str());
+}
+
+uint64_t monotonic_clock_ns() {
+    timespec now = {};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    return static_cast<uint64_t>(now.tv_sec) * NANOSECONDS_PER_SECOND + static_cast<uint64_t>(now.tv_nsec);
 }

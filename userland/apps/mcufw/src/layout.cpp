@@ -9,6 +9,7 @@ directory_layout system_layout() {
     layout.state = "/var/lib/mcufw";
     layout.overrides = "/etc/res/mcufw/overrides";
     layout.libraries = "/var/lib/mcufw/libraries";
+    layout.builds = "/var/cache/mcufw/builds";
 
     return layout;
 }
