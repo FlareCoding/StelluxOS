@@ -180,6 +180,9 @@ static bool plan_stage(const property_table& properties, const stage_step& stage
         return true;
     case build_stage::objcopy:
         return plan_objcopy(properties, steps, error);
+    case build_stage::size:
+        steps.push_back(step);
+        return plan_size(properties, steps.back(), error);
     }
 
     return false;

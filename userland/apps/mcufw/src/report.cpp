@@ -13,6 +13,7 @@ constexpr size_t MENU_GAP = 2;
 constexpr size_t DESCRIPTION_WIDTH_MAX = 120;
 constexpr const char* NOTHING_NEEDED = "-";
 constexpr const char* NO_VERSION = "-";
+constexpr const char* NO_MAXIMUM = "-";
 constexpr uint64_t PROGRESS_INTERVAL_NS = 100'000'000;
 constexpr double BYTES_PER_MB = 1e6;
 constexpr const char* CLEAR_TO_END = "\x1b[K";
@@ -20,6 +21,7 @@ constexpr const char* CLEAR_TO_END = "\x1b[K";
 constexpr size_t LABEL_WIDTH = 11;
 constexpr uint64_t NANOSECONDS_PER_SECOND = 1'000'000'000;
 constexpr uint64_t SECONDS_PER_MINUTE = 60;
+constexpr uint64_t PERCENT = 100;
 
 struct stage_label {
     const char* stage;
@@ -288,6 +290,15 @@ static std::string platform_name(const installed_core& core) {
     return name.empty() ? core.packager + ":" + core.architecture : name;
 }
 
+static std::string with_thousands(uint64_t number) {
+    std::string digits = std::to_string(number);
+    for (size_t at = digits.size(); at > 3; at -= 3) {
+        digits.insert(at - 3, ",");
+    }
+
+    return digits;
+}
+
 static std::string duration(uint64_t elapsed_ns) {
     uint64_t seconds = (elapsed_ns + NANOSECONDS_PER_SECOND / 2) / NANOSECONDS_PER_SECOND;
     if (seconds < SECONDS_PER_MINUTE) {
@@ -450,6 +461,32 @@ void reporter::problem(const compiler_problem& problem) {
     if (m_events) {
         event({ "problem", severity_name(problem.severity), problem.file, std::to_string(problem.line),
                 std::to_string(problem.column), problem.message });
+    }
+}
+
+// `<used> of <maximum> bytes, <share>%`, or the bytes alone when the maximum is 0 or unset
+static std::string usage(uint64_t used, uint64_t maximum) {
+    if (maximum == 0) {
+        return with_thousands(used) + " bytes";
+    }
+
+    return with_thousands(used) + " of " + with_thousands(maximum) + " bytes, " +
+           std::to_string(used * PERCENT / maximum) + "%";
+}
+
+void reporter::size_checked(const program_size& size, uint64_t flash_max, uint64_t ram_max) {
+    if (m_events) {
+        event({ "size", "flash", std::to_string(size.flash), flash_max ? std::to_string(flash_max) : NO_MAXIMUM });
+        if (size.has_ram) {
+            event({ "size", "ram", std::to_string(size.ram), ram_max ? std::to_string(ram_max) : NO_MAXIMUM });
+        }
+
+        return;
+    }
+
+    labeled("Flash", usage(size.flash, flash_max));
+    if (size.has_ram) {
+        labeled("RAM", usage(size.ram, ram_max));
     }
 }
 

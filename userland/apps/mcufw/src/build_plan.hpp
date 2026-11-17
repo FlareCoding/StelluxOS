@@ -16,7 +16,7 @@
 enum class step_kind { hook, compile, archive, link, objcopy, size };
 
 // A build's stages, each run as a step of its own or as the recipes of a hook point
-enum class build_stage { hooks, sketch_tree, sketch_compiles, core_compiles, core_archive, link, objcopy };
+enum class build_stage { hooks, sketch_tree, sketch_compiles, core_compiles, core_archive, link, objcopy, size };
 
 struct stage_step {
     build_stage stage;
@@ -99,5 +99,8 @@ size_t command_text_length(const build_step& step, size_t index);
 // build tree is made relative to it, and the command runs there
 void shorten_long_command(const std::string& build_path, size_t text_length, std::vector<std::string>& words,
                           std::string& working_directory);
+
+// The size recipe's command, whose stdout the core's regexes sum
+bool plan_size(const property_table& properties, build_step& step, std::string& error);
 
 #endif // MCUFW_BUILD_PLAN_HPP

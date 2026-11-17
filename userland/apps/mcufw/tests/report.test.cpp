@@ -199,12 +199,15 @@ static void check_build_lines() {
     shown.tool_output("compile", "My Lamp.ino:3:1: warning: unused");
     shown.progress("compile", 75, 75, BUILD_START_NS + 250'000'000);
 
+    shown.size_checked({ 1'034'612, 44'932, true }, 1'310'720, 327'680);
     shown.built(LAMP_RESULT, 108'400'000'000);
 
     std::string expected =
         "Board      ESP32-WROOM-DA Module (esp32:esp32:esp32da), saved in sketch.yaml\n"
         "Core       ESP32 Arduino 3.3.12, 60 files\n"
         "Compiling  75 of 75\n"
+        "Flash      1,034,612 of 1,310,720 bytes, 78%\n"
+        "RAM        44,932 of 327,680 bytes, 13%\n"
         "Built      /b/My Lamp.ino.bin in 1 min 48 s\n";
     check(read_back(person.out) == expected,
           "a person sees labeled lines, and counts only at the end when stdout is no terminal");
@@ -228,6 +231,7 @@ static void check_build_events() {
     events.problem({ problem_severity::error, "/sketches/My Lamp/a.ino", 1, 2, "x" });
     events.progress("compile", 75, 75, BUILD_START_NS + 120'000'000);
 
+    events.size_checked({ 100, 0, false }, 0, 0);
     events.built(LAMP_RESULT, 1);
 
     std::string expected =
@@ -240,6 +244,7 @@ static void check_build_events() {
         "log\tcompile\t  1 | y\n"
         "problem\terror\t/sketches/My Lamp/a.ino\t1\t2\tx\n"
         "progress\tcompile\t75\t75\n"
+        "size\tflash\t100\t-\n"
         "built\t/b/My Lamp.ino.bin\n";
     check(read_back(program.out) == expected, "a program sees each fact, counts at most every 100 ms and at the end");
     check(read_back(program.err).empty(), "a program's build writes nothing on stderr");

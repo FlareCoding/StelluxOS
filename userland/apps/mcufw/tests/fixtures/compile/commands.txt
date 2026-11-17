@@ -22,3 +22,4 @@ mcufw	hook	write	{build}/objcopy.preobjcopy.txt
 cp	{build}/Lamp.ino.elf	{build}/Lamp.ino.bin
 mcufw	hook	write	{build}/objcopy.postobjcopy.txt
 mcufw	hook	write	{build}/postbuild.txt
+size	-A	{build}/Lamp.ino.elf
