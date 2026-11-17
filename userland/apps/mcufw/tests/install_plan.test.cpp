@@ -276,7 +276,7 @@ static install_target library_target(const std::string& name, const std::string&
 
 static library installed_library(const std::string& name, const std::string& version, bool is_legacy = false) {
     return { name, version, "/libraries/" + library_folder_name(name), library_folder_name(name),
-             library_location::installed, is_legacy };
+             library_location::installed, is_legacy, library_layout::flat, {}, {}, "", false, "" };
 }
 
 static std::string chosen_text(const std::vector<release_name>& chosen) {

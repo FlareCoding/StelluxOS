@@ -3,10 +3,13 @@
 #include "build_plan.hpp"
 #include "cancel.hpp"
 #include "compiler_output.hpp"
+#include "discovery.hpp"
 #include "file_lock.hpp"
 #include "files.hpp"
 #include "hooks.hpp"
+#include "indexes.hpp"
 #include "jobs.hpp"
+#include "library_hint.hpp"
 #include "prototypes.hpp"
 #include "recipes.hpp"
 #include "sizes.hpp"
@@ -16,27 +19,32 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <map>
 
 constexpr const char* LOCK_FILE = "lock";
 constexpr const char* SKETCH_FOLDER = "sketch";
 constexpr const char* CORE_FOLDER = "core";
 constexpr const char* CORE_ARCHIVE = "core.a";
+constexpr const char* CORE_LIBRARIES_FOLDER = "libraries";
 constexpr const char* PREPROCESSED_FOLDER = "preproc";
 constexpr const char* PREPROCESSED_FILE = "sketch_merged.cpp";
 
 // What one build shares between its stages
 struct build_run {
-    const build_options&     options;
-    reporter&                report;
-    failure&                 failed;
-    job_runner&              runner;
-    property_table           properties;
-    std::string              directory;
-    std::vector<std::string> includes;          // the `{includes}` of the sketch's compiles, the core's and variant's
-    uint64_t                 compiled = 0;      // compiles finished, for the progress count
-    uint64_t                 compiles_total = 0;
-    compile_plan             compiles;
-    merged_sketch            merged;
+    const directory_layout&     layout;
+    const build_options&        options;
+    reporter&                   report;
+    failure&                    failed;
+    job_runner&                 runner;
+    property_table              properties;
+    std::string                 directory;
+    std::vector<std::string>    includes;          // the `{includes}` of the sketch's compiles
+    std::vector<library>        libraries;         // every library discovery may add
+    std::vector<const library*> added;             // those it added, in the order they joined
+    uint64_t                    compiled = 0;      // compiles finished, for the progress count
+    uint64_t                    compiles_total = 0;
+    compile_plan                compiles;
+    merged_sketch               merged;
 };
 
 static bool fail(build_run& run, failure_kind kind, const std::string& reason) {
@@ -303,6 +311,157 @@ static bool prepare_sketch_tree(build_run& run, const sketch& sketch) {
     return true;
 }
 
+// Starts a probe as arduino-cli's preprocessor runs, outside the long-command rule
+static bool start_probe(build_run& run, const probe& started, uint64_t id) {
+    if (!started.error.empty()) {
+        return fail(run, failure_kind::compile, started.error);
+    }
+
+    if (run.options.verbose) {
+        run.report.command_started(started.words);
+    }
+
+    job probing = { id, started.words, "" };
+    std::string error;
+    if (!make_directories(parent_directory(started.depfile), error) || !run.runner.start(probing, error)) {
+        return fail(run, failure_kind::compile, "cannot probe " + file_name(started.source) + ": " + error);
+    }
+
+    return true;
+}
+
+// Waits for job `id`, keeping the results of jobs that finish first for their own turns
+static bool wait_for_job(build_run& run, uint64_t id, std::map<uint64_t, finished_job>& finished,
+                         finished_job& result) {
+    while (finished.find(id) == finished.end()) {
+        finished_job next;
+        std::string error;
+        if (!run.runner.wait_for_next(next, error)) {
+            return fail_unless_cancelled(run, failure_kind::compile, error);
+        }
+
+        finished[next.id] = std::move(next);
+    }
+
+    result = std::move(finished[id]);
+    finished.erase(id);
+
+    return true;
+}
+
+static bool fail_unresolved(build_run& run, const selected_board& board, const std::string& header) {
+    library_suggestion suggestion;
+    std::string error;
+    std::string index = join_path(run.layout.state, LIBRARY_INDEX_FILE);
+
+    // A missing or unreadable index only leaves the hint out
+    if (suggest_library(index, header, board.core->architecture, suggestion, error)) {
+        run.report.library_suggested(header, suggestion);
+    }
+
+    return fail(run, failure_kind::library, "no installed library provides " + header);
+}
+
+static bool fail_discovery(build_run& run, const selected_board& board, const discovery_failure& failure) {
+    if (failure.stop == discovery_stop::unreadable) {
+        return fail(run, failure_kind::io, failure.output);
+    }
+
+    std::vector<compiler_problem> errors;
+    show_compiler_output(run, failure.output, errors);
+    switch (failure.stop) {
+    case discovery_stop::unresolved:
+        return fail_unresolved(run, board, failure.header);
+    case discovery_stop::already_added:
+        return fail(run, failure_kind::library, failure.header + " is missing though " + failure.library +
+                                                    " provides it");
+    case discovery_stop::refused:
+        return fail(run, failure_kind::library, failure.library + ", and the sketch needs it for " + failure.header);
+    case discovery_stop::unreadable:
+    case discovery_stop::failed:
+        break;
+    }
+
+    return fail(run, failure_kind::compile, "the board's preprocessor failed without saying why");
+}
+
+// arduino-cli's warning for a library made for neither the board's architecture nor one the board asks to accept
+static void warn_about_architectures(build_run& run, const selected_board& board) {
+    std::vector<std::string> architectures =
+        board_architectures(board.core->architecture, run.properties.get("architecture.override_check"));
+    for (const library* incompatible : incompatible_libraries(run.added, architectures)) {
+        run.report.library_incompatible(*incompatible, architectures);
+    }
+}
+
+// arduino-cli's library discovery. The turn's probe takes the result of a probe ahead with its words, else every
+// probe ahead stops and it runs alone, and once a file completes after that, later files are probed ahead.
+static bool discover_libraries(build_run& run, const sketch& sketch, const selected_board& board) {
+    std::vector<std::string> sources;
+    std::string error;
+    if (!discovery_sources(join_path(run.directory, SKETCH_FOLDER), sketch.main_file, sources, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    if (!find_libraries(join_path(board.core->directory, CORE_LIBRARIES_FOLDER), run.layout, run.libraries, error)) {
+        return fail(run, failure_kind::library, error);
+    }
+
+    library_discovery discovery(run.properties, run.libraries, board.core->architecture, run.directory, sources,
+                                run.includes);
+    std::map<std::vector<std::string>, uint64_t> ahead;
+    std::map<uint64_t, finished_job> finished;
+    uint64_t last_id = 0;
+    bool probing_ahead = false;
+    while (const probe* turn = discovery.turn_probe()) {
+        run.report.progress("libraries", discovery.files_done(), discovery.files_queued(), monotonic_clock_ns());
+        auto running = ahead.find(turn->words);
+        bool runs_alone = running == ahead.end();
+        if (runs_alone) {
+            run.runner.stop_all();
+            ahead.clear();
+            finished.clear();
+        }
+
+        finished_job result;
+        uint64_t id = runs_alone ? ++last_id : running->second;
+        if ((runs_alone && !start_probe(run, *turn, id)) || !wait_for_job(run, id, finished, result)) {
+            return false;
+        }
+
+        probe_result probed = read_probe_result(result.exit_status, result.error_output);
+        discovery_failure failure;
+        if (!discovery.take_turn_result(probed, failure)) {
+            run.runner.stop_all();
+            return fail_discovery(run, board, failure);
+        }
+
+        bool completed = probed.status == probe_status::complete;
+        probing_ahead = probing_ahead || (runs_alone && completed);
+        if (!probing_ahead || !completed) {
+            continue;
+        }
+
+        for (const probe& later : discovery.probes_ahead(run.runner.free_slots())) {
+            if (!start_probe(run, later, ++last_id)) {
+                return false;
+            }
+
+            ahead[later.words] = last_id;
+        }
+    }
+
+    run.runner.stop_all();
+    run.report.progress("libraries", discovery.files_done(), discovery.files_queued(), monotonic_clock_ns());
+    run.includes = discovery.include_directories();
+    run.added = discovery.libraries_added();
+
+    run.report.libraries_found(run.added);
+    warn_about_architectures(run, board);
+
+    return true;
+}
+
 // Writes `<main>.ino.cpp`, the merged sketch with arduino-cli's prototypes, only when its content changes. The
 // preprocessor runs as arduino-cli builds it, outside the long-command rule.
 static bool add_prototypes(build_run& run, const sketch& sketch) {
@@ -379,12 +538,16 @@ static bool add_prototypes(build_run& run, const sketch& sketch) {
 static bool plan_and_count_compiles(build_run& run, const selected_board& board) {
     std::string error;
     compile_plan& plan = run.compiles;
-    if (!plan_build_compiles(run.properties, run.includes, run.options.warnings, plan, error)) {
+    if (!plan_build_compiles(run.properties, run.includes, run.added, run.options.warnings, plan, error)) {
         return fail(run, failure_kind::compile, error);
     }
 
     std::string core_archive = join_path(join_path(run.directory, CORE_FOLDER), CORE_ARCHIVE);
     run.compiles_total = plan.sketch.size() + plan.sources.size() + plan.variant.size() + plan.core.size();
+    for (const library_compiles& compiles : plan.libraries) {
+        run.compiles_total += compiles.sources.size() + compiles.utility.size();
+    }
+
     run.report.core_compiling(*board.core, core_archive, plan.variant.size() + plan.core.size());
     run.report.progress("compile", 0, run.compiles_total, monotonic_clock_ns());
 
@@ -445,24 +608,68 @@ static bool check_size(build_run& run) {
     return verdict.failure.empty() || fail(run, failure_kind::size, verdict.failure);
 }
 
-static bool archive_core(build_run& run, const std::string& core_archive) {
-    if (unlink(core_archive.c_str()) != 0 && errno != ENOENT) {
-        return fail(run, failure_kind::io, "cannot remove " + core_archive + ": " + strerror(errno));
-    }
-
-    std::vector<std::string> objects;
-    for (const build_step& step : run.compiles.core) {
-        objects.push_back(step.output);
+static bool archive_objects(build_run& run, std::vector<std::string> objects, const std::string& archive) {
+    if (unlink(archive.c_str()) != 0 && errno != ENOENT) {
+        return fail(run, failure_kind::io, "cannot remove " + archive + ": " + strerror(errno));
     }
 
     std::sort(objects.begin(), objects.end());
-    build_step archive;
+    build_step archiving;
     std::string error;
-    if (!plan_archive(run.properties, objects, core_archive, archive, error)) {
+    if (!plan_archive(run.properties, objects, archive, archiving, error)) {
         return fail(run, failure_kind::recipe, error);
     }
 
-    return run_step(run, archive);
+    return run_step(run, archiving);
+}
+
+// arduino-cli deletes each library tree in the build that no library the sketch uses names as its folder
+static bool remove_unused_library_trees(build_run& run) {
+    std::string root = library_builds_directory(run.directory);
+    std::vector<std::string> folders;
+    std::string error;
+    if (is_directory(root) && !list_subdirectories(root, folders, error)) {
+        return fail(run, failure_kind::io, error);
+    }
+
+    for (const std::string& folder : folders) {
+        bool used = std::any_of(run.added.begin(), run.added.end(), [&](const library* added) {
+            return added->folder_name == folder;
+        });
+
+        if (!used && !remove_tree(join_path(root, folder), error)) {
+            return fail(run, failure_kind::io, error);
+        }
+    }
+
+    return true;
+}
+
+static std::vector<std::string> objects_of(const std::vector<build_step>& compiles) {
+    std::vector<std::string> objects;
+    for (const build_step& step : compiles) {
+        objects.push_back(step.output);
+    }
+
+    return objects;
+}
+
+// Each library in the order it joined: its source directory's files, then a flat library's utility/ folder's, each
+// group compiling up to `jobs` at once, then its archive for `dot_a_linkage`
+static bool compile_libraries(build_run& run) {
+    for (const library_compiles& compiles : run.compiles.libraries) {
+        if (!run_compiles(run, compiles.sources) || !run_compiles(run, compiles.utility)) {
+            return false;
+        }
+
+        const library& compiled = *compiles.library;
+        std::string archive = library_archive(run.directory, compiled);
+        if (compiled.dot_a_linkage && !archive_objects(run, objects_of(compiles.sources), archive)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // A long link's folder archives, each emptied first, since `ar` adds to an archive and would keep an older build's
@@ -494,8 +701,8 @@ static bool link_sketch(build_run& run, const std::string& core_archive) {
     std::vector<build_step> folder_archives;
     build_step link;
     std::string error;
-    if (!plan_link(run.properties, linked_objects(run.compiles), core_archive, run.options.warnings, folder_archives,
-                   link, error)) {
+    std::vector<std::string> objects = linked_objects(run.directory, run.compiles);
+    if (!plan_link(run.properties, objects, core_archive, run.options.warnings, folder_archives, link, error)) {
         return fail(run, failure_kind::link, error);
     }
 
@@ -519,6 +726,8 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
         return run_hooks(run, stage.hook_point);
     case build_stage::sketch_tree:
         return prepare_sketch_tree(run, sketch);
+    case build_stage::discovery:
+        return discover_libraries(run, sketch, board);
     case build_stage::prototypes:
         return add_prototypes(run, sketch);
     case build_stage::sketch_compiles:
@@ -526,8 +735,12 @@ static bool run_stage(build_run& run, const stage_step& stage, const sketch& ske
                run_compiles(run, run.compiles.sources);
     case build_stage::core_compiles:
         return run_compiles(run, run.compiles.variant) && run_compiles(run, run.compiles.core);
+    case build_stage::library_trees:
+        return remove_unused_library_trees(run);
+    case build_stage::library_compiles:
+        return compile_libraries(run);
     case build_stage::core_archive:
-        return archive_core(run, core_archive);
+        return archive_objects(run, objects_of(run.compiles.core), core_archive);
     case build_stage::link:
         return link_sketch(run, core_archive);
     case build_stage::objcopy:
@@ -584,7 +797,8 @@ bool build_sketch(
 
     job_runner runner(options.jobs);
     property_table properties = build_properties(board_properties(board, tools), sketch, directory);
-    build_run run = { options, report, failed, runner, std::move(properties), directory, {}, 0, 0, {}, {} };
+    build_run run = { layout, options, report, failed, runner, std::move(properties), directory, {}, {}, {}, 0, 0, {},
+                      {} };
     if (!build_in_tree(run, sketch, board)) {
         return false;
     }

@@ -26,11 +26,12 @@ constexpr uint64_t PERCENT = 100;
 struct stage_label {
     const char* stage;
     const char* label;
+    bool        summarized;  // its final count is cleared, since `libraries_found` names the stage's result
 };
 
 constexpr stage_label STAGE_LABELS[] = {
-    { "libraries", "Libraries" },
-    { "compile", "Compiling" },
+    { "libraries", "Libraries", true },
+    { "compile", "Compiling", false },
 };
 
 reporter::reporter(bool events, FILE* out, FILE* err)
@@ -350,6 +351,54 @@ void reporter::core_compiling(const installed_core& core, const std::string& arc
     labeled("Core", platform_name(core) + " " + core.version + ", " + count);
 }
 
+void reporter::libraries_found(const std::vector<const library*>& libraries) {
+    if (m_events) {
+        for (const library* found : libraries) {
+            event({ "library", found->name, found->version, found->directory });
+        }
+
+        return;
+    }
+
+    std::string list;
+    for (const library* found : libraries) {
+        list += (list.empty() ? "" : ", ") + found->name + (found->version.empty() ? "" : " " + found->version);
+    }
+
+    if (!list.empty()) {
+        labeled("Libraries", list);
+    }
+}
+
+void reporter::library_suggested(const std::string& header, const library_suggestion& suggestion) {
+    if (m_events) {
+        event({ "hint", header, suggestion.name, suggestion.version });
+        return;
+    }
+
+    bool has_space = suggestion.name.find(' ') != std::string::npos;
+    std::string target = has_space ? "\"" + suggestion.name + "\"" : suggestion.name;
+    hide_progress();
+    fprintf(m_err, "%s %s provides %s: mcufw install %s\n", suggestion.name.c_str(), suggestion.version.c_str(),
+            header.c_str(), target.c_str());
+}
+
+static std::string joined_with_commas(const std::vector<std::string>& words) {
+    std::string joined;
+    for (const std::string& word : words) {
+        joined += (joined.empty() ? "" : ", ") + word;
+    }
+
+    return joined;
+}
+
+void reporter::library_incompatible(const library& library, const std::vector<std::string>& architectures) {
+    tool_output("libraries", "WARNING: library " + library.name + " claims to run on " +
+                                 joined_with_commas(library.architectures) +
+                                 " architecture(s) and may be incompatible with your current board which runs on " +
+                                 joined_with_commas(architectures) + " architecture(s).");
+}
+
 void reporter::progress(std::string_view stage, uint64_t done, uint64_t total, uint64_t now_ns) {
     bool finished = done >= total;
     if (!finished && now_ns - m_last_progress_ns < PROGRESS_INTERVAL_NS) {
@@ -363,13 +412,20 @@ void reporter::progress(std::string_view stage, uint64_t done, uint64_t total, u
     }
 
     std::string label(stage);
+    bool summarized = false;
     for (const stage_label& known : STAGE_LABELS) {
         if (stage == known.stage) {
             label = known.label;
+            summarized = known.summarized;
         }
     }
 
     std::string count = std::to_string(done) + " of " + std::to_string(total);
+    if (finished && summarized) {
+        hide_progress();
+        return;
+    }
+
     if (finished) {
         labeled(label, count);
         return;
