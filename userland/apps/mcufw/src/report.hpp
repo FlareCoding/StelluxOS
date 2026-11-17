@@ -74,6 +74,10 @@ public:
     // sees `progress <stage> <done> <total>` at most every 100 ms and at the total.
     void progress(std::string_view stage, uint64_t done, uint64_t total, uint64_t now_ns);
 
+    // How many of the build's `total` compiles must run, which its compile count counts up to and a stage may change.
+    // A person's last count reads `Compiling 1 of 75, Lamp.ino changed`, with the first reason that names a change.
+    void compiles_needed(size_t needed, size_t total, const std::string& first_reason);
+
     // With `--verbose`, the command with a word holding a space, tab, `"` or `\` quoted as arduino-cli prints it. A
     // program sees no commands.
     void command_started(const std::vector<std::string>& words);
@@ -108,6 +112,9 @@ private:
     std::string m_progress_line;     // the start of the line that progress rewrites
     uint64_t    m_last_progress_ns = 0;
     std::string m_shown_count;       // a build's count shown in place, empty when none is
+    size_t      m_compiles_needed = 0;
+    size_t      m_compiles_total = 0;
+    std::string m_compile_reason;
 };
 
 // The monotonic clock in nanoseconds, which progress counts and a build's time are measured against

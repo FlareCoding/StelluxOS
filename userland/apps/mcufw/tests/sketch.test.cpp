@@ -96,6 +96,11 @@ static void check_loading(const std::string& root) {
           "two main files fail");
     check(!load_sketch(join_path(root, "Empty"), found, error), "a folder without its main file fails");
     check(!load_sketch(join_path(root, "Missing"), found, error), "a missing folder fails");
+
+    check(sketch_folder_of(folder) == folder && sketch_folder_of(join_path(folder, "Lamp.ino")) == folder,
+          "a sketch path names its folder, or its main file's");
+    check(sketch_folder_of(join_path(root, "Gone/Gone.pde")) == join_path(root, "Gone"),
+          "a main file's folder that is gone still names it");
 }
 
 static void check_merge(const std::string& root) {

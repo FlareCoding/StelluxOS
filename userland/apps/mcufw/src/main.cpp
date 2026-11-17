@@ -11,6 +11,7 @@ constexpr const char* USAGE =
     "       mcufw install <board, core or library>[@<version>]... [--events]\n"
     "       mcufw remove <core or library>... [--events]\n"
     "       mcufw build [<sketch>] [--board <board>] [--jobs <n>] [--warnings <level>] [--verbose] [--events]\n"
+    "       mcufw clean [<sketch>] [--events]\n"
     "       mcufw hook copy-first <to> <from>... [--else <command>...]\n"
     "       mcufw hook write <file> [<line>...]\n";
 
@@ -39,5 +40,7 @@ int main(int argc, char** argv) {
         return run_hook_command(parsed, report);
     case command_name::build:
         return run_build(parsed, layout, report);
+    case command_name::clean:
+        return run_clean(parsed, layout, report);
     }
 }

@@ -15,6 +15,9 @@
 #include <string>
 #include <vector>
 
+// The build tree's lock, held exclusively by whatever builds in the tree or deletes it
+constexpr const char* BUILD_LOCK_NAME = "lock";
+
 struct build_options {
     uint32_t    jobs;
     std::string warnings;  // none, default, more or all, for the sketch's files and the link
@@ -24,7 +27,8 @@ struct build_options {
 struct build_result {
     std::string directory;
     std::string elf;
-    std::string image;  // `recipe.output.tmp_file` in the build tree, else the ELF
+    std::string image;       // `recipe.output.tmp_file` in the build tree, else the ELF
+    bool        up_to_date;  // no step that keeps a record ran, which `reporter::built` reports as up to date
 };
 
 // Builds `sketch` in its tree under `layout.builds`, holding the tree's lock for the call, so a second build of the

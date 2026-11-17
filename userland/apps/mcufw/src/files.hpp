@@ -18,6 +18,9 @@ bool read_file(const std::string& path, std::string& text, std::string& error);
 bool is_directory(const std::string& path);
 bool is_file(const std::string& path);
 
+// The size and modification time of the regular file at `path`, false when there is none
+bool read_file_size_and_time(const std::string& path, uint64_t& size, int64_t& modified_ns);
+
 // The names in directory `path`, sorted, without `.` and `..`
 bool list_directory(const std::string& path, std::vector<std::string>& names, std::string& error);
 
@@ -65,5 +68,8 @@ bool enter_folder(const std::string& folder, std::vector<std::string>& walked, s
 // them: each folder's names sorted, those starting with a dot and version control folders left out
 bool find_source_files(const std::string& folder, bool recursive, std::vector<std::string>& sources,
                        std::string& error);
+
+// Renames `from` to `to` as `rename` does, so moving a directory onto one that holds anything fails
+bool rename_path(const std::string& from, const std::string& to, std::string& error);
 
 #endif // MCUFW_FILES_HPP

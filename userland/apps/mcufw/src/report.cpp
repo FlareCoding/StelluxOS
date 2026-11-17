@@ -426,6 +426,12 @@ void reporter::progress(std::string_view stage, uint64_t done, uint64_t total, u
         return;
     }
 
+    if (finished && stage == "compile" && m_compiles_total > 0) {
+        std::string reason = m_compile_reason.empty() ? "" : ", " + m_compile_reason;
+        labeled(label, std::to_string(m_compiles_needed) + " of " + std::to_string(m_compiles_total) + reason);
+        return;
+    }
+
     if (finished) {
         labeled(label, count);
         return;
@@ -546,13 +552,19 @@ void reporter::size_checked(const program_size& size, uint64_t flash_max, uint64
     }
 }
 
+void reporter::compiles_needed(size_t needed, size_t total, const std::string& first_reason) {
+    m_compiles_needed = needed;
+    m_compiles_total = total;
+    m_compile_reason = first_reason;
+}
+
 void reporter::built(const build_result& result, uint64_t elapsed_ns) {
     if (m_events) {
         event({ "built", result.image });
         return;
     }
 
-    labeled("Built", result.image + " in " + duration(elapsed_ns));
+    labeled("Built", result.image + (result.up_to_date ? " is up to date" : " in " + duration(elapsed_ns)));
 }
 
 void reporter::failed(const failure& failure) {

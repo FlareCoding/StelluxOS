@@ -83,16 +83,18 @@ static bool collect_files(const std::string& folder, const std::string& relative
     return true;
 }
 
+std::string sketch_folder_of(const std::string& path) {
+    bool names_main_file = !is_directory(path) && is_one_of(extension_of(file_name(path)), SKETCH_EXTENSIONS);
+    return names_main_file ? parent_directory(path) : path;
+}
+
 bool load_sketch(const std::string& path, sketch& found, std::string& error) {
     std::string folder;
     if (!canonical_path(path, folder, error)) {
         return false;
     }
 
-    if (!is_directory(folder) && is_one_of(extension_of(file_name(folder)), SKETCH_EXTENSIONS)) {
-        folder = parent_directory(folder);
-    }
-
+    folder = sketch_folder_of(folder);
     found = {};
     found.folder = folder;
     found.name = file_name(folder);
