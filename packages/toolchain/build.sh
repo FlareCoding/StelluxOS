@@ -22,11 +22,20 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# The tree's musl patches apply to the musl version the tree builds
+actual="$(awk '$1 == "MUSL_VERSION" && $2 == ":=" { print $3 }' "$REPO_ROOT/Makefile")"
+if [ "$actual" != "$MUSL_VER" ]; then
+    echo "toolchain: the Makefile builds musl $actual, packages/toolchain/versions.sh pins $MUSL_VER" >&2
+    exit 1
+fi
+
 mkdir -p "$TOP" "$SOURCES_CACHE"
 
-# Archive timestamps come from the recipe's last change, so identical inputs
-# produce identical bytes on every machine
-SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- packages/toolchain 2>/dev/null || echo 0)"
+# Archive timestamps come from the last change to the recipe or the tree paths it
+# builds from, so identical inputs produce identical bytes on every machine
+recipe_paths="packages/toolchain $RECIPE_TREE"
+# shellcheck disable=SC2086
+SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- $recipe_paths 2>/dev/null || echo 0)"
 
 docker build -q -t "$IMAGE_TAG" \
     --build-arg "ALPINE_IMAGE=$ALPINE_IMAGE" \
@@ -64,6 +73,18 @@ for d in "$SCRIPT_DIR"/patches/*/; do
     name="$(basename "$d")"
     mkdir -p "$work/mcm-stage2/patches/$name"
     cp "$d"/* "$work/mcm-stage2/patches/$name/"
+done
+
+# The tree's musl patches and the headers they include, as committed
+# shellcheck disable=SC2086
+git -C "$REPO_ROOT" archive --format=tar -o "$work/tree.tar" HEAD $RECIPE_TREE
+mkdir -p "$work/tree"
+tar -C "$work/tree" -xf "$work/tree.tar"
+
+# musl-cross-make applies a source's patches in name order, so the prefix puts
+# the tree's last
+for p in "$work/tree/userland/musl/patches"/*.patch; do
+    cp "$p" "$work/mcm-stage2/patches/musl-$MUSL_VER/stellux-$(basename "$p")"
 done
 
 docker run --rm -v "$work:/host" \

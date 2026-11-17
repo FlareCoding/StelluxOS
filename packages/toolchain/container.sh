@@ -5,8 +5,9 @@
 #   stage 2: that cross toolchain rebuilds everything as static
 #            Stellux binaries
 # Expects the work tree prepared by build.sh mounted at /host: mcm-stage1/,
-# mcm-stage2/, and versions.sh. Leaves the package archives in /host/dist
-# together with the downloaded sources and the built trees.
+# mcm-stage2/, tree/ with the tree paths RECIPE_TREE names, and versions.sh.
+# Leaves the package archives in /host/dist together with the downloaded
+# sources and the built trees.
 #
 # STAGE=package skips the builds and repackages the existing trees.
 set -eu
@@ -83,6 +84,7 @@ GCC_CONFIG += --disable-fixincludes
 GCC_CONFIG += --with-native-system-header-dir=/include
 BINUTILS_CONFIG += --disable-lto
 MUSL_CONFIG += --disable-shared
+MUSL_CONFIG += CFLAGS=-I/work/tree/$STLX_HEADERS
 EOF
 
     echo "=== stage 2: static native toolchain ($TRIPLE) ==="
