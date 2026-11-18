@@ -1,6 +1,7 @@
 #include "extensions/perf_binaries/perf_binaries_extension.h"
 #include "core/editor_core.h"
 #include "extensions/extension_host.h"
+#include "extensions/perf_binaries/disasm_split_view.h"
 #include "extensions/perf_binaries/elf_hex_view.h"
 #include "extensions/perf_binaries/elf_model.h"
 #include "ui/file_sheet.h"
@@ -22,6 +23,24 @@ static constexpr const char* EXTENSION_ID = "perf_binaries";
 static constexpr qint64 ELF_MIN_FILE_BYTES = 64;
 static constexpr qint64 PROBE_HEADER_BYTES = 24;
 static constexpr size_t MAX_SIDEBAR_SYMBOLS = 24;
+static constexpr qsizetype SYMBOL_TAB_TITLE_MAX_CHARS = 28;
+
+static constexpr package_requirement PERF_BINARIES_PACKAGES[] = {
+    { "binutils", "/usr/bin/objdump" },
+};
+
+static constexpr dependency_group PERF_BINARIES_DEPS[] = {
+    {
+        "binary-tools",
+        "GNU Binary Utilities",
+        "Static binary disassembler and symbol inspection tools.",
+        PERF_BINARIES_PACKAGES,
+        {},
+        nullptr,
+        event_protocol::NONE,
+        true,
+    },
+};
 
 namespace {
 
@@ -44,6 +63,9 @@ private:
     void populate_symbol_views();
     void open_elf_inspector_tab();
     void preview_symbol_by_index(const QString& row_id);
+    void activate_symbol_by_index(const QString& row_id);
+    void open_default_disassembly();
+    void open_disassembly_for_symbol(const elf_symbol& symbol);
     void refresh_strip();
 
     extension_host& m_host;
@@ -53,6 +75,7 @@ private:
     ui::ui_section_list* m_top_symbols = nullptr;
     ui::ui_table_view* m_symbols_dock = nullptr;
     QPointer<elf_hex_view> m_elf_tab;
+    std::vector<QPointer<disasm_split_view>> m_disasm_tabs;
 
     QString m_binary_path;
     elf_binary_model m_elf_model;
@@ -134,11 +157,35 @@ static bool can_open_elf_file(const QString& path, QByteArrayView header_bytes) 
 }
 
 static QWidget* create_elf_file_view(editor_core& editor, const QString& path) {
-    (void)editor;
     auto* view = new elf_hex_view(path);
     if (perf_binaries_session* session = find_session_for_path(path)) {
         session->adopt_elf_view(path, view);
+        return view;
     }
+
+    QPointer<editor_core> guarded_editor(&editor);
+    QPointer<elf_hex_view> guarded_view(view);
+    QString project_root = infer_project_root_for_binary(path);
+
+    view->on_symbol_activated = [guarded_editor, guarded_view, path, project_root](const elf_symbol& symbol) {
+        if (!guarded_editor || !guarded_view) {
+            return;
+        }
+
+        QString owner_id = QString::fromLatin1(EXTENSION_ID);
+        QString tab_id = QStringLiteral("disasm:%1:%2").arg(path, QString::fromStdString(symbol.raw_name));
+        if (guarded_editor->has_custom_tab(owner_id, tab_id)) {
+            guarded_editor->focus_custom_tab(owner_id, tab_id);
+            return;
+        }
+
+        auto* split = new disasm_split_view(path, project_root,
+                                            guarded_view->model().header.machine,
+                                            guarded_view->model().header.dwarf_version, symbol);
+        QString title = QStringLiteral("%1 - Disasm")
+                            .arg(QString::fromStdString(symbol.demangled_name).left(SYMBOL_TAB_TITLE_MAX_CHARS));
+        guarded_editor->open_custom_tab(owner_id, { tab_id, title, split });
+    };
 
     return view;
 }
@@ -163,9 +210,9 @@ perf_binaries_session::perf_binaries_session(extension_host& host)
     g_active_sessions.push_back(this);
     m_top_symbols->set_empty_text(QStringLiteral("Select an ELF64 binary"));
     m_top_symbols->on_action_clicked = [this] { browse_for_binary(); };
-    m_top_symbols->on_row_activated = [this](const QString& row_id) { preview_symbol_by_index(row_id); };
+    m_top_symbols->on_row_activated = [this](const QString& row_id) { activate_symbol_by_index(row_id); };
     m_symbols_dock->on_row_clicked = [this](const QString& row_id) { preview_symbol_by_index(row_id); };
-    m_symbols_dock->on_row_activated = [this](const QString& row_id) { preview_symbol_by_index(row_id); };
+    m_symbols_dock->on_row_activated = [this](const QString& row_id) { activate_symbol_by_index(row_id); };
 
     m_host.set_sidebar_sections({ { QStringLiteral("top_symbols"), QStringLiteral("Top Symbols"), m_top_symbols } });
     m_host.set_dock_panels({ { QStringLiteral("symbols"), QStringLiteral("Symbols"), m_symbols_dock, false, 0 } });
@@ -198,6 +245,13 @@ void perf_binaries_session::shutdown() {
         m_elf_tab.clear();
     }
 
+    for (QPointer<disasm_split_view>& tab : m_disasm_tabs) {
+        if (tab) {
+            tab->stop_disassembly();
+        }
+    }
+
+    m_disasm_tabs.clear();
     m_top_symbols = nullptr;
     m_symbols_dock = nullptr;
 }
@@ -215,8 +269,10 @@ void perf_binaries_session::adopt_elf_view(const QString& binary_path, elf_hex_v
     }
 
     m_elf_tab = view;
+    m_elf_tab->on_symbol_activated = [this](const elf_symbol& symbol) { open_disassembly_for_symbol(symbol); };
     m_binary_path = binary_path;
     m_elf_model = view->model();
+
     m_has_elf_model = true;
     populate_symbol_views();
     refresh_strip();
@@ -228,6 +284,10 @@ void perf_binaries_session::register_commands() {
           QStringLiteral("Inspect ELF & Hex"), QString(), false,
           [this] { return m_has_elf_model; },
           [this] { open_elf_inspector_tab(); } },
+        { QStringLiteral("perf.open_disasm"), QStringLiteral("Performance"),
+          QStringLiteral("Open Source + Disassembly"), QString(), false,
+          [this] { return m_has_elf_model; },
+          [this] { open_default_disassembly(); } },
         { QStringLiteral("perf.browse_binary"), QStringLiteral("Performance"),
           QStringLiteral("Choose Binary..."), QString(), true,
           [] { return true; },
@@ -380,23 +440,81 @@ void perf_binaries_session::open_elf_inspector_tab() {
     }
 
     auto* view = new elf_hex_view(m_binary_path);
+    view->on_symbol_activated = [this](const elf_symbol& symbol) { open_disassembly_for_symbol(symbol); };
     m_elf_tab = view;
     m_host.open_custom_tab({ tab_id, title, view });
     m_host.reveal_dock_panel(QStringLiteral("symbols"));
 }
 
-void perf_binaries_session::preview_symbol_by_index(const QString& row_id) {
+void perf_binaries_session::activate_symbol_by_index(const QString& row_id) {
     bool ok = false;
     size_t idx = row_id.toULongLong(&ok);
     if (!ok || !m_has_elf_model || idx >= m_elf_model.symbols.size()) {
         return;
     }
 
+    const elf_symbol& symbol = m_elf_model.symbols[idx];
+    if (symbol.symbol_type == ELF_STT_FUNC || symbol.section_name.starts_with(".text")) {
+        open_disassembly_for_symbol(symbol);
+        return;
+    }
+
     open_elf_inspector_tab();
     byte_range range;
-    if (m_elf_tab && symbol_file_byte_range(m_elf_model, m_elf_model.symbols[idx], range)) {
+    if (m_elf_tab && symbol_file_byte_range(m_elf_model, symbol, range)) {
+        m_elf_tab->select_byte_range(range, QString::fromStdString(symbol.demangled_name));
+    }
+}
+
+void perf_binaries_session::preview_symbol_by_index(const QString& row_id) {
+    bool ok = false;
+    size_t idx = row_id.toULongLong(&ok);
+    byte_range range;
+    if (ok && m_has_elf_model && idx < m_elf_model.symbols.size() &&
+        m_elf_tab && symbol_file_byte_range(m_elf_model, m_elf_model.symbols[idx], range)) {
         m_elf_tab->select_byte_range(range, QString::fromStdString(m_elf_model.symbols[idx].demangled_name));
     }
+}
+
+void perf_binaries_session::open_default_disassembly() {
+    if (!m_has_elf_model) {
+        return;
+    }
+
+    const elf_symbol* chosen = nullptr;
+    for (const elf_symbol& symbol : m_elf_model.symbols) {
+        if ((symbol.symbol_type == ELF_STT_FUNC || symbol.section_name.starts_with(".text")) &&
+            (!chosen || symbol.size > chosen->size)) {
+            chosen = &symbol;
+        }
+    }
+
+    open_disassembly_for_symbol(chosen ? *chosen : elf_symbol{});
+}
+
+void perf_binaries_session::open_disassembly_for_symbol(const elf_symbol& symbol) {
+    if (m_is_shutting_down || !m_has_elf_model || m_binary_path.isEmpty()) {
+        return;
+    }
+
+    QString key = symbol.raw_name.empty() ? QStringLiteral("text") : QString::fromStdString(symbol.raw_name);
+    QString tab_id = QStringLiteral("disasm:%1:%2").arg(m_binary_path, key);
+    QString label = symbol.demangled_name.empty()
+                        ? QFileInfo(m_binary_path).fileName()
+                        : QString::fromStdString(symbol.demangled_name).left(SYMBOL_TAB_TITLE_MAX_CHARS);
+    QString title = QStringLiteral("%1 - Disasm").arg(label);
+
+    for (const QPointer<disasm_split_view>& existing : m_disasm_tabs) {
+        if (existing && existing->binary_path() == m_binary_path && existing->symbol_raw_name() == symbol.raw_name) {
+            m_host.open_custom_tab({ tab_id, title, existing.data() });
+            return;
+        }
+    }
+
+    auto* view = new disasm_split_view(m_binary_path, m_host.workspace_root(),
+                                       m_elf_model.header.machine, m_elf_model.header.dwarf_version, symbol);
+    m_disasm_tabs.emplace_back(view);
+    m_host.open_custom_tab({ tab_id, title, view });
 }
 
 void perf_binaries_session::refresh_strip() {
@@ -429,7 +547,10 @@ void perf_binaries_session::refresh_strip() {
             } } },
         { { QStringLiteral("elf_hex"), QStringLiteral("ELF & Hex"),
             QStringLiteral("Inspect ELF64 sections and Hex/ASCII bytes"), m_has_elf_model, false,
-            [this] { open_elf_inspector_tab(); } } },
+            [this] { open_elf_inspector_tab(); } },
+          { QStringLiteral("source_disasm"), QStringLiteral("Source + Disasm"),
+            QStringLiteral("Open synchronized C++ source and objdump disassembly"), m_has_elf_model, false,
+            [this] { open_default_disassembly(); } } },
         { { QStringLiteral("binary_summary"), summary, -1, false } },
         { QStringLiteral(".elf"), QStringLiteral(".o") },
     });
@@ -455,9 +576,10 @@ static std::unique_ptr<extension_session> create_perf_binaries_session(extension
 
 extension_descriptor perf_binaries_extension() {
     return { EXTENSION_ID, "Performance & Binaries",
-             "Inspect ELF64 sections, symbols, and synced Hex/ASCII bytes.",
+             "Inspect ELF64 sections, symbols, Hex/ASCII bytes, and DWARF-mapped disassembly.",
              extension_icon::BINARY, "ELF64 binary detected", true,
-             {}, PERF_BINARIES_OPENERS, qualifies_perf_binaries, create_perf_binaries_session };
+             PERF_BINARIES_DEPS, PERF_BINARIES_OPENERS,
+             qualifies_perf_binaries, create_perf_binaries_session };
 }
 
 } // namespace sheen

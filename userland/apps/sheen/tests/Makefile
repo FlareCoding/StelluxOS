@@ -14,14 +14,16 @@ SOURCES := $(SRC_DIR)/app/workspace_store.cpp \
            $(SRC_DIR)/extensions/workspace_paths.cpp \
            $(SRC_DIR)/extensions/python/python_traceback.cpp \
            $(SRC_DIR)/extensions/c_run/compiler_diagnostics.cpp \
-           $(PERF_DIR)/elf_model.cpp
+           $(PERF_DIR)/elf_model.cpp \
+           $(PERF_DIR)/disasm_mapper.cpp
 HEADERS := $(SRC_DIR)/app/workspace_store.h \
            $(SRC_DIR)/workspace/event_stream.h \
            $(SRC_DIR)/extensions/embedded/embedded_protocol.h \
            $(SRC_DIR)/extensions/workspace_paths.h \
            $(SRC_DIR)/extensions/python/python_traceback.h \
            $(SRC_DIR)/extensions/c_run/compiler_diagnostics.h \
-           $(PERF_DIR)/elf_model.h
+           $(PERF_DIR)/elf_model.h \
+           $(PERF_DIR)/disasm_mapper.h
 
 OBJECTS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJECT_DIR)/%.o,$(SOURCES))
 TESTS   := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))
