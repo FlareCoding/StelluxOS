@@ -727,6 +727,12 @@ ui_table_view::ui_table_view(const QList<table_column_spec>& columns, QWidget* p
                                    token(STLXTHEME_TEXT_DIM).name(),
                                    token(STLXTHEME_LINE).name(QColor::HexArgb)));
 
+    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {
+        if (on_row_clicked && item) {
+            on_row_clicked(item->data(0, CHOICE_ID_ROLE).toString());
+        }
+    });
+
     connect(m_tree, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item, int) {
         if (on_row_activated && item) {
             on_row_activated(item->data(0, CHOICE_ID_ROLE).toString());
