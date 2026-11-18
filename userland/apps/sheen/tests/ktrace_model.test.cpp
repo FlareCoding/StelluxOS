@@ -182,6 +182,25 @@ static void test_sqlite_decode_schema_and_invariants() {
 
     ktrace_window_view without_recorder = query_ktrace_window(model, { 1000, 5000, std::nullopt, std::nullopt, true });
     check(without_recorder.busy_cpu_ns == 2900, "excludes ktrace recorder while keeping stlxdm and khubd");
+
+    for (const ktrace_flame_span& span : full_stlxdm.flame_spans) {
+        check(span.start_fraction >= 0.0 && span.start_fraction < span.end_fraction && span.end_fraction <= 1.0,
+              "keeps flame span fractions inside [0.0, 1.0]");
+    }
+
+    auto frames = extract_ktrace_thread_frames(model, 104, 1000, 5000);
+    check(frames.size() == 2 && frames[1].wall_ns == 1700 && frames[1].running_ns == 1500,
+          "extracts wakeup-to-sleep active thread frames");
+
+    ktrace_profile_model huge_cap;
+    huge_cap.session.cpu_count = 8;
+    huge_cap.threads.push_back({ 1, KTRACE_TASK_USER, 1, "app", {}, 0, 0, std::nullopt });
+    huge_cap.cpu_slices.push_back({ 0, 1, false, 0, uint64_t{ 1 } << 62 });
+    finalize_ktrace_model(huge_cap);
+
+    auto bars = compute_ktrace_timeline_bars(huge_cap, { 0, uint64_t{ 1 } << 62, std::nullopt, std::nullopt, false }, 1);
+    check(bars.size() == 1 && std::fabs(bars[0].busy_fraction - 0.125) < 1e-9,
+          "computes bar capacity in double without uint64_t wall * cpu_count wrap");
 }
 
 static void test_cut_short_trace_null_preservation() {
