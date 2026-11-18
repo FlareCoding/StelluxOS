@@ -147,6 +147,7 @@ public:
 
     void set_rows(const QList<table_row>& rows);
 
+    std::function<void(const QString& row_id)> on_row_clicked;
     std::function<void(const QString& row_id)> on_row_activated;
 
 private:
