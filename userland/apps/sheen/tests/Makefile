@@ -12,12 +12,14 @@ SOURCES   := $(SRC_DIR)/app/workspace_store.cpp \
              $(SRC_DIR)/workspace/event_stream.cpp \
              $(SRC_DIR)/extensions/embedded/embedded_protocol.cpp \
              $(SRC_DIR)/extensions/workspace_paths.cpp \
-             $(SRC_DIR)/extensions/python/python_traceback.cpp
+             $(SRC_DIR)/extensions/python/python_traceback.cpp \
+             $(SRC_DIR)/extensions/c_run/compiler_diagnostics.cpp
 HEADERS   := $(SRC_DIR)/app/workspace_store.h \
              $(SRC_DIR)/workspace/event_stream.h \
              $(SRC_DIR)/extensions/embedded/embedded_protocol.h \
              $(SRC_DIR)/extensions/workspace_paths.h \
-             $(SRC_DIR)/extensions/python/python_traceback.h
+             $(SRC_DIR)/extensions/python/python_traceback.h \
+             $(SRC_DIR)/extensions/c_run/compiler_diagnostics.h
 TESTS     := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))
 
 CXXFLAGS := -std=c++20 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)
