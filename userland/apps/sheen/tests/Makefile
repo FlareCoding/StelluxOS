@@ -10,10 +10,14 @@ SRC_DIR   := ../src
 BUILD_DIR := ../build/host
 SOURCES   := $(SRC_DIR)/app/workspace_store.cpp \
              $(SRC_DIR)/workspace/event_stream.cpp \
-             $(SRC_DIR)/extensions/embedded/embedded_protocol.cpp
+             $(SRC_DIR)/extensions/embedded/embedded_protocol.cpp \
+             $(SRC_DIR)/extensions/workspace_paths.cpp \
+             $(SRC_DIR)/extensions/python/python_traceback.cpp
 HEADERS   := $(SRC_DIR)/app/workspace_store.h \
              $(SRC_DIR)/workspace/event_stream.h \
-             $(SRC_DIR)/extensions/embedded/embedded_protocol.h
+             $(SRC_DIR)/extensions/embedded/embedded_protocol.h \
+             $(SRC_DIR)/extensions/workspace_paths.h \
+             $(SRC_DIR)/extensions/python/python_traceback.h
 TESTS     := $(patsubst %.test.cpp,$(BUILD_DIR)/%,$(wildcard *.test.cpp))
 
 CXXFLAGS := -std=c++20 -O2 -g -Wall -Wextra -Werror -I$(SRC_DIR)
