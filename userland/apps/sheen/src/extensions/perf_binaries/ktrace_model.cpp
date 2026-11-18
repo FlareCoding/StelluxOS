@@ -845,6 +845,155 @@ static bool matches_thread_filter(uint32_t tid, std::optional<uint32_t> fallback
     return true;
 }
 
+static uint64_t bucket_edge_offset(uint64_t total_ns, size_t edge_index, size_t bucket_count) {
+    uint64_t quotient = total_ns / bucket_count;
+    uint64_t remainder = total_ns % bucket_count;
+    return static_cast<uint64_t>(edge_index) * quotient +
+           std::min<uint64_t>(static_cast<uint64_t>(edge_index), remainder);
+}
+
+std::vector<ktrace_timeline_bar> compute_ktrace_timeline_bars(const ktrace_profile_model& model,
+                                                              const ktrace_window_filter& filter,
+                                                              size_t bucket_count) {
+    if (bucket_count == 0 || filter.end_ns <= filter.start_ns) {
+        return {};
+    }
+
+    std::unordered_map<uint32_t, const ktrace_thread*> thread_by_tid;
+    for (const ktrace_thread& thread : model.threads) {
+        thread_by_tid[thread.tid] = &thread;
+    }
+
+    std::set<uint32_t> recorder_pids;
+    for (const ktrace_process& proc : model.processes) {
+        if (proc.is_recorder) {
+            recorder_pids.insert(proc.pid);
+        }
+    }
+
+    uint64_t total_window_ns = filter.end_ns - filter.start_ns;
+    std::vector<ktrace_timeline_bar> bars(bucket_count);
+    for (size_t idx = 0; idx < bucket_count; idx++) {
+        bars[idx].start_ns = filter.start_ns + bucket_edge_offset(total_window_ns, idx, bucket_count);
+        bars[idx].end_ns = filter.start_ns + bucket_edge_offset(total_window_ns, idx + 1, bucket_count);
+    }
+
+    bool scoped_to_task = filter.tid.has_value() || filter.pid.has_value();
+    for (const ktrace_cpu_slice& slice : model.cpu_slices) {
+        if (!slice.end_ns.has_value() || *slice.end_ns <= slice.start_ns) {
+            continue;
+        }
+
+        uint64_t clipped_start = std::max(slice.start_ns, filter.start_ns);
+        uint64_t clipped_end = std::min(*slice.end_ns, filter.end_ns);
+        if (clipped_end <= clipped_start) {
+            continue;
+        }
+
+        if ((slice.is_idle && scoped_to_task) ||
+            (!slice.is_idle && !matches_thread_filter(slice.tid, std::nullopt, filter, thread_by_tid, recorder_pids))) {
+            continue;
+        }
+
+        auto first_bar = std::lower_bound(bars.begin(), bars.end(), clipped_start,
+                                          [](const ktrace_timeline_bar& bar, uint64_t ts) {
+                                              return bar.end_ns <= ts;
+                                          });
+        for (auto bar_it = first_bar; bar_it != bars.end() && bar_it->start_ns < clipped_end; ++bar_it) {
+            uint64_t overlap = interval_overlap(clipped_start, clipped_end, bar_it->start_ns, bar_it->end_ns);
+            uint64_t& target = slice.is_idle ? bar_it->idle_cpu_ns : bar_it->busy_cpu_ns;
+            target = saturating_add_u64(target, overlap);
+        }
+    }
+
+    double parallel_cpus = filter.tid.has_value()
+                               ? 1.0
+                               : static_cast<double>(std::max<uint32_t>(model.session.cpu_count, 1));
+    for (ktrace_timeline_bar& bar : bars) {
+        double wall = bar.end_ns > bar.start_ns ? static_cast<double>(bar.end_ns - bar.start_ns) : 0.0;
+        double capacity = wall * parallel_cpus;
+        if (capacity > 0.0) {
+            bar.busy_fraction = std::min(1.0, static_cast<double>(bar.busy_cpu_ns) / capacity);
+        }
+    }
+
+    return bars;
+}
+
+std::vector<ktrace_thread_frame> extract_ktrace_thread_frames(const ktrace_profile_model& model,
+                                                              uint32_t tid, uint64_t start_ns,
+                                                              uint64_t end_ns) {
+    if (end_ns <= start_ns) {
+        return {};
+    }
+
+    std::vector<ktrace_thread_frame> frames;
+    bool in_active_burst = false;
+    ktrace_thread_frame current;
+
+    auto flush_burst = [&]() {
+        if (!in_active_burst) {
+            return;
+        }
+
+        if (current.end_ns > current.start_ns) {
+            current.wall_ns = current.end_ns - current.start_ns;
+            current.cpu_fraction = std::min(1.0, static_cast<double>(current.running_ns) /
+                                                     static_cast<double>(current.wall_ns));
+            current.frame_index = static_cast<uint32_t>(frames.size());
+            frames.push_back(current);
+        }
+
+        in_active_burst = false;
+        current = {};
+    };
+
+    auto start_it = std::lower_bound(model.thread_states.begin(), model.thread_states.end(), tid,
+                                     [](const ktrace_thread_state& state, uint32_t target) {
+                                         return state.tid < target;
+                                     });
+    for (auto it = start_it; it != model.thread_states.end() && it->tid == tid; ++it) {
+        const ktrace_thread_state& state = *it;
+        if (!state.end_ns.has_value() || *state.end_ns <= state.start_ns) {
+            continue;
+        }
+
+        uint64_t c0 = std::max(state.start_ns, start_ns);
+        uint64_t c1 = std::min(*state.end_ns, end_ns);
+        if (c1 <= c0) {
+            continue;
+        }
+
+        if (state.state == thread_state_kind::SLEEPING) {
+            flush_burst();
+            continue;
+        }
+
+        if (in_active_burst && c0 > current.end_ns) {
+            flush_burst();
+        }
+
+        if (!in_active_burst) {
+            in_active_burst = true;
+            current.tid = tid;
+            current.start_ns = c0;
+            current.end_ns = c1;
+        } else {
+            current.end_ns = std::max(current.end_ns, c1);
+        }
+
+        uint64_t dur = c1 - c0;
+        if (state.state == thread_state_kind::RUNNING) {
+            current.running_ns = saturating_add_u64(current.running_ns, dur);
+        } else if (state.state == thread_state_kind::RUNNABLE) {
+            current.runnable_ns = saturating_add_u64(current.runnable_ns, dur);
+        }
+    }
+
+    flush_burst();
+    return frames;
+}
+
 static size_t ensure_tree_child(std::vector<flame_tree_node>& nodes, size_t parent_idx,
                                 const std::string& name, uint32_t depth) {
     auto existing = nodes[parent_idx].child_by_name.find(name);
@@ -990,6 +1139,43 @@ static void populate_tree_from_kernel_activity(const ktrace_profile_model& model
         nodes[root_idx].self_ns = saturating_add_u64(nodes[root_idx].self_ns,
                                                      total_run >= covered ? (total_run - covered) : 0);
         nodes[root_idx].call_count += running_by_tid[tid].size();
+    }
+}
+
+static void sort_and_layout_flame_tree(std::vector<flame_tree_node>& nodes, size_t node_idx,
+                                       double start_fraction, double parent_end_fraction,
+                                       double root_total_double, std::vector<ktrace_flame_span>& out_spans) {
+    flame_tree_node& node = nodes[node_idx];
+    std::sort(node.children.begin(), node.children.end(), [&nodes](size_t lhs, size_t rhs) {
+        return nodes[lhs].total_ns != nodes[rhs].total_ns ? (nodes[lhs].total_ns > nodes[rhs].total_ns)
+                                                          : (nodes[lhs].name < nodes[rhs].name);
+    });
+
+    if (node_idx != 0) {
+        double width = static_cast<double>(node.total_ns) / root_total_double;
+        double end_fraction = std::min(parent_end_fraction, start_fraction + width);
+        if (end_fraction > start_fraction) {
+            out_spans.push_back({
+                node.depth, start_fraction, end_fraction, node.self_ns,
+                node.total_ns, node.call_count, node.name, {}, 0,
+            });
+        }
+
+        double child_cursor = start_fraction;
+        for (size_t child_idx : node.children) {
+            double child_width = static_cast<double>(nodes[child_idx].total_ns) / root_total_double;
+            sort_and_layout_flame_tree(nodes, child_idx, child_cursor, end_fraction, root_total_double, out_spans);
+            child_cursor = std::min(end_fraction, child_cursor + child_width);
+        }
+
+        return;
+    }
+
+    double root_cursor = 0.0;
+    for (size_t child_idx : node.children) {
+        double child_width = static_cast<double>(nodes[child_idx].total_ns) / root_total_double;
+        sort_and_layout_flame_tree(nodes, child_idx, root_cursor, 1.0, root_total_double, out_spans);
+        root_cursor = std::min(1.0, root_cursor + child_width);
     }
 }
 
@@ -1155,6 +1341,8 @@ ktrace_window_view query_ktrace_window(const ktrace_profile_model& model, const 
 
     if (root_total_ns > 0) {
         double root_total_double = static_cast<double>(root_total_ns);
+        sort_and_layout_flame_tree(tree_nodes, 0, 0.0, 1.0, root_total_double, view.flame_spans);
+
         std::set<std::string> ancestors;
         std::map<std::string, ktrace_hotspot> hotspots_by_name;
         collect_hotspots_from_tree(tree_nodes, 0, ancestors, hotspots_by_name);

@@ -5,8 +5,8 @@
 #include "extensions/perf_binaries/disasm_split_view.h"
 #include "extensions/perf_binaries/elf_hex_view.h"
 #include "extensions/perf_binaries/elf_model.h"
+#include "extensions/perf_binaries/flame_graph_view.h"
 #include "extensions/perf_binaries/ktrace_model.h"
-#include "ui/chrome.h"
 #include "ui/file_sheet.h"
 #include "ui/ui_kit.h"
 
@@ -14,11 +14,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QHBoxLayout>
 #include <QHash>
-#include <QLabel>
 #include <QPointer>
-#include <QVBoxLayout>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -36,8 +33,6 @@ static constexpr qint64 TRACE_MIN_FILE_BYTES = 16;
 static constexpr qint64 PROBE_HEADER_BYTES = 24;
 static constexpr size_t MAX_SIDEBAR_ITEMS = 24;
 static constexpr qsizetype SYMBOL_TAB_TITLE_MAX_CHARS = 28;
-static constexpr int TRACE_BAR_HEIGHT = 32;
-static constexpr int TRACE_BAR_PAD_X = 12;
 static constexpr double HOT_LINE_PERCENT_THRESHOLD = 10.0;
 
 static uint64_t g_capture_sequence = 0;
@@ -61,32 +56,6 @@ static constexpr dependency_group PERF_BINARIES_DEPS[] = {
 
 namespace {
 
-class trace_summary_tab final : public QWidget {
-public:
-    explicit trace_summary_tab(const QString& trace_path, QWidget* parent = nullptr);
-    ~trace_summary_tab() override;
-
-    const QString& trace_path() const { return m_trace_path; }
-    void stop_decode();
-
-    std::function<void(const ktrace_profile_model& model, const ktrace_window_view& window)> on_loaded;
-    std::function<void(const ktrace_hotspot& hotspot)> on_hotspot_activated;
-
-private:
-    void start_load();
-    void finish_decode(const process_exit& exit_result);
-    void cleanup_temp_db();
-    void apply_loaded_model(ktrace_profile_model loaded);
-
-    QString m_trace_path;
-    QString m_temp_db_path;
-    QLabel* m_header_label = nullptr;
-    ui::ui_table_view* m_hotspots_table = nullptr;
-    std::unique_ptr<process_task> m_decode_task;
-    QByteArray m_decode_stderr;
-    std::vector<ktrace_hotspot> m_hotspots;
-};
-
 class perf_binaries_session final : public extension_session {
 public:
     explicit perf_binaries_session(extension_host& host);
@@ -97,7 +66,7 @@ public:
 
     QString workspace_root() const { return m_host.workspace_root(); }
     void adopt_elf_view(const QString& binary_path, elf_hex_view* view);
-    void adopt_trace_tab(const QString& trace_path, trace_summary_tab* view);
+    void adopt_flame_view(const QString& trace_path, flame_graph_view* view);
 
 private:
     void discover_initial_targets();
@@ -109,6 +78,7 @@ private:
     void browse_for_trace();
     void browse_for_binary();
     void open_trace_tab(const QString& path);
+    void open_flame_graph_tab();
     void update_from_trace_window(const ktrace_profile_model& model, const ktrace_window_view& window,
                                   bool scoped_to_single_thread);
     QString resolve_existing_workspace_file(const std::string& recorded_path) const;
@@ -135,7 +105,7 @@ private:
     ui::ui_table_view* m_symbols_dock = nullptr;
 
     QPointer<elf_hex_view> m_elf_tab;
-    QPointer<trace_summary_tab> m_trace_tab;
+    QPointer<flame_graph_view> m_flame_tab;
     std::vector<QPointer<disasm_split_view>> m_disasm_tabs;
 
     process_task m_ktrace_task;
@@ -291,182 +261,6 @@ static QList<ui::table_row> build_syscall_table_rows(const std::vector<ktrace_sy
     return rows;
 }
 
-trace_summary_tab::trace_summary_tab(const QString& trace_path, QWidget* parent)
-    : QWidget(parent), m_trace_path(trace_path) {
-    auto* root_layout = new QVBoxLayout(this);
-    root_layout->setContentsMargins(0, 0, 0, 0);
-    root_layout->setSpacing(0);
-
-    auto* header = new perf_strip_bar(TRACE_BAR_HEIGHT, false, true, this);
-    auto* header_layout = new QHBoxLayout(header);
-    header_layout->setContentsMargins(TRACE_BAR_PAD_X, 0, TRACE_BAR_PAD_X, 1);
-
-    m_header_label = new QLabel(header);
-    m_header_label->setFont(mono_font(STLXTHEME_CAPTION_SIZE));
-    m_header_label->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                                      .arg(token(STLXTHEME_TEXT_SECONDARY).name(QColor::HexArgb)));
-    header_layout->addWidget(m_header_label, 1);
-    root_layout->addWidget(header);
-
-    m_hotspots_table = new ui::ui_table_view({
-        { QStringLiteral("Thread / Kernel Activity"), 0, false }, { QStringLiteral("Self"), 96, true },
-        { QStringLiteral("Total"), 96, true }, { QStringLiteral("Self %"), 80, true },
-        { QStringLiteral("Calls"), 76, true },
-    }, this);
-
-    auto activate_fn = [this](const QString& row_id) {
-        bool ok = false;
-        size_t idx = row_id.toULongLong(&ok);
-        if (ok && idx < m_hotspots.size() && on_hotspot_activated) {
-            on_hotspot_activated(m_hotspots[idx]);
-        }
-    };
-
-    m_hotspots_table->on_row_activated = activate_fn;
-    m_hotspots_table->on_row_clicked = activate_fn;
-    root_layout->addWidget(m_hotspots_table, 1);
-    start_load();
-}
-
-trace_summary_tab::~trace_summary_tab() {
-    stop_decode();
-}
-
-void trace_summary_tab::stop_decode() {
-    if (m_decode_task) {
-        m_decode_task->on_stdout = nullptr;
-        m_decode_task->on_stderr = nullptr;
-        m_decode_task->on_finished = nullptr;
-        m_decode_task->stop();
-        m_decode_task.reset();
-    }
-
-    cleanup_temp_db();
-}
-
-void trace_summary_tab::cleanup_temp_db() {
-    if (!m_temp_db_path.isEmpty()) {
-        QByteArray utf8 = m_temp_db_path.toUtf8();
-        ::unlink(utf8.constData());
-        QByteArray partial = utf8 + ".partial";
-        ::unlink(partial.constData());
-        m_temp_db_path.clear();
-    }
-}
-
-void trace_summary_tab::start_load() {
-    stop_decode();
-    QString title = QFileInfo(m_trace_path).fileName();
-
-    QFile file(m_trace_path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        m_header_label->setText(QStringLiteral("Cannot open %1").arg(title));
-        return;
-    }
-
-    QByteArray prefix = file.read(TRACE_MIN_FILE_BYTES);
-    file.close();
-    std::span<const uint8_t> head_span(reinterpret_cast<const uint8_t*>(prefix.constData()),
-                                       static_cast<size_t>(prefix.size()));
-    if (!is_ktrace_capture(head_span)) {
-        ktrace_profile_model loaded;
-        std::string error_message;
-        if (!load_ktrace_database(m_trace_path.toStdString(), loaded, error_message)) {
-            m_header_label->setText(QString::fromStdString(error_message));
-            return;
-        }
-
-        apply_loaded_model(std::move(loaded));
-        return;
-    }
-
-    g_capture_sequence++;
-    m_temp_db_path = QStringLiteral("/tmp/sheen-ktrace-%1-%2.db").arg(::getpid()).arg(g_capture_sequence);
-    cleanup_temp_db();
-    m_temp_db_path = QStringLiteral("/tmp/sheen-ktrace-%1-%2.db").arg(::getpid()).arg(g_capture_sequence);
-    m_decode_stderr.clear();
-    m_header_label->setText(QStringLiteral("Decoding %1...").arg(title));
-
-    m_decode_task = std::make_unique<process_task>();
-    m_decode_task->on_stderr = [this](QByteArrayView chunk) { m_decode_stderr.append(chunk.data(), chunk.size()); };
-    m_decode_task->on_finished = [this](const process_exit& exit_result) { finish_decode(exit_result); };
-
-    QString start_error;
-    process_spec spec;
-    spec.program = QStringLiteral("/bin/ktrace-decode");
-    spec.arguments = { QFileInfo(m_trace_path).absoluteFilePath(), QStringLiteral("-o"), m_temp_db_path };
-    if (!m_decode_task->start(spec, &start_error)) {
-        m_header_label->setText(QStringLiteral("ktrace-decode unavailable: %1").arg(start_error));
-        stop_decode();
-    }
-}
-
-void trace_summary_tab::finish_decode(const process_exit& exit_result) {
-    if (exit_result.exit_code != 0) {
-        QString detail = QString::fromUtf8(m_decode_stderr).trimmed();
-        m_header_label->setText(detail.isEmpty() ? QStringLiteral("ktrace-decode failed") : detail);
-        cleanup_temp_db();
-        return;
-    }
-
-    ktrace_profile_model loaded;
-    std::string error_message;
-    bool ok = load_ktrace_database(m_temp_db_path.toStdString(), loaded, error_message);
-    cleanup_temp_db();
-    if (!ok) {
-        m_header_label->setText(QString::fromStdString(error_message));
-        return;
-    }
-
-    apply_loaded_model(std::move(loaded));
-}
-
-void trace_summary_tab::apply_loaded_model(ktrace_profile_model loaded) {
-    uint64_t end_ns = std::max(loaded.session.start_ns + 1, loaded.session.effective_end_ns);
-    ktrace_window_view window = query_ktrace_window(
-        loaded, { loaded.session.start_ns, end_ns, std::nullopt, std::nullopt, true });
-    m_hotspots = window.function_hotspots;
-
-    QList<ui::table_row> hotspot_rows;
-    for (size_t idx = 0; idx < window.function_hotspots.size(); idx++) {
-        const ktrace_hotspot& hotspot = window.function_hotspots[idx];
-        hotspot_rows.append({
-            QString::number(idx),
-            { QString::fromStdString(hotspot.name), qstring_duration(hotspot.self_ns),
-              qstring_duration(hotspot.total_ns),
-              QStringLiteral("%1%").arg(hotspot.self_percent, 0, 'f', 1),
-              QString::number(hotspot.call_count) },
-        });
-    }
-
-    m_hotspots_table->set_rows(hotspot_rows);
-
-    QString health_tag = QStringLiteral("Health OK");
-    if (!loaded.all_health_checks_passed) {
-        if (loaded.session.lost_records > 0) {
-            health_tag = QStringLiteral("Lost %1").arg(loaded.session.lost_records);
-        } else {
-            health_tag = QStringLiteral("Incomplete");
-            for (const ktrace_health_status& check : loaded.health_checks) {
-                if (!check.passed && !check.name.empty()) {
-                    health_tag = QString::fromStdString(check.name) + QStringLiteral(" failed");
-                    break;
-                }
-            }
-        }
-    }
-
-    m_header_label->setText(QStringLiteral("%1   %2   %3 CPUs   %4 records   %5   Duration %6")
-                                .arg(QFileInfo(m_trace_path).fileName(), QString::fromStdString(loaded.session.arch))
-                                .arg(loaded.session.cpu_count)
-                                .arg(loaded.session.records)
-                                .arg(health_tag, qstring_duration(window.window_ns)));
-
-    if (on_loaded) {
-        on_loaded(loaded, window);
-    }
-}
-
 static bool can_open_elf_file(const QString& path, QByteArrayView header_bytes) {
     (void)path;
     std::span<const uint8_t> span(reinterpret_cast<const uint8_t*>(header_bytes.data()),
@@ -521,30 +315,32 @@ static bool can_open_trace_file(const QString& path, QByteArrayView header_bytes
 }
 
 static QWidget* create_trace_file_view(editor_core& editor, const QString& path) {
-    auto* view = new trace_summary_tab(path);
+    auto* view = new flame_graph_view();
     if (perf_binaries_session* session = find_session_for_path(path)) {
-        session->adopt_trace_tab(path, view);
+        session->adopt_flame_view(path, view);
+        view->open_trace_path(path);
         return view;
     }
 
     QPointer<editor_core> guarded_editor(&editor);
-    view->on_hotspot_activated = [guarded_editor](const ktrace_hotspot& hotspot) {
-        if (!guarded_editor || hotspot.source_file.empty() || hotspot.source_line <= 0) {
+    view->on_span_activated = [guarded_editor](const ktrace_flame_span& span, bool) {
+        if (!guarded_editor || span.source_file.empty() || span.source_line <= 0) {
             return;
         }
 
-        QString candidate = QString::fromStdString(hotspot.source_file);
+        QString candidate = QString::fromStdString(span.source_file);
         if (QFileInfo::exists(candidate)) {
-            guarded_editor->open_file_at_line(QFileInfo(candidate).absoluteFilePath(), hotspot.source_line);
+            guarded_editor->open_file_at_line(QFileInfo(candidate).absoluteFilePath(), span.source_line);
         }
     };
 
+    view->open_trace_path(path);
     return view;
 }
 
 static constexpr file_opener_spec PERF_BINARIES_OPENERS[] = {
     { "elf", "Open ELF & Hex", can_open_elf_file, create_elf_file_view },
-    { "ktrace", "Open Trace", can_open_trace_file, create_trace_file_view },
+    { "ktrace", "Open Flame Graph", can_open_trace_file, create_trace_file_view },
 };
 
 perf_binaries_session::perf_binaries_session(extension_host& host)
@@ -625,11 +421,11 @@ void perf_binaries_session::shutdown() {
         m_elf_tab.clear();
     }
 
-    if (m_trace_tab) {
-        m_trace_tab->on_loaded = nullptr;
-        m_trace_tab->on_hotspot_activated = nullptr;
-        m_trace_tab->stop_decode();
-        m_trace_tab.clear();
+    if (m_flame_tab) {
+        m_flame_tab->on_window_changed = nullptr;
+        m_flame_tab->on_span_activated = nullptr;
+        m_flame_tab->stop_decode();
+        m_flame_tab.clear();
     }
 
     for (QPointer<disasm_split_view>& tab : m_disasm_tabs) {
@@ -673,25 +469,30 @@ void perf_binaries_session::adopt_elf_view(const QString& binary_path, elf_hex_v
     refresh_strip();
 }
 
-void perf_binaries_session::adopt_trace_tab(const QString& trace_path, trace_summary_tab* view) {
+void perf_binaries_session::adopt_flame_view(const QString& trace_path, flame_graph_view* view) {
     if (m_is_shutting_down || !view) {
         return;
     }
 
-    if (m_trace_tab && m_trace_tab != view) {
-        m_trace_tab->on_loaded = nullptr;
-        m_trace_tab->on_hotspot_activated = nullptr;
+    if (m_flame_tab && m_flame_tab != view) {
+        m_flame_tab->on_window_changed = nullptr;
+        m_flame_tab->on_span_activated = nullptr;
     }
 
     m_trace_path = trace_path;
-    m_trace_tab = view;
-    view->on_loaded = [this](const ktrace_profile_model& model, const ktrace_window_view& window) {
-        update_from_trace_window(model, window, false);
+    m_flame_tab = view;
+    view->on_window_changed = [this](const ktrace_profile_model& model, const ktrace_window_view& window,
+                                     bool scoped_to_single_thread) {
+        update_from_trace_window(model, window, scoped_to_single_thread);
     };
 
-    view->on_hotspot_activated = [this](const ktrace_hotspot& hotspot) {
-        jump_to_hotspot_location(hotspot.name, hotspot.source_file, hotspot.source_line, false);
+    view->on_span_activated = [this](const ktrace_flame_span& span, bool open_disasm) {
+        jump_to_hotspot_location(span.name, span.source_file, span.source_line, open_disasm);
     };
+
+    if (view->has_model()) {
+        update_from_trace_window(view->model(), view->current_window(), view->is_filtered_to_single_thread());
+    }
 
     refresh_strip();
 }
@@ -719,6 +520,9 @@ void perf_binaries_session::register_commands() {
           [this] { return !m_ktrace_task.is_running(); }, [this] { toggle_recording(); } },
         { QStringLiteral("perf.open_trace"), QStringLiteral("Performance"),
           QStringLiteral("Open Trace..."), {}, false, [] { return true; }, [this] { browse_for_trace(); } },
+        { QStringLiteral("perf.open_flame"), QStringLiteral("Performance"),
+          QStringLiteral("Open Flame Graph"), {}, false,
+          [] { return true; }, [this] { open_flame_graph_tab(); } },
         { QStringLiteral("perf.show_syscalls"), QStringLiteral("Performance"),
           QStringLiteral("Show Syscalls & Waits"), {}, false,
           [this] { return m_has_active_trace; }, [this] { m_host.reveal_dock_panel(QStringLiteral("syscalls")); } },
@@ -859,17 +663,27 @@ void perf_binaries_session::open_trace_tab(const QString& path) {
     }
 
     QString tab_id = QStringLiteral("trace:") + path;
-    QString title = QFileInfo(path).fileName();
-    if (m_trace_tab && m_trace_tab->trace_path() == path) {
-        m_host.open_custom_tab({ tab_id, title, m_trace_tab.data() });
+    QString title = QStringLiteral("%1 - Flame Graph").arg(QFileInfo(path).fileName());
+    if (m_flame_tab && m_flame_tab->trace_path() == path) {
+        m_host.open_custom_tab({ tab_id, title, m_flame_tab.data() });
         m_host.reveal_dock_panel(QStringLiteral("hotspots"));
         return;
     }
 
-    auto* view = new trace_summary_tab(path);
-    adopt_trace_tab(path, view);
+    auto* view = new flame_graph_view();
+    adopt_flame_view(path, view);
+    view->open_trace_path(path);
     m_host.open_custom_tab({ tab_id, title, view });
     m_host.reveal_dock_panel(QStringLiteral("hotspots"));
+}
+
+void perf_binaries_session::open_flame_graph_tab() {
+    if (!m_trace_path.isEmpty() && QFileInfo::exists(m_trace_path)) {
+        open_trace_tab(m_trace_path);
+        return;
+    }
+
+    browse_for_trace();
 }
 
 void perf_binaries_session::update_from_trace_window(const ktrace_profile_model& model,
@@ -1226,6 +1040,9 @@ void perf_binaries_session::refresh_strip() {
           { QStringLiteral("open_trace"), QStringLiteral("Open Trace..."),
             QStringLiteral("Open a .ktrace capture or ktrace-decode SQLite database"), true, false,
             [this] { browse_for_trace(); } },
+          { QStringLiteral("flame_graph"), QStringLiteral("Flame Graph"),
+            QStringLiteral("Open CPU frame timeline and Flame Graph"), true, false,
+            [this] { open_flame_graph_tab(); } },
           { QStringLiteral("source_disasm"), QStringLiteral("Source + Disasm"),
             QStringLiteral("Open synchronized C++ source and objdump disassembly"), m_has_elf_model, false,
             [this] { open_default_disassembly(); } },
@@ -1261,7 +1078,7 @@ static std::unique_ptr<extension_session> create_perf_binaries_session(extension
 
 extension_descriptor perf_binaries_extension() {
     return { EXTENSION_ID, "Performance & Binaries",
-             "Profile ktrace captures, hotspots, syscalls, ELF64 sections, Hex/ASCII bytes, and disassembly.",
+             "Profile ktrace timelines, Flame Graphs, syscalls, ELF64 sections, Hex/ASCII bytes, and disassembly.",
              extension_icon::BINARY, "Trace capture or ELF64 binary detected", true,
              PERF_BINARIES_DEPS, PERF_BINARIES_OPENERS,
              qualifies_perf_binaries, create_perf_binaries_session };

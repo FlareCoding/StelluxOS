@@ -127,6 +127,19 @@ struct ktrace_window_filter {
     bool exclude_recorder = false;
 };
 
+struct ktrace_timeline_bar {
+    uint64_t start_ns = 0, end_ns = 0;
+    uint64_t busy_cpu_ns = 0, idle_cpu_ns = 0;
+    double busy_fraction = 0.0;
+};
+
+struct ktrace_thread_frame {
+    uint32_t frame_index = 0, tid = 0;
+    uint64_t start_ns = 0, end_ns = 0, wall_ns = 0;
+    uint64_t running_ns = 0, runnable_ns = 0;
+    double cpu_fraction = 0.0;
+};
+
 struct ktrace_syscall_summary {
     uint32_t number = 0;
     std::string name;
@@ -141,6 +154,14 @@ struct ktrace_hotspot {
     double self_percent = 0.0;
 };
 
+struct ktrace_flame_span {
+    uint32_t depth = 0;
+    double start_fraction = 0.0, end_fraction = 0.0;
+    uint64_t self_ns = 0, total_ns = 0, call_count = 0;
+    std::string name, source_file;
+    int source_line = 0;
+};
+
 struct ktrace_window_view {
     uint64_t start_ns = 0, end_ns = 0, window_ns = 0;
     uint64_t busy_cpu_ns = 0, idle_cpu_ns = 0;
@@ -148,6 +169,7 @@ struct ktrace_window_view {
     uint64_t indeterminate_slice_count = 0, indeterminate_state_count = 0;
     std::vector<ktrace_syscall_summary> syscall_summaries;
     std::vector<ktrace_hotspot> function_hotspots;
+    std::vector<ktrace_flame_span> flame_spans;
 };
 
 bool is_ktrace_capture(std::span<const uint8_t> header_bytes);
@@ -157,6 +179,12 @@ void finalize_ktrace_model(ktrace_profile_model& model);
 std::string resolve_syscall_name(const ktrace_profile_model& model, uint32_t syscall_number);
 std::string resolve_errno_name(const ktrace_profile_model& model, int32_t errno_code);
 std::string thread_name_at(const ktrace_profile_model& model, uint32_t tid, uint64_t ts_ns);
+std::vector<ktrace_timeline_bar> compute_ktrace_timeline_bars(const ktrace_profile_model& model,
+                                                              const ktrace_window_filter& filter,
+                                                              size_t bucket_count);
+std::vector<ktrace_thread_frame> extract_ktrace_thread_frames(const ktrace_profile_model& model,
+                                                              uint32_t tid, uint64_t start_ns,
+                                                              uint64_t end_ns);
 ktrace_window_view query_ktrace_window(const ktrace_profile_model& model,
                                        const ktrace_window_filter& filter);
 std::string format_duration_ns(uint64_t ns);
