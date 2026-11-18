@@ -15,7 +15,7 @@ HOST_QT="/work/qt-host"
 ROOT="/work/root/$ARCH"
 
 # The libraries Sheen links, in the order the userland build makes them
-SHEEN_LIBS="libstlxtheme libstlx libstlxconf libstlxwin libstlxqpa"
+SHEEN_LIBS="libstlxtheme libstlx libstlxconf libstlxwin libstlxqpa libsqlite3"
 
 # Runs a command with its output in a log, shown only when it fails
 run_logged() {

@@ -6,7 +6,7 @@ SHEEN_VER="1.2"
 
 # The tree a release builds from beyond this recipe, Sheen's source and the libraries it links statically, which the
 # recipe's hash covers, so a change there marks the published archive stale until the release is bumped
-RECIPE_TREE="userland/apps/sheen userland/lib/libstlx userland/lib/libstlxqpa userland/lib/libstlxwin userland/lib/libstlxconf userland/lib/libstlxtheme"
+RECIPE_TREE="userland/apps/sheen userland/lib/libstlx userland/lib/libstlxqpa userland/lib/libstlxwin userland/lib/libstlxconf userland/lib/libstlxtheme userland/lib/libsqlite3"
 
 # Scintilla, the editing component, and Lexilla, its lexers, compiled unmodified from their release tarballs
 SCINTILLA_VER="5.6.9"
@@ -26,7 +26,7 @@ LLVM_SHA256="6898f963c8e938981e6c4a302e83ec5beb4630147c7311183cf61069af16333d"
 LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/llvm-project-$LLVM_VER.src.tar.xz"
 
 # Package release number, bumped when the recipe, a pin or the Qt kit changes without Sheen's version changing
-SHEEN_PKG_REL="3"
+SHEEN_PKG_REL="4"
 
 # The version-release of each package this recipe emits, as the archive names it
 package_version() {

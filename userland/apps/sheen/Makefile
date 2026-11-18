@@ -3,6 +3,7 @@ APP_QT := 1
 
 # Scintilla's Qt layer and the legacy code pages convert text through QTextCodec, which Qt 6 keeps in Core5Compat
 APP_QT_MODULES := core5compat
+APP_LIBS       := sqlite3
 
 EXTENSION_DIRS  := $(patsubst src/%/,%,$(wildcard src/extensions/*/))
 APP_SOURCE_DIRS := app core ui workspace extensions $(EXTENSION_DIRS)
